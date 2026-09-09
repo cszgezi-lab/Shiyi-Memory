@@ -15,7 +15,7 @@ export function createWorkspace(bound) {
     let found;
     try { found = store.tryGetJson ? await store.tryGetJson({ namespace: NS, key }) : { found: true, value: await store.getJson({ namespace: NS, key }) }; }
     catch (error) {
-      if (isMissingProductEntry(error)) found = { found:false };
+      if (!store.tryGetJson && isMissingProductEntry(error)) found = { found:false };
       else throw new Error('当前聊天资料读取失败，请重试');
     }
     guard();

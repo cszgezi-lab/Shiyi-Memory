@@ -177,7 +177,30 @@ export function productStoreFromSession(session) {
   if(stores.has(store))return stores.get(store);
   const wrapped={
     setJson: args=>store.setJson(args),
-    async tryGetJson(args){try { if(store.tryGetJson)return await store.tryGetJson(args); const value=await store.getJson(args); return {found:value!==undefined,value}; }catch(error){if(isMissingProductEntry(error))return {found:false};throw error;}},
+    async tryGetJson(args) {
+      if (typeof store.tryGetJson === 'function') return store.tryGetJson(args);
+      // TT 2.2 chat stores notify natively before a missing getJson rejects.
+      // Catching that rejection is too late: query this namespace first.
+      // No persistent key cache: another write/delete must be visible on reload.
+      if (typeof store.listKeys === 'function') {
+        const keys = await store.listKeys({ namespace: args.namespace, ...(args.table !== undefined ? { table: args.table } : {}) });
+        if (!Array.isArray(keys) || keys.some(key => typeof key !== 'string')) {
+          throw productError('宿主存储目录格式无效，未读取记忆。', 'HOST_CONTRACT_INVALID');
+        }
+        if (!keys.includes(args.key)) return { found: false };
+        // A listed record that cannot be read is a real failure, not an empty
+        // workspace (including deletion races, invalid JSON and permissions).
+        return { found: true, value: await store.getJson(args) };
+      }
+      // Compatibility for older hosts with neither optional reads nor listing.
+      try {
+        const value = await store.getJson(args);
+        return { found: value !== undefined, value };
+      } catch (error) {
+        if (isMissingProductEntry(error)) return { found: false };
+        throw error;
+      }
+    },
     ...(store.getJson?{getJson:args=>store.getJson(args)}:{}),
     ...(store.deleteJson?{deleteJson:args=>store.deleteJson(args)}:{}),
   };
