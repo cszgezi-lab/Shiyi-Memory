@@ -185,7 +185,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         else {try{bindings.push(hostAdapter.subscribe(name,callback));}catch{ /* explicit refresh still available */ }}
       }
     } catch { setMessage('已打开；宿主不支持自动任务，可手动整理和预览'); }
-    setMessage('已读取当前聊天；可以直接开始总结'); return publicState();
+    setMessage('已连接当前聊天；可以直接开始总结'); return publicState();
     } catch(error){workspace=null;boundScope=null;boundRefKey=null;state.cards=[];state.records={};state.batches=[];state.deletedRecords=[];state.progress='';modules.clear();state.status='unavailable';recallChanged({clear:true});await stopListeners();await clearPrompt();setMessage(`聊天读取未完成：${failureText(error)}`);throw error;
     } finally { opening = false; operations.delete(opener);if(active===opener)active=null;notify(); }
   }
@@ -313,7 +313,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function summarize({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null}={}){
     if(trigger==='manual'&&!replaceBatchId){
-      try{await prepareSummaryChat();}catch(error){summaryFeedback(error.code==='CANCELED'?'info':'error',`总结未完成：${failureText(error)}`,trigger);throw error;}
+      const version=cancelVersion;
+      try{await prepareSummaryChat();if(version!==cancelVersion)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});}catch(error){summaryFeedback(error.code==='CANCELED'?'info':'error',`总结未完成：${failureText(error)}`,trigger);throw error;}
     }
     if(!workspace)throw Object.assign(new Error('当前聊天尚未读取'),{code:'CHAT_REF_UNAVAILABLE'});
     batchSize??=core.settings.summaryBatchSize;
@@ -339,7 +340,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         // Staged generations survive crashes but are never available for recall.
         await core.updateMemoryControls({operations:{[operationId]:'pending'}});op.check();
         const range=await core.readRange({startIndex:item.startIndex,endIndex:item.endIndex});
-        op.check();if(range.status!=='ready')throw new Error(core.state.errorMessage??'范围读取失败');
+        op.check();if(range.status!=='ready')throw Object.assign(new Error(core.state.errorMessage??'范围读取失败'),{code:range.errorCode??'HISTORY_UNAVAILABLE'});
         state.progress=`第 ${i+1}/${planned.length} 批 · 已读取 #${item.startIndex}–${item.endIndex}，共 ${range.count} 楼`;
         await readBatches(await core.readMemoryView());summaryFeedback('running',`正在总结 ${state.progress}`,trigger);
         const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,requireFloorSummaries:true});

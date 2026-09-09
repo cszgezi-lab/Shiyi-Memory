@@ -1,7 +1,7 @@
 {
   "index.js": "0858f6c5abac809e4553ea9c8000f72292e2f93e80d7e956a06d219936699cd9",
-  "ui/product-view.js": "aae006523cd69a33dd3edcaa26af4ca4f0676bf15b9548508d8cc23fe7224c27",
-  "src/product-application.js": "8cfac0e3f105347972fd68ac0d54cc783157dfac4cec91470740f66fba61ab77",
+  "ui/product-view.js": "220af0faa540e2ff9f8d7a62c2253e46f797c0bc405aa722511fc5e120308732",
+  "src/product-application.js": "3554145235f912115e516211392bf6a9c9eef6b5b885a4703e73cd38226f8163",
   "src/host-adapter.js": "4c31fca7af113f68e40a42fa20154606c817257a2868215e4e51180f5d97d08a",
   "src/errors.js": "60212b14a74c221c90f4423c1db93777375bedac27f768e405898de0e64a00b1",
   "src/utils.js": "2eea86765f5d4041a97e1756693879db96bb806fa1a3a74aced3faaa043a9857",
