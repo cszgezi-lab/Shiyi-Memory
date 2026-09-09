@@ -9,6 +9,7 @@ import { LocalBM25Index, retrieveAndPack } from './retrieval.js';
 import { SummaryEngine } from './summary-engine.js';
 import { HostAdapter } from './host-adapter.js';
 import { productFailure } from './product-feedback.js';
+import { safeLogDetails } from './product-runtime-log.js';
 import { verifyProductSources } from './product-sources.js';
 import { makeId, clone, stableStringify, sha256, estimateUnits } from './utils.js';
 import {
@@ -460,7 +461,7 @@ export function createProductShellController({
     return null;
   }
 
-  async function startSummary({ focus = state.focus, confirmedFocus = state.focusConfirmed, trigger = 'manual', requireFloorSummaries = false, operationId = makeId('product-summary') } = {}) {
+  async function startSummary({ focus = state.focus, confirmedFocus = state.focusConfirmed, trigger = 'manual', requireFloorSummaries = false, operationId = makeId('product-summary'), onDiagnostic = () => {} } = {}) {
     if (state.status === PRODUCT_SHELL_STATUS.INVALIDATED) return { status: state.status, errorCode: state.errorCode };
     if (!state.session || !repository) return { status: PRODUCT_SHELL_STATUS.UNAVAILABLE, errorCode: state.capabilities.persistence === 'unavailable' ? 'PERSISTENCE_UNAVAILABLE' : 'CHAT_IDENTITY_NOT_READY' };
     if (activeTask) return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: 'HOST_CONTRACT_INVALID' };
@@ -524,7 +525,7 @@ export function createProductShellController({
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId]})).records;
     engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: sourceSplitUnits(), requireFloorSummaries, outputReserveUnits: 0, now });
     try {
-      const result = await engine.process(batch, { signal: abortController.signal });
+      const result = await engine.process(batch, { signal: abortController.signal, onDiagnostic });
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
       const snapshot = await repository.readScope(session.scope);
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
@@ -561,7 +562,7 @@ export function createProductShellController({
       state.draft.status = 'retryable';
       state.capabilities.summary = code === 'PERSISTENCE_UNAVAILABLE' ? 'persistence_failed' : 'failed';
       const safeFailure = productFailure(error);
-      return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: code, failure: safeFailure, errorDetails: { status: safeFailure.status }, operationId };
+      return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: code, failure: safeFailure, errorDetails: { ...safeLogDetails(error.details), status: safeFailure.status }, operationId };
     } finally {
       if (activeTask === operationId) activeTask = null;
       if (abortController?.signal.aborted || !activeTask) abortController = null;

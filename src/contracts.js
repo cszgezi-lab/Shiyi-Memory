@@ -44,9 +44,16 @@ export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
     personaChanges: Object.freeze(['id', 'subject|person|entity', 'aspect|field|key', 'object|objectRef', 'context', 'scope', 'expiresAt|validUntil|term|duration', 'epistemicStatus', 'sourceRefs']),
     commitmentChanges: Object.freeze(['id', 'participants|subject', 'content|description', 'state', 'epistemicStatus', 'sourceRefs']),
     performanceHints: Object.freeze(['id', 'sourceRefs']),
-    summaryView: Object.freeze(['id', 'sourceRefs']),
+    summaryView: Object.freeze(['id', 'floorIndex', 'text', 'sourceRefs']),
     conflicts: Object.freeze(['id', 'sourceRefs']),
     coverage: Object.freeze(['sourceRefs', 'bridgeRefs', 'processed', 'excluded', 'unprocessed']),
+  }),
+  floorSummaryRules: Object.freeze({
+    cardinality: 'One independent row for EACH sourceMessages item, including user and non-story messages; do not combine floors. bridgeMessages are context only and must not get rows.',
+    floorIndex: 'Copy sourceMessages[i].index (absolute host floor, not position in this batch).',
+    text: 'A non-empty concise summary of that floor and its immediate process. For non-story content, briefly describe its purpose without inventing story facts.',
+    sourceRefs: 'Exactly one object: {sourceId: sourceMessages[i].id}; also copy fragmentId when present. Never use the floor number as sourceId.',
+    id: 'A unique string per summary row. Empty arrays are allowed in other categories but not in summaryView for a non-empty sourceMessages range.',
   }),
   enums: Object.freeze({
     eventState: Object.freeze(['proposed', 'attempted', 'accepted', 'completed', 'declined', 'canceled']),

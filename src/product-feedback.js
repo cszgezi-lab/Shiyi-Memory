@@ -14,7 +14,9 @@ const CODES = {
   HISTORY_UNAVAILABLE:'当前聊天正文未读到，或所选范围为空。请等待正文加载完成并检查楼层范围。',
   CHAT_CHANGED:'读取期间聊天已切换，本次已停止；请在目标聊天重新开始总结。',
   SOURCE_INVALIDATED:'所选正文已修改，本次已停止；请按修改后的内容重新总结。',
-  FLOOR_SUMMARY_MISSING:'模型没有返回完整的逐楼摘要，本批未完成。请重试、减少每批楼数或提高回复上限。',
+  FLOOR_SUMMARY_MISSING:'逐楼摘要未完整对应所选楼层，本批未保存。这不等于回复上限不足；请查看运行日志中的缺失楼层和结束原因。',
+  MODEL_OUTPUT_TRUNCATED:'服务明确报告输出被截断，本批未保存。请查看运行日志中的实际回复上限、结束原因和用量。',
+  MODEL_OUTPUT_BLOCKED:'模型服务拦截了输出，本批未保存；提高回复上限不能解决此问题。',
   INPUT_BUDGET_EXCEEDED:'输入超过预算，请提高总结输入预算或减少每批楼数；未完成部分不会注入。',
   TIMEOUT:NETWORK['network.timeout'], CANCELED:'任务已停止；已保存内容保留。',
   MODEL_UNAVAILABLE:'请先在 API 中填写并保存总结地址与模型。',
@@ -33,6 +35,9 @@ export function productFailure(error) {
   const rawStatus=Number(error?.details?.status);
   const status=Number.isInteger(rawStatus)&&rawStatus>=400&&rawStatus<=599?rawStatus:null;
   let message=HTTP[status]??NETWORK[code]??CODES[code];
+  if(code==='FLOOR_SUMMARY_MISSING'&&['expected','received','covered'].every(k=>Number.isSafeInteger(error?.details?.[k])&&error.details[k]>=0)){
+    const d=error.details;message=`收到 ${d.received} 条逐楼摘要，完整对应 ${d.covered}/${d.expected} 楼，本批未保存。请查看运行日志；这不代表回复上限不足。`;
+  }
   if(!message&&error instanceof TypeError)message='网络请求或浏览器跨域访问失败，请检查网络与服务地址。';
   // Local validation errors contain actionable Chinese text. Never echo remote
   // bodies or raw provider errors (they may contain the request and credentials).

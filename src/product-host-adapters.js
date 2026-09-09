@@ -238,6 +238,7 @@ export function createProductTransport(profile = {}, { sessionApiKey = '', fetch
     return { status: 'unavailable', errorCode: 'TRANSPORT_UNAVAILABLE', reason: 'provider_profile_invalid' };
   }
   const publicProfile = {
+    maxTokens: Number.isSafeInteger(profile.outputBudgetUnits) && profile.outputBudgetUnits>0 ? profile.outputBudgetUnits : 0,
     endpointMode: client.profile.endpointMode,
     url: client.profile.url,
     model: client.profile.model,

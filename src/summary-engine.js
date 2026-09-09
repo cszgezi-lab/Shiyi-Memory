@@ -8,6 +8,8 @@ import {
 } from './contracts.js';
 import { ScopeConflictError, ShiyiError, SummaryResponseError, ValidationError } from './errors.js';
 import { abortError, clone, decodeUtf8Chunk, estimateUnits, sha256, stableStringify, throwIfAborted } from './utils.js';
+import { requireIndependentFloorSummaries } from './floor-summaries.js';
+import { safeLogDetails } from './product-runtime-log.js';
 
 function responseStatus(response) {
   return Number(response?.status ?? response?.statusCode ?? 200);
@@ -41,7 +43,7 @@ function stripJsonFence(text) {
   return fenced ? fenced[1].trim() : value;
 }
 
-async function parseModelResponse(raw) {
+async function parseModelResponse(raw, { onMetadata = () => {} } = {}) {
   const status = responseStatus(raw);
   if (status < 200 || status >= 300) {
     const body = await readRawBody(raw).catch(() => '');
@@ -55,9 +57,13 @@ async function parseModelResponse(raw) {
   // OpenAI-compatible chat response. A length stop is a truncated model
   // result even when the provider happened to return syntactically valid JSON.
   const finishReason = payload?.choices?.[0]?.finish_reason ?? payload?.choices?.[0]?.finishReason ?? payload?.finish_reason ?? payload?.finishReason;
+  const content=payload?.choices?.[0]?.message?.content??payload?.output_text;
+  const metadata=safeLogDetails({status,finishReason:finishReason??'unknown',truncated:['length','max_tokens','truncated','abort'].includes(String(finishReason).toLowerCase()),promptTokens:payload?.usage?.prompt_tokens,completionTokens:payload?.usage?.completion_tokens,totalTokens:payload?.usage?.total_tokens,reasoningTokens:payload?.usage?.completion_tokens_details?.reasoning_tokens,responseChars:typeof content==='string'?content.length:undefined});
+  try{onMetadata(metadata);}catch{/* diagnostics are not part of model validation */}
   if (['length', 'max_tokens', 'truncated', 'abort'].includes(String(finishReason).toLowerCase())) {
-    throw new SummaryResponseError('summary model output was truncated', { finishReason });
+    const error=new SummaryResponseError('summary model output was truncated', metadata);error.code='MODEL_OUTPUT_TRUNCATED';throw error;
   }
+  if(finishReason==='content_filter'){const error=new SummaryResponseError('summary model output was filtered',metadata);error.code='MODEL_OUTPUT_BLOCKED';throw error;}
   if (payload?.choices?.[0]?.message?.content !== undefined) payload = payload.choices[0].message.content;
   else if (payload?.output_text !== undefined) payload = payload.output_text;
   if (typeof payload === 'string') {
@@ -79,6 +85,7 @@ function modelInvoker(model) {
     // second, independently estimated request.
     invoke.providerPayload = (request) => ({
       model: model.profile?.model,
+      ...(model.profile?.maxTokens>0?{max_tokens:model.profile.maxTokens}:{}),
       messages: [
         { role: 'system', content: request.instructions },
         { role: 'user', content: JSON.stringify(request) },
@@ -146,7 +153,7 @@ function makeInstructions(focus, rules) {
   return [
     'Return one JSON DraftBundle for this complete source range.',
     'Use all required category keys, including empty arrays where there is no change.',
-    'In summaryView, write one concise source-grounded summary per sourceMessage, with its floorIndex and sourceRefs. Include what happened and its immediate process; mark non-story content briefly. Never manufacture details to fill a category.',
+    'summaryView is NOT a batch overview. Write one row for EVERY sourceMessages item: {id, floorIndex: item.index, text, sourceRefs:[{sourceId:item.id, fragmentId:item.fragmentId if present}]}. Copy the source ID exactly. Never merge floors or omit user/non-story floors; do not summarize bridgeMessages. Briefly mark non-story content. Never manufacture details to fill a category.',
     'Do not invent scope, operationId, expectedRevision, paths, executable code, or permissions.',
     'Keep expression, response, mutual confirmation, public scope, state, epistemic status, perspective, time, and follow-up distinct.',
     'A recalled event includes its awareness, temporal context, and lifecycle dependencies as one unit.',
@@ -250,7 +257,8 @@ export class SummaryEngine {
     return { records: selection.records, authoritativeRecords, ids, selection };
   }
 
-  async process(batch, { signal, relevantRecords = null, onProgress = null, correctionAuthorizations = [] } = {}) {
+  async process(batch, { signal, relevantRecords = null, onProgress = null, onDiagnostic = () => {}, correctionAuthorizations = [] } = {}) {
+    const emit=(phase,details={},level='info')=>{try{onDiagnostic({phase,level,details:safeLogDetails(details)});}catch{/* log failure must not affect a commit */}};
     const focus = focusGate(batch?.focusSpec);
     if (!focus.confirmed) {
       return {
@@ -321,6 +329,9 @@ export class SummaryEngine {
     for (const child of children) {
       const childIndex = child.childRange.childIndex;
       if (completed.has(childIndex)) continue;
+      let phase='request';
+      const started=this.now();
+      const baseDetails={childIndex,startIndex:child.sourceMessages[0]?.index,endIndex:child.sourceMessages.at(-1)?.index,sourceCount:child.sourceMessages.length};
       try {
         throwIfAborted(signal);
         const focusForChild = focusGate(child.focusSpec);
@@ -481,19 +492,13 @@ export class SummaryEngine {
         }
         this.requestLog.push({ operationId: child.operationId, parentOperationId: batch.operationId, childIndex, sourceIds: child.sourceMessages.map((message) => message.id) });
         state.requests += 1;
+        emit('request',{...baseDetails,inputLimit:configuredLimit,inputUnits:wireUnits(),maxTokens:this.model.providerPayload?.(request)?.max_tokens??0});
         const raw = await this.model(request, { signal });
         throwIfAborted(signal);
-        const output = await parseModelResponse(raw);
+        phase='response';
+        const output = await parseModelResponse(raw,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started})});
         ensureAllCategories(output);
-        if(this.requireFloorSummaries){
-          const fail=()=>{const error=new SummaryResponseError('missing independent floor summaries');error.code='FLOOR_SUMMARY_MISSING';throw error;};
-          if(!Array.isArray(output.summaryView)||output.summaryView.length!==child.sourceMessages.length)fail();
-          for(const message of child.sourceMessages){
-            const rows=output.summaryView.filter(row=>Array.isArray(row.sourceRefs)&&row.sourceRefs.length===1&&(row.sourceRefs[0].sourceId??row.sourceRefs[0].id)===message.id&&(!row.sourceRefs[0].fragmentId||row.sourceRefs[0].fragmentId===message.fragmentId));
-            if(rows.length!==1||!['text','description','summary','content'].some(key=>typeof rows[0][key]==='string'&&rows[0][key].trim()))fail();
-            rows[0].floorIndex=message.index;
-          }
-        }
+        phase='validate';
         const sourceRefs = sourceRefsFor(child);
         const bundle = bindDraftBundle(output, {
           scope: child.scope,
@@ -508,6 +513,12 @@ export class SummaryEngine {
           focusVersion: focusFingerprint(child.focusSpec, child.focusVersion),
           correctionAuthorizations,
         });
+        if(this.requireFloorSummaries){
+          phase='floors';
+          const details=requireIndependentFloorSummaries(bundle,child.sourceMessages);
+          emit('floors',{...baseDetails,...details},'success');
+        }
+        phase='validate';emit('validate',baseDetails);
         // The host freezes what was submitted; the model still has to report
         // which of those refs it processed.  Overwriting processed here would
         // make an explicit unprocessed gap look complete.
@@ -530,6 +541,7 @@ export class SummaryEngine {
           throw incomplete;
         }
         throwIfAborted(signal);
+        phase='commit';emit('commit',baseDetails);
         const receipt = await this.repository.commitBundle(bundle, { scope: child.scope, expectedRevision: child.expectedRevision, sourceRevision: child.sourceRevision });
         state.receipts.push(receipt);
         completed.add(childIndex);
@@ -551,6 +563,7 @@ export class SummaryEngine {
         });
         if (typeof onProgress === 'function') await onProgress(clone(state));
       } catch (error) {
+        emit(phase,{...baseDetails,...safeLogDetails(error?.details),code:signal?.aborted?'CANCELED':error?.code,elapsedMs:this.now()-started},signal?.aborted?'warning':'error');
         if (error?.name === 'AbortError' || error?.code === 'CANCELED' || signal?.aborted) {
           state.status = 'canceled';
           state.canceledChild = childIndex;

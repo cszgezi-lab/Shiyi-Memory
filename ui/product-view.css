@@ -67,7 +67,7 @@
 #shiyi-floating-window>.sy-workbench-content::after{content:'';display:block;height:12px;pointer-events:none}
 #shiyi-floating-window>.sy-workbench-dock{display:flex;gap:8px;align-items:center;flex:0 0 auto;padding:8px 12px;border-top:1px solid color-mix(in srgb,currentColor 18%,transparent);background:var(--SmartThemeBlurTintColor,#20252e)}
 #shiyi-floating-window .sy-workbench-notice{flex:1;min-width:0;font-size:13px;line-height:1.5;overflow-wrap:anywhere;max-height:6em;overflow:auto;border-left:3px solid #86b3a5;padding-left:8px}
-#shiyi-floating-window .sy-dock-stop{font:inherit;color:inherit;min-height:44px;padding:8px 12px;background:transparent;border:1px solid currentColor;border-radius:8px;cursor:pointer}
+#shiyi-floating-window :is(.sy-dock-stop,.sy-dock-logs){font:inherit;color:inherit;min-height:44px;padding:8px 12px;background:transparent;border:1px solid currentColor;border-radius:8px;cursor:pointer;flex-shrink:0}
 #shiyi-floating-window .sy-workbench-notice[data-level=error]{border-color:#ed7979}
 #shiyi-floating-window .sy-workbench-notice[data-level=success]{border-color:#86b3a5}
 #shiyi-floating-window .sy-workbench-notice[data-level=running]{border-color:#e6c366}
@@ -116,4 +116,16 @@
 #shiyi-product-shell .sy-page-jump input {width:70px;}
 #shiyi-product-shell .sy-record-tabs {display:flex;gap:8px;margin:12px 0;}
 #shiyi-product-shell .sy-record-tabs button {flex:1;}
+#shiyi-product-shell .sy-record-tabs {flex-wrap:wrap;}
+#shiyi-product-shell .sy-record-tabs button {min-width:85px;font-size:14px;padding:8px;}
+#shiyi-product-shell [data-open-logs] {font-size:13px;margin:0 0 8px;padding:6px 10px;min-height:36px;}
+#shiyi-product-shell .sy-log-row {padding:10px 12px;margin:8px 0;}
+#shiyi-product-shell .sy-log-row summary {font-size:14px;overflow-wrap:anywhere;}
+#shiyi-product-shell .sy-log-row summary small {display:block;font-size:12px;font-weight:400;opacity:.75;margin-top:4px;}
+#shiyi-product-shell .sy-log-row[data-level=error] {border-left:3px solid #ed9292;}
+#shiyi-product-shell .sy-log-row[data-level=warning] {border-left:3px solid #dfc26e;}
+#shiyi-product-shell .sy-log-detail {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:8px;padding:8px 0;border-top:1px solid #8883;overflow-wrap:anywhere;font-size:14px;}
+#shiyi-product-shell .sy-log-detail>span {font-size:12px;opacity:.75;}
+#shiyi-product-shell .sy-log-detail>strong {font-weight:500;}
+#shiyi-product-shell .sy-log-wide>strong {grid-column:1/-1;}
 #shiyi-product-shell .sy-record-tabs button.active {background:color-mix(in srgb,var(--sy-accent) 15%,transparent);border-color:var(--sy-accent);}

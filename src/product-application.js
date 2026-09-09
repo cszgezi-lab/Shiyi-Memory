@@ -19,6 +19,7 @@ import { createModuleController } from './product-module-controller.js';
 import { moduleRules, checkModuleBundle, mvuContext } from './product-custom-modules.js';
 
 import { createCredentialStore, credentialOrigin } from './product-credentials.js';
+import { createRuntimeLog, safeLogDetails } from './product-runtime-log.js';
 
 const PROMPT_KEY = 'shiyi-memory-continuity';
 function completion(response) {
@@ -64,8 +65,22 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const credentials=createCredentialStore({getStore:globalStore});
   const state = { credentialSaved:{},credentialErrors:{}, modules:[],moduleSnapshots:[],moduleCurrent:[],mvuPaths:[],mvuStatus:'no_chat', status: 'unbound', message: '开始总结时自动读取 TT 当前聊天', cards: [], documents: [], history: [], batches: [], records: {}, conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };
   const notify = () => { try { onChange(publicState()); } catch { /* paint failure must not affect persistence */ } };
+  const runtimeLog=createRuntimeLog({getStore:globalStore,onChange:notify});
+  async function logged(task,fn,details={}){
+    const version=cancelVersion,run=await runtimeLog.start(task,details),started=Date.now();
+    try{
+      if(version!==cancelVersion)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
+      const result=await fn(run);
+      runtimeLog.record({run,task,phase:'complete',level:result?.level==='warning'?'warning':'success',details:{...details,elapsedMs:Date.now()-started,savedBatches:result?.batches}});
+      return result;
+    }catch(error){
+      const canceled=error?.code==='CANCELED'||error?.name==='AbortError';
+      runtimeLog.record({run,task,phase:canceled?'canceled':'failed',level:canceled?'warning':'error',details:{...details,...safeLogDetails(error?.details),code:error?.code??'OPERATION_FAILED',elapsedMs:Date.now()-started}});
+      throw error;
+    }finally{await runtimeLog.flush();}
+  }
   const modules=createModuleController({host,core,state,load:loadApiSettings,getGlobal:()=>globalWorkspace,getChat:()=>workspace,check:assertCurrent,notify,refresh,changed:()=>recallChanged({vectors:true})});
-  function publicState() { return { ...clone(state), enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
+  function publicState() { return { ...clone(state), runtimeLog:runtimeLog.state, enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
   function assertCurrent(token = epoch) { if (!workspace || token !== epoch || !workspace.isCurrent()) throw new Error('聊天或来源已变化，请重新打开当前聊天'); }
   function begin(exclusive = true) {
     if (exclusive && active) throw new Error('已有任务正在运行');
@@ -311,7 +326,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     summaryFeedback('running','正在读取 TT 当前聊天…','manual');
     await open({enable:enabled,expectedRef:target});
   }
-  async function summarize({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null}={}){
+  async function summarize(options={}){return logged('summary',run=>summarizeTask({...options,diagnosticRun:run}));}
+  async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null,diagnosticRun}={}){
     if(trigger==='manual'&&!replaceBatchId){
       const version=cancelVersion;
       try{await prepareSummaryChat();if(version!==cancelVersion)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});}catch(error){summaryFeedback(error.code==='CANCELED'?'info':'error',`总结未完成：${failureText(error)}`,trigger);throw error;}
@@ -342,8 +358,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         const range=await core.readRange({startIndex:item.startIndex,endIndex:item.endIndex});
         op.check();if(range.status!=='ready')throw Object.assign(new Error(core.state.errorMessage??'范围读取失败'),{code:range.errorCode??'HISTORY_UNAVAILABLE'});
         state.progress=`第 ${i+1}/${planned.length} 批 · 已读取 #${item.startIndex}–${item.endIndex}，共 ${range.count} 楼`;
+        runtimeLog.record({run:diagnosticRun,task:'summary',phase:'range',details:{batchNumber:item.number,startIndex:item.startIndex,endIndex:item.endIndex,sourceCount:range.count}});
         await readBatches(await core.readMemoryView());summaryFeedback('running',`正在总结 ${state.progress}`,trigger);
-        const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,requireFloorSummaries:true});
+        const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,requireFloorSummaries:true,onDiagnostic:event=>runtimeLog.record({run:diagnosticRun,task:'summary',...event,details:{...event.details,batchNumber:item.number}})});
         op.check();if(result.status!=='saved')throw Object.assign(new Error(core.state.errorMessage??'总结未保存'),{code:result.failure?.code??result.errorCode??'SUMMARY_RESPONSE_ERROR',details:result.errorDetails});
         await core.updateMemoryControls({operations:{[operationId]:'active',...(oldOperation?{[oldOperation]:'deleted'}:{})}});op.check();
         currentBatch={...currentBatch,status:'saved',requests:result.requests,updatedAt:Date.now()};
@@ -625,7 +642,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
   async function stop(){abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停自动整理和记忆注入');}
-  return {core,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,testConnection,listModels,summarize,regenerateBatch,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,preview,addDocument,removeDocument,analyzeDocuments,assistant,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,buildVectors,stop,disable,
+  return {core,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
+    loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:()=>runtimeLog.export(),clearRuntimeLog:()=>runtimeLog.clear(),
+    testConnection:(kind='summary',patch={})=>logged('connection',()=>testConnection(kind,patch),{modelRole:kind}),
+    listModels:(kind,options)=>logged('models',()=>listModels(kind,options),{modelRole:kind}),
+    assistant:input=>logged('assistant',()=>assistant(input)),
+    analyzeDocuments:()=>logged('knowledge',()=>analyzeDocuments()),
+    buildVectors:()=>logged('vectors',()=>buildVectors()),
+    addDocument:input=>logged('import',()=>addDocument(input)),
+    preview:(...args)=>logged('recall',()=>preview(...args)),
     async remember(text,people='',options={}){assertCurrent();await core.remember(text,{people,...options});await refresh();setMessage('记事已保存');},
     get draftContext(){return `global:${state.conversationId}`;},
     async exportGlobalBackup(){await loadApiSettings();return {kind:'shiyi-global-backup',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`))),analysis:await globalWorkspace.read(`${d.id}-analysis`,[])}))),conversations:await Promise.all(state.conversations.map(async c=>({...c,messages:await globalWorkspace.read(`assistant-${c.id}`,[])})))};},
@@ -633,6 +658,6 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     setKey(kind,value,endpoint){if(!Object.hasOwn(keys,kind))throw new Error('未知连接');keyEdited.add(kind);keyVersions[kind]=(keyVersions[kind]??0)+1;keys[kind]=String(value??'');keyOrigins[kind]=credentialOrigin(endpoint??core.settings[`${prefixFor(kind)}Endpoint`]);if(kind==='summary')core.setSessionCredential(effectiveKeys().summary);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true});},
     exportSettings(){return {kind:'shiyi-config',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings)};},
     async exportBackup(){assertCurrent();return {kind:'shiyi-backup',version:1,scope:boundScope,modules:clone(state.modules),moduleSnapshots:clone(state.moduleSnapshots),settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`)))}))),assistant:state.history};},
-    async dispose(){await disable();epoch++;await core.dispose();},
+    async dispose(){await disable();epoch++;await core.dispose();await runtimeLog.flush();},
   };
 }

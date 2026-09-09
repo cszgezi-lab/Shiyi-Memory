@@ -22,7 +22,7 @@ export function floatingPosition(point, size, frame) {
 }
 
 /** One persistent non-modal window. Closing only hides UI, not the application. */
-export function mountFloatingProduct({ panel, documentRef, host, version, onClose = () => {}, onStop = () => {} }) {
+export function mountFloatingProduct({ panel, documentRef, host, version, onClose = () => {}, onStop = () => {}, onLogs = () => {} }) {
   const win = documentRef.defaultView ?? host;
   let preferences;
   try { preferences = floatingPreferences(JSON.parse(win.localStorage.getItem(STORAGE_KEY))); }
@@ -46,7 +46,8 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onClos
   const dock = documentRef.createElement('div'); dock.className = 'sy-workbench-dock';
   const notice = documentRef.createElement('div'); notice.className = 'sy-workbench-notice'; notice.setAttribute('role','status');notice.setAttribute('aria-live','polite');notice.setAttribute('aria-atomic','true');notice.textContent='就绪';
   const stopButton=documentRef.createElement('button');stopButton.type='button';stopButton.textContent='停止';stopButton.hidden=true;stopButton.className='sy-dock-stop';
-  dock.append(notice,stopButton);
+  const logButton=documentRef.createElement('button');logButton.type='button';logButton.textContent='日志';logButton.className='sy-dock-logs';logButton.setAttribute('aria-label','查看运行日志');
+  dock.append(notice,logButton,stopButton);
   // Navigation and feedback must not scroll away with a long API form.
   const nav=panel.querySelector('.sy-nav');
   header.append(grip, closeButton); windowEl.append(header);if(nav)windowEl.append(nav);windowEl.append(content,dock);layer.append(launcher, windowEl); documentRef.body.appendChild(layer);
@@ -66,6 +67,7 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onClos
   const cleanup = [];
   function listen(target, type, fn, options) { target?.addEventListener?.(type, fn, options); cleanup.push(() => target?.removeEventListener?.(type, fn, options)); }
   listen(stopButton,'click',onStop);
+  listen(logButton,'click',onLogs);
   // A touch opens on pointerup and hides its target. Some WebViews then retarget
   // the compatibility click to the newly exposed window control under the finger.
   // Consume only that gesture's click; a new pointerdown or keyboard click is free.
