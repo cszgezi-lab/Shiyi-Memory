@@ -423,7 +423,7 @@ export async function retrieveMemories({
   // is optional; otherwise retain the configured allowance of both stages.
   const explicitTotal = Number.isFinite(totalTimeoutMs) && totalTimeoutMs > 0;
   const onlineBudget = explicitTotal ? totalTimeoutMs : (vectorAdapter ? vectorDeadline : 0) + (reranker ? rerankDeadline : 0);
-  const remaining = () => Math.max(0, onlineBudget - (monotonicNow() - onlineStartedAt));
+  const remaining = () => explicitTotal ? Math.max(0, onlineBudget - (monotonicNow() - onlineStartedAt)) : Infinity;
   const stageTimeout = (requested, fallback) => Math.min(Number.isFinite(requested) && requested > 0 ? requested : fallback, remaining());
   const byId = new Map(local.map((candidate) => [String(candidate.id), candidate]));
   const trace = {
@@ -434,7 +434,7 @@ export async function retrieveMemories({
     fusion: { algorithm: 'weighted_rrf', rankConstant: 60, weights: { local: 1, vector: 1 } },
     fallbacks: [],
     timings: { localMs: onlineStartedAt - startedAt, vectorMs: 0, rerankMs: 0 },
-    deadline: { totalTimeoutMs: onlineBudget, scope: 'online_stages_shared', mode: explicitTotal ? 'explicit_total' : 'per_api_allowance' },
+    deadline: { totalTimeoutMs: explicitTotal ? onlineBudget : 0, nominalAllowanceMs: onlineBudget, scope: explicitTotal ? 'online_stages_shared' : 'per_api', mode: explicitTotal ? 'explicit_total' : 'per_api_allowance' },
   };
   const localRanks = new Map(local.map((candidate, index) => [String(candidate.id), index + 1]));
   const vectorRanks = new Map();

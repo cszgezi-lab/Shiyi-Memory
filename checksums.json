@@ -8,7 +8,7 @@
   "src/product-shell-controller.js": "b5cf65bc55a37a15ba4ddf4d948a60adb90742235835e90999cfa9482ffd7072",
   "src/contracts.js": "1cace1a3b7a32f61dfc55a9ced2297e01fbe5060a62d1afc868837c68628eb13",
   "src/repository.js": "8ef2fe7871524c2e2cbbb3d237fe9c4fb743254cedfff25ad46f79ae24f41fcc",
-  "src/retrieval.js": "4f8c454600b28b18579f5af5d04b5ba4cd46a485d9e4174ceeb7ef89d623c3af",
+  "src/retrieval.js": "8946494bb905c223043dd16e14d0624abd7dfcf436e6d9b9125dd63209b28607",
   "src/summary-engine.js": "5802367a254852b49c26a7929842cd435e44d3f1a989dd630a7b43765b2069e0",
   "src/product-sources.js": "f4f7c3d98c4a6151a556917d6417beefc6bceabbfd1a370a10e22b7ac7cdaf02",
   "src/product-host-adapters.js": "7f7ff459688dfb45cf9bc82d3d4cbdc99924b1658dc26d4075137fe6b61aaaea",
@@ -25,6 +25,6 @@
   "manifest.json": "69a22e22daaffc906daa854019d5d1f8a2f4fbe9dd6445626453c3e76af7d343",
   "ui/product-view.css": "055d181cba421a4ea1ef3e9d8a3499b14fb69ea79e454ab70269bafdcfa65003",
   "README.md": "cd075f31d11b12310435e0454f93f2caf8cdd0b7fec7ef06aab6ecf63896d52b",
-  "CHANGELOG.md": "9b1dbced1d31a47552c341c9c8abc1895a61c3766605000a8a17aa981eb81d93",
+  "CHANGELOG.md": "63a5d98fb076692e85272388a734e383e5eadfe003eb2b32d7da72394938f2c5",
   ".gitattributes": "cc641658d855cb2ba3f269f3248111fa65fa54225c87b56c5c8e98b6d3d574bf"
 }
