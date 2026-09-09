@@ -3,6 +3,7 @@ import { PRODUCT_SETTING_REGISTRY } from '../src/product-settings.js';
 import { CATEGORY_LABELS, recordDescription, renderMemoryCard } from '../src/product-memory.js';
 import { exportProductJson } from '../src/product-host-ui.js';
 import { PRODUCT_VERSION, PRODUCT_REPOSITORY } from '../src/product-release.js';
+import { mountFloatingProduct } from '../src/product-floating.js';
 
 const ID='shiyi-product-shell';
 const NAV=['memory','current','assistant','settings'];
@@ -23,7 +24,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  if(!documentRef||documentRef.getElementById?.(ID))return null;
  const panel=documentRef.createElement('section');panel.id=ID;panel.className='sy-root';
  panel.innerHTML=`<details class="sy-shell" open><summary class="sy-brand"><span class="sy-mark">拾</span><span>拾忆<small>让故事有迹可循</small></span><span class="sy-version">${PRODUCT_VERSION}</span></summary><div class="sy-body">
- <div class="sy-top"><span data-scope>尚未打开聊天</span><div class="sy-actions">${button('open','开始使用',true)}${button('expand','展开工作台')}${button('disable','暂停')}</div></div><p role="status" aria-live="polite" class="sy-status" data-status>连接一个模型，就可以开始整理故事。</p>
+ <div class="sy-top"><span data-scope>尚未打开聊天</span><div class="sy-actions">${button('open','开始使用',true)}${button('disable','暂停')}</div></div><p role="status" aria-live="polite" class="sy-status" data-status>连接一个模型，就可以开始整理故事。</p>
  <nav class="sy-nav" aria-label="拾忆导航">${['记忆','本轮','配置助手','设置'].map((v,i)=>`<button type="button" data-page="${NAV[i]}" ${i===0?'class="active"':''}>${v}</button>`).join('')}</nav>
  <section data-view="memory"><div class="sy-top"><h3>故事记忆</h3>${button('refresh','刷新')}</div>
  <details class="sy-card" open><summary>整理聊天</summary><div class="sy-grid">${field('最近多少条消息','<input type="number" min="1" max="200" value="8" data-count>')}${field('本次侧重点（可留空）','<textarea rows="2" data-focus placeholder="想记得更细的内容"></textarea>')}</div><details><summary>选择明确楼层范围</summary><div class="sy-grid">${field('起始楼层（从 0 开始）','<input type="number" min="0" data-start>')}${field('结束楼层（含）','<input type="number" min="0" data-end>')}</div></details><div class="sy-actions">${button('summarize','按现有偏好开始',true)}${button('focus-summary','带本次侧重开始')}${button('stop','停止任务')}</div></details>
@@ -51,20 +52,6 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  async function download(data,name){const result=await exportProductJson(data,name,{host,documentRef});host.toastr?.success?.(result.mode==='mobile-native'?'已保存到手机 Downloads':'已提交导出');return result;}
  const actions={open:async()=>{await app.open();fill();},disable:()=>app.disable(),refresh:()=>app.refresh(),summarize:()=>summarize(false),'focus-summary':()=>summarize(true),stop:()=>app.stop(),'assistant-stop':()=>app.stop(),remember:async()=>{await app.remember($('[data-note]')?.value??'',$('[data-people]')?.value??'');if($('[data-note]'))$('[data-note]').value='';},preview:()=>app.preview($('[data-query]')?.value??''),'save-settings':()=>app.saveSettings(collect()),'test-summary':()=>app.testConnection('summary'),'test-assistant':()=>app.testConnection('assistant'),'test-embedding':()=>app.testConnection('embedding'),'test-rerank':()=>app.testConnection('rerank'),import:async()=>{for(const f of Array.from($('[data-files]')?.files??[]))await app.addDocument({name:f.name,text:await f.text(),purpose:$('[data-purpose]')?.value});},analyze:()=>app.analyzeDocuments(),assistant:async()=>{await app.assistant($('[data-input]')?.value??'');if($('[data-input]'))$('[data-input]').value='';},beginner:async()=>{await app.analyzeDocuments();await app.assistant('按我导入的配置规则一次性生成完整设置方案，只有必要信息缺失才询问，不需要逐项问卷。');},'new-conversation':async()=>{await app.newConversation();fill();},'delete-conversation':async()=>{if(host.confirm?.('删除当前助手对话？已应用设置和记忆不会删除。')){await app.deleteConversation();fill();}},'restore-hidden':()=>app.restoreHidden(),vectors:()=>app.buildVectors(),undo:async()=>{await app.undoSettings();fill();},'export-config':()=>download(app.exportSettings(),'拾忆-配置.json'),'export-backup':async()=>download(await app.exportBackup(),'拾忆-聊天备份.json')};
  actions['save-connect']=actions['save-settings'];actions['test-summary-quick']=actions['test-summary'];
- let dialog=null;
- actions.expand=()=>{
-   if(dialog)return;
-   const parent=panel.parentNode,next=panel.nextSibling;
-   dialog=documentRef.createElement('dialog');dialog.className='sy-workbench';
-   dialog.setAttribute('data-tt-mobile-surface','fullscreen-window');
-   dialog.setAttribute('aria-label','拾忆工作台');
-   if(typeof dialog.showModal!=='function'){dialog=null;throw new Error('当前 Android WebView 不支持工作台，请更新系统 WebView；仍可使用扩展页内面板');}
-   const close=documentRef.createElement('button');close.type='button';close.className='sy-workbench-close';close.textContent='收起工作台';
-   dialog.appendChild(close);documentRef.body.appendChild(dialog);dialog.appendChild(panel);
-   const restore=()=>{if(!dialog)return;const old=dialog;dialog=null;if(next?.parentNode===parent)parent.insertBefore(panel,next);else parent.appendChild(panel);old.remove();};
-   close.addEventListener('click',()=>dialog.close());dialog.addEventListener('close',restore,{once:true});
-   try{dialog.showModal();}catch(error){restore();throw error;}
- };
  for(const [name,fn]of Object.entries(actions))$(`[data-action="${name}"]`)?.addEventListener?.('click',()=>run(fn));
  function setPage(page){for(const s of $$('[data-view]'))s.hidden=s.getAttribute('data-view')!==page;for(const b of $$('[data-page]'))b.classList?.toggle('active',b.getAttribute('data-page')===page);return page;}
  for(const b of $$('[data-page]'))b.addEventListener?.('click',()=>setPage(b.getAttribute('data-page')));
@@ -74,6 +61,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  const updates=documentRef.createElement('details');updates.className='sy-card';
  updates.innerHTML=`<summary>版本与更新 · ${PRODUCT_VERSION}</summary><p class="sy-help">从 Git 安装后，在 TT 的扩展管理中检查拾忆更新。更新完成，等待当前任务结束、保存设置后重载页面即可生效，不需要重装 TT。记忆保留，Key 需重新填写。</p><a href="${PRODUCT_REPOSITORY}" target="_blank" rel="noopener noreferrer">安装地址与更新说明</a>`;
  $('[data-view="settings"]')?.appendChild(updates);
- (documentRef.getElementById?.('extensions_settings2')??documentRef.body)?.appendChild?.(panel);
- return {panel,application:app,controller:controller??app.core,setPage};
+ const floating=mountFloatingProduct({panel,documentRef,host,version:PRODUCT_VERSION});
+ return {panel,application:app,controller:controller??app.core,setPage,floating,
+   async destroy(){clearTimeout(timer);floating.destroy();await app.dispose?.();}};
 }

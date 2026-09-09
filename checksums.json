@@ -1,6 +1,6 @@
 {
   "index.js": "0858f6c5abac809e4553ea9c8000f72292e2f93e80d7e956a06d219936699cd9",
-  "ui/product-view.js": "8a9a2ba9406f1a65add595b7114180c2797790ca2af5c5aa153b02ab54639af2",
+  "ui/product-view.js": "795ecaafdb2423716df5272769d1dc51ca9391a17327402c7cb09eacf01baf66",
   "src/product-application.js": "67c73019687c147c8703404672bebc8850a155d9a3003a6e34de74504c50b8c0",
   "src/host-adapter.js": "4c31fca7af113f68e40a42fa20154606c817257a2868215e4e51180f5d97d08a",
   "src/errors.js": "60212b14a74c221c90f4423c1db93777375bedac27f768e405898de0e64a00b1",
@@ -20,10 +20,11 @@
   "src/product-vector-cache.js": "72625dfab1c34d89db9866207edf187267e6d526df692f9416ae865c12299e9d",
   "src/product-network.js": "1b1c450e7a9cb0ce6e47b1f95c2f432bd22f2749556edd4b576c438663e18616",
   "src/product-host-ui.js": "ede456d3c8086aac7a9b157b2bbf7be83c0c2b2175e177c533f592f3a7d44a33",
-  "src/product-release.js": "1000ca922612fe00ffe3c47be62c1ee9850e1ce6be620de4cc815c7dece0dcd4",
-  "manifest.json": "4a6841a62ac62cfc0b62706df4feb4ba9d045114696a42639a3b39ca91c7cba6",
-  "ui/product-view.css": "271f445b31983749f525d1f394daffb1bd2351521434998cbf658af405dff9dc",
-  "README.md": "9429d666958a7a367d6f4dd8b678c375e8009193123414565e319bb8259d58e0",
-  "CHANGELOG.md": "29a94bac1b42e4786ad3de10c961155e9bbe997e89bf3052f1befcbcdfc93ebd",
+  "src/product-release.js": "b9897cb54dad2b029e859b81eab84928403f516b4871d64e7559569f37975ceb",
+  "src/product-floating.js": "3dabf30716c8606025291230a253c2037f3ea33d7561e00770c12bd693823123",
+  "manifest.json": "69a22e22daaffc906daa854019d5d1f8a2f4fbe9dd6445626453c3e76af7d343",
+  "ui/product-view.css": "055d181cba421a4ea1ef3e9d8a3499b14fb69ea79e454ab70269bafdcfa65003",
+  "README.md": "cd075f31d11b12310435e0454f93f2caf8cdd0b7fec7ef06aab6ecf63896d52b",
+  "CHANGELOG.md": "9b1dbced1d31a47552c341c9c8abc1895a61c3766605000a8a17aa981eb81d93",
   ".gitattributes": "cc641658d855cb2ba3f269f3248111fa65fa54225c87b56c5c8e98b6d3d574bf"
 }
