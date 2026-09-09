@@ -12,6 +12,7 @@ import { createProductFetch } from './product-network.js';
 import { productApiProfile, fetchProductModels } from './product-model-list.js';
 import { failureText } from './product-feedback.js';
 import { createApiSettings } from './product-api-settings.js';
+import { chatConnectionPayload, inspectChatConnection } from './product-connection-probe.js';
 
 const PROMPT_KEY = 'shiyi-memory-continuity';
 function completion(response) {
@@ -190,11 +191,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function testConnection(kind = 'summary', patch = {}) {
     const op=beginApi();
-    try { await loadApiSettings();op.check();const c = client(kind, patch); let result;
+    try { await loadApiSettings();op.check();const c = client(kind, patch); let result,report={ok:true,connected:true,completionReady:true,level:'success',message:'连接测试成功。'};
       if (kind === 'embedding') { result = await c.embeddings({ model: c.profile.model, input: ['connection check'] },op); if (!Array.isArray(result?.data?.[0]?.embedding)) throw new Error('服务没有返回向量'); }
       else if (kind === 'rerank') { result = await c.rerank({ model: c.profile.model, query: '连接', documents: ['连接测试'], top_n: 1 },op); if (!Array.isArray(result?.results)) throw new Error('服务没有返回重排结果'); }
-      else completion(await c.chatCompletions({ model: c.profile.model, messages: [{ role: 'user', content: '请只回复 OK。这是一条连接测试。' }], stream: false, max_tokens: 16 },op));
-      op.check(); setMessage('连接测试成功'); return { ok: true, kind };
+      else report=inspectChatConnection(await c.chatCompletions(chatConnectionPayload(c.profile.model),op));
+      op.check(); setMessage(report.message); return { ...report,kind };
     } finally { op.finish(); }
   }
   async function summarize({ count, startIndex, endIndex, focus = '', trigger = 'manual' } = {}) {

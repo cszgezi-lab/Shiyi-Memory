@@ -3,7 +3,7 @@ import { PRODUCT_SETTING_REGISTRY as registry } from './product-settings.js';
 export const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export const button = (action, label, primary = false) => `<button type="button" data-action="${action}" ${primary ? 'class="sy-primary"' : ''}>${label}</button>`;
 export const field = (label, input) => `<label class="sy-field"><span>${label}</span>${input}</label>`;
-const names = { base:'基础地址', exact:'完整端点', none:'无需认证', bearer:'Bearer Key', 'api-key':'API Key 请求头', inherit:'沿用记录偏好', ask_manual:'手动总结时填写', ask_every:'每次总结前填写', disabled:'关闭', broadcast:'各类别均衡召回', leader_only:'仅指定通道', original:'原创', fanfiction:'同人', system:'系统', user:'用户', start:'请求开头', before_last:'最后一条消息前' };
+const names = { base:'自动补接口路径', exact:'完整地址（不补路径）', none:'无需 Key', bearer:'标准 Key（默认）', 'api-key':'x-api-key（服务商要求时）', inherit:'沿用记录偏好', ask_manual:'手动总结时填写', ask_every:'每次总结前填写', disabled:'关闭', broadcast:'各类别均衡召回', leader_only:'仅指定通道', original:'原创', fanfiction:'同人', system:'系统', user:'用户', start:'请求开头', before_last:'最后一条消息前' };
 const copy = {
   messageCount:['每次总结多少楼','按最近楼层计算；最后一楼为 20、填 10，即整理 11–20。'],
   autoSummaryEnabled:['自动整理聊天','AI 回复后检查是否需要整理。'],
@@ -88,7 +88,7 @@ export function apiSettingsHTML() {
     <label class="sy-field"><span class="sy-sr-only">${title}模型列表</span><select data-model-list="${kind}" disabled><option value="">先拉取模型列表，也可以在下方直接输入</option></select></label>
     ${setting(`${prefix}Model`, '模型名称', '', '选择列表中的模型，或手动填写')}
     <p class="sy-help" role="status" data-model-status="${kind}"></p></div>
-    <details class="sy-advanced"><summary>地址与认证选项</summary>${setting(`${prefix}EndpointMode`, '地址模式')}${setting(`${prefix}AuthMode`, '认证方式')}${field('模型列表地址（可选）', `<input data-models-url="${kind}" placeholder="留空时按 API 地址推导 /models" autocomplete="off">`)}</details>
+    <details class="sy-advanced"><summary>高级连接选项（通常不用改）</summary>${setting(`${prefix}EndpointMode`, '地址如何使用', `默认只补 ${resource}，绝不补 /v1。填完整接口地址时可选“不补路径”。`)}${setting(`${prefix}AuthMode`, 'Key 发送方式', '一般保持“标准 Key”；不需要 Key 可留空或选“无需 Key”。只有服务商明确要求时才改用 x-api-key。')}${field('模型列表地址（可选）', `<input data-models-url="${kind}" placeholder="留空时按 API 地址推导 /models" autocomplete="off">`)}</details>
     </div><div class="sy-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></section>`).join('') + card('请求设置', setting('deadlineMs') + setting('assistantBudgetUnits'));
 }
 

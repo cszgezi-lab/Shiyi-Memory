@@ -36,9 +36,10 @@ export function productFailure(error) {
 export function failureText(error) { const f=productFailure(error);return `${f.message}${f.status?`（HTTP ${f.status}）`:f.code==='OPERATION_FAILED'?'':`（${f.code}）`}`; }
 
 /** TT's status route reports upstream errors in an HTTP-200 envelope. */
-export function modelListFailure(response) {
+export function providerEnvelopeFailure(response) {
   const code=Object.hasOwn(NETWORK,response?.code)?response.code:'PROVIDER_REQUEST_FAILED';
   const rawStatus=response?.status??response?.error?.status??String(response?.message??'').match(/\b(?:HTTP(?:\s+error)?|status(?:\s+code)?)\s*[:=]?\s*([45]\d\d)\b/i)?.[1];
   const status=Number(rawStatus);
-  return Object.assign(new Error('模型列表服务返回错误'),{code,details:{...(Number.isInteger(status)&&status>=400&&status<=599?{status}:{})}});
+  return Object.assign(new Error('模型服务返回错误'),{code,details:{...(Number.isInteger(status)&&status>=400&&status<=599?{status}:{})}});
 }
+export const modelListFailure = providerEnvelopeFailure;

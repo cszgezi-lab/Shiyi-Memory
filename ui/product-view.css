@@ -71,6 +71,7 @@
 #shiyi-floating-window .sy-workbench-notice[data-level=error]{border-color:#ed7979}
 #shiyi-floating-window .sy-workbench-notice[data-level=success]{border-color:#86b3a5}
 #shiyi-floating-window .sy-workbench-notice[data-level=running]{border-color:#e6c366}
+#shiyi-floating-window .sy-workbench-notice[data-level=warning]{border-color:#e6c366}
 #shiyi-floating-launcher[data-notice=error]::after{content:'!';position:absolute;right:0;top:0;border-radius:50%;background:#a62e36;color:white;width:19px;height:19px;line-height:19px}
 #shiyi-floating-window>.sy-nav{flex:0 0 auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;margin:0;padding:4px 10px;border-bottom:1px solid color-mix(in srgb,currentColor 18%,transparent);background:var(--SmartThemeBlurTintColor,#20252e)}
 #shiyi-floating-window>.sy-nav button{font:inherit;font-size:13px;color:inherit;min-width:0;min-height:44px;margin:0;padding:8px 3px;border:0;border-radius:8px;background:transparent;cursor:pointer}
