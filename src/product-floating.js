@@ -59,6 +59,17 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onClos
   let disposed = false, raf = null, unsubscribe = null;
   const cleanup = [];
   function listen(target, type, fn, options) { target?.addEventListener?.(type, fn, options); cleanup.push(() => target?.removeEventListener?.(type, fn, options)); }
+  // A touch opens on pointerup and hides its target. Some WebViews then retarget
+  // the compatibility click to the newly exposed window control under the finger.
+  // Consume only that gesture's click; a new pointerdown or keyboard click is free.
+  let openingGesture = null;
+  listen(documentRef, 'pointerdown', () => { openingGesture = null; }, true);
+  listen(documentRef, 'click', event => {
+    const g = openingGesture; openingGesture = null;
+    if (g && event.detail !== 0 && Date.now() - g.at < 700 && Math.hypot(event.clientX - g.x, event.clientY - g.y) < 20) {
+      event.preventDefault(); event.stopImmediatePropagation();
+    }
+  }, true);
   const px = (style, name) => Math.max(0, Number.parseFloat(style.getPropertyValue(name)) || 0);
   function frameFor(element) {
     const rootStyle = win.getComputedStyle(documentRef.documentElement), localStyle = win.getComputedStyle(element);
@@ -126,7 +137,9 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onClos
       if (event.type === 'pointerup' && !previous.moved && tap) {
         // Some Android WebViews suppress/delay the compatibility click after
         // pointer capture. Complete taps here and ignore the duplicate click.
-        suppressClick = true; event.preventDefault(); tap();
+        suppressClick = true; event.preventDefault();
+        openingGesture = { x: event.clientX, y: event.clientY, at: Date.now() };
+        tap();
       }
     };
     listen(handle, 'pointerup', finish); listen(handle, 'pointercancel', finish);

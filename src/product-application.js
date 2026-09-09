@@ -9,6 +9,7 @@ import { RecallIndexCache } from './recall-cache.js';
 import { ProductVectorCache } from './product-vector-cache.js';
 import { clone, sha256, makeId, estimateUnits, stableStringify } from './utils.js';
 import { createProductFetch } from './product-network.js';
+import { productApiProfile, fetchProductModels } from './product-model-list.js';
 
 const PROMPT_KEY = 'shiyi-memory-continuity';
 function completion(response) {
@@ -75,13 +76,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const values={};for(const path of paths){const keys=path.split('.');if(!['chatMetadata','lastMessageExtra'].includes(keys[0])||keys.some(k=>['__proto__','constructor','prototype'].includes(k)))continue;let value=root;for(const key of keys)value=value?.[key];if(value!==undefined)values[path]=value;}
     const result=JSON.stringify(values);return result.length<=4000?result:'所选外部状态过长，请缩小字段路径';
   }
-  function client(kind = 'summary') {
-    const s = core.settings;
-    let prefix = kind === 'summary' ? 'provider' : kind;
-    if (kind === 'assistant' && s.assistantFollowSummary) { prefix = 'provider'; kind = 'summary'; }
-    const endpoint = s[`${prefix}Endpoint`], model = s[`${prefix}Model`];
-    if (!endpoint || !model) throw new Error('请先在设置中填写 API 地址和模型');
-    return new ProviderClient({ endpoint, model, endpointMode: s[`${prefix}EndpointMode`] ?? 'base', authMode: s[`${prefix}AuthMode`] ?? 'bearer', apiKey: keys[kind], timeoutMs: s.deadlineMs }, { fetchImpl, recordRequests: false });
+  function client(kind = 'summary', patch = {}) {
+    const profile = productApiProfile(core.settings, kind, keys, patch);
+    if (!profile.endpoint || !profile.model) throw new Error('请先在 API 中填写地址和模型');
+    return new ProviderClient(profile, { fetchImpl, recordRequests: false });
   }
   async function clearPrompt() { try { await hostAdapter?.setExtensionPrompt?.(PROMPT_KEY, '', 1, 1, false, 0); } catch { /* capability reported at enable */ } }
   async function stopListeners() { for (const off of bindings.splice(0)) { try { await off(); } catch { /* tracked by host */ } } }
@@ -157,9 +155,22 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if (!core.settings.injectionEnabled) await clearPrompt();
     setMessage('设置已保存'); return result;
   }
-  async function testConnection(kind = 'summary') {
+  async function listModels(kind, { patch = {}, modelsUrl = '', signal } = {}) {
+    assertCurrent(); const op = begin(false);
+    const cancel = () => controller.abort();
+    const controller = new AbortController();
+    op.signal.addEventListener('abort', cancel, { once: true });
+    signal?.addEventListener('abort', cancel, { once: true });
+    if (signal?.aborted) controller.abort();
+    try {
+      const models = await fetchProductModels(productApiProfile(core.settings, kind, keys, patch), { fetchImpl, modelsUrl, signal: controller.signal });
+      op.check(); if (controller.signal.aborted) throw new Error('已停止拉取模型');
+      return models;
+    } finally { op.signal.removeEventListener('abort', cancel); signal?.removeEventListener('abort', cancel); op.finish(); }
+  }
+  async function testConnection(kind = 'summary', patch = {}) {
     assertCurrent(); const op=begin();
-    try { const c = client(kind); let result;
+    try { const c = client(kind, patch); let result;
       if (kind === 'embedding') { result = await c.embeddings({ model: c.profile.model, input: ['connection check'] },op); if (!Array.isArray(result?.data?.[0]?.embedding)) throw new Error('服务没有返回向量'); }
       else if (kind === 'rerank') { result = await c.rerank({ model: c.profile.model, query: '连接', documents: ['连接测试'], top_n: 1 },op); if (!Array.isArray(result?.results)) throw new Error('服务没有返回重排结果'); }
       else completion(await c.chatCompletions({ model: c.profile.model, messages: [{ role: 'user', content: '请只回复 OK。这是一条连接测试。' }], stream: false, max_tokens: 16 },op));
@@ -408,7 +419,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
   async function stop(){abortAll();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停自动整理和记忆注入');}
-  return {core,get state(){return publicState();},open,refresh,saveSettings,testConnection,summarize,preview,addDocument,removeDocument,analyzeDocuments,assistant,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,buildVectors,stop,disable,
+  return {core,get state(){return publicState();},open,refresh,saveSettings,testConnection,listModels,summarize,preview,addDocument,removeDocument,analyzeDocuments,assistant,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,buildVectors,stop,disable,
     async remember(text,people=''){assertCurrent();await core.remember(text,{people});await refresh();setMessage('记事已保存');},
     get draftContext(){return `${epoch}:${state.conversationId}`;},
     async setDraft(value,context=`${epoch}:${state.conversationId}`){if(context!==`${epoch}:${state.conversationId}`)return;state.draft=value;await saveUi();},

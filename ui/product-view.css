@@ -9,7 +9,7 @@
 #shiyi-product-shell .sy-top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
 #shiyi-product-shell [data-scope],#shiyi-product-shell [data-model]{font-size:12px;opacity:.75;overflow-wrap:anywhere}
 #shiyi-product-shell .sy-status{padding:10px 12px;border-left:3px solid var(--sy-accent);background:color-mix(in srgb,var(--sy-accent) 9%,transparent);font-size:13px;overflow-wrap:anywhere}
-#shiyi-product-shell .sy-nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-bottom:1px solid var(--sy-border);gap:3px;margin:16px 0}
+#shiyi-product-shell .sy-nav{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border-bottom:1px solid var(--sy-border);gap:3px;margin:16px 0}
 #shiyi-product-shell button{font:inherit;color:inherit;background:transparent;border:1px solid var(--sy-border);border-radius:9px;min-height:44px;padding:8px 12px;cursor:pointer;white-space:normal;overflow-wrap:anywhere}
 #shiyi-product-shell button:hover{background:color-mix(in srgb,var(--sy-accent) 15%,transparent)}
 #shiyi-product-shell :is(button,input,textarea,select):focus-visible{outline:2px solid var(--sy-accent);outline-offset:2px}
@@ -17,7 +17,21 @@
 #shiyi-product-shell .sy-nav button{border:0;border-radius:8px 8px 0 0;padding:8px 3px;font-size:13px}
 #shiyi-product-shell .sy-nav .active{color:var(--sy-accent);box-shadow:inset 0 -2px var(--sy-accent);background:color-mix(in srgb,var(--sy-accent) 8%,transparent)}
 #shiyi-product-shell h3{font-size:17px;margin:16px 0 10px}#shiyi-product-shell h4{font-size:15px;margin:0 0 8px}
-#shiyi-product-shell .sy-card{border:1px solid var(--sy-border);border-radius:12px;padding:12px;margin:12px 0}
+#shiyi-product-shell .sy-card{border:1px solid var(--sy-border);border-radius:18px;padding:18px;margin:16px 0;background:color-mix(in srgb,currentColor 2%,transparent)}
+#shiyi-product-shell .sy-api-card{max-width:640px;margin-inline:auto}
+#shiyi-product-shell .sy-api-card>.sy-top h4{font-size:18px;margin:0}
+#shiyi-product-shell .sy-field small{display:block;font-weight:400;margin-top:4px;line-height:1.6}
+#shiyi-product-shell .sy-api-card .sy-field{margin:18px 0}
+#shiyi-product-shell .sy-api-card>.sy-actions>button{flex:1}
+#shiyi-product-shell .sy-advanced{margin-top:14px;border-top:1px solid var(--sy-border);padding-top:8px}
+#shiyi-product-shell .sy-module-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:20px 0}
+#shiyi-product-shell .sy-module-grid button{text-align:left;border-radius:16px;padding:18px 12px;min-height:110px}
+#shiyi-product-shell .sy-module-grid small{display:block;margin-top:8px;opacity:.7;font-size:12px}
+#shiyi-product-shell .sy-model-picker>.sy-top{font-size:13px}
+#shiyi-product-shell .sy-model-picker .sy-field{margin:10px 0}
+#shiyi-product-shell .sy-inherited{border-radius:10px;padding:12px;background:color-mix(in srgb,var(--sy-accent) 10%,transparent)}
+#shiyi-product-shell .sy-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%)}
+#shiyi-product-shell button:disabled{opacity:.5;cursor:wait}
 #shiyi-product-shell summary{cursor:pointer;min-height:38px;font-weight:600;align-content:center}
 #shiyi-product-shell .sy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px;margin:12px 0}
 #shiyi-product-shell .sy-field{display:flex;flex-direction:column;gap:6px;margin:8px 0;font-size:13px}

@@ -1,0 +1,105 @@
+import { PRODUCT_SETTING_REGISTRY as registry } from './product-settings.js';
+
+export const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+export const button = (action, label, primary = false) => `<button type="button" data-action="${action}" ${primary ? 'class="sy-primary"' : ''}>${label}</button>`;
+export const field = (label, input) => `<label class="sy-field"><span>${label}</span>${input}</label>`;
+const names = { base:'基础地址', exact:'完整端点', none:'无需认证', bearer:'Bearer Key', 'api-key':'API Key 请求头', inherit:'沿用记录偏好', ask_manual:'手动总结时填写', ask_every:'每次总结前填写', disabled:'关闭', broadcast:'各类别均衡召回', leader_only:'仅指定通道', original:'原创', fanfiction:'同人', system:'系统', user:'用户', start:'请求开头', before_last:'最后一条消息前' };
+const copy = {
+  messageCount:['每次总结多少楼','按最近楼层计算；最后一楼为 20、填 10，即整理 11–20。'],
+  autoSummaryEnabled:['自动整理聊天','AI 回复后检查是否需要整理。'],
+  autoSummaryEvery:['每新增多少楼自动整理','一条聊天消息算一楼。'],
+  recordingRules:['长期记录偏好','告诉总结模型哪些内容值得记住。'],
+  focusMode:['总结侧重点','手动总结时可以临时补充要求。'],
+  inputBudgetUnits:['总结输入预算','控制一批正文的输入长度。'],
+  outputBudgetUnits:['总结输出预留','为总结结果留出上下文空间。'],
+  excludedTags:['忽略的正文标签','标签中的内容不参与总结，用逗号分隔。'],
+  injectionEnabled:['自动注入相关记忆','发送聊天时，把相关记忆加入本轮请求。'],
+  retrievalLimit:['每次最多注入几条',''],
+  retrievalBudgetUnits:['注入长度上限',''],
+  timeProtection:['注入日期参照','附带事件日期和时间关系。'],
+  personaEnabled:['注入相关人物信息','保留身份、学校、住址和已有变化。'],
+  performanceEnabled:['注入人物演绎参考','使用有记录依据的变化，不编造内心。'],
+  injectionPosition:['记忆放置位置',''], injectionRole:['记忆消息角色',''],
+  vectorEnabled:['向量检索','按语义寻找记忆；需要配置向量 API。'],
+  rerankEnabled:['重排筛选','再次比较候选记忆的相关性；需要配置重排 API。'],
+  retrievalCandidateLimit:['初选记忆数量','先找出候选，再筛选用于注入的记忆。'],
+  rerankMaxCandidates:['交给重排的记忆数量',''],
+  bm25K1:['重复关键词的影响','决定同一个词重复出现时，对排名的影响。'],
+  bm25B:['长短记忆的平衡','减少长记录仅因字多而靠前的情况。'],
+  vectorWeight:['语义检索权重',''], fusionLocalWeight:['关键词检索权重',''],
+  fusionRankConstant:['合并排名平滑值','数值越大，前后名次的差距越平缓。'],
+  distributedEnabled:['分类检索','将聊天记忆和知识库分开检索。'],
+  distributedStrategy:['分类检索方式',''],
+  distributedChannel:['指定检索类别','仅指定通道时填写 memory 或 knowledge。'],
+  retrievalTimeoutMs:['总检索超时（毫秒）','0 表示分别使用向量与重排的超时设置。'],
+  vectorTimeoutMs:['向量超时（毫秒）',''], rerankTimeoutMs:['重排超时（毫秒）',''],
+  worldMode:['故事类型','同人的原作设定不等于当前聊天已经发生的事实。'],
+  knowledgeEnabled:['检索已导入资料','将当前聊天的作品资料纳入召回。'],
+  aliases:['人物别名','每行填写：主名=别名,别名。'],
+  externalStatePaths:['只读变量路径','读取指定的 chatMetadata 或 lastMessageExtra 字段，不改写 MVU。'],
+  storyDate:['故事日期参照（兼容设置）','未知留空，不使用现实日期代替剧情日期。'],
+  deadlineMs:['模型请求超时（毫秒）','120000 即 2 分钟。'],
+  assistantBudgetUnits:['助手输入预算','限制一次配置对话带入的资料长度。'],
+  assistantFollowSummary:['沿用总结模型','共用地址、模型和本次 Key，无需再填一遍。'],
+};
+
+export function setting(key, label, help, placeholder = '') {
+  const d = registry[key]; if (!d || d.persisted === false) throw new Error(`未知设置：${key}`);
+  const [name, hint] = [label ?? copy[key]?.[0] ?? d.label, help ?? copy[key]?.[1] ?? ''];
+  let input;
+  const attr = `data-setting="${key}"`;
+  if (d.type === 'boolean') input = `<input type="checkbox" ${attr} ${d.defaultValue ? 'checked' : ''}>`;
+  else if (d.type === 'enum') input = `<select ${attr}>${d.values.map(v => `<option value="${esc(v)}" ${v === d.defaultValue ? 'selected' : ''}>${esc(names[v] ?? v)}</option>`).join('')}</select>`;
+  else if (['recordingRules','aliases','externalStatePaths'].includes(key)) input = `<textarea rows="4" ${attr} maxlength="${d.maxLength}">${esc(d.defaultValue)}</textarea>`;
+  else input = `<input ${attr} type="${['integer','number'].includes(d.type) ? 'number' : key === 'storyDate' ? 'date' : 'text'}" ${d.min !== undefined ? `min="${d.min}" max="${d.max}" step="${d.type === 'integer' ? 1 : 'any'}"` : `maxlength="${d.maxLength}"`} value="${esc(d.defaultValue)}" placeholder="${esc(placeholder)}" autocomplete="off">`;
+  return `<label class="sy-field ${d.type === 'boolean' ? 'sy-toggle' : ''}"><span>${esc(name)}${hint ? `<small class="sy-help">${esc(hint)}</small>` : ''}</span>${input}</label>`;
+}
+const fields = keys => keys.map(key => setting(key)).join('');
+const advanced = (title, keys) => `<details class="sy-advanced"><summary>${title}</summary>${fields(keys)}</details>`;
+const card = (title, body) => `<div class="sy-card"><h4>${title}</h4>${body}</div>`;
+
+export const SETTING_GROUPS = Object.freeze({
+  recording: ['messageCount','autoSummaryEnabled','autoSummaryEvery','recordingRules','focusMode','inputBudgetUnits','outputBudgetUnits','excludedTags'],
+  injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','injectionPosition','injectionRole'],
+  retrieval: ['vectorEnabled','rerankEnabled','retrievalCandidateLimit','rerankMaxCandidates','bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant','distributedEnabled','distributedStrategy','distributedChannel','retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs'],
+  world: ['worldMode','knowledgeEnabled','aliases','externalStatePaths','storyDate'],
+});
+export function settingsSection(kind) {
+  const keys = SETTING_GROUPS[kind];
+  if (kind === 'recording') return card('记录偏好', fields(keys.slice(0,5)) + advanced('总结高级设置', keys.slice(5)));
+  if (kind === 'injection') return card('把记忆交给 AI', fields(keys.slice(0,6)) + advanced('注入位置', keys.slice(6)));
+  if (kind === 'retrieval') return card('召回设置', fields(keys.slice(0,4)) + advanced('关键词与融合', keys.slice(4,9)) + advanced('分类检索', keys.slice(9,12)) + advanced('超时保护', keys.slice(12)));
+  return card('世界与资料', fields(keys.slice(0,3)) + advanced('变量与日期兼容设置', keys.slice(3)));
+}
+
+export const API_INFO = Object.freeze({
+  summary: { prefix:'provider', title:'总结模型', help:'整理你选择的聊天楼层，提取事件、人物、关系与知情者。不会替代主聊天模型。', resource:'/chat/completions' },
+  assistant: { prefix:'assistant', title:'配置助手', help:'理解你的要求和配置文件，生成可确认、可应用的设置方案。', resource:'/chat/completions' },
+  embedding: { prefix:'embedding', title:'向量模型', help:'按意思寻找相关记忆。已预填硅基流动推荐配置，可更换服务商。', resource:'/embeddings' },
+  rerank: { prefix:'rerank', title:'重排模型', help:'从候选记忆里挑出更相关的内容，让注入更精简。', resource:'/rerank' },
+});
+export function apiSettingsHTML() {
+  return Object.entries(API_INFO).map(([kind, {prefix, title, help, resource}]) => `<section class="sy-card sy-api-card" data-api-card="${kind}"><div class="sy-top"><h4>${title}</h4>${['embedding','rerank'].includes(kind) ? button(`recommend-${kind}`, '补齐推荐值') : ''}</div><p class="sy-help">${help}</p>
+    ${kind === 'assistant' ? setting('assistantFollowSummary') + '<p class="sy-inherited sy-help" data-inherited></p>' : ''}
+    <div data-api-fields="${kind}">
+    ${setting(`${prefix}Endpoint`, 'API 地址', `基础地址只补 ${resource}，不自动添加 /v1。`, '填写你的服务商地址')}
+    ${field('API Key', `<input type="password" autocomplete="new-password" data-key="${kind}" placeholder="无需认证的服务可以留空"><small class="sy-help">仅在本次会话使用，不发给配置助手。${['embedding','rerank'].includes(kind) ? '硅基流动需要填写 Key。' : ''}</small>`)}
+    <div class="sy-model-picker"><div class="sy-top"><span>选择模型</span>${button(`models-${kind}`, '拉取模型列表')}</div>
+    <label class="sy-field"><span class="sy-sr-only">${title}模型列表</span><select data-model-list="${kind}" disabled><option value="">先拉取模型列表，也可以在下方直接输入</option></select></label>
+    ${setting(`${prefix}Model`, '模型名称', '', '选择列表中的模型，或手动填写')}
+    <p class="sy-help" role="status" data-model-status="${kind}"></p></div>
+    <details class="sy-advanced"><summary>地址与认证选项</summary>${setting(`${prefix}EndpointMode`, '地址模式')}${setting(`${prefix}AuthMode`, '认证方式')}${field('模型列表地址（可选）', `<input data-models-url="${kind}" placeholder="留空时按 API 地址推导 /models" autocomplete="off">`)}</details>
+    </div><div class="sy-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></section>`).join('') + card('请求设置', setting('deadlineMs') + setting('assistantBudgetUnits'));
+}
+
+// Upgrade opt-in: never replace a custom endpoint, model, or a deliberate zero/false.
+export function missingRecommendations(settings, kind) {
+  if (!['embedding','rerank'].includes(kind)) return {};
+  const endpointKey = `${kind}Endpoint`, modelKey = `${kind}Model`;
+  const endpoint = String(settings[endpointKey] ?? '').trim();
+  const model = String(settings[modelKey] ?? '').trim();
+  const recommendedEndpoint = registry[endpointKey].defaultValue;
+  if (!endpoint && !model) return { [endpointKey]: recommendedEndpoint, [modelKey]: registry[modelKey].defaultValue };
+  if (endpoint === recommendedEndpoint && !model) return { [modelKey]: registry[modelKey].defaultValue };
+  return {};
+}
