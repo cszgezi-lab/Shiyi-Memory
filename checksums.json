@@ -18,9 +18,9 @@
   "src/product-memory.js": "08d7f24888552e51e450fc7eb75f5da16c46774acea04f338822930518319534",
   "src/product-network.js": "1b1c450e7a9cb0ce6e47b1f95c2f432bd22f2749556edd4b576c438663e18616",
   "src/product-host-ui.js": "ede456d3c8086aac7a9b157b2bbf7be83c0c2b2175e177c533f592f3a7d44a33",
-  "src/product-release.js": "406dc3ecabc12e705bdb67c7e6df9438d2e2ce1df33e9677e1806ebb67c221a1",
-  "manifest.json": "68ef7f97704e584aacbf6709462652033335d03f270e3c9a6b61116148b40e52",
-  "ui/product-view.css": "6682a333e7a1f0941ae07c48f9e52facddff3da41d856f3de6dab1f2bc799265",
-  "README.md": "0b0e73dae11c7c63eaa7c489341eb50b8bb7ac26f74dcb6a86bd00122c34c4d2",
-  "CHANGELOG.md": "31484946e49194d0d1f0dd1a545b7ea66446fc27b46fef219b53acd0a51b3cdd"
+  "src/product-release.js": "4d6d5df528c23398e9dd523c96a7778aa121fedb059119d9eb128ad0df9a263e",
+  "manifest.json": "45c35819598fca098b514eafe8edff61f8b0ee46422f4c78057c1b1dba4adfad",
+  "ui/product-view.css": "271f445b31983749f525d1f394daffb1bd2351521434998cbf658af405dff9dc",
+  "README.md": "ad1cd1b90d6b746c46f4e0a2f5105166689933f38cbce191c02437240356bf16",
+  "CHANGELOG.md": "4d7a0f216a58e6c622ab1487888d063212f625339926967c1009f345ac457890"
 }

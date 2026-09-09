@@ -42,9 +42,9 @@
 @media(max-width:430px){#shiyi-product-shell .sy-body{padding:0 10px 14px}#shiyi-product-shell .sy-grid{grid-template-columns:1fr}#shiyi-product-shell .sy-actions>button{flex:1 1 auto}#shiyi-product-shell .sy-brand{padding:12px}#shiyi-product-shell .sy-nav button{font-size:12px}}
 @media(max-width:700px){
  .sy-workbench{width:100%;max-width:100%;margin:auto;padding:10px;border-radius:12px;max-height:100dvh;
-  scroll-padding-bottom:max(16px,calc(var(--tt-viewport-bottom-inset,0px) - var(--tt-inset-bottom,0px)))}
+  scroll-padding-top:120px;scroll-padding-bottom:max(16px,calc(var(--tt-viewport-bottom-inset,0px) - var(--tt-inset-bottom,0px)))}
  /* TT owns safe-area and IME geometry; this slack also makes the last input/actions reachable. */
  .sy-workbench::after{content:'';display:block;height:max(var(--tt-viewport-bottom-inset,var(--tt-inset-bottom,0px)),16px);pointer-events:none}
- #shiyi-product-shell .sy-nav{position:sticky;top:0;z-index:1;background:var(--SmartThemeBlurTintColor,#20252e)}
+ #shiyi-product-shell .sy-nav{position:sticky;top:56px;z-index:1;background:var(--SmartThemeBlurTintColor,#20252e)}
  #shiyi-product-shell input[type=file]{font-size:14px}
 }
