@@ -185,6 +185,7 @@ export function normalizeSourceRefs(refs) {
 
 function normalizeMessage(message, index) {
   if (!isPlainObject(message)) throw new ValidationError(`source message ${index} must be an object`);
+  if(message.index!==undefined){if(!Number.isInteger(message.index)||message.index<0)throw new ValidationError('source message index must be a non-negative integer');index=message.index;}
   const id = message.id ?? message.messageId ?? message.uuid ?? message.sourceId;
   if (typeof id !== 'string' || !id.trim()) {
     throw new ValidationError(`source message ${index} has no stable id`);
@@ -243,7 +244,7 @@ export function createSummaryBatch({
   if (!Number.isInteger(expectedRevision) || expectedRevision < 0) throw new ValidationError('expectedRevision must be a non-negative integer');
   const input = sourceMessages ?? messages;
   if (!Array.isArray(input) || input.length === 0) throw new ValidationError('summary batch requires at least one source message');
-  const normalizedMessages = input.map(normalizeMessage);
+  const normalizedMessages = input.map((message,offset)=>normalizeMessage(message,(Number.isInteger(requestedRange?.startIndex)?requestedRange.startIndex:0)+offset));
   const normalizedBridgeMessages = Array.isArray(bridgeMessages) ? bridgeMessages.map(normalizeMessage) : [];
   const range = requestedRange ?? {
     startIndex: normalizedMessages[0].index,

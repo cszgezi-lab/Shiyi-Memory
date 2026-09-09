@@ -298,7 +298,9 @@ export function createProductShellController({
         const selected = state.range;
         if (!selected || state.session !== session || destroyed || !activeTask || abortController?.signal.aborted) return null;
         try {
+          if(stableStringify(await adapterInstance.currentRef())!==session.refKey)return null;
           const current = await readProductHostRange(session, { ...selected, maxMessages });
+          if(stableStringify(await adapterInstance.currentRef())!==session.refKey)return null;
           const batch = createSummaryBatch({
             scope: session.scope,
             operationId: state.job?.operationId ?? bundle.operationId,
@@ -325,13 +327,14 @@ export function createProductShellController({
     if (destroyed) return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: 'HOST_CONTRACT_INVALID' };
     if (bindingPromise) return bindingPromise;
     const pending = (async () => {
+      const matchesExpected=ref=>options.expectedRef===undefined||stableStringify(ref)===stableStringify(options.expectedRef);
       if (state.session) {
         // A repeated bind is idempotent while it points at the same captured
         // session.  A changed host chat is intentionally not guessed here.
         try {
           adapterInstance ??= adapterFactory(host);
           const currentRef = await adapterInstance.currentRef();
-          if (state.session.refKey === stableStringify(currentRef) && state.status !== PRODUCT_SHELL_STATUS.INVALIDATED) return { status: 'ready', identityReady: true, persistence: repository ? 'available' : 'unavailable' };
+          if (matchesExpected(currentRef) && state.session.refKey === stableStringify(currentRef) && state.status !== PRODUCT_SHELL_STATUS.INVALIDATED) return { status: 'ready', identityReady: true, persistence: repository ? 'available' : 'unavailable' };
         } catch { /* continue with a fresh explicit bind */ }
         await removeSubscriptions();
         invalidate('CHAT_CHANGED', 'CHAT_CHANGED');
@@ -353,6 +356,7 @@ export function createProductShellController({
       adapterInstance ??= adapterFactory(host);
       try {
         const session = await captureProductHostSession(adapterInstance, { accountId: options.accountId ?? accountId, branchId: options.branchId ?? branchId });
+        if(!matchesExpected(session.ref))throw Object.assign(new Error('聊天已切换'),{code:'CHAT_CHANGED'});
         state.session = session;
         state.scope = clone(session.scope);
         state.capabilities.identity = 'ready';
@@ -367,6 +371,8 @@ export function createProductShellController({
           createRepository(session, store);
           await loadSettings(store);
         }
+        const finalRef=await adapterInstance.currentRef();
+        if(!matchesExpected(finalRef)||stableStringify(finalRef)!==session.refKey)throw Object.assign(new Error('读取期间聊天已切换'),{code:'CHAT_CHANGED'});
         subscribeInvalidation(session);
         mark(PRODUCT_SHELL_STATUS.READY);
         state.draft.status = state.range ? 'ready' : 'empty';
@@ -404,6 +410,7 @@ export function createProductShellController({
         maxMessages,
       });
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
+      if(stableStringify(await adapterInstance.currentRef())!==session.refKey)return {status:'invalidated',errorCode:'CHAT_CHANGED'};
       const batch = createSummaryBatch({
         scope: session.scope,
         operationId: 'preview-range',
@@ -730,7 +737,12 @@ export function createProductShellController({
     get legacyApiSettings() { return clone(legacyApiSettings); },
     get legacySettings() { return clone(legacySettings); },
     useGlobalSettings(patch) { globalApiSettings=validateProductPatch(patch);Object.assign(state.settings,globalApiSettings);transport=null; },
-    async historyTail(){ if(!state.session)throw new Error('请先打开聊天');const session=state.session, token=currentToken();const range=await readProductHostRange(session,{count:1});if(!tokenValid(token,session))throw new Error('聊天已变化');return range.endIndex; },
+    async historyTail(){
+      if(!state.session)throw new Error('请先打开聊天');
+      const session=state.session,token=currentToken();
+      const check=async()=>{const ref=await adapterInstance.currentRef();if(!tokenValid(token,session)||stableStringify(ref)!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
+      await check();const range=await readProductHostRange(session,{count:1});await check();return range.endIndex;
+    },
     useGlobalApiSettings(patch) {
       const {api,chat}=splitProductSettings(validateProductPatch(patch));
       if(Object.keys(chat).length)throw new Error('全局连接仅接受 API 字段');

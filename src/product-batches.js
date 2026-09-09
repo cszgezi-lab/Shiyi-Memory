@@ -17,6 +17,16 @@ export function pageSummaryBatches(batches,{query='',status='all',page=1,pageSiz
   const pages=Math.max(1,Math.ceil(selected.length/size)),current=Math.min(pages,Math.max(1,Number.isInteger(Number(page))?Number(page):1));
   return {items:selected.slice((current-1)*size,current*size),page:current,pages,pageSize:size,total:selected.length,allTotal:batches.length};
 }
+// The inactive UI range is deliberately absent from the submitted request.
+export function summarySelection({mode='recent',count,startIndex,endIndex,batchSize,focus=''}={}){
+  const integer=(value,label,min,max)=>{if(value==null||String(value).trim()===''||!Number.isInteger(Number(value))||Number(value)<min||Number(value)>max)throw new Error(`${label}需要填写 ${min}–${max} 的整数`);return Number(value);};
+  const common={batchSize:integer(batchSize,'每批楼数',1,200),focus};
+  if(mode==='recent')return {...common,count:integer(count,'最近楼数',1,100000)};
+  if(mode!=='range')throw new Error('请选择总结范围');
+  const start=integer(startIndex,'起始楼层',0,10000000),end=integer(endIndex,'结束楼层',0,10000000);
+  if(end<start)throw new Error('结束楼层不能早于起始楼层');
+  return {...common,startIndex:start,endIndex:end};
+}
 export function planSummaryRanges({count,startIndex,endIndex,lastIndex,batchSize}){
   if(!Number.isInteger(batchSize)||batchSize<1||batchSize>200)throw new Error('每批楼数应为 1–200');
   if((startIndex==null)!==(endIndex==null))throw new Error('请同时填写起止楼层');

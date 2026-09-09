@@ -5,7 +5,7 @@ export const button = (action, label, primary = false) => `<button type="button"
 export const field = (label, input) => `<label class="sy-field"><span>${label}</span>${input}</label>`;
 const names = { base:'自动补接口路径', exact:'完整地址（不补路径）', none:'无需 Key', bearer:'标准 Key（默认）', 'api-key':'x-api-key（服务商要求时）', inherit:'沿用记录偏好', ask_manual:'手动总结时填写', ask_every:'每次总结前填写', disabled:'关闭', broadcast:'各类别均衡召回', leader_only:'仅指定通道', original:'原创', fanfiction:'同人', system:'系统', user:'用户', start:'请求开头', before_last:'最后一条消息前' };
 const copy = {
-  messageCount:['每次总结多少楼','按最近楼层计算；最后一楼为 20、填 10，即整理 11–20。'],
+  messageCount:['默认总结楼数','手动总结的初始值；本次以范围选择中的输入为准。'],
   autoSummaryEnabled:['自动整理聊天','AI 回复后检查是否需要整理。'],
   autoSummaryEvery:['每新增多少楼自动整理','一条聊天消息算一楼。'],
   recordingRules:['长期记录偏好','告诉总结模型哪些内容值得记住。'],

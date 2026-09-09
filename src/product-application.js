@@ -43,7 +43,7 @@ const ASSISTANT_TOOLS = [
 export function createProductApplication({ host = globalThis, adapter = null, controller = null, fetchImpl = globalThis.fetch, onChange = () => {} } = {}) {
   fetchImpl = createProductFetch(host, fetchImpl);
   let hostAdapter = adapter;
-  let workspace = null, boundScope = null, epoch = 0, active = null, bindings = [], enabled = false;
+  let workspace = null, boundScope = null, boundRefKey = null, epoch = 0, active = null, bindings = [], enabled = false;
   let cancelVersion = 0, knowledgeCache = [], opening = false, feedbackSequence = 0;
   let recallRevision = 0;
   let recallBusy = 0, moduleSourceBaseline=null;
@@ -62,10 +62,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   };
   const apiSettings=createGlobalSettings({getStore:globalStore,onApply:settings=>{core.useGlobalSettings(settings);core.setSessionCredential(effectiveKeys().summary);recallChanged({vectors:true});notify();}});
   const credentials=createCredentialStore({getStore:globalStore});
-  const state = { credentialSaved:{},credentialErrors:{}, modules:[],moduleSnapshots:[],moduleCurrent:[],mvuPaths:[],mvuStatus:'no_chat', status: 'unbound', message: '打开聊天后开始使用', cards: [], documents: [], history: [], batches: [], records: {}, conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };
+  const state = { credentialSaved:{},credentialErrors:{}, modules:[],moduleSnapshots:[],moduleCurrent:[],mvuPaths:[],mvuStatus:'no_chat', status: 'unbound', message: '开始总结时自动读取 TT 当前聊天', cards: [], documents: [], history: [], batches: [], records: {}, conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };
   const notify = () => { try { onChange(publicState()); } catch { /* paint failure must not affect persistence */ } };
   const modules=createModuleController({host,core,state,load:loadApiSettings,getGlobal:()=>globalWorkspace,getChat:()=>workspace,check:assertCurrent,notify,refresh,changed:()=>recallChanged({vectors:true})});
-  function publicState() { return { ...clone(state), enabled, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
+  function publicState() { return { ...clone(state), enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
   function assertCurrent(token = epoch) { if (!workspace || token !== epoch || !workspace.isCurrent()) throw new Error('聊天或来源已变化，请重新打开当前聊天'); }
   function begin(exclusive = true) {
     if (exclusive && active) throw new Error('已有任务正在运行');
@@ -138,26 +138,33 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   function invalidate(reason) {
     epoch++; abortAll(); moduleSourceBaseline=null;modules.clear();state.cards=state.cards.filter(c=>!c.readonly);state.stale = true; state.preview = null; state.actual = null;
     recallChanged({ clear: true });
-    clearPrompt(); state.status = 'stale'; setMessage(reason === 'CHAT_CHANGED' ? '聊天已切换，点击开始使用以加载当前聊天' : '正文已修改，旧记忆已暂停注入；重新整理相关范围后恢复');
+    clearPrompt(); state.status = 'stale'; setMessage(reason === 'CHAT_CHANGED' ? '聊天已切换；开始总结时会自动读取当前聊天' : '正文已修改，旧记忆已暂停注入；重新整理相关范围后恢复');
   }
-  async function open() {
+  async function open({enable = true, expectedRef} = {}) {
     if (active || opening) throw new Error('请先停止当前任务');
     opening = true;
     const opener=new AbortController(), version=cancelVersion;
     operations.add(opener); active=opener;
-    const checkOpen=()=>{if(opener.signal.aborted||version!==cancelVersion)throw new Error('打开已取消');};
+    const checkOpen=()=>{if(opener.signal.aborted||version!==cancelVersion)throw Object.assign(new Error('聊天加载已取消'),{code:'CANCELED'});};
     try {
     await loadApiSettings();checkOpen();
+    hostAdapter ??= new HostAdapter(host);
+    const target=expectedRef??await hostAdapter.currentRef();checkOpen();
+    if(!target)throw Object.assign(new Error('TT 当前没有打开聊天'),{code:'CHAT_REF_UNAVAILABLE'});
+    const targetKey=stableStringify(target);
+    const checkTarget=async()=>{const current=await hostAdapter.currentRef();checkOpen();if(stableStringify(current)!==targetKey)throw Object.assign(new Error('读取期间聊天已切换'),{code:'CHAT_CHANGED'});};
+    await checkTarget();
     await stopListeners(); checkOpen(); await clearPrompt(); checkOpen();
     hostAdapter ??= new HostAdapter(host);
-    const result = await core.bindCurrentChat();
-    checkOpen();
-    if (result.status !== 'ready' || result.persistence !== 'available') throw new Error(core.state.errorMessage ?? '当前聊天尚未保存或宿主存储不可用');
+    workspace=null;boundScope=null;boundRefKey=null;state.cards=[];state.records={};state.batches=[];state.deletedRecords=[];state.progress='';modules.clear();state.status='loading';notify();
+    const result = await core.bindCurrentChat({expectedRef:target});
+    await checkTarget();
+    if (result.status !== 'ready' || result.persistence !== 'available') throw Object.assign(new Error(core.state.errorMessage ?? '当前聊天尚未保存或宿主存储不可用'),{code:result.errorCode??'PERSISTENCE_UNAVAILABLE'});
     epoch++; knowledgeCache = []; recallChanged({ clear: true });
     workspace = createWorkspace(core.workspace());
     await apiSettings.adoptLegacy(core.legacySettings);checkOpen();
     core.setSessionCredential(effectiveKeys().summary);
-    boundScope = core.state.scope;
+    boundScope = core.state.scope;boundRefKey=targetKey;
     const [ui,hidden]=await Promise.all([workspace.read('ui',{savedThrough:-1}),workspace.read('hidden',[])]);
     checkOpen();assertCurrent();Object.assign(state,{savedThrough:ui.savedThrough??-1,hidden,preview:null,actual:null,stale:false});
     await migrateWorkspace();
@@ -166,7 +173,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       try { bindings.push(hostAdapter.subscribe(name, async () => {if(name==='MESSAGE_UPDATED'&&moduleMetadataOnly()){await syncModulesQuietly();return;}invalidate(name);})); } catch { /* no automatic activation without final hook */ }
     }
     state.status = 'ready';rememberModuleSources(); await refresh(); checkOpen();
-    await loadKnowledge(); checkOpen(); enabled = true;
+    await loadKnowledge(); await checkTarget(); enabled = enable;
     try {
       bindings.push(hostAdapter.subscribe('CHAT_COMPLETION_SETTINGS_READY', payload => inject(payload)));
       bindings.push(hostAdapter.subscribe('MESSAGE_RECEIVED', async () => {await syncModulesQuietly();await autoSummary();}));
@@ -178,7 +185,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         else {try{bindings.push(hostAdapter.subscribe(name,callback));}catch{ /* explicit refresh still available */ }}
       }
     } catch { setMessage('已打开；宿主不支持自动任务，可手动整理和预览'); }
-    setMessage('已加载当前聊天的记忆'); return publicState();
+    setMessage('已读取当前聊天；可以直接开始总结'); return publicState();
+    } catch(error){workspace=null;boundScope=null;boundRefKey=null;state.cards=[];state.records={};state.batches=[];state.deletedRecords=[];state.progress='';modules.clear();state.status='unavailable';recallChanged({clear:true});await stopListeners();await clearPrompt();setMessage(`聊天读取未完成：${failureText(error)}`);throw error;
     } finally { opening = false; operations.delete(opener);if(active===opener)active=null;notify(); }
   }
   async function saveUi() {
@@ -293,8 +301,22 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       return {...item,status,records,counts:Object.fromEntries(MEMORY_CATEGORIES.map(k=>[k,records[k].length]))};
     });
   }
-  async function summarize({count,startIndex,endIndex,batchSize=core.settings.summaryBatchSize,focus='',trigger='manual',replaceBatchId=null}={}){
-    if(!workspace)throw new Error('请先打开要整理的聊天');
+  async function prepareSummaryChat(){
+    if(active||opening)throw new Error('已有任务正在运行，请等待完成或停止');
+    const version=cancelVersion;hostAdapter??=new HostAdapter(host);
+    let target;try{target=await hostAdapter.currentRef();}catch{throw Object.assign(new Error('无法读取 TT 当前聊天'),{code:'CHAT_REF_UNAVAILABLE'});}
+    if(version!==cancelVersion)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
+    if(!target)throw Object.assign(new Error('TT 当前没有打开聊天'),{code:'CHAT_REF_UNAVAILABLE'});
+    if(workspace?.isCurrent()&&!state.stale&&boundRefKey===stableStringify(target))return;
+    summaryFeedback('running','正在读取 TT 当前聊天…','manual');
+    await open({enable:enabled,expectedRef:target});
+  }
+  async function summarize({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null}={}){
+    if(trigger==='manual'&&!replaceBatchId){
+      try{await prepareSummaryChat();}catch(error){summaryFeedback(error.code==='CANCELED'?'info':'error',`总结未完成：${failureText(error)}`,trigger);throw error;}
+    }
+    if(!workspace)throw Object.assign(new Error('当前聊天尚未读取'),{code:'CHAT_REF_UNAVAILABLE'});
+    batchSize??=core.settings.summaryBatchSize;
     const op=begin();let saved=0,currentBatch=null;
     summaryFeedback('running','正在读取总结范围…',trigger);
     try{
@@ -318,7 +340,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         await core.updateMemoryControls({operations:{[operationId]:'pending'}});op.check();
         const range=await core.readRange({startIndex:item.startIndex,endIndex:item.endIndex});
         op.check();if(range.status!=='ready')throw new Error(core.state.errorMessage??'范围读取失败');
-        state.progress=`第 ${i+1}/${planned.length} 批 · #${item.startIndex}–${item.endIndex}`;
+        state.progress=`第 ${i+1}/${planned.length} 批 · 已读取 #${item.startIndex}–${item.endIndex}，共 ${range.count} 楼`;
         await readBatches(await core.readMemoryView());summaryFeedback('running',`正在总结 ${state.progress}`,trigger);
         const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,requireFloorSummaries:true});
         op.check();if(result.status!=='saved')throw Object.assign(new Error(core.state.errorMessage??'总结未保存'),{code:result.failure?.code??result.errorCode??'SUMMARY_RESPONSE_ERROR',details:result.errorDetails});

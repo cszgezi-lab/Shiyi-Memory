@@ -8,6 +8,12 @@ const NETWORK = {
   'network.request_failed':'网络请求失败，请检查服务是否可访问。',
 };
 const CODES = {
+  CHAT_REF_UNAVAILABLE:'未能取得 TT 当前聊天。请确认已进入具体对话、正文加载完成后重试；不会读取其他聊天。',
+  CHAT_IDENTITY_NOT_READY:'TT 尚未提供当前聊天的持久标识，请等待聊天保存完成后重试。',
+  CHAT_HANDLE_UNAVAILABLE:'TT 未能提供当前聊天读取接口，请重新进入这段对话后重试。',
+  HISTORY_UNAVAILABLE:'当前聊天正文未读到，或所选范围为空。请等待正文加载完成并检查楼层范围。',
+  CHAT_CHANGED:'读取期间聊天已切换，本次已停止；请在目标聊天重新开始总结。',
+  SOURCE_INVALIDATED:'所选正文已修改，本次已停止；请按修改后的内容重新总结。',
   FLOOR_SUMMARY_MISSING:'模型没有返回完整的逐楼摘要，本批未完成。请重试、减少每批楼数或提高回复上限。',
   INPUT_BUDGET_EXCEEDED:'输入超过预算，请提高总结输入预算或减少每批楼数；未完成部分不会注入。',
   TIMEOUT:NETWORK['network.timeout'], CANCELED:'任务已停止；已保存内容保留。',
