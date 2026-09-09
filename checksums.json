@@ -5,7 +5,7 @@
   "src/host-adapter.js": "4c31fca7af113f68e40a42fa20154606c817257a2868215e4e51180f5d97d08a",
   "src/errors.js": "60212b14a74c221c90f4423c1db93777375bedac27f768e405898de0e64a00b1",
   "src/utils.js": "2eea86765f5d4041a97e1756693879db96bb806fa1a3a74aced3faaa043a9857",
-  "src/product-shell-controller.js": "eda7df0cdc4a4650e66bfcd0826e4cae7af59352e694f74792fd18d5219a4107",
+  "src/product-shell-controller.js": "3599dab8d259e3bb7e6a73d98ec33afdba9518ba67eed2d4571c0a740f1bdf73",
   "src/contracts.js": "fa16d013fee2953e60ad6fbaec29be80f72706b94faa3fd60084fedf96e18094",
   "src/repository.js": "639a6e0722b1720fcade973b810441d6c00494029788654931e6549aef86b538",
   "src/retrieval.js": "8946494bb905c223043dd16e14d0624abd7dfcf436e6d9b9125dd63209b28607",

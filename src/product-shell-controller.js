@@ -155,7 +155,7 @@ export function createProductShellController({
   onChange = () => {},
   runtimeRules = () => '',
   summaryBundleValidator = () => () => {},
-  shouldInvalidate = () => true, 
+  shouldInvalidate = () => true,
 } = {}) {
   let adapterInstance = adapter;
   let bindingPromise = null;
