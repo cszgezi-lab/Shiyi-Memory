@@ -1,4 +1,4 @@
-# 拾忆 · Shiyi Memory 0.3.1
+# 拾忆 · Shiyi Memory 0.3.2
 
 为 TauriTavern 整理聊天记忆，按当前剧情少量召回，并用自然语言配置记录方式。数据保存在当前聊天的插件存储中，不需要部署 Anima Remote 或额外的记忆服务器。
 
