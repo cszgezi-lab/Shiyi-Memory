@@ -39,6 +39,9 @@ export function normalizeModelList(response) {
 }
 
 export async function fetchProductModels(profile, { fetchImpl, signal, modelsUrl = '' } = {}) {
-  const client = new ProviderClient({ ...profile, endpoint: modelListEndpoint(profile, modelsUrl), endpointMode: 'exact' }, { fetchImpl, recordRequests: false });
+  const endpoint=modelListEndpoint(profile,modelsUrl);
+  // A separate model-list address must not forward a saved provider key to another origin.
+  const apiKey=new URL(endpoint).origin===new URL(profile.endpoint).origin?profile.apiKey:'';
+  const client = new ProviderClient({ ...profile, apiKey, endpoint, endpointMode: 'exact' }, { fetchImpl, recordRequests: false });
   return normalizeModelList(await client.models({}, { signal }));
 }

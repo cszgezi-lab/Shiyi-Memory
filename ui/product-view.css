@@ -95,3 +95,25 @@
 .sy-root .sy-category-grid small {font-size:12px;opacity:.7;}
 .sy-root .sy-category-grid button.active {border-color:var(--sy-accent,#75b9a2);background:rgba(94,150,129,.18);}
 .sy-root [data-batches] details details {padding:8px 0;border-top:1px solid rgba(128,128,128,.2);}
+/* Explicit, consistent text roles; do not inherit unrelated host tile styles. */
+#shiyi-product-shell [data-view=memory] {font:400 16px/1.6 system-ui,sans-serif;}
+#shiyi-product-shell [data-view=memory] h3 {font:600 18px/1.5 system-ui,sans-serif;}
+#shiyi-product-shell [data-view=memory] :is(summary,h4) {font:600 16px/1.5 system-ui,sans-serif;}
+#shiyi-product-shell [data-view=memory] .sy-card p:not(.sy-help) {font:400 16px/1.6 system-ui,sans-serif;}
+#shiyi-product-shell [data-view=memory] :is(.sy-help,.sy-field>span,.sy-tag) {font:400 13px/1.5 system-ui,sans-serif;letter-spacing:normal;}
+#shiyi-product-shell .sy-category-grid button {height:96px;justify-content:space-between;text-align:left;padding:12px 10px;}
+#shiyi-product-shell .sy-category-grid strong {font:600 14px/1.5 system-ui,sans-serif;display:block;min-height:42px;}
+#shiyi-product-shell .sy-category-grid small {font:400 13px/1.5 system-ui,sans-serif;opacity:.75;}
+#shiyi-product-shell .sy-batch-filters {display:grid;grid-template-columns:minmax(0,1fr) 82px;gap:8px;}
+#shiyi-product-shell .sy-batch-filters>.sy-field:first-child {grid-column:1/-1;}
+#shiyi-product-shell .sy-batch-row {padding:10px 12px;margin:8px 0;border-radius:12px;}
+#shiyi-product-shell .sy-batch-row>summary {font:600 14px/1.5 system-ui,sans-serif;}
+#shiyi-product-shell .sy-batch-status {display:block;margin:4px 0 0 16px;font:400 13px/1.5 system-ui,sans-serif;opacity:.8;}
+#shiyi-product-shell .sy-batch-status[data-state=failed],#shiyi-product-shell .sy-batch-error {color:#ed9292;}
+#shiyi-product-shell .sy-batch-pagination {display:flex;gap:8px;align-items:center;justify-content:space-between;margin:12px 0;}
+#shiyi-product-shell .sy-batch-pagination>span {font-size:14px;white-space:nowrap;}
+#shiyi-product-shell .sy-page-jump {display:flex;flex-direction:row;align-items:center;gap:8px;justify-content:flex-end;}
+#shiyi-product-shell .sy-page-jump input {width:70px;}
+#shiyi-product-shell .sy-record-tabs {display:flex;gap:8px;margin:12px 0;}
+#shiyi-product-shell .sy-record-tabs button {flex:1;}
+#shiyi-product-shell .sy-record-tabs button.active {background:color-mix(in srgb,var(--sy-accent) 15%,transparent);border-color:var(--sy-accent);}

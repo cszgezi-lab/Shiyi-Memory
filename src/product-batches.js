@@ -1,6 +1,22 @@
 import { DRAFT_CATEGORIES } from './contracts.js';
 
 export const MEMORY_CATEGORIES=Object.freeze(DRAFT_CATEGORIES.filter(k=>k!=='coverage'));
+export function pageSummaryBatches(batches,{query='',status='all',page=1,pageSize=10}={}) {
+  const size=[10,20,50].includes(Number(pageSize))?Number(pageSize):10;
+  const term=String(query).trim(),range=/^#?(\d+)\s*[-–~至]\s*#?(\d+)$/.exec(term),floor=/^#(\d+)$/.exec(term),number=/^第?\s*(\d+)\s*批$/.exec(term);
+  const selected=[...batches].reverse().filter(b=>{
+    if(status==='failed'&&!['failed','interrupted'].includes(b.status))return false;
+    if(status==='pending'&&!['running','queued'].includes(b.status))return false;
+    if(['saved','deleted'].includes(status)&&b.status!==status)return false;
+    if(!term)return true;
+    if(number)return b.number===Number(number[1]);
+    if(floor)return Number.isInteger(b.startIndex)&&b.startIndex<=Number(floor[1])&&b.endIndex>=Number(floor[1]);
+    if(range)return Number.isInteger(b.startIndex)&&b.startIndex<=Number(range[2])&&b.endIndex>=Number(range[1]);
+    return `${b.number} ${b.focus??''} ${b.error??''}`.toLowerCase().includes(term.toLowerCase());
+  });
+  const pages=Math.max(1,Math.ceil(selected.length/size)),current=Math.min(pages,Math.max(1,Number.isInteger(Number(page))?Number(page):1));
+  return {items:selected.slice((current-1)*size,current*size),page:current,pages,pageSize:size,total:selected.length,allTotal:batches.length};
+}
 export function planSummaryRanges({count,startIndex,endIndex,lastIndex,batchSize}){
   if(!Number.isInteger(batchSize)||batchSize<1||batchSize>200)throw new Error('每批楼数应为 1–200');
   if((startIndex==null)!==(endIndex==null))throw new Error('请同时填写起止楼层');

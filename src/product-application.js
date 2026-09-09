@@ -18,6 +18,8 @@ import { chatConnectionPayload, inspectChatConnection } from './product-connecti
 import { createModuleController } from './product-module-controller.js';
 import { moduleRules, checkModuleBundle, mvuContext } from './product-custom-modules.js';
 
+import { createCredentialStore, credentialOrigin } from './product-credentials.js';
+
 const PROMPT_KEY = 'shiyi-memory-continuity';
 function completion(response) {
   if (['length','max_tokens','content_filter'].includes(response?.choices?.[0]?.finish_reason)) throw new Error('模型输出被截断，请提高输出上限或减少输入后重试');
@@ -48,6 +50,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache();
   const operations = new Set(), apiOperations = new Set(), injectedPayloads = new WeakSet();
   const keys = { summary: '', assistant: '', embedding: '', rerank: '' };
+  const keyOrigins={},keyVersions={},keyEdited=new Set();let credentialsLoaded=false;
+  const prefixFor=k=>k==='summary'?'provider':k;
+  function effectiveKeys(patch={}){const s={...core.settings,...patch};return Object.fromEntries(Object.entries(keys).map(([k,v])=>[k,keyOrigins[k]&&keyOrigins[k]!==credentialOrigin(s[`${prefixFor(k)}Endpoint`])?'':v]));}
   const core = controller ?? createProductShellController({ host, adapterFactory: h => (hostAdapter ??= new HostAdapter(h)), adapter, fetchImpl, onChange: () => notify(), runtimeRules: () => `当前故事日期：${core.settings.storyDate || '未知'}。外部权威状态（只读）：${externalState()}\n${moduleRules(state.modules)}`, shouldInvalidate:reason=>!(reason==='MESSAGE_UPDATED'&&moduleMetadataOnly()), summaryBundleValidator:()=>{const definitions=clone(state.modules);return bundle=>checkModuleBundle(bundle,definitions);} });
   let globalWorkspace,globalLoaded=false,globalLoading=null,assistantActive=false;
   const globalStore=async()=>{
@@ -55,11 +60,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(!hostAdapter.getStore)throw new Error('宿主没有提供全局扩展存储');
     return hostAdapter.getStore({scope:'extension'});
   };
-  const apiSettings=createGlobalSettings({getStore:globalStore,onApply:settings=>{core.useGlobalSettings(settings);recallChanged({vectors:true});notify();}});
-  const state = { modules:[],moduleSnapshots:[],moduleCurrent:[],mvuPaths:[],mvuStatus:'no_chat', status: 'unbound', message: '打开聊天后开始使用', cards: [], documents: [], history: [], batches: [], records: {}, conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };
+  const apiSettings=createGlobalSettings({getStore:globalStore,onApply:settings=>{core.useGlobalSettings(settings);core.setSessionCredential(effectiveKeys().summary);recallChanged({vectors:true});notify();}});
+  const credentials=createCredentialStore({getStore:globalStore});
+  const state = { credentialSaved:{},credentialErrors:{}, modules:[],moduleSnapshots:[],moduleCurrent:[],mvuPaths:[],mvuStatus:'no_chat', status: 'unbound', message: '打开聊天后开始使用', cards: [], documents: [], history: [], batches: [], records: {}, conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };
   const notify = () => { try { onChange(publicState()); } catch { /* paint failure must not affect persistence */ } };
   const modules=createModuleController({host,core,state,load:loadApiSettings,getGlobal:()=>globalWorkspace,getChat:()=>workspace,check:assertCurrent,notify,refresh,changed:()=>recallChanged({vectors:true})});
-  function publicState() { return { ...clone(state), enabled, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialPresent: Object.fromEntries(Object.entries(keys).map(([kind,value])=>[kind,Boolean(value)])) }; }
+  function publicState() { return { ...clone(state), enabled, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
   function assertCurrent(token = epoch) { if (!workspace || token !== epoch || !workspace.isCurrent()) throw new Error('聊天或来源已变化，请重新打开当前聊天'); }
   function begin(exclusive = true) {
     if (exclusive && active) throw new Error('已有任务正在运行');
@@ -76,6 +82,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function loadApiSettings(){
     await apiSettings.load();
+    if(!credentialsLoaded){await Promise.all(Object.keys(keys).map(async kind=>{try{const found=await credentials.read(kind);state.credentialSaved[kind]=Boolean(found.value);if(!keyEdited.has(kind)){keys[kind]=found.value;keyOrigins[kind]=found.origin;}}catch(e){state.credentialErrors[kind]=e.message;}}));credentialsLoaded=true;core.setSessionCredential(effectiveKeys().summary);}
     if(globalLoaded)return core.settings;
     if(globalLoading)return globalLoading;
     globalLoading=(async()=>{
@@ -115,7 +122,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const result=JSON.stringify(values);return result.length<=4000?result:'所选外部状态过长，请缩小字段路径';
   }
   function client(kind = 'summary', patch = {}) {
-    const profile = productApiProfile(core.settings, kind, keys, patch);
+    const profile = productApiProfile(core.settings, kind, effectiveKeys(patch), patch);
     if (!profile.endpoint || !profile.model) throw new Error('请先在 API 中填写地址和模型');
     return new ProviderClient(profile, { fetchImpl, recordRequests: false });
   }
@@ -149,7 +156,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     epoch++; knowledgeCache = []; recallChanged({ clear: true });
     workspace = createWorkspace(core.workspace());
     await apiSettings.adoptLegacy(core.legacySettings);checkOpen();
-    core.setSessionCredential(keys.summary);
+    core.setSessionCredential(effectiveKeys().summary);
     boundScope = core.state.scope;
     const [ui,hidden]=await Promise.all([workspace.read('ui',{savedThrough:-1}),workspace.read('hidden',[])]);
     checkOpen();assertCurrent();Object.assign(state,{savedThrough:ui.savedThrough??-1,hidden,preview:null,actual:null,stale:false});
@@ -232,6 +239,21 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(!core.settings.injectionEnabled)await clearPrompt();
     setMessage('全局设置已保存，所有聊天共用');return {status:'saved',settings:core.settings};
   }
+  async function saveApi(kind,patch,{keyValue}={}){
+    if(!Object.hasOwn(keys,kind))throw new Error('未知模型用途');
+    const keyVersion=keyVersions[kind]??0;
+    await loadApiSettings();
+    const valid=validateProductPatch(patch),settings={...core.settings,...valid};
+    if(Object.keys(valid).some(k=>!k.startsWith(prefixFor(kind))&&!(kind==='assistant'&&k==='assistantFollowSummary')))throw new Error('此按钮只保存当前模型连接');
+    let value=keyValue!==undefined&&String(keyValue)!==''?String(keyValue):effectiveKeys(valid)[kind];
+    if(!value&&state.credentialSaved[kind]){const saved=await credentials.read(kind);if(saved.origin===credentialOrigin(settings[`${prefixFor(kind)}Endpoint`]))value=saved.value;}
+    await saveSettings(valid);
+    if(value){const stored=await credentials.save(kind,value,credentialOrigin(settings[`${prefixFor(kind)}Endpoint`]));if((keyVersions[kind]??0)===keyVersion){keys[kind]=stored.value;keyOrigins[kind]=stored.origin;keyEdited.delete(kind);}state.credentialSaved[kind]=true;delete state.credentialErrors[kind];}
+    core.setSessionCredential(effectiveKeys().summary);setMessage(value?'API 与 Key 已保存，重启后自动恢复':'API 已保存；当前地址未保存 Key');return {status:'saved'};
+  }
+  async function forgetKey(kind){
+    await loadApiSettings();await credentials.save(kind,'','');keys[kind]='';keyOrigins[kind]='';keyEdited.add(kind);state.credentialSaved[kind]=false;delete state.credentialErrors[kind];core.setSessionCredential(effectiveKeys().summary);recallChanged({vectors:true});setMessage('此模型保存的 Key 已清除，设置与记忆保留');
+  }
   async function listModels(kind, { patch = {}, modelsUrl = '', signal } = {}) {
     const op = beginApi();
     const cancel = () => controller.abort();
@@ -241,7 +263,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if (signal?.aborted) controller.abort();
     try {
       await loadApiSettings();op.check();
-      const models = await fetchProductModels(productApiProfile(core.settings, kind, keys, patch), { fetchImpl, modelsUrl, signal: controller.signal });
+      const models = await fetchProductModels(productApiProfile(core.settings, kind, effectiveKeys(patch), patch), { fetchImpl, modelsUrl, signal: controller.signal });
       op.check(); if (controller.signal.aborted) throw new Error('已停止拉取模型');
       return models;
     } finally { op.signal.removeEventListener('abort', cancel); signal?.removeEventListener('abort', cancel); op.finish(); }
@@ -580,12 +602,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
   async function stop(){abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停自动整理和记忆注入');}
-  return {core,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,testConnection,listModels,summarize,regenerateBatch,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,preview,addDocument,removeDocument,analyzeDocuments,assistant,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,buildVectors,stop,disable,
+  return {core,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,testConnection,listModels,summarize,regenerateBatch,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,preview,addDocument,removeDocument,analyzeDocuments,assistant,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,buildVectors,stop,disable,
     async remember(text,people='',options={}){assertCurrent();await core.remember(text,{people,...options});await refresh();setMessage('记事已保存');},
     get draftContext(){return `global:${state.conversationId}`;},
     async exportGlobalBackup(){await loadApiSettings();return {kind:'shiyi-global-backup',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`))),analysis:await globalWorkspace.read(`${d.id}-analysis`,[])}))),conversations:await Promise.all(state.conversations.map(async c=>({...c,messages:await globalWorkspace.read(`assistant-${c.id}`,[])})))};},
     async setDraft(value,context=`global:${state.conversationId}`){await loadApiSettings();if(context!==`global:${state.conversationId}`)return;state.draft=value;await saveUi();},
-    setKey(kind,value){if(!(kind in keys))throw new Error('未知连接');keys[kind]=String(value??'');if(kind==='summary')core.setSessionCredential(keys[kind]);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true});},
+    setKey(kind,value,endpoint){if(!Object.hasOwn(keys,kind))throw new Error('未知连接');keyEdited.add(kind);keyVersions[kind]=(keyVersions[kind]??0)+1;keys[kind]=String(value??'');keyOrigins[kind]=credentialOrigin(endpoint??core.settings[`${prefixFor(kind)}Endpoint`]);if(kind==='summary')core.setSessionCredential(effectiveKeys().summary);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true});},
     exportSettings(){return {kind:'shiyi-config',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings)};},
     async exportBackup(){assertCurrent();return {kind:'shiyi-backup',version:1,scope:boundScope,modules:clone(state.modules),moduleSnapshots:clone(state.moduleSnapshots),settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`)))}))),assistant:state.history};},
     async dispose(){await disable();epoch++;await core.dispose();},
