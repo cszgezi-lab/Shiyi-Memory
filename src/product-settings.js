@@ -1,0 +1,167 @@
+import { clone, isPlainObject } from './utils.js';
+
+/**
+ * Settings shared by the product shell and future assistant panels.
+ *
+ * The registry is intentionally data-only: a setting is not considered
+ * implemented merely because it is present here.  `consumers` names the
+ * executable code that reads the value, while `status` distinguishes a
+ * disabled/awaiting adapter from a live local consumer.
+ */
+export const PRODUCT_SETTINGS_VERSION = 1;
+
+const DEFINITIONS = [
+  { key: 'messageCount', label: '最近消息数', defaultValue: 8, type: 'integer', min: 1, max: 200, consumers: ['ProductShellController.readRange'] },
+  { key: 'inputBudgetUnits', label: '总结输入预算', defaultValue: 12000, type: 'integer', min: 256, max: 100000, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
+  { key: 'outputBudgetUnits', label: '总结输出预留', defaultValue: 2400, type: 'integer', min: 0, max: 50000, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
+  { key: 'deadlineMs', label: '请求截止时间', defaultValue: 120000, type: 'integer', min: 100, max: 600000, consumers: ['ProductShellController.transport', 'ProviderClient'] },
+  { key: 'focusMode', label: '侧重点确认方式', defaultValue: 'ask_manual', type: 'enum', values: ['inherit', 'ask_manual', 'ask_every'], consumers: ['ProductShellController.startSummary', 'SummaryEngine'] },
+
+  { key: 'bm25K1', label: 'BM25 k1', defaultValue: 1.2, type: 'number', min: 0.01, max: 10, consumers: ['ProductShellController.previewRecall', 'LocalBM25Index'] },
+  { key: 'bm25B', label: 'BM25 b', defaultValue: 0.75, type: 'number', min: 0, max: 1, consumers: ['ProductShellController.previewRecall', 'LocalBM25Index'] },
+  { key: 'retrievalLimit', label: '本地召回数量', defaultValue: 8, type: 'integer', min: 1, max: 100, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
+  { key: 'retrievalBudgetUnits', label: '本地召回预算', defaultValue: 1800, type: 'integer', min: 0, max: 50000, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
+  { key: 'vectorEnabled', label: '向量召回', defaultValue: false, type: 'boolean', consumers: ['ProductShellController.previewRecall'] },
+  { key: 'vectorWeight', label: '向量融合权重', defaultValue: 1, type: 'number', min: 0, max: 100, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
+  { key: 'fusionRankConstant', label: '融合 rank constant', defaultValue: 60, type: 'number', min: 1, max: 10000, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
+  { key: 'fusionLocalWeight', label: '本地融合权重', defaultValue: 1, type: 'number', min: 0, max: 100, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
+  { key: 'rerankEnabled', label: '重排', defaultValue: false, type: 'boolean', consumers: ['ProductShellController.previewRecall'] },
+  { key: 'rerankTimeoutMs', label: '重排截止时间', defaultValue: 1500, type: 'integer', min: 50, max: 60000, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
+  { key: 'distributedEnabled', label: '分类通道召回', defaultValue: false, type: 'boolean', consumers: ['ProductApplication.recall'] },
+  { key: 'distributedChannel', label: '指定通道（memory 或 knowledge）', defaultValue: 'disabled', type: 'string', maxLength: 80, consumers: ['ProductApplication.recall'] },
+  { key: 'distributedStrategy', label: '分类通道策略', defaultValue: 'disabled', type: 'enum', values: ['disabled', 'broadcast', 'leader_only'], consumers: ['ProductApplication.recall'] },
+
+  { key: 'providerEndpoint', label: 'Provider 地址', defaultValue: '', type: 'string', maxLength: 2048, consumers: ['ProductShellController.transport', 'ProviderClient'] },
+  { key: 'providerEndpointMode', label: 'Provider 地址模式', defaultValue: 'base', type: 'enum', values: ['base', 'exact'], consumers: ['ProductShellController.transport', 'resolveProviderEndpoint'] },
+  { key: 'providerModel', label: '总结模型', defaultValue: '', type: 'string', maxLength: 240, consumers: ['ProductShellController.transport', 'SummaryEngine'] },
+  { key: 'providerAuthMode', label: '认证模式', defaultValue: 'bearer', type: 'enum', values: ['none', 'bearer', 'api-key'], consumers: ['ProductShellController.transport', 'ProviderClient'] },
+  { key: 'embeddingEndpoint', label: 'Embedding 地址', defaultValue: '', type: 'string', maxLength: 2048, consumers: ['ProductShellController.settingsStatus'] },
+  { key: 'embeddingModel', label: 'Embedding 模型', defaultValue: '', type: 'string', maxLength: 240, consumers: ['ProductShellController.settingsStatus'] },
+  { key: 'rerankEndpoint', label: 'Rerank 地址', defaultValue: '', type: 'string', maxLength: 2048, consumers: ['ProductShellController.settingsStatus'] },
+  { key: 'rerankModel', label: 'Rerank 模型', defaultValue: '', type: 'string', maxLength: 240, consumers: ['ProductShellController.settingsStatus'] },
+
+  { key: 'injectionEnabled', label: '自动注入', defaultValue: false, type: 'boolean', consumers: ['ProductShellController.injectionStatus'] },
+  { key: 'injectionPosition', label: '注入位置', defaultValue: 'before_last', type: 'enum', values: ['start','before_last'], consumers: ['ProductApplication.inject'] },
+  { key: 'injectionRole', label: '注入角色', defaultValue: 'system', type: 'enum', values: ['system','user'], consumers: ['ProductApplication.inject'] },
+  { key: 'recordingRules', label: '长期记录偏好', defaultValue: '保存有来源的事实和细节；区分计划与完成、事实与推测；记录时间、知情范围和人物变化。', type: 'string', maxLength: 24000, consumers: ['ProductShellController.createBatch'] },
+  { key: 'assistantFollowSummary', label: '配置助手使用总结连接', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.assistant'] },
+  { key: 'assistantEndpoint', label: '助手 API 地址', defaultValue: '', type: 'string', maxLength: 2048, consumers: ['ProductApplication.assistant'] },
+  { key: 'assistantModel', label: '助手模型', defaultValue: '', type: 'string', maxLength: 240, consumers: ['ProductApplication.assistant'] },
+  { key: 'assistantEndpointMode', label: '助手地址模式', defaultValue: 'base', type: 'enum', values: ['base', 'exact'], consumers: ['ProductApplication.assistant'] },
+  { key: 'assistantAuthMode', label: '助手认证方式', defaultValue: 'bearer', type: 'enum', values: ['none', 'bearer', 'api-key'], consumers: ['ProductApplication.assistant'] },
+  { key: 'assistantBudgetUnits', label: '助手输入预算（估算）', defaultValue: 16000, type: 'integer', min: 2000, max: 100000, consumers: ['ProductApplication.assistant'] },
+  { key: 'autoSummaryEnabled', label: '回复后自动整理', defaultValue: false, type: 'boolean', consumers: ['ProductApplication.autoSummary'] },
+  { key: 'autoSummaryEvery', label: '每新增多少条消息整理', defaultValue: 12, type: 'integer', min: 1, max: 200, consumers: ['ProductApplication.autoSummary'] },
+  { key: 'storyDate', label: '当前故事日期（可留空）', defaultValue: '', type: 'string', maxLength: 32, consumers: ['ProductApplication.pack'] },
+  { key: 'timeProtection', label: '附带日期与时间参照', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.pack'] },
+  { key: 'personaEnabled', label: '携带相关人物身份与变化', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.recall'] },
+  { key: 'performanceEnabled', label: '携带有依据的演绎参考', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.recall'] },
+  { key: 'knowledgeEnabled', label: '检索外部资料', defaultValue: false, type: 'boolean', consumers: ['ProductApplication.recall'] },
+  { key: 'worldMode', label: '故事类型', defaultValue: 'original', type: 'enum', values: ['original', 'fanfiction'], consumers: ['ProductApplication.pack'] },
+  { key: 'aliases', label: '人物称呼（每行 主名=别名,别名）', defaultValue: '', type: 'string', maxLength: 12000, consumers: ['ProductApplication.recall'] },
+  { key: 'externalStatePaths', label: '只读外部状态路径（每行一项）', defaultValue: '', type: 'string', maxLength: 4000, consumers: ['ProductApplication.externalState'] },
+  { key: 'excludedTags', label: '总结忽略的标签（逗号分隔）', defaultValue: 'think,thinking', type: 'string', maxLength: 1000, consumers: ['ProductApplication.summarize'] },
+  { key: 'embeddingEndpointMode', label: '向量地址模式', defaultValue: 'base', type: 'enum', values: ['base', 'exact'], consumers: ['ProductApplication.vector'] },
+  { key: 'embeddingAuthMode', label: '向量认证方式', defaultValue: 'bearer', type: 'enum', values: ['none', 'bearer', 'api-key'], consumers: ['ProductApplication.vector'] },
+  { key: 'vectorTimeoutMs', label: '在线向量等待上限（毫秒）', defaultValue: 1500, type: 'integer', min: 100, max: 60000, consumers: ['ProductApplication.vector'] },
+  { key: 'rerankEndpointMode', label: '重排地址模式', defaultValue: 'base', type: 'enum', values: ['base', 'exact'], consumers: ['ProductApplication.rerank'] },
+  { key: 'rerankAuthMode', label: '重排认证方式', defaultValue: 'bearer', type: 'enum', values: ['none', 'bearer', 'api-key'], consumers: ['ProductApplication.rerank'] },
+  { key: 'rerankMaxCandidates', label: '重排候选上限', defaultValue: 20, type: 'integer', min: 1, max: 100, consumers: ['ProductApplication.rerank'] },
+  // This key is deliberately not part of persisted settings.  It documents
+  // the shared field and keeps the session-only boundary visible to callers.
+  { key: 'providerApiKey', label: '会话密钥', defaultValue: '', type: 'session-secret', consumers: ['ProductShellController.transport'], persisted: false },
+];
+
+export const PRODUCT_SETTING_REGISTRY = Object.freeze(Object.fromEntries(
+  DEFINITIONS.map((definition) => [definition.key, Object.freeze({ ...definition, consumers: Object.freeze([...definition.consumers]) })]),
+));
+
+const PERSISTED_KEYS = Object.freeze(DEFINITIONS.filter((definition) => definition.persisted !== false).map((definition) => definition.key));
+
+function validateDefinition(definition, value) {
+  if (definition.type === 'session-secret') return typeof value === 'string' ? value : '';
+  if (definition.type === 'boolean') return Boolean(value);
+  if (definition.type === 'integer') {
+    const number = Number(value);
+    if (!Number.isInteger(number)) return definition.defaultValue;
+    return Math.min(definition.max, Math.max(definition.min, number));
+  }
+  if (definition.type === 'number') {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return definition.defaultValue;
+    return Math.min(definition.max, Math.max(definition.min, number));
+  }
+  if (definition.type === 'enum') return definition.values.includes(value) ? value : definition.defaultValue;
+  if (typeof value !== 'string') return definition.defaultValue;
+  return value.slice(0, definition.maxLength ?? value.length);
+}
+
+/** UI and AI use identical strict validation; never silently claim a coerced plan applied. */
+export function validateProductPatch(patch) {
+  if (!isPlainObject(patch)) throw new Error('设置方案必须是对象');
+  const result = {};
+  for (const [key, value] of Object.entries(patch)) {
+    const def = PRODUCT_SETTING_REGISTRY[key];
+    if (!def || def.persisted === false) throw new Error(`不能通过设置方案修改字段：${key}`);
+    if (def.type === 'boolean' && typeof value !== 'boolean') throw new Error(`${def.label}需要开关值`);
+    if (['number', 'integer'].includes(def.type) && (typeof value !== 'number' || !Number.isFinite(value) || value < def.min || value > def.max || (def.type === 'integer' && !Number.isInteger(value)))) throw new Error(`${def.label}超出允许范围`);
+    if (def.type === 'enum' && !def.values.includes(value)) throw new Error(`${def.label}选项无效`);
+    if (def.type === 'string' && (typeof value !== 'string' || value.length > def.maxLength)) throw new Error(`${def.label}格式或长度不正确`);
+    if (/Endpoint$/.test(key) && value) { const url = new URL(value); if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('API 地址必须是无内嵌凭据的 HTTP(S) 地址'); }
+    if (key === 'storyDate' && value && (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(Date.parse(`${value}T00:00:00Z`)) || new Date(`${value}T00:00:00Z`).toISOString().slice(0,10)!==value)) throw new Error('故事日期请使用有效的 YYYY-MM-DD；未知时留空');
+    result[key] = clone(value);
+  }
+  return result;
+}
+
+export function defaultProductSettings() {
+  return Object.fromEntries(DEFINITIONS.map((definition) => [definition.key, clone(definition.defaultValue)]));
+}
+
+/** Normalize only known fields; unknown keys never enter the persisted form. */
+export function normalizeProductSettings(input = {}, { includeSessionSecret = true } = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const result = defaultProductSettings();
+  if (!includeSessionSecret) delete result.providerApiKey;
+  for (const definition of DEFINITIONS) {
+    if (!includeSessionSecret && definition.type === 'session-secret') continue;
+    if (Object.prototype.hasOwnProperty.call(source, definition.key)) result[definition.key] = validateDefinition(definition, source[definition.key]);
+  }
+  return result;
+}
+
+export function persistedProductSettings(input = {}) {
+  const normalized = normalizeProductSettings(input, { includeSessionSecret: false });
+  return Object.fromEntries(PERSISTED_KEYS.map((key) => [key, clone(normalized[key])]));
+}
+
+export function listProductSettings(input = {}) {
+  const normalized = normalizeProductSettings(input);
+  return DEFINITIONS.map((definition) => ({
+    key: definition.key,
+    label: definition.label,
+    value: definition.type === 'session-secret' ? (normalized[definition.key] ? '[session-only]' : '') : clone(normalized[definition.key]),
+    persisted: definition.persisted !== false,
+    type: definition.type,
+    consumers: [...definition.consumers],
+    status: definition.type === 'session-secret' ? 'session_only' : 'registered',
+  }));
+}
+
+export function productSettingConsumers(input = {}) {
+  const normalized = normalizeProductSettings(input);
+  return DEFINITIONS.map((definition) => ({
+    key: definition.key,
+    value: definition.type === 'session-secret' ? (normalized[definition.key] ? '[session-only]' : '') : clone(normalized[definition.key]),
+    consumers: [...definition.consumers],
+    status: definition.type === 'session-secret'
+      ? 'session_only'
+      : definition.key === 'injectionEnabled'
+        ? 'disabled_no_safe_host_hook'
+        : definition.key.startsWith('vector') || definition.key.startsWith('rerank') || definition.key.startsWith('embedding') || definition.key.startsWith('distributed')
+          ? 'registered_no_active_adapter'
+          : 'consumed',
+  }));
+}
+
+export const PRODUCT_PERSISTED_SETTING_KEYS = PERSISTED_KEYS;

@@ -1,0 +1,50 @@
+#shiyi-product-shell{--sy-accent:#86b3a5;--sy-border:color-mix(in srgb,currentColor 18%,transparent);font:inherit;color:inherit;width:100%;min-width:0;line-height:1.6}
+#shiyi-product-shell *{box-sizing:border-box;min-width:0}
+#shiyi-product-shell .sy-shell{border:1px solid var(--sy-border);border-radius:16px;overflow:clip;background:color-mix(in srgb,var(--SmartThemeBlurTintColor,#20252e) 95%,transparent)}
+#shiyi-product-shell .sy-brand{display:flex;align-items:center;gap:12px;padding:16px;cursor:pointer;list-style:none;font-size:20px;font-weight:700}
+#shiyi-product-shell .sy-brand small{display:block;font-size:11px;letter-spacing:2px;font-weight:400;opacity:.65}
+#shiyi-product-shell .sy-mark{display:grid;place-items:center;background:var(--sy-accent);color:#102d28;border-radius:12px;width:42px;height:42px;font-family:serif;font-size:26px}
+#shiyi-product-shell .sy-version{margin-left:auto;font-size:11px;opacity:.55}
+#shiyi-product-shell .sy-body{padding:0 16px 20px}
+#shiyi-product-shell .sy-top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+#shiyi-product-shell [data-scope],#shiyi-product-shell [data-model]{font-size:12px;opacity:.75;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-status{padding:10px 12px;border-left:3px solid var(--sy-accent);background:color-mix(in srgb,var(--sy-accent) 9%,transparent);font-size:13px;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-bottom:1px solid var(--sy-border);gap:3px;margin:16px 0}
+#shiyi-product-shell button{font:inherit;color:inherit;background:transparent;border:1px solid var(--sy-border);border-radius:9px;min-height:44px;padding:8px 12px;cursor:pointer;white-space:normal;overflow-wrap:anywhere}
+#shiyi-product-shell button:hover{background:color-mix(in srgb,var(--sy-accent) 15%,transparent)}
+#shiyi-product-shell :is(button,input,textarea,select):focus-visible{outline:2px solid var(--sy-accent);outline-offset:2px}
+#shiyi-product-shell .sy-primary{background:var(--sy-accent);color:#142c26;border-color:var(--sy-accent);font-weight:650}
+#shiyi-product-shell .sy-nav button{border:0;border-radius:8px 8px 0 0;padding:8px 3px;font-size:13px}
+#shiyi-product-shell .sy-nav .active{color:var(--sy-accent);box-shadow:inset 0 -2px var(--sy-accent);background:color-mix(in srgb,var(--sy-accent) 8%,transparent)}
+#shiyi-product-shell h3{font-size:17px;margin:16px 0 10px}#shiyi-product-shell h4{font-size:15px;margin:0 0 8px}
+#shiyi-product-shell .sy-card{border:1px solid var(--sy-border);border-radius:12px;padding:12px;margin:12px 0}
+#shiyi-product-shell summary{cursor:pointer;min-height:38px;font-weight:600;align-content:center}
+#shiyi-product-shell .sy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px;margin:12px 0}
+#shiyi-product-shell .sy-field{display:flex;flex-direction:column;gap:6px;margin:8px 0;font-size:13px}
+#shiyi-product-shell .sy-field:has(textarea){grid-column:1/-1}
+#shiyi-product-shell input:not([type=checkbox]),#shiyi-product-shell textarea,#shiyi-product-shell select{font:inherit;font-size:16px;color:inherit;background:color-mix(in srgb,currentColor 4%,transparent);border:1px solid var(--sy-border);border-radius:8px;width:100%;padding:10px;min-height:44px}
+#shiyi-product-shell textarea{resize:vertical;line-height:1.55}#shiyi-product-shell select option{color:#20252e;background:#f5f7f6}
+#shiyi-product-shell .sy-toggle{flex-direction:row;align-items:center;justify-content:space-between;gap:8px;min-height:44px}#shiyi-product-shell input[type=checkbox]{width:22px;height:22px;accent-color:var(--sy-accent)}
+#shiyi-product-shell .sy-actions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+#shiyi-product-shell .sy-help{font-size:12px;opacity:.75;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-filters{display:flex;gap:8px;margin:18px 0}#shiyi-product-shell .sy-filters select{flex:0 1 125px}
+#shiyi-product-shell .sy-tag{font-size:11px;letter-spacing:1px;border-radius:5px;color:var(--sy-accent);background:color-mix(in srgb,var(--sy-accent) 10%,transparent);padding:4px 6px}
+#shiyi-product-shell .sy-card p{margin:10px 0;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-empty{text-align:center;padding:28px 10px;font-size:13px;opacity:.6}
+#shiyi-product-shell .sy-packet,#shiyi-product-shell .sy-message div{white-space:pre-wrap;overflow-wrap:anywhere;font-size:14px}
+#shiyi-product-shell [data-preview]{margin:14px 0}#shiyi-product-shell .sy-document{padding:10px 0;border-bottom:1px solid var(--sy-border);overflow-wrap:anywhere}#shiyi-product-shell .sy-document span{display:block;font-size:12px;opacity:.7}
+#shiyi-product-shell .sy-message{margin:12px 0;padding:14px;border-radius:12px;background:color-mix(in srgb,currentColor 5%,transparent)}#shiyi-product-shell .sy-message strong{font-size:11px;opacity:.6}#shiyi-product-shell .sy-message.is-user{margin-left:22px;background:color-mix(in srgb,var(--sy-accent) 12%,transparent)}
+#shiyi-product-shell .sy-plan{border:1px solid var(--sy-accent);border-radius:12px;padding:14px;font-size:13px;overflow-wrap:anywhere}
+#shiyi-product-shell [hidden]{display:none!important}
+.sy-workbench{box-sizing:border-box;width:min(940px,94vw);max-width:94vw;height:90vh;max-height:90vh;height:90dvh;max-height:90dvh;margin:auto;padding:16px;border:1px solid #49645e;border-radius:18px;background:var(--SmartThemeBlurTintColor,#20252e);color:var(--SmartThemeBodyColor,#ecf1ee);overflow:auto;overscroll-behavior:contain;scroll-padding-block:64px}
+.sy-workbench::backdrop{background:#0009;backdrop-filter:blur(3px)}
+.sy-workbench-close{display:block;position:sticky;top:0;z-index:2;margin:0 0 12px auto;min-height:44px;padding:8px 16px;background:#86b3a5;color:#142c26;border:0;border-radius:9px;cursor:pointer;font:inherit}
+@media(max-width:430px){#shiyi-product-shell .sy-body{padding:0 10px 14px}#shiyi-product-shell .sy-grid{grid-template-columns:1fr}#shiyi-product-shell .sy-actions>button{flex:1 1 auto}#shiyi-product-shell .sy-brand{padding:12px}#shiyi-product-shell .sy-nav button{font-size:12px}}
+@media(max-width:700px){
+ .sy-workbench{width:100%;max-width:100%;margin:auto;padding:10px;border-radius:12px;max-height:100dvh;
+  scroll-padding-bottom:max(16px,calc(var(--tt-viewport-bottom-inset,0px) - var(--tt-inset-bottom,0px)))}
+ /* TT owns safe-area and IME geometry; this slack also makes the last input/actions reachable. */
+ .sy-workbench::after{content:'';display:block;height:max(var(--tt-viewport-bottom-inset,var(--tt-inset-bottom,0px)),16px);pointer-events:none}
+ #shiyi-product-shell .sy-nav{position:sticky;top:0;z-index:1;background:var(--SmartThemeBlurTintColor,#20252e)}
+ #shiyi-product-shell input[type=file]{font-size:14px}
+}
