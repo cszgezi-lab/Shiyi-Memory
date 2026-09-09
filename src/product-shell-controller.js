@@ -24,6 +24,8 @@ import {
   normalizeProductSettings,
   persistedProductSettings,
   productSettingConsumers,
+  splitProductSettings,
+  validateProductPatch,
 } from './product-settings.js';
 
 export const PRODUCT_MEMORY_NAMESPACE = 'shiyi-product-memory';
@@ -159,6 +161,7 @@ export function createProductShellController({
   let generation = 0;
   let subscriptions = [];
   let settingsLoaded = false;
+  let globalApiSettings = null, legacyApiSettings = {};
   let sessionStore = null;
   let repository = null;
   let engine = null;
@@ -267,7 +270,9 @@ export function createProductShellController({
       const found = typeof store.tryGetJson === 'function'
         ? await store.tryGetJson({ namespace: PRODUCT_SETTINGS_NAMESPACE, key: settingsKey() })
         : { found: true, value: await store.getJson({ namespace: PRODUCT_SETTINGS_NAMESPACE, key: settingsKey() }) };
+      legacyApiSettings = found?.found ? splitProductSettings(found.value??{}).api : {};
       if (found?.found && found.value) state.settings = normalizeProductSettings(found.value, { includeSessionSecret: false });
+      if (globalApiSettings) Object.assign(state.settings,globalApiSettings);
       state.settingsStatus = found?.found ? 'readback_verified' : 'defaults_unpersisted';
     } catch {
       state.settingsStatus = 'unavailable';
@@ -327,7 +332,8 @@ export function createProductShellController({
         state.session = null;
         state.scope = null;
         settingsLoaded = false;
-        state.settings = normalizeProductSettings(settings, { includeSessionSecret: false });
+        state.settings = normalizeProductSettings({...settings,...globalApiSettings}, { includeSessionSecret: false });
+        legacyApiSettings = {};
         state.range = null;
         state.sourceMessages = [];
         state.sourceRevision = null;
@@ -601,7 +607,7 @@ export function createProductShellController({
       const token = currentToken();
       const store = sessionStore;
       const key = settingsKey();
-      const value = noSecretSettings(merged);
+      const value = globalApiSettings ? splitProductSettings(noSecretSettings(merged)).chat : noSecretSettings(merged);
       const saved = { schemaVersion: PRODUCT_SETTINGS_VERSION, ...value };
       await store.setJson({ namespace: PRODUCT_SETTINGS_NAMESPACE, key, value: saved });
       const found = typeof store.tryGetJson === 'function'
@@ -692,6 +698,12 @@ export function createProductShellController({
   const controller = {
     get state() { return cloneState(state); },
     get settings() { return clone(state.settings); },
+    get legacyApiSettings() { return clone(legacyApiSettings); },
+    useGlobalApiSettings(patch) {
+      const {api,chat}=splitProductSettings(validateProductPatch(patch));
+      if(Object.keys(chat).length)throw new Error('全局连接仅接受 API 字段');
+      globalApiSettings=api;Object.assign(state.settings,api);transport=null;
+    },
     get session() { return state.session ? { scope: clone(state.scope), stableIdReady: true } : null; },
     bindCurrentChat,
     readRange,

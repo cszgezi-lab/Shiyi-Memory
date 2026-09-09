@@ -83,7 +83,7 @@ export function apiSettingsHTML() {
     ${kind === 'assistant' ? setting('assistantFollowSummary') + '<p class="sy-inherited sy-help" data-inherited></p>' : ''}
     <div data-api-fields="${kind}">
     ${setting(`${prefix}Endpoint`, 'API 地址', `基础地址只补 ${resource}，不自动添加 /v1。`, '填写你的服务商地址')}
-    ${field('API Key', `<input type="password" autocomplete="new-password" data-key="${kind}" placeholder="无需认证的服务可以留空"><small class="sy-help">仅在本次会话使用，不发给配置助手。${['embedding','rerank'].includes(kind) ? '硅基流动需要填写 Key。' : ''}</small>`)}
+    ${field('API Key', `<input type="password" autocomplete="new-password" data-key="${kind}" placeholder="无需认证的服务可以留空"><small class="sy-help">切换聊天保留，重载后需重填；不发给配置助手。${['embedding','rerank'].includes(kind) ? '硅基流动需要填写 Key。' : ''}</small>`)}
     <div class="sy-model-picker"><div class="sy-top"><span>选择模型</span>${button(`models-${kind}`, '拉取模型列表')}</div>
     <label class="sy-field"><span class="sy-sr-only">${title}模型列表</span><select data-model-list="${kind}" disabled><option value="">先拉取模型列表，也可以在下方直接输入</option></select></label>
     ${setting(`${prefix}Model`, '模型名称', '', '选择列表中的模型，或手动填写')}

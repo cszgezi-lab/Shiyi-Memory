@@ -167,3 +167,15 @@ export function productSettingConsumers(input = {}) {
 }
 
 export const PRODUCT_PERSISTED_SETTING_KEYS = PERSISTED_KEYS;
+
+// Connection settings belong to this TT installation, not a story or chat.
+// Credentials remain runtime-only and are deliberately absent from this list.
+export const PRODUCT_API_SETTING_KEYS = Object.freeze([
+  ...['provider','assistant','embedding','rerank'].flatMap(prefix => ['Endpoint','EndpointMode','Model','AuthMode'].map(suffix => prefix + suffix)),
+  'assistantFollowSummary','deadlineMs','assistantBudgetUnits',
+]);
+export function splitProductSettings(patch) {
+  const api = {}, chat = {};
+  for (const [key,value] of Object.entries(patch)) (PRODUCT_API_SETTING_KEYS.includes(key) ? api : chat)[key] = clone(value);
+  return {api,chat};
+}

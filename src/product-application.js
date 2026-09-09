@@ -2,7 +2,7 @@ import { HostAdapter } from './host-adapter.js';
 import { createProductShellController } from './product-shell-controller.js';
 import { createWorkspace, importTextDocument, splitDocument } from './product-workspace.js';
 import { sourceKey } from './product-sources.js';
-import { PRODUCT_SETTING_REGISTRY, persistedProductSettings, validateProductPatch } from './product-settings.js';
+import { PRODUCT_SETTING_REGISTRY, persistedProductSettings, validateProductPatch, splitProductSettings } from './product-settings.js';
 import { ProviderClient } from './provider.js';
 import { memoryCards, recallMemory, readable, recordDescription, selectRecallCards, prepareRecallIndex } from './product-memory.js';
 import { RecallIndexCache } from './recall-cache.js';
@@ -11,6 +11,7 @@ import { clone, sha256, makeId, estimateUnits, stableStringify } from './utils.j
 import { createProductFetch } from './product-network.js';
 import { productApiProfile, fetchProductModels } from './product-model-list.js';
 import { failureText } from './product-feedback.js';
+import { createApiSettings } from './product-api-settings.js';
 
 const PROMPT_KEY = 'shiyi-memory-continuity';
 function completion(response) {
@@ -37,12 +38,17 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let recallRevision = 0;
   let recallBusy = 0;
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache();
-  const operations = new Set(), injectedPayloads = new WeakSet();
+  const operations = new Set(), apiOperations = new Set(), injectedPayloads = new WeakSet();
   const keys = { summary: '', assistant: '', embedding: '', rerank: '' };
   const core = controller ?? createProductShellController({ host, adapterFactory: h => (hostAdapter ??= new HostAdapter(h)), adapter, fetchImpl, onChange: () => notify(), runtimeRules: () => `当前故事日期：${core.settings.storyDate || '未知'}。外部权威状态（只读）：${externalState()}` });
+  const apiSettings=createApiSettings({getStore:async()=>{
+    hostAdapter??=new HostAdapter(host);await hostAdapter.ready?.();
+    if(!hostAdapter.getStore)throw new Error('宿主没有提供独立 API 配置存储');
+    return hostAdapter.getStore({scope:'extension'});
+  },onApply:settings=>{core.useGlobalApiSettings(settings);recallChanged({vectors:true});notify();}});
   const state = { status: 'unbound', message: '打开聊天后开始使用', cards: [], documents: [], history: [], conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };
   const notify = () => { try { onChange(publicState()); } catch { /* paint failure must not affect persistence */ } };
-  function publicState() { return { ...clone(state), enabled, settings: core.settings, core: core.state, busy: Boolean(active), credentialPresent: Object.fromEntries(Object.entries(keys).map(([kind,value])=>[kind,Boolean(value)])) }; }
+  function publicState() { return { ...clone(state), enabled, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialPresent: Object.fromEntries(Object.entries(keys).map(([kind,value])=>[kind,Boolean(value)])) }; }
   function assertCurrent(token = epoch) { if (!workspace || token !== epoch || !workspace.isCurrent()) throw new Error('聊天或来源已变化，请重新打开当前聊天'); }
   function begin(exclusive = true) {
     if (exclusive && active) throw new Error('已有任务正在运行');
@@ -53,6 +59,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       finish() { operations.delete(controller); if (active === controller) active = null; notify(); } };
   }
   function abortAll() { cancelVersion++; for (const op of operations) op.abort(); }
+  function beginApi() {
+    const controller=new AbortController();apiOperations.add(controller);notify();
+    return {signal:controller.signal,check(){if(controller.signal.aborted)throw Object.assign(new Error('已停止'),{code:'CANCELED'});},finish(){apiOperations.delete(controller);notify();}};
+  }
+  async function loadApiSettings(){return apiSettings.load();}
   function recallChanged({ clear = false, vectors = false } = {}) {
     recallRevision++; state.preview = null; state.actual = null;
     if (clear) recallCache.clear();
@@ -97,6 +108,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     operations.add(opener); active=opener;
     const checkOpen=()=>{if(opener.signal.aborted||version!==cancelVersion)throw new Error('打开已取消');};
     try {
+    await loadApiSettings();checkOpen();
     await stopListeners(); checkOpen(); await clearPrompt(); checkOpen();
     hostAdapter ??= new HostAdapter(host);
     const result = await core.bindCurrentChat();
@@ -104,7 +116,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if (result.status !== 'ready' || result.persistence !== 'available') throw new Error(core.state.errorMessage ?? '当前聊天尚未保存或宿主存储不可用');
     epoch++; knowledgeCache = []; recallChanged({ clear: true });
     workspace = createWorkspace(core.workspace());
-    if(boundScope&&stableStringify(boundScope)!==stableStringify(core.state.scope)){for(const key of Object.keys(keys))keys[key]='';core.setSessionCredential('');}
+    await apiSettings.adoptLegacy(core.legacyApiSettings);checkOpen();
+    core.setSessionCredential(keys.summary);
     boundScope = core.state.scope;
     state.conversationId = 'main';
     const [ui, docs, hidden] = await Promise.all([workspace.read('ui', {draft:'',savedThrough:-1}), workspace.read('documents', []), workspace.read('hidden', [])]);
@@ -148,8 +161,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     } finally { recallBusy--; }
   }
   async function saveSettings(patch) {
-    const token=epoch; assertCurrent(token); const validated = validateProductPatch(patch);
-    const result = await core.saveSettings(validated);
+    const token=epoch; const validated = validateProductPatch(patch),{api,chat}=splitProductSettings(validated);
+    if(Object.keys(chat).length)assertCurrent(token);
+    if(Object.keys(api).length){await apiSettings.save(api);}
+    if(!Object.keys(chat).length){setMessage('API 配置已保存，所有聊天共用');return {status:'saved',settings:core.settings};}
+    assertCurrent(token);
+    const result = await core.saveSettings(chat);
     assertCurrent(token);
     if (result.status !== 'saved') throw new Error('设置尚未保存，请重试');
     recallChanged({ vectors: Object.keys(validated).some(key => /^(embedding|vector)/.test(key)) });
@@ -158,21 +175,22 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     setMessage('设置已保存'); return result;
   }
   async function listModels(kind, { patch = {}, modelsUrl = '', signal } = {}) {
-    assertCurrent(); const op = begin(false);
+    const op = beginApi();
     const cancel = () => controller.abort();
     const controller = new AbortController();
     op.signal.addEventListener('abort', cancel, { once: true });
     signal?.addEventListener('abort', cancel, { once: true });
     if (signal?.aborted) controller.abort();
     try {
+      await loadApiSettings();op.check();
       const models = await fetchProductModels(productApiProfile(core.settings, kind, keys, patch), { fetchImpl, modelsUrl, signal: controller.signal });
       op.check(); if (controller.signal.aborted) throw new Error('已停止拉取模型');
       return models;
     } finally { op.signal.removeEventListener('abort', cancel); signal?.removeEventListener('abort', cancel); op.finish(); }
   }
   async function testConnection(kind = 'summary', patch = {}) {
-    assertCurrent(); const op=begin();
-    try { const c = client(kind, patch); let result;
+    const op=beginApi();
+    try { await loadApiSettings();op.check();const c = client(kind, patch); let result;
       if (kind === 'embedding') { result = await c.embeddings({ model: c.profile.model, input: ['connection check'] },op); if (!Array.isArray(result?.data?.[0]?.embedding)) throw new Error('服务没有返回向量'); }
       else if (kind === 'rerank') { result = await c.rerank({ model: c.profile.model, query: '连接', documents: ['连接测试'], top_n: 1 },op); if (!Array.isArray(result?.results)) throw new Error('服务没有返回重排结果'); }
       else completion(await c.chatCompletions({ model: c.profile.model, messages: [{ role: 'user', content: '请只回复 OK。这是一条连接测试。' }], stream: false, max_tokens: 16 },op));
@@ -426,9 +444,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function deleteConversation(){assertCurrent();if(active)throw new Error('请先停止助手');await workspace.remove(`assistant-${state.conversationId}`);state.history=[];state.conversations=await workspace.update('conversations',list=>list.filter(c=>c.id!==state.conversationId),[]);await newConversation();setMessage('助手对话已删除，已应用设置和记忆未改变');}
   async function hideRecord(id){assertCurrent();recallBusy++;recallChanged();try{state.hidden=await workspace.update('hidden',list=>[...new Set([...list,id])],[]);await refresh();}finally{recallBusy--;}}
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
-  async function stop(){abortAll();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
+  async function stop(){abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停自动整理和记忆注入');}
-  return {core,get state(){return publicState();},open,refresh,saveSettings,testConnection,listModels,summarize,preview,addDocument,removeDocument,analyzeDocuments,assistant,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,buildVectors,stop,disable,
+  return {core,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,testConnection,listModels,summarize,preview,addDocument,removeDocument,analyzeDocuments,assistant,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,buildVectors,stop,disable,
     async remember(text,people=''){assertCurrent();await core.remember(text,{people});await refresh();setMessage('记事已保存');},
     get draftContext(){return `${epoch}:${state.conversationId}`;},
     async setDraft(value,context=`${epoch}:${state.conversationId}`){if(context!==`${epoch}:${state.conversationId}`)return;state.draft=value;await saveUi();},
