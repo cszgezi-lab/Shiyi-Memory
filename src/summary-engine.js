@@ -10,6 +10,8 @@ import { ScopeConflictError, ShiyiError, SummaryResponseError, ValidationError }
 import { abortError, clone, decodeUtf8Chunk, estimateUnits, sha256, stableStringify, throwIfAborted } from './utils.js';
 import { requireIndependentFloorSummaries } from './floor-summaries.js';
 import { safeLogDetails } from './product-runtime-log.js';
+import { resolveEventMerges } from './event-consolidation.js';
+import { tokenizeChinese } from './retrieval.js';
 
 function responseStatus(response) {
   return Number(response?.status ?? response?.statusCode ?? 200);
@@ -153,6 +155,7 @@ function makeInstructions(focus, rules) {
   return [
     '你是中文剧情记忆整理员。所有自然语言内容必须使用简体中文，不能以英文动作句代替中文总结；技术字段、枚举和来源标识保持契约原样。',
     '严格执行 outputContract.narrativeRules：完整事件纪要 description、召回速览 recallSummary 与逐楼经过 summaryView.text 分开写。标题不是纪要，多模块变化不代替事情的起因、过程和结果。输出前对照原文检查人物、时间、地点、条件/否认及结局，不续写，不用猜测填补缺失。',
+    '执行 consolidationRules 与 characterDetailRules：先核对既有事件，用 mergeInto 合并同一次经历的新增经过；提取有依据的观念、态度变化与关键台词。不要重复建立同一事件，也不要把相似题材误当同一经历。',
     'Return one JSON DraftBundle for this complete source range.',
     'Return every required category with its exact categoryTypes from outputContract. The nine memory categories are arrays of record objects; use [] for categories with no changes. coverage is always an OBJECT with array fields sourceRefs, bridgeRefs, processed, excluded, unprocessed; never return coverage:[] or coverage:null. Follow coverageRules honestly.',
     'For all sourceRefs, copy source message id strings exactly, with fragmentId only when present. Do not output floor numbers or event IDs as source IDs. Omit host-owned hash, contentHash, version and swipeId; the host supplies frozen evidence metadata. Follow sourceRefRules for record sources and coverage alike.',
@@ -187,7 +190,7 @@ function sourceOverlap(record, sourceIds) {
 function selectRelevantRecords(records, sourceMessages, bridgeMessages, budgetUnits, maxRecords = 64) {
   const sourceIds = new Set([...(sourceMessages ?? []), ...(bridgeMessages ?? [])].map((message) => message.id));
   const query = sourceText([...(sourceMessages ?? []), ...(bridgeMessages ?? [])]);
-  const tokens = [...new Set(query.split(/[^\p{L}\p{N}_-]+/u).filter((token) => token.length > 1))];
+  const tokens = [...new Set(tokenizeChinese(query).filter(token=>token.length>1))];
   const selected = {};
   const modelCategories = DRAFT_CATEGORIES.filter((category) => category !== 'coverage');
   for (const category of modelCategories) selected[category] = [];
@@ -518,6 +521,7 @@ export class SummaryEngine {
           focusVersion: focusFingerprint(child.focusSpec, child.focusVersion),
           correctionAuthorizations,
         });
+        resolveEventMerges(bundle,request.relevantRecords);
         if(this.requireFloorSummaries){
           phase='floors';
           const details=requireIndependentFloorSummaries(bundle,child.sourceMessages);

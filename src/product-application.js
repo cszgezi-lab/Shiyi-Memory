@@ -12,7 +12,7 @@ import { createProductFetch } from './product-network.js';
 import { productApiProfile, fetchProductModels } from './product-model-list.js';
 import { failureText } from './product-feedback.js';
 import { createGlobalSettings } from './product-global-settings.js';
-import { planSummaryRanges, batchRecords, MEMORY_CATEGORIES, editedMemoryFields } from './product-batches.js';
+import { planSummaryRanges, batchRecords, MEMORY_CATEGORIES, editedMemoryFields, batchOperationIds, sameBatchRange, consolidateSummaryBatches, savedBatchOperation } from './product-batches.js';
 import { chatConnectionPayload, inspectChatConnection } from './product-connection-probe.js';
 
 import { createModuleController } from './product-module-controller.js';
@@ -190,6 +190,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const [ui,hidden]=await Promise.all([workspace.read('ui',{savedThrough:-1}),workspace.read('hidden',[])]);
     checkOpen();assertCurrent();Object.assign(state,{savedThrough:ui.savedThrough??-1,hidden,preview:null,actual:null,stale:false});
     await migrateWorkspace();
+    await normalizeBatchRanges();
     checkOpen();
     for (const name of ['CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_SWIPED','MESSAGE_DELETED','MESSAGE_SWIPE_DELETED']) {
       try { bindings.push(hostAdapter.subscribe(name, async () => {if(name==='MESSAGE_UPDATED'&&moduleMetadataOnly()){await syncModulesQuietly();return;}invalidate(name);})); } catch { /* no automatic activation without final hook */ }
@@ -307,12 +308,22 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       op.check(); setMessage(report.message); return { ...report,kind };
     } finally { op.finish(); }
   }
+  async function normalizeBatchRanges(){
+    const list=await workspace.read('summary-batches',[]),view=await core.readMemoryView();
+    const consolidated=consolidateSummaryBatches(list,view.controls?.operations);
+    if(!consolidated.removed)return;
+    // Save a recovery copy before hiding duplicate generations. A failed write
+    // leaves the old batch list available so normalization can safely retry.
+    if(!await workspace.read('summary-batches-before-range-dedup-v1'))await workspace.write('summary-batches-before-range-dedup-v1',list);
+    if(Object.keys(consolidated.retire).length)await core.updateMemoryControls({operations:consolidated.retire});
+    await workspace.write('summary-batches',consolidated.rows);
+  }
   async function readBatches(view){
     let list=await workspace.read('summary-batches',[]);
     const known=new Set(list.flatMap(b=>[b.operationId,b.previousOperation,...(b.attempts??[])]));
     const parents=[...new Set((view.records?.history??[]).map(h=>h.operationId?.split('/child-')[0]).filter(id=>id?.startsWith('product-summary_')&&!known.has(id)))];
     const legacy=parents.map((operationId,i)=>{
-      const records=batchRecords(view.records?.history,operationId),indices=Object.values(records).flatMap(rows=>rows.flatMap(r=>[r.floorIndex,...(r.sourceRefs??[]).map(ref=>{const match=/^message:(\\d+):/.exec(ref.sourceId);return match?Number(match[1]):null;})])).filter(Number.isInteger);
+      const records=batchRecords(view.records?.history,operationId),indices=Object.values(records).flatMap(rows=>rows.flatMap(r=>[r.floorIndex,...(r.sourceRefs??[]).map(ref=>{const match=/^message:(\d+):/.exec(ref.sourceId);return match?Number(match[1]):null;})])).filter(Number.isInteger);
       return {id:makeId('legacy-batch'),number:list.length+i+1,operationId,startIndex:indices.length?Math.min(...indices):null,endIndex:indices.length?Math.max(...indices):null,status:'saved',legacy:true,attempts:[],focus:''};
     });
     if(legacy.length)list=await workspace.write('summary-batches',[...list,...legacy]);
@@ -353,12 +364,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       let previous=replaceBatchId?list.find(b=>b.id===replaceBatchId):null;
       if(replaceBatchId&&!previous)throw new Error('总结批次不存在');
       if(previous&&ranges.length!==1)throw new Error('重生保留原批次范围');
-      const planned=ranges.map((range,i)=>({id:previous?.id??makeId('summary-batch'),number:previous?.number??list.length+i+1,groupId,...range,focus,trigger,status:'queued',operationId:previous?.operationId??null,createdAt:Date.now(),attempts:previous?.attempts??[]}));
-      if(!previous)await workspace.write('summary-batches',[...list,...planned]);
+      const planned=ranges.map((range,i)=>{
+        const prior=previous??list.find(b=>sameBatchRange(b,range));
+        return {...prior,id:prior?.id??makeId('summary-batch'),number:prior?.number??Math.max(0,...list.map(b=>b.number??0))+i+1,groupId,...range,focus,trigger,status:prior?.status??'queued',operationId:prior?.operationId??null,createdAt:prior?.createdAt??Date.now(),attempts:prior?.attempts??[]};
+      });
+      await workspace.write('summary-batches',[...list,...planned.filter(p=>!list.some(b=>b.id===p.id))]);
       for(let i=0;i<planned.length;i++){
         op.check();const item=planned[i],operationId=makeId('product-summary');
-        const oldOperation=previous?.operationId;
-        currentBatch={...item,status:'running',operationId,previousOperation:oldOperation??null,attempts:[...item.attempts,...(oldOperation?[oldOperation]:[])],updatedAt:Date.now()};
+        const oldOperation=item.status==='deleted'?null:savedBatchOperation(item);
+        currentBatch={...item,status:'running',error:null,operationId,previousOperation:oldOperation??null,attempts:batchOperationIds(item),updatedAt:Date.now()};
         await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
         // Staged generations survive crashes but are never available for recall.
         await core.updateMemoryControls({operations:{[operationId]:'pending'}});op.check();
@@ -367,10 +381,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         state.progress=`第 ${i+1}/${planned.length} 批 · 已读取 #${item.startIndex}–${item.endIndex}，共 ${range.count} 楼`;
         runtimeLog.record({run:diagnosticRun,task:'summary',phase:'range',details:{batchNumber:item.number,startIndex:item.startIndex,endIndex:item.endIndex,sourceCount:range.count}});
         await readBatches(await core.readMemoryView());summaryFeedback('running',`正在总结 ${state.progress}`,trigger);
-        const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,requireFloorSummaries:true,onDiagnostic:event=>runtimeLog.record({run:diagnosticRun,task:'summary',...event,details:{...event.details,batchNumber:item.number}})});
+        const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,excludeOperations:currentBatch.attempts,requireFloorSummaries:true,onDiagnostic:event=>runtimeLog.record({run:diagnosticRun,task:'summary',...event,details:{...event.details,batchNumber:item.number}})});
         op.check();if(result.status!=='saved')throw Object.assign(new Error(core.state.errorMessage??'总结未保存'),{code:result.failure?.code??result.errorCode??'SUMMARY_RESPONSE_ERROR',details:result.errorDetails});
-        await core.updateMemoryControls({operations:{[operationId]:'active',...(oldOperation?{[oldOperation]:'deleted'}:{})}});op.check();
-        currentBatch={...currentBatch,status:'saved',requests:result.requests,updatedAt:Date.now()};
+        await core.updateMemoryControls({operations:{...Object.fromEntries(currentBatch.attempts.map(id=>[id,'deleted'])),[operationId]:'active'}});op.check();
+        currentBatch={...currentBatch,status:'saved',savedOperationId:operationId,requests:result.requests,updatedAt:Date.now()};
         await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);
         saved++;state.savedThrough=Math.max(state.savedThrough,item.endIndex);state.stale=false;
         await workspace.write('ui',{savedThrough:state.savedThrough});await refresh();currentBatch=null;
@@ -391,25 +405,38 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     assertCurrent();const row=(await workspace.read('summary-batches',[])).find(b=>b.id===id);
     if(!row)throw new Error('批次不存在');
     if(!Number.isInteger(row.startIndex)||!Number.isInteger(row.endIndex))throw new Error('旧版未保存楼层范围，请在手动总结中指定范围重新整理');
-    // A failed regeneration still has the last successful operation to replace.
-    if(row.previousOperation&&row.status!=='saved')row.operationId=row.previousOperation;
-    await workspace.update('summary-batches',list=>list.map(b=>b.id===id?row:b),[]);
     return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id});
   }
-  async function deleteBatch(id){
+  async function manageBatches(ids,action){
     assertCurrent();if(active)throw new Error('请先停止总结');
-    const row=(await workspace.read('summary-batches',[])).find(b=>b.id===id);if(!row)throw new Error('批次不存在');
-    await core.updateMemoryControls({operations:Object.fromEntries([row.operationId,row.previousOperation,...(row.attempts??[])].filter(Boolean).map(id=>[id,'deleted']))});
-    await workspace.update('summary-batches',rows=>rows.map(b=>b.id===id?{...b,status:'deleted'}:b),[]);
-    await refresh();setMessage('该批记忆已撤下，原始记录保留供恢复；聊天原文未删除');
+    const selected=[...new Set(ids)],rows=await workspace.read('summary-batches',[]),targets=selected.map(id=>rows.find(b=>b.id===id));
+    if(!targets.length||targets.some(b=>!b))throw new Error('请选择仍存在的批次');
+    const token=epoch,version=cancelVersion;
+    if(action==='regenerate'){
+      if(targets.some(b=>!Number.isInteger(b.startIndex)||!Number.isInteger(b.endIndex)))throw new Error('所选旧批次没有楼层范围，请取消选择');
+      for(const row of targets.sort((a,b)=>a.startIndex-b.startIndex)){assertCurrent(token);if(version!==cancelVersion)throw new Error('已停止');await regenerateBatch(row.id);}
+      setMessage(`已重新生成 ${targets.length} 批`);return;
+    }
+    if(!['delete','restore'].includes(action))throw new Error('未知批量操作');
+    const operations={};
+    for(const row of targets){
+      const keep=savedBatchOperation(row);
+      if(action==='restore'&&!keep)throw new Error('所选批次尚无结果可恢复');
+      for(const id of batchOperationIds(row))operations[id]='deleted';
+      if(action==='restore')operations[keep]='active';
+    }
+    assertCurrent(token);await core.updateMemoryControls({operations});assertCurrent(token);
+    await workspace.update('summary-batches',list=>list.map(row=>selected.includes(row.id)?{...row,status:action==='delete'?'deleted':'saved',savedOperationId:savedBatchOperation(row),operationId:action==='restore'?savedBatchOperation(row):row.operationId}:row),[]);
+    await refresh();setMessage(action==='delete'?`已撤下 ${targets.length} 批记忆，可恢复；聊天原文未改变`:`已恢复 ${targets.length} 批`);
   }
+  async function deleteBatch(id){return manageBatches([id],'delete');}
   async function deleteRecord(id){
     assertCurrent();if(active)throw new Error('请先停止总结');
     if(!state.cards.some(c=>c.id===id))throw new Error('记忆不存在');
     await core.updateMemoryControls({deletedRecords:{[id]:true}});await refresh();setMessage('记忆已删除，可在回收站恢复；聊天原文未改变');
   }
   async function restoreRecord(id){assertCurrent();await core.updateMemoryControls({deletedRecords:{[id]:false}});await refresh();}
-  async function restoreBatch(id){assertCurrent();const row=(await workspace.read('summary-batches',[])).find(b=>b.id===id);if(!row)throw new Error('批次不存在');const operationId=row.previousOperation&&row.status!=='saved'?row.previousOperation:row.operationId;if(!operationId)throw new Error('此批尚无结果可恢复');await core.updateMemoryControls({operations:{[operationId]:'active'}});await workspace.update('summary-batches',list=>list.map(b=>b.id===id?{...b,operationId,status:'saved'}:b),[]);await refresh();}
+  async function restoreBatch(id){return manageBatches([id],'restore');}
   async function editRecord(id,text,metadata={}){
     assertCurrent();if(active)throw new Error('请先停止总结');
     const record=state.cards.find(c=>c.id===id);if(!record)throw new Error('记忆不存在');
@@ -658,7 +685,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
   async function stop(){abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停自动整理和记忆注入');}
-  return {core,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
+  return {core,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
     loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:()=>runtimeLog.export(),clearRuntimeLog:()=>runtimeLog.clear(),
     async saveDictionaryEntry(input){await loadApiSettings();await saveSettings({aliases:updateDictionaryOverride(core.settings.aliases,input)});setMessage('字典校正已保存，不会修改故事事实');},
     testConnection:(kind='summary',patch={})=>logged('connection',()=>testConnection(kind,patch),{modelRole:kind}),

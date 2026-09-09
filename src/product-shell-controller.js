@@ -461,7 +461,7 @@ export function createProductShellController({
     return null;
   }
 
-  async function startSummary({ focus = state.focus, confirmedFocus = state.focusConfirmed, trigger = 'manual', requireFloorSummaries = false, operationId = makeId('product-summary'), onDiagnostic = () => {} } = {}) {
+  async function startSummary({ focus = state.focus, confirmedFocus = state.focusConfirmed, trigger = 'manual', requireFloorSummaries = false, operationId = makeId('product-summary'), excludeOperations = [], onDiagnostic = () => {} } = {}) {
     if (state.status === PRODUCT_SHELL_STATUS.INVALIDATED) return { status: state.status, errorCode: state.errorCode };
     if (!state.session || !repository) return { status: PRODUCT_SHELL_STATUS.UNAVAILABLE, errorCode: state.capabilities.persistence === 'unavailable' ? 'PERSISTENCE_UNAVAILABLE' : 'CHAT_IDENTITY_NOT_READY' };
     if (activeTask) return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: 'HOST_CONTRACT_INVALID' };
@@ -522,7 +522,7 @@ export function createProductShellController({
     const summaryRepository=Object.create(repository);
     const validateBundle=summaryBundleValidator();
     summaryRepository.commitBundle=async (...args)=>{validateBundle(args[0]);return repository.commitBundle(...args);};
-    summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId]})).records;
+    summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations})).records;
     engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: sourceSplitUnits(), requireFloorSummaries, outputReserveUnits: 0, now });
     try {
       const result = await engine.process(batch, { signal: abortController.signal, onDiagnostic });

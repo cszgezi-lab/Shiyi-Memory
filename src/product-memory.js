@@ -60,6 +60,9 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
   const lines = metadataOnly?[]:[`[${CATEGORY_LABELS[card.category] ?? '记忆'}] ${body}`];
   if (Array.isArray(card.participants)&&card.participants.length)lines.push(`参与人物：${narrativeText(card.participants)}`);
   if (card.location)lines.push(`地点：${narrativeText(card.location)}`);
+  for(const v of (card.viewpoints??[]).slice(0,detail?8:2))lines.push(`观念 / 态度：${v.holder}${v.target?` 对 ${v.target}`:''}：${v.content}${v.context?`〔${v.context}〕`:''}${v.basis?`（${v.basis}）`:''}`);
+  for(const q of (card.keyDialogues??[]).slice(0,detail?8:2))lines.push(`关键台词：${q.speaker}${q.to?` 对 ${q.to}`:''}：「${q.text}」${q.context?`〔${q.context}〕`:''}${q.meaning?`；体现：${q.meaning}`:''}`);
+  if(card.keyDialogues?.length)lines.push('原话仅作当时语境的证据，不要求复读；说过不等于仍持相同态度。');
   if (card.state) lines.push(`状态：${stateLabel(card.state)}`);
   if (card.epistemicStatus && card.epistemicStatus !== 'observed') lines.push(`性质：${({ user_asserted: '用户确认', inferred: '推测而非事实', character_claim: '角色自述', unknown: '未确认' })[card.epistemicStatus] ?? card.epistemicStatus}`);
   if (card.category === 'knowledge') lines.push('外部设定资料，不等于角色已经历或已知情。');

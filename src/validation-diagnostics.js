@@ -1,12 +1,13 @@
 // Shared by the validator, local diagnostics and UI. Only schema vocabulary
 // and numeric row positions may cross this boundary, never model values.
 const categories = 'events|awarenessChanges|entityFactChanges|relationshipChanges|personaChanges|commitmentChanges|performanceHints|summaryView|conflicts';
-const fields = 'id|sourceRefs|sources|state|status|epistemicStatus|perspective|via|learnedAt|eventRef|eventRefs|eventId|eventIds|sourceEventId|evidenceKind|expression|response|mutualConfirmation|publicScope|object|context|scope|expiresAt|term|title|description|recallSummary|entities|tags';
+const fields = 'id|sourceRefs|sources|state|status|epistemicStatus|perspective|via|learnedAt|eventRef|eventRefs|eventId|eventIds|sourceEventId|evidenceKind|expression|response|mutualConfirmation|publicScope|object|context|scope|expiresAt|term|title|description|recallSummary|entities|tags|mergeInto';
 const index = '\\[(?:0|[1-9]\\d{0,6})\\]';
 const pathPattern = new RegExp(`^(?:bundle|scope|operationId|expectedRevision|(?:${categories})(?:${index}(?:\\.(?:${fields})(?:${index})?)?)?|coverage(?:\\.(?:sourceRefs|bridgeRefs|processed|excluded|unprocessed)(?:${index})?)?)$`);
 const types = new Set(['array','object','string','number','boolean','null','undefined']);
 const locatorFields = new Set(['version','swipeId','fragmentId','hash','contentHash']);
 export const VALIDATION_ISSUE_LABELS = Object.freeze({
+  invalid_event_merge:'合并目标未提供或事件发生时间冲突，旧记忆未改变',
   type_mismatch:'字段类型不正确', invalid_source_ref:'来源引用格式不正确', source_mismatch:'来源版本、片段或校验信息与本批正文不一致',
   source_ambiguous:'来源对应多个片段，缺少准确定位', unknown_source:'引用了本批未提供的来源', missing_source:'缺少有效的正文来源',
   required:'缺少必填字段', invalid_enum:'字段值不在支持的选项中', duplicate_id:'记录编号重复', unknown_event:'引用的事件不存在',

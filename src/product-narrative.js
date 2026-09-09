@@ -28,7 +28,7 @@ export function sourceLabel(card) {
   return '来源：已关联原文；旧记录未保存楼层号';
 }
 export function fullSearchText(card,body) {
-  return [...new Set([card.title,body,card.recallSummary,narrativeText(card.participants),narrativeText(card.location),narrativeText(card.temporal),...normalizeTerms(card.entities).flatMap(t=>[t.name,...t.aliases,...t.indexWords]),...normalizeTags(card.tags)].filter(v=>typeof v==='string'&&v.trim()))].join('\n');
+  return [...new Set([card.title,body,card.recallSummary,narrativeText(card.participants),narrativeText(card.location),narrativeText(card.temporal),...(card.keyDialogues??[]).map(q=>[q.speaker,q.to,q.text,q.context,q.meaning].filter(Boolean).join(' ')),...(card.viewpoints??[]).map(v=>[v.holder,v.target,v.content,v.context].filter(Boolean).join(' ')),...normalizeTerms(card.entities).flatMap(t=>[t.name,...t.aliases,...t.indexWords]),...normalizeTags(card.tags)].filter(v=>typeof v==='string'&&v.trim()))].join('\n');
 }
 export const stateLabel=value=>({proposed:'提出',attempted:'尝试',accepted:'接受',completed:'完成',declined:'拒绝',canceled:'取消',resolved:'已解决',active:'有效'})[value]??value;
 export const awarenessLabel=value=>({known:'知道',heard:'听说',suspected:'怀疑',mistaken:'误以为',explicitly_unaware:'明确不知情'})[value]??value;

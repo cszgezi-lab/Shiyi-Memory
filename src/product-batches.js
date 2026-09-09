@@ -1,6 +1,28 @@
 import { DRAFT_CATEGORIES } from './contracts.js';
 
 export const MEMORY_CATEGORIES=Object.freeze(DRAFT_CATEGORIES.filter(k=>k!=='coverage'));
+export const batchOperationIds=b=>[...new Set([b.operationId,b.previousOperation,...(b.attempts??[])].filter(Boolean))];
+export const savedBatchOperation=b=>b.savedOperationId??(b.status==='saved'||b.status==='deleted'&&!b.error?b.operationId:b.previousOperation)??null;
+export const sameBatchRange=(a,b)=>Number.isInteger(a.startIndex)&&Number.isInteger(a.endIndex)&&a.startIndex===b.startIndex&&a.endIndex===b.endIndex;
+
+// A range is one logical batch. Immutable generations stay in the repository;
+// only the effective generation changes. Never prefer an unfinished attempt.
+export function consolidateSummaryBatches(rows,controls={}){
+  const groups=new Map(),retire={};
+  for(const row of rows){const key=Number.isInteger(row.startIndex)&&Number.isInteger(row.endIndex)?`${row.startIndex}:${row.endIndex}`:row.id;const group=groups.get(key)??[];group.push(row);groups.set(key,group);}
+  const result=[];
+  for(const group of groups.values()){
+    if(group.length===1){result.push(group[0]);continue;}
+    const completed=group.flatMap(b=>{
+      const id=[b.operationId,savedBatchOperation(b)].find(id=>id&&(controls[id]==='active'||(!controls[id]&&b.status==='saved')));
+      return id?[{...b,operationId:id,savedOperationId:id,status:'saved',error:null}]:[];
+    });
+    const winner=completed.sort((a,b)=>(a.updatedAt??a.createdAt??0)-(b.updatedAt??b.createdAt??0)).at(-1)??group.at(-1),attempts=[...new Set(group.flatMap(batchOperationIds))];
+    for(const id of attempts)if(id!==winner.operationId&&completed.length&&controls[id]!=='deleted')retire[id]='deleted';
+    result.push({...winner,id:group[0].id,number:group[0].number,savedOperationId:savedBatchOperation(winner),attempts:attempts.filter(id=>id!==winner.operationId)});
+  }
+  return {rows:result,retire,removed:rows.length-result.length};
+}
 export function pageSummaryBatches(batches,{query='',status='all',page=1,pageSize=10}={}) {
   const size=[10,20,50].includes(Number(pageSize))?Number(pageSize):10;
   const term=String(query).trim(),range=/^#?(\d+)\s*[-–~至]\s*#?(\d+)$/.exec(term),floor=/^#(\d+)$/.exec(term),number=/^第?\s*(\d+)\s*批$/.exec(term);

@@ -1,6 +1,7 @@
 import { ValidationError } from './errors.js';
 import { validationDetails, valueType } from './validation-diagnostics.js';
 import { normalizeTerms, normalizeTags } from './product-dictionary.js';
+import { bindCharacterDetails } from './event-consolidation.js';
 import {
   asArray,
   asString,
@@ -49,7 +50,7 @@ export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
   }),
   requiredFields: Object.freeze(['scope(host-bound)', 'operationId(host-bound)', 'expectedRevision(host-bound)', 'schemaVersion', 'events', 'awarenessChanges', 'entityFactChanges', 'relationshipChanges', 'personaChanges', 'commitmentChanges', 'performanceHints', 'summaryView', 'conflicts', 'coverage']),
   fields: Object.freeze({
-    events: Object.freeze(['id', 'title', 'description', 'recallSummary', 'participants', 'location', 'temporal', 'sourceRefs', 'subject', 'action', 'object', 'state', 'epistemicStatus', 'perspective']),
+    events: Object.freeze(['id', 'title', 'description', 'recallSummary', 'participants', 'location', 'temporal', 'sourceRefs', 'subject', 'action', 'object', 'state', 'epistemicStatus', 'perspective', 'mergeInto(optional)', 'keyDialogues(optional)', 'viewpoints(optional)']),
     awarenessChanges: Object.freeze(['id', 'eventRef|eventRefs', 'actorId|person|audience', 'knowledge|fact|content', 'status', 'via', 'learnedAt', 'sourceRefs']),
     entityFactChanges: Object.freeze(['id', 'entity|entityId', 'field|key', 'to|value|newValue', 'epistemicStatus', 'sourceRefs']),
     relationshipChanges: Object.freeze(['id', 'from|subject', 'to|object', 'evidenceKind', 'epistemicStatus', 'sourceRefs']),
@@ -76,6 +77,8 @@ export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
     completeness: '同一次请求同时输出逐楼经过、跨楼事件纪要及其余人物/知情/关系等变化。按正文信息量而非偏好的题材决定详细程度；普通互动中出现的新细节也不能丢。对照本批每一楼检查首尾、人物、时间和结果是否遗漏，不按数组顺序猜来源，不输出思考过程。',
   }),
   retrievalMetadataRules: '每类记录可附 entities:[{name:"正式名称",aliases:["本条来源中明确同指的别称"],kind:"人物|地点|组织|物品|术语之一"}] 和 tags:["具体中文主题"]，不另建无来源的全局词典。自动随总结生成，名称与别称必须出现在该记录 sourceRefs 指向的文字内；不凭原作常识合并，不把“他/她/老师”等泛称当别名。tags 通常 2–5 个具体主题（例如借书归还、转校手续），不用“重要、普通、事件”等无区分度标签。标签只帮助检索，不决定知情或人物身份。summaryView 也可有 recallSummary 速览，但 text 仍保留逐楼完整经过。',
+  consolidationRules: '同一件事跨楼延续或被再次谈起，只输出一条 events，串起起因、经过、转折、结果，合并 sourceRefs；同一天同地点也可能是不同事件，不能只因人物/标签/类型相同而合并。与 relevantRecords.events 中既有事件确为同一次经历时，增加 mergeInto:该事件的精确 id；description 记录本批新增经过，不复述已保存文字，recallSummary 则更新为涵盖整件事与最新结果的速览。不得编造 mergeInto 或复用别件事的 identityKey。同批链接只能指向前面已输出的事件 id。不同日期的再次相似经历、不同学校/人物、回忆与当前讲述分别记录。观念改变需保留前后与原因，不抹掉旧态度。summaryView 仍逐楼独立，不因事件合并而省略楼层。',
+  characterDetailRules: 'events、relationshipChanges、personaChanges、performanceHints 可附 viewpoints:[{holder:"持有观念的人",target:"针对谁或什么",content:"具体观念或态度变化",context:"适用语境",basis:"原文明示/角色自述/推测"}] 和 keyDialogues:[{speaker:"说话人",to:"对谁说",text:"原文逐字台词",context:"何时何事下说出",meaning:"体现的观念、关系边界或改变"}]。记录有辨识度的观念、价值取向、称呼转变、拒绝/接受和重要台词，不把每句闲聊都摘抄。没有原文明示则留空，不虚构内心；推测必须标注。引语必须逐字来自该条 sourceRefs，不可把转述改成原话。时间用本事件 temporal，知情者仍输出 awarenessChanges，不能把被谈论的人或全部在场者直接视为知道全部。演绎参考是有语境的行为倾向，不是要求每轮重说名台词或固定人设。',
   enums: Object.freeze({
     eventState: Object.freeze(['proposed', 'attempted', 'accepted', 'completed', 'declined', 'canceled']),
     epistemicStatus: Object.freeze(['observed', 'user_asserted', 'character_claim', 'inferred', 'unknown']),
@@ -501,7 +504,7 @@ export function bindDraftBundle(modelOutput, {
     const evidence=sourceTexts.filter(m=>next.sourceRefs.some(r=>r.sourceId===m.sourceId&&r.fragmentId===m.fragmentId)).map(m=>m.text).join('\n');
     if(next.entities!==undefined)next.entities=normalizeTerms(next.entities).filter(t=>evidence.includes(t.name)).map(t=>({...t,aliases:t.aliases.filter(a=>evidence.includes(a))}));
     if(next.tags!==undefined)next.tags=normalizeTags(next.tags);
-    return next;
+    return bindCharacterDetails(next,evidence);
   };
   const bindCategory = category => normalizedCategory(source[category],category).map((record,index)=>bindEvidence(record,category,index));
   const bundle = {

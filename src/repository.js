@@ -13,6 +13,7 @@ import {
   validateDraftBundle,
 } from './contracts.js';
 import { clone, isPlainObject, makeId, sha256, stableStringify } from './utils.js';
+import { mergeEventDetails, exactEventDuplicate } from './event-consolidation.js';
 
 const DEFAULT_NAMESPACE = 'shiyi-memory-core';
 const CATEGORIES = [
@@ -107,8 +108,8 @@ function recordIdentityKeys(category, record) {
   return [...new Set(keys.filter(Boolean))];
 }
 
-function mergeRecordRevision(previous, next, revision, operationId, { canonicalId = previous?.id } = {}) {
-  const merged = { ...clone(previous), ...clone(next) };
+function mergeRecordRevision(previous, next, revision, operationId, { canonicalId = previous?.id, eventRecord=false } = {}) {
+  const merged = eventRecord ? mergeEventDetails(previous,next) : { ...clone(previous), ...clone(next) };
   // The first durable event ID is the canonical address of the occurrence.
   // A later extraction can choose a different id while carrying the same
   // identityKey; keeping the old ID means already committed awareness and
@@ -156,6 +157,7 @@ function mergeRecords(chunks) {
           }
           result[category][existingIndex] = mergeRecordRevision(previousRecord, record, revision, operationId, {
             canonicalId: category === 'events' ? previousRecord?.id : undefined,
+            eventRecord: category === 'events',
           });
           for (const key of recordIdentityKeys(category, result[category][existingIndex])) indexes.set(key, existingIndex);
         }
@@ -277,7 +279,7 @@ function materializeBundle(bundle, scope, existingAliases = {}, previousRecords 
   for (const record of bundle.events ?? []) {
     if (!isTemporaryId(record?.id)) continue;
     const identity = eventIdentity(record);
-    const priorId = identity ? priorByIdentity.get(identity) : null;
+    const priorId = (identity ? priorByIdentity.get(identity) : null) ?? (previousRecords?.events??[]).find(e=>exactEventDuplicate(e,record))?.id;
     const durableId = priorId ?? `memory_${sha256(`${scopeKey(scope)}|${bundle.operationId}|${record.id}|${identity ?? ''}|${bundle.sourceRevision ?? ''}|${stableStringify(record)}`).slice(0, 28)}`;
     idMap.set(record.id, durableId);
   }
@@ -338,7 +340,7 @@ export class MemoryRepository {
 
   async getCommittedRevision(scope) { return (await this._getPointer(normalizeScope(scope))).committedRevision; }
 
-  async readScope(scope, { includeOperations = [] } = {}) {
+  async readScope(scope, { includeOperations = [], excludeOperations = [] } = {}) {
     const frozenScope = normalizeScope(scope);
     const pointer = await this._getPointer(frozenScope);
     if (!pointer.manifestRef) return { scope: frozenScope, committedRevision: 0, records: emptyRecords(), pointer, manifest: null };
@@ -358,7 +360,7 @@ export class MemoryRepository {
     }
     const controls=manifest.controls??{operations:{},deletedRecords:{},edits:{}};
     const parent=id=>id?.split('/child-')[0];
-    const visible=chunk=>!['pending','deleted'].includes(controls.operations?.[parent(chunk.operationId)])||includeOperations.includes(parent(chunk.operationId));
+    const visible=chunk=>!excludeOperations.includes(parent(chunk.operationId))&&(!['pending','deleted'].includes(controls.operations?.[parent(chunk.operationId)])||includeOperations.includes(parent(chunk.operationId)));
     const records=mergeRecords(chunks.filter(visible));
     records.history=chunks.map(chunk=>({revision:chunk.committedRevision,operationId:chunk.operationId,sourceRevision:chunk.sourceRevision,createdAt:chunk.createdAt,scopeKey:chunk.scopeKey,idMap:clone(chunk.idMap??{}),coverage:clone(chunk.coverage),categories:Object.fromEntries(CATEGORIES.map(k=>[k,clone(chunk[k]??[])])),excluded:!visible(chunk)}));
     for(const category of CATEGORIES)records[category]=records[category].filter(r=>!controls.deletedRecords?.[r.id]).map(r=>controls.edits?.[r.id]?{...r,...clone(controls.edits[r.id]),epistemicStatus:'user_asserted'}:r);
