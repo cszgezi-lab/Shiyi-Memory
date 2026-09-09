@@ -360,7 +360,7 @@ export class MemoryRepository {
     const parent=id=>id?.split('/child-')[0];
     const visible=chunk=>!['pending','deleted'].includes(controls.operations?.[parent(chunk.operationId)])||includeOperations.includes(parent(chunk.operationId));
     const records=mergeRecords(chunks.filter(visible));
-    records.history=chunks.map(chunk=>({revision:chunk.committedRevision,operationId:chunk.operationId,sourceRevision:chunk.sourceRevision,createdAt:chunk.createdAt,coverage:clone(chunk.coverage),categories:Object.fromEntries(CATEGORIES.map(k=>[k,clone(chunk[k]??[])])),excluded:!visible(chunk)}));
+    records.history=chunks.map(chunk=>({revision:chunk.committedRevision,operationId:chunk.operationId,sourceRevision:chunk.sourceRevision,createdAt:chunk.createdAt,scopeKey:chunk.scopeKey,idMap:clone(chunk.idMap??{}),coverage:clone(chunk.coverage),categories:Object.fromEntries(CATEGORIES.map(k=>[k,clone(chunk[k]??[])])),excluded:!visible(chunk)}));
     for(const category of CATEGORIES)records[category]=records[category].filter(r=>!controls.deletedRecords?.[r.id]).map(r=>controls.edits?.[r.id]?{...r,...clone(controls.edits[r.id]),epistemicStatus:'user_asserted'}:r);
     const eventIds=new Set(records.events.map(r=>r.id));
     records.awarenessChanges=records.awarenessChanges.filter(r=>[r.eventRef,...(r.eventRefs??[])].filter(Boolean).every(id=>eventIds.has(id)));
