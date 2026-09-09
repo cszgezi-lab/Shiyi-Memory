@@ -7,6 +7,7 @@ import { MemoryRepository } from './repository.js';
 import { LocalBM25Index, retrieveAndPack } from './retrieval.js';
 import { SummaryEngine } from './summary-engine.js';
 import { HostAdapter } from './host-adapter.js';
+import { productFailure } from './product-feedback.js';
 import { verifyProductSources } from './product-sources.js';
 import { makeId, clone, stableStringify, sha256 } from './utils.js';
 import {
@@ -536,7 +537,8 @@ export function createProductShellController({
       if (token === generation) mark(PRODUCT_SHELL_STATUS.FAILED, code, code === 'PERSISTENCE_UNAVAILABLE' ? '持久保存/读回失败，未显示为已保存。' : '本次整理失败，草稿仍可重试。');
       state.draft.status = 'retryable';
       state.capabilities.summary = code === 'PERSISTENCE_UNAVAILABLE' ? 'persistence_failed' : 'failed';
-      return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: code, operationId };
+      const safeFailure = productFailure(error);
+      return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: code, failure: safeFailure, errorDetails: { status: safeFailure.status }, operationId };
     } finally {
       if (activeTask === operationId) activeTask = null;
       if (abortController?.signal.aborted || !activeTask) abortController = null;

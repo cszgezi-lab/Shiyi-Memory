@@ -1,5 +1,6 @@
 import { validateProductPatch } from './product-settings.js';
 import { ProviderClient, resolveProviderEndpoint } from './provider.js';
+import { modelListFailure } from './product-feedback.js';
 
 export const API_KINDS = Object.freeze(['summary', 'assistant', 'embedding', 'rerank']);
 export function productApiProfile(settings, kind, keys = {}, patch = {}) {
@@ -30,6 +31,7 @@ export function modelListEndpoint(profile, explicit = '') {
 }
 
 export function normalizeModelList(response) {
+  if (response?.error) throw modelListFailure(response);
   const rows = Array.isArray(response) ? response : response?.data ?? response?.models;
   if (!Array.isArray(rows)) throw new Error('接口没有返回模型列表，请直接输入模型名称');
   return [...new Set(rows.map(row => typeof row === 'string' ? row : row?.id ?? row?.name)

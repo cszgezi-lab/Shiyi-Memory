@@ -10,6 +10,7 @@ import { ProductVectorCache } from './product-vector-cache.js';
 import { clone, sha256, makeId, estimateUnits, stableStringify } from './utils.js';
 import { createProductFetch } from './product-network.js';
 import { productApiProfile, fetchProductModels } from './product-model-list.js';
+import { failureText } from './product-feedback.js';
 
 const PROMPT_KEY = 'shiyi-memory-continuity';
 function completion(response) {
@@ -32,7 +33,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   fetchImpl = createProductFetch(host, fetchImpl);
   let hostAdapter = adapter;
   let workspace = null, boundScope = null, epoch = 0, active = null, bindings = [], enabled = false;
-  let cancelVersion = 0, knowledgeCache = [], opening = false;
+  let cancelVersion = 0, knowledgeCache = [], opening = false, feedbackSequence = 0;
   let recallRevision = 0;
   let recallBusy = 0;
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache();
@@ -68,6 +69,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
   }
   function setMessage(message) { state.message = message; notify(); }
+  function summaryFeedback(level,text,trigger) { state.feedback={id:++feedbackSequence,kind:'summary',level,text,trigger};setMessage(text); }
   function externalState() {
     const paths=String(core.settings.externalStatePaths??'').split('\n').map(p=>p.trim()).filter(Boolean);
     if(!paths.length)return '未配置';
@@ -179,35 +181,42 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function summarize({ count, startIndex, endIndex, focus = '', trigger = 'manual' } = {}) {
     const op = begin();
+    let saved = false;
+    summaryFeedback('running','正在读取总结范围…',trigger);
     try {
     // Reading a fresh range is the explicit recovery from source invalidation.
     if (state.stale) { const r = await core.readRange({ count: count ?? core.settings.messageCount, startIndex, endIndex }); if (r.status !== 'ready') throw new Error('请重新打开当前聊天'); workspace = createWorkspace(core.workspace()); }
     assertCurrent(); const token = epoch;
     const range = await core.readRange({ count: count ?? core.settings.messageCount, startIndex, endIndex });
     if (range.status !== 'ready') throw new Error(core.state.errorMessage ?? '范围读取失败');
-    op.check(); setMessage('正在整理所选消息…');
+    op.check(); summaryFeedback('running',`正在总结 #${core.state.range.startIndex}–${core.state.range.endIndex}，请稍候…`,trigger);
       const result = await core.startSummary({ focus, confirmedFocus: true, trigger });
       op.check();
-      if (result.status !== 'saved') throw new Error(core.state.errorMessage ?? result.errorCode ?? '整理未保存');
+      if (result.status !== 'saved') throw Object.assign(new Error(core.state.errorMessage ?? '整理未保存'),{code:result.failure?.code??result.errorCode??'SUMMARY_RESPONSE_ERROR',details:result.errorDetails});
+      saved = true;
       state.savedThrough = Math.max(state.savedThrough, core.state.range.endIndex); state.stale = false;
-      await saveUi(); await refresh(); setMessage(`已整理 ${core.state.range.count} 条消息`);
+      await saveUi(); await refresh(); summaryFeedback('success',`总结成功并已保存：#${core.state.range.startIndex}–${core.state.range.endIndex}，共 ${core.state.range.count} 楼。`,trigger);
       return result;
+    } catch(error) {
+      if(op.token===epoch)summaryFeedback(op.signal.aborted?'info':'error',op.signal.aborted?'总结已停止；已保存内容保留。':`${saved?'总结已保存，但刷新未完成':'总结未完成'}：${failureText(error)}`,trigger);
+      throw error;
     } finally { op.finish(); }
   }
   async function autoSummary() {
     if (!enabled || active || state.stale || !core.settings.autoSummaryEnabled || !workspace?.isCurrent()) return;
+    const feedbackAtStart = feedbackSequence;
     const op=begin();
     try {
       const r = await core.readRange({ count: core.settings.autoSummaryEvery });
       op.check();
-      if (r.status !== 'ready') return;
+      if (r.status !== 'ready') throw Object.assign(new Error(core.state.errorMessage??'无法读取待总结楼层'),{code:r.errorCode??'HISTORY_UNAVAILABLE'});
       const end = core.state.range.endIndex;
       if (end - state.savedThrough < core.settings.autoSummaryEvery) return;
       if (core.settings.focusMode === 'ask_every') { setMessage('有一批消息等待本次总结侧重点'); return; }
       // Release and synchronously acquire the summary lock without yielding.
       op.finish();
       await summarize({ count: core.settings.autoSummaryEvery, trigger: 'auto' });
-    } catch { if(!op.signal.aborted)setMessage('自动整理失败，可在记忆页重试'); }
+    } catch(error) { if(!op.signal.aborted&&op.token===epoch&&feedbackSequence===feedbackAtStart)summaryFeedback('error',`自动总结未完成：${failureText(error)}`,'auto'); }
     finally { op.finish(); }
   }
   async function loadKnowledge() {

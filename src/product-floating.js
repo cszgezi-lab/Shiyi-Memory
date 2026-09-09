@@ -22,7 +22,7 @@ export function floatingPosition(point, size, frame) {
 }
 
 /** One persistent non-modal window. Closing only hides UI, not the application. */
-export function mountFloatingProduct({ panel, documentRef, host, version, onClose = () => {} }) {
+export function mountFloatingProduct({ panel, documentRef, host, version, onClose = () => {}, onStop = () => {} }) {
   const win = documentRef.defaultView ?? host;
   let preferences;
   try { preferences = floatingPreferences(JSON.parse(win.localStorage.getItem(STORAGE_KEY))); }
@@ -43,7 +43,13 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onClos
   const closeButton = documentRef.createElement('button'); closeButton.type = 'button'; closeButton.className = 'sy-workbench-close';
   closeButton.textContent = '收起'; closeButton.setAttribute('aria-label', '收起拾忆');
   const content = documentRef.createElement('div'); content.className = 'sy-workbench-content'; content.appendChild(panel);
-  header.append(grip, closeButton); windowEl.append(header, content); layer.append(launcher, windowEl); documentRef.body.appendChild(layer);
+  const dock = documentRef.createElement('div'); dock.className = 'sy-workbench-dock';
+  const notice = documentRef.createElement('div'); notice.className = 'sy-workbench-notice'; notice.setAttribute('role','status');notice.setAttribute('aria-live','polite');notice.setAttribute('aria-atomic','true');notice.textContent='就绪';
+  const stopButton=documentRef.createElement('button');stopButton.type='button';stopButton.textContent='停止';stopButton.hidden=true;stopButton.className='sy-dock-stop';
+  dock.append(notice,stopButton);
+  // Navigation and feedback must not scroll away with a long API form.
+  const nav=panel.querySelector('.sy-nav');
+  header.append(grip, closeButton); windowEl.append(header);if(nav)windowEl.append(nav);windowEl.append(content,dock);layer.append(launcher, windowEl); documentRef.body.appendChild(layer);
   // A manual popover is non-modal and escapes drawer/theme stacking contexts.
   // Old WebViews retain a fixed high-z-index surface; no showModal or scroll lock.
   if (typeof layer.showPopover === 'function') {
@@ -59,6 +65,7 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onClos
   let disposed = false, raf = null, unsubscribe = null;
   const cleanup = [];
   function listen(target, type, fn, options) { target?.addEventListener?.(type, fn, options); cleanup.push(() => target?.removeEventListener?.(type, fn, options)); }
+  listen(stopButton,'click',onStop);
   // A touch opens on pointerup and hides its target. Some WebViews then retarget
   // the compatibility click to the newly exposed window control under the finger.
   // Consume only that gesture's click; a new pointerdown or keyboard click is free.
@@ -75,7 +82,7 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onClos
     const rootStyle = win.getComputedStyle(documentRef.documentElement), localStyle = win.getComputedStyle(element);
     const vv = win.visualViewport;
     return floatingBounds({ width: vv?.width ?? win.innerWidth, height: vv?.height ?? win.innerHeight,
-      left: vv?.offsetLeft ?? 0, top: vv?.offsetTop ?? 0, layoutHeight: win.innerHeight,
+      left: vv?.offsetLeft ?? 0, top: vv?.offsetTop ?? 0, layoutHeight: px(rootStyle,'--tt-base-viewport-height') || win.innerHeight,
       insets: Object.fromEntries(['top', 'right', 'bottom', 'left'].map(side => [side, px(rootStyle, `--tt-inset-${side}`)])),
       bottomInset: Math.max(px(localStyle, '--tt-viewport-bottom-inset'), px(localStyle, '--tt-ime-bottom')) });
   }
@@ -95,6 +102,14 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onClos
     setPx(windowEl, 'height', Math.min(720, frame.height * .92));
     if (!windowEl.hidden) place(windowEl, preferences.window);
     if (!launcher.hidden) place(launcher, preferences.bubble);
+    keepInputVisible();
+  }
+  function keepInputVisible() {
+    const input=documentRef.activeElement;
+    if(windowEl.hidden||!content.contains(input)||!input.matches('input,textarea,select,[contenteditable="true"]'))return;
+    const rect=input.getBoundingClientRect(), bounds=content.getBoundingClientRect();
+    if(rect.bottom>bounds.bottom-12)content.scrollTop+=rect.bottom-(bounds.bottom-12);
+    else if(rect.top<bounds.top+12)content.scrollTop-=bounds.top+12-rect.top;
   }
   function schedule() { if (raf === null && !disposed) raf = win.requestAnimationFrame(() => { raf = null; layout(); }); }
   function show() {
@@ -158,6 +173,7 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onClos
   listen(windowEl, 'keydown', event => { if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); event.stopPropagation(); hide(); } });
   listen(win, 'resize', schedule); listen(win, 'orientationchange', schedule);
   listen(win.visualViewport, 'resize', schedule); listen(win.visualViewport, 'scroll', schedule);
+  listen(content,'focusin',schedule);
   // Ignore our own left/top writes in both our observer and TT's subscription:
   // otherwise reapplying saved coordinates would snap an active drag back.
   let geometrySignature = JSON.stringify([frameFor(windowEl), frameFor(launcher)]);
@@ -178,5 +194,7 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onClos
   }).catch(() => { /* CSS contract remains available */ });
   launcher.hidden = !preferences.showLauncher; layout();
   return { layer, launcher, window: windowEl, content, shortcut, show, hide,
+    setNotice(text,level='info'){notice.textContent=text;notice.dataset.level=level;launcher.dataset.notice=level;launcher.title=`打开拾忆 · ${text}`;},
+    setBusy(busy){stopButton.hidden=!busy;},
     destroy() { disposed = true; if (raf !== null) win.cancelAnimationFrame(raf); observer?.disconnect(); for (const off of cleanup) off(); Promise.resolve().then(() => unsubscribe?.()).catch(() => {}); layer.remove(); shortcut.remove(); } };
 }
