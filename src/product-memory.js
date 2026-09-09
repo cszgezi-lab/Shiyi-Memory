@@ -74,7 +74,7 @@ export function expandAliases(query, aliases = '') {
   return out;
 }
 export function selectRecallCards(cards, settings) {
-  return cards.filter(c => c.category !== 'awarenessChanges' && !['retracted', 'superseded'].includes(c.lifecycleState) && c.category !== 'conflicts' && (settings.personaEnabled || !['entityFactChanges','personaChanges','relationshipChanges'].includes(c.category)) && (settings.performanceEnabled || c.category !== 'performanceHints') && (settings.knowledgeEnabled || c.category !== 'knowledge'));
+  return cards.filter(c => c.customInject !== false && c.category !== 'awarenessChanges' && !['retracted', 'superseded'].includes(c.lifecycleState) && c.category !== 'conflicts' && (settings.personaEnabled || !['entityFactChanges','personaChanges','relationshipChanges'].includes(c.category)) && (settings.performanceEnabled || c.category !== 'performanceHints') && (settings.knowledgeEnabled || c.category !== 'knowledge'));
 }
 export function prepareRecallIndex(cache, cards, settings, { scopeKey, revision, signal } = {}) {
   if (revision === undefined) throw new Error('recall cache requires a snapshot revision');

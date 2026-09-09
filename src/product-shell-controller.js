@@ -154,6 +154,8 @@ export function createProductShellController({
   maxMessages = 200,
   onChange = () => {},
   runtimeRules = () => '',
+  summaryBundleValidator = () => () => {},
+  shouldInvalidate = () => true, 
 } = {}) {
   let adapterInstance = adapter;
   let bindingPromise = null;
@@ -251,7 +253,7 @@ export function createProductShellController({
     for (const eventName of eventNames) {
       try {
         const listener = () => {
-          if (state.session !== session) return;
+          if (state.session !== session || !shouldInvalidate(eventName)) return;
           invalidate(eventName === 'CHAT_CHANGED' ? 'CHAT_CHANGED' : eventName, eventName === 'CHAT_CHANGED' ? 'CHAT_CHANGED' : 'SOURCE_INVALIDATED');
         };
         const remove = adapterInstance.subscribe(eventName, listener);
@@ -510,6 +512,8 @@ export function createProductShellController({
     mark(PRODUCT_SHELL_STATUS.RUNNING);
     state.capabilities.summary = 'running';
     const summaryRepository=Object.create(repository);
+    const validateBundle=summaryBundleValidator();
+    summaryRepository.commitBundle=async (...args)=>{validateBundle(args[0]);return repository.commitBundle(...args);};
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId]})).records;
     engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: sourceSplitUnits(), requireFloorSummaries, outputReserveUnits: 0, now });
     try {
@@ -652,7 +656,7 @@ export function createProductShellController({
     return { status: 'session_only', configured: Boolean(state.sessionApiKey) };
   }
 
-  async function remember(textValue, { people = '', category='events',subject='',target='',field='补充信息',eventRef='',context='当前聊天',term='直至用户修改' } = {}) {
+  async function remember(textValue, { people = '', category='events',subject='',target='',field='补充信息',eventRef='',context='当前聊天',term='直至用户修改',typedValue } = {}) {
     const content = text(textValue);
     if (!content || content.length > 12000) throw new Error('记事需要 1–12000 字');
     if (!repository || !state.session || state.status === 'invalidated' || activeTask) throw new Error('请先打开当前聊天，等待当前整理结束');
@@ -670,7 +674,7 @@ export function createProductShellController({
       if(['relationshipChanges','personaChanges'].includes(category)&&!target.trim())throw new Error('请填写关系对象');
       const fields={
         awarenessChanges:{eventRef,person:subject,knowledge:content,status:'known',via:'user_confirmed',learnedAt:{kind:'unknown'}},
-        entityFactChanges:{entity:subject,field:field||'补充信息',to:content},
+        entityFactChanges:{entity:subject,field:field||'补充信息',to:typedValue===undefined?content:typedValue},
         relationshipChanges:{from:subject,to:target,evidenceKind:'user_confirmed'},
         personaChanges:{subject,aspect:field||'变化',object:target,context,scope:'当前关系与场景',term},
         commitmentChanges:{subject:subject||people||'用户确认',content,state:'proposed'},

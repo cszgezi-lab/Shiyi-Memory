@@ -21,7 +21,7 @@ export function mountMemoryManagement({panel,app,run,host}){
   $('[data-more-batches]').addEventListener('click',()=>{limit+=50;paint(app.state);});
   function edit(id){const card=app.state.cards.find(c=>c.id===id);if(!card)return;editingId=id;$('[data-edit-text]').value=card.category==='entityFactChanges'?readable(card.to??card.value??card.newValue):recordDescription(card);$('[data-edit-memory]').hidden=false;$('[data-edit-memory]').scrollIntoView({block:'nearest'});}
   function paint(state){
-    const grid=$('[data-memory-categories]');grid.innerHTML=MEMORY_CATEGORIES.map(key=>`<button type="button" data-memory-category="${key}" ${currentCategory.value===key?'class="active"':''}><strong>${CATEGORY_LABELS[key]}</strong><small>${state.cards.filter(c=>c.category===key).length} 条</small></button>`).join('');
+    const grid=$('[data-memory-categories]');grid.innerHTML=MEMORY_CATEGORIES.map(key=>`<button type="button" data-memory-category="${key}" ${currentCategory.value===key?'class="active"':''}><strong>${CATEGORY_LABELS[key]}</strong><small>${state.cards.filter(c=>!c.customModuleId&&c.category===key).length} 条</small></button>`).join('');
     for(const b of grid.querySelectorAll('button'))b.addEventListener('click',()=>selectCategory(b.dataset.memoryCategory));
     const select=$('[data-note-event]'),value=select.value;select.innerHTML='<option value="">请选择事件</option>'+state.cards.filter(c=>c.category==='events').map(c=>`<option value="${esc(c.id)}">${esc(recordDescription(c).slice(0,60))}</option>`).join('');select.value=value;
     const statusNames={queued:'待处理',running:'处理中',saved:'已保存',failed:'失败，可重试',interrupted:'中断，可重试',deleted:'已删除'};
