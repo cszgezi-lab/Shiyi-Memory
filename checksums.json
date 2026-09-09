@@ -18,10 +18,10 @@
   "src/product-memory.js": "08d7f24888552e51e450fc7eb75f5da16c46774acea04f338822930518319534",
   "src/product-network.js": "1b1c450e7a9cb0ce6e47b1f95c2f432bd22f2749556edd4b576c438663e18616",
   "src/product-host-ui.js": "ede456d3c8086aac7a9b157b2bbf7be83c0c2b2175e177c533f592f3a7d44a33",
-  "src/product-release.js": "8164ff632e0e766276ff6fccafbb7fab3f4807c5abef407663b0e4f8098ea45a",
-  "manifest.json": "70aeac6ad679bc84803e0db92c91d4894a524f1750c6f3db0dd5c44e55ff4c43",
+  "src/product-release.js": "7f3b895345d50e04003c3d281d7b19e307ab186737cd81e4d700a858a5cfeb40",
+  "manifest.json": "c8fa6d3a5ca796180e84218a3a7dec9511ee5fce235f7805bc2fbed330ac1db0",
   "ui/product-view.css": "271f445b31983749f525d1f394daffb1bd2351521434998cbf658af405dff9dc",
-  "README.md": "d1b3b1388209288632d435f9477f86be18b0c2e04c3ec94127288c1b1adcc0d4",
-  "CHANGELOG.md": "3d7cd536ae75b779dba2ab7c707ccb9c83f683320c77d470a74c718da3e31d7f",
+  "README.md": "a9180e3a986e17c802a655edf2b182b7b5a4b3ed64eaa30e4c80dc21029fa78d",
+  "CHANGELOG.md": "447d94943d1bc3682f4a9462e502698987d20ff6ad840addd3beef0b0d562e5d",
   ".gitattributes": "cc641658d855cb2ba3f269f3248111fa65fa54225c87b56c5c8e98b6d3d574bf"
 }
