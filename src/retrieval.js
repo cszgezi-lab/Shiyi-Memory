@@ -400,6 +400,7 @@ export async function retrieveMemories({
   query,
   limit = 20,
   entityIds = [],
+  tagLanes = [],
   filter,
   vectorAdapter = null,
   reranker = null,
@@ -415,6 +416,8 @@ export async function retrieveMemories({
   throwIfAborted(signal);
   const startedAt = monotonicNow();
   const local = index.search(query, { limit: Math.max(limit, rerankOptions.maxCandidates ?? limit), entityIds, filter });
+  const lanes=tagLanes.slice(0,4).filter(l=>typeof l.tag==='string'&&l.tag.length>=2&&Number.isSafeInteger(l.limit)&&l.limit>0).map(l=>({...l,limit:Math.min(l.limit,20)}));
+  const tagged=lanes.map(lane=>({...lane,candidates:index.search(query,{limit:lane.limit,entityIds,filter:r=>(!filter||filter(r))&&Array.isArray(r.tags)&&r.tags.includes(lane.tag)})}));
   const onlineStartedAt = monotonicNow();
   const finiteTimeout = (value, fallback) => Number.isFinite(value) && value > 0 ? value : fallback;
   const vectorDeadline = finiteTimeout(vectorTimeoutMs ?? vectorOptions.timeoutMs ?? vectorOptions.deadlineMs ?? vectorAdapter?.timeoutMs, DEFAULT_VECTOR_TIMEOUT_MS);
@@ -426,9 +429,11 @@ export async function retrieveMemories({
   const remaining = () => explicitTotal ? Math.max(0, onlineBudget - (monotonicNow() - onlineStartedAt)) : Infinity;
   const stageTimeout = (requested, fallback) => Math.min(Number.isFinite(requested) && requested > 0 ? requested : fallback, remaining());
   const byId = new Map(local.map((candidate) => [String(candidate.id), candidate]));
+  for(const lane of tagged)for(const item of lane.candidates){const candidate=byId.get(String(item.id))??item;candidate.channels=[...new Set([...candidate.channels,'tag_local'])];byId.set(String(item.id),candidate);}
   const trace = {
     query: String(query ?? ''),
     local: { status: 'passed', count: local.length, channel: 'bm25_cjk+entity_exact' },
+    tags: {status:lanes.length?'active':'not_triggered',lanes:tagged.map(l=>({tag:l.tag,limit:l.limit,local:l.candidates.length}))},
     vector: { status: vectorAdapter ? 'pending' : 'disabled' },
     rerank: { status: reranker ? 'pending' : 'disabled', calls: 0 },
     fusion: { algorithm: 'weighted_rrf', rankConstant: 60, weights: { local: 1, vector: 1 } },
@@ -445,7 +450,7 @@ export async function retrieveMemories({
       if (typeof search !== 'function') throw new Error('vector adapter has no search function');
       const timeoutMs = stageTimeout(vectorTimeoutMs ?? vectorOptions.timeoutMs ?? vectorOptions.deadlineMs ?? vectorAdapter.timeoutMs, DEFAULT_VECTOR_TIMEOUT_MS);
       if (timeoutMs <= 0) throw new Error('shared deadline exceeded');
-      const vectorResults = await invokeWithDeadline(search.bind(vectorAdapter), { query, limit, candidates: local.map((candidate) => candidate.id) }, {
+      const vectorResults = await invokeWithDeadline(search.bind(vectorAdapter), { query, limit, candidates: [...byId.keys()], tagLanes:lanes }, {
         signal,
         timeoutMs,
         label: 'vector search',
@@ -511,10 +516,21 @@ export async function retrieveMemories({
     const localRank = localRanks.get(id);
     const vectorRank = vectorRanks.get(id);
     candidate.localScore = candidate.score;
-    candidate.fusionScore = (localRank ? localWeight / (rankConstant + localRank) : 0) + (vectorRank ? vectorWeight / (rankConstant + vectorRank) : 0);
+    const tagRank=tagged.reduce((best,lane)=>{const n=lane.candidates.findIndex(c=>String(c.id)===id);return n<0?best:Math.min(best,n+1);},Infinity);
+    candidate.fusionScore = (localRank ? localWeight / (rankConstant + localRank) : 0) + (vectorRank ? vectorWeight / (rankConstant + vectorRank) : 0) + (Number.isFinite(tagRank)?0.5*localWeight/(rankConstant+tagRank):0);
     candidate.score = candidate.fusionScore;
     return candidate;
   }).sort((a, b) => b.score - a.score || (b.localScore ?? 0) - (a.localScore ?? 0) || String(a.id).localeCompare(String(b.id)));
+  if(lanes.length){
+    const capacity=Math.max(1,Math.min(rerankOptions.maxCandidates??limit,limit));
+    const reserved=[];
+    for(const lane of lanes){const hit=candidates.find(c=>c.record?.tags?.includes(lane.tag)&&!reserved.some(r=>r.id===c.id));if(hit&&reserved.length<Math.floor(capacity/2))reserved.push(hit);}
+    const ids=new Set(reserved.map(c=>c.id));
+    const baseline=candidates.filter(c=>!ids.has(c.id)).slice(0,capacity-reserved.length);
+    const pool=[...baseline,...reserved],pooled=new Set(pool.map(c=>c.id));
+    candidates=[...pool,...candidates.filter(c=>!pooled.has(c.id))];
+    trace.tags.reserved=reserved.length;
+  }
   throwIfAborted(signal);
   if (reranker && remaining() <= 0) {
     trace.rerank = { status: 'skipped', calls: 0, reason: 'shared_deadline' };

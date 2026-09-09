@@ -45,5 +45,5 @@ export function editedMemoryFields(category,record,text){
   const body=text.trim();
   if(category==='entityFactChanges')return {to:body,value:body,newValue:body};
   if(category==='awarenessChanges')return {knowledge:body,fact:body,content:body};
-  return {description:body,content:body,text:body,summary:body};
+  return {description:body,content:body,text:body,summary:body,recallSummary:null,...(body!==(record.description??record.content??record.text)?{entities:[]}:{} )};
 }

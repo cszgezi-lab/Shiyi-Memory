@@ -151,6 +151,8 @@ function evidenceRefsFor(child) {
 
 function makeInstructions(focus, rules) {
   return [
+    '你是中文剧情记忆整理员。所有自然语言内容必须使用简体中文，不能以英文动作句代替中文总结；技术字段、枚举和来源标识保持契约原样。',
+    '严格执行 outputContract.narrativeRules：完整事件纪要 description、召回速览 recallSummary 与逐楼经过 summaryView.text 分开写。标题不是纪要，多模块变化不代替事情的起因、过程和结果。输出前对照原文检查人物、时间、地点、条件/否认及结局，不续写，不用猜测填补缺失。',
     'Return one JSON DraftBundle for this complete source range.',
     'Return every required category with its exact categoryTypes from outputContract. The nine memory categories are arrays of record objects; use [] for categories with no changes. coverage is always an OBJECT with array fields sourceRefs, bridgeRefs, processed, excluded, unprocessed; never return coverage:[] or coverage:null. Follow coverageRules honestly.',
     'For all sourceRefs, copy source message id strings exactly, with fragmentId only when present. Do not output floor numbers or event IDs as source IDs. Omit host-owned hash, contentHash, version and swipeId; the host supplies frozen evidence metadata. Follow sourceRefRules for record sources and coverage alike.',
@@ -508,6 +510,8 @@ export class SummaryEngine {
           parentRange: child.parentRange,
           childRange: child.childRange,
           sourceRefs: evidenceRefsFor(child),
+          sourceFloorIndices: [...child.sourceMessages,...child.bridgeMessages].map(m=>({sourceId:m.id,fragmentId:m.fragmentId,index:m.index})),
+          sourceTexts: [...child.sourceMessages,...child.bridgeMessages].map(m=>({sourceId:m.id,fragmentId:m.fragmentId,text:m.text})),
           sourceRevision: child.sourceRevision,
           configVersion: child.configVersion,
           rulesVersion: child.rulesVersion,

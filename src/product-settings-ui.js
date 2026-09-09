@@ -36,6 +36,9 @@ const copy = {
   worldMode:['故事类型','同人的原作设定不等于当前聊天已经发生的事实。'],
   knowledgeEnabled:['检索已导入资料','全局资料库作为原作参照，不会合并其他聊天的经历。'],
   aliases:['人物别名','每行填写：主名=别名,别名。'],
+  dictionaryEnabled:['使用自动字典','总结和资料分析时生成；别称有歧义时不自动归并。'],
+  tagRecallEnabled:['标签辅助召回','结合本轮相关主题补充候选，仍保留普通语义检索。'],
+  tagCandidateLimit:['每个标签初选几条','与普通候选合并去重，再统一重排。'],
   externalStatePaths:['只读变量路径','读取指定的 chatMetadata 或 lastMessageExtra 字段，不改写 MVU。'],
   storyDate:['故事日期参照（兼容设置）','未知留空，不使用现实日期代替剧情日期。'],
   deadlineMs:['模型请求超时（毫秒）','120000 即 2 分钟。'],
@@ -54,7 +57,8 @@ export function setting(key, label, help, placeholder = '') {
   else if (d.type === 'enum') input = `<select ${attr}>${d.values.map(v => `<option value="${esc(v)}" ${v === d.defaultValue ? 'selected' : ''}>${esc(names[v] ?? v)}</option>`).join('')}</select>`;
   else if (['recordingRules','aliases','externalStatePaths'].includes(key)) input = `<textarea rows="4" ${attr} maxlength="${d.maxLength}">${esc(d.defaultValue)}</textarea>`;
   else input = `<input ${attr} type="${['integer','number'].includes(d.type) ? 'number' : key === 'storyDate' ? 'date' : 'text'}" ${d.min !== undefined ? `min="${d.min}" max="${d.max}" step="${d.type === 'integer' ? 1 : 'any'}"` : `maxlength="${d.maxLength}"`} value="${esc(d.defaultValue)}" placeholder="${esc(placeholder)}" autocomplete="off">`;
-  return `<label class="sy-field ${d.type === 'boolean' ? 'sy-toggle' : ''}"><span>${esc(name)}${hint ? `<small class="sy-help">${esc(hint)}</small>` : ''}</span>${input}</label>`;
+  const html=`<label class="sy-field ${d.type === 'boolean' ? 'sy-toggle' : ''}"><span>${esc(name)}${hint ? `<small class="sy-help">${esc(hint)}</small>` : ''}</span>${input}</label>`;
+  return key==='aliases'?`<details><summary>手动字典文本（高级）</summary>${html}</details>`:html;
 }
 const fields = keys => keys.map(key => setting(key)).join('');
 const advanced = (title, keys) => `<details class="sy-advanced"><summary>${title}</summary>${fields(keys)}</details>`;
@@ -63,15 +67,15 @@ const card = (title, body) => `<div class="sy-card"><h4>${title}</h4>${body}</di
 export const SETTING_GROUPS = Object.freeze({
   recording: ['messageCount','autoSummaryEnabled','autoSummaryEvery','recordingRules','focusMode','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
   injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','injectionPosition','injectionRole'],
-  retrieval: ['vectorEnabled','rerankEnabled','retrievalCandidateLimit','rerankMaxCandidates','bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant','distributedEnabled','distributedStrategy','distributedChannel','retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs'],
-  world: ['worldMode','knowledgeEnabled','aliases','externalStatePaths','storyDate'],
+  retrieval: ['vectorEnabled','rerankEnabled','tagRecallEnabled','tagCandidateLimit','retrievalCandidateLimit','rerankMaxCandidates','bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant','distributedEnabled','distributedStrategy','distributedChannel','retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs'],
+  world: ['worldMode','knowledgeEnabled','dictionaryEnabled','aliases','externalStatePaths','storyDate'],
 });
 export function settingsSection(kind) {
   const keys = SETTING_GROUPS[kind];
   if (kind === 'recording') return card('记录偏好', fields(keys.slice(0,5)) + advanced('总结高级设置', keys.slice(5)));
   if (kind === 'injection') return card('把记忆交给 AI', fields(keys.slice(0,6)) + advanced('注入位置', keys.slice(6)));
-  if (kind === 'retrieval') return card('召回设置', fields(keys.slice(0,4)) + advanced('关键词与融合', keys.slice(4,9)) + advanced('分类检索', keys.slice(9,12)) + advanced('超时保护', keys.slice(12)));
-  return card('世界与资料', fields(keys.slice(0,3)) + advanced('变量与日期兼容设置', keys.slice(3)));
+  if (kind === 'retrieval') return card('召回设置', fields(['vectorEnabled','rerankEnabled','retrievalCandidateLimit','rerankMaxCandidates']) + advanced('标签辅助召回',['tagRecallEnabled','tagCandidateLimit']) + advanced('关键词与融合',['bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant']) + advanced('分类检索',['distributedEnabled','distributedStrategy','distributedChannel']) + advanced('超时保护',['retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs']));
+  return card('世界与资料', fields(['worldMode','knowledgeEnabled','dictionaryEnabled','aliases']) + advanced('变量与日期兼容设置',['externalStatePaths','storyDate']));
 }
 
 export const API_INFO = Object.freeze({

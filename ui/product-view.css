@@ -129,3 +129,8 @@
 #shiyi-product-shell .sy-log-detail>strong {font-weight:500;}
 #shiyi-product-shell .sy-log-wide>strong {grid-column:1/-1;}
 #shiyi-product-shell .sy-record-tabs button.active {background:color-mix(in srgb,var(--sy-accent) 15%,transparent);border-color:var(--sy-accent);}
+#shiyi-product-shell .sy-narrative {white-space:pre-wrap;line-height:1.8;font-size:15px;overflow-wrap:anywhere;}
+#shiyi-product-shell [data-cards] h4 {font-size:16px;line-height:1.6;margin:12px 0 6px;font-weight:600;}
+#shiyi-product-shell .sy-dictionary-row {padding:12px 0;border-bottom:1px solid #8884;overflow-wrap:anywhere;}
+#shiyi-product-shell .sy-dictionary-row p {margin:8px 0;font-size:14px;}
+#shiyi-product-shell .sy-dictionary-row>.sy-tag {margin-left:8px;}

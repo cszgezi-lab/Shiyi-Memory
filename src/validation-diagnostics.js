@@ -1,7 +1,7 @@
 // Shared by the validator, local diagnostics and UI. Only schema vocabulary
 // and numeric row positions may cross this boundary, never model values.
 const categories = 'events|awarenessChanges|entityFactChanges|relationshipChanges|personaChanges|commitmentChanges|performanceHints|summaryView|conflicts';
-const fields = 'id|sourceRefs|sources|state|status|epistemicStatus|perspective|via|learnedAt|eventRef|eventRefs|eventId|eventIds|sourceEventId|evidenceKind|expression|response|mutualConfirmation|publicScope|object|context|scope|expiresAt|term';
+const fields = 'id|sourceRefs|sources|state|status|epistemicStatus|perspective|via|learnedAt|eventRef|eventRefs|eventId|eventIds|sourceEventId|evidenceKind|expression|response|mutualConfirmation|publicScope|object|context|scope|expiresAt|term|title|description|recallSummary|entities|tags';
 const index = '\\[(?:0|[1-9]\\d{0,6})\\]';
 const pathPattern = new RegExp(`^(?:bundle|scope|operationId|expectedRevision|(?:${categories})(?:${index}(?:\\.(?:${fields})(?:${index})?)?)?|coverage(?:\\.(?:sourceRefs|bridgeRefs|processed|excluded|unprocessed)(?:${index})?)?)$`);
 const types = new Set(['array','object','string','number','boolean','null','undefined']);

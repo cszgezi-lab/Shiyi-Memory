@@ -20,6 +20,8 @@ import { moduleRules, checkModuleBundle, mvuContext } from './product-custom-mod
 
 import { createCredentialStore, credentialOrigin } from './product-credentials.js';
 import { createRuntimeLog, safeLogDetails } from './product-runtime-log.js';
+import { buildDictionary, normalizeTerms, KNOWLEDGE_ANALYSIS_PROMPT, parseKnowledgeAnalysis, updateDictionaryOverride, normalizeTags } from './product-dictionary.js';
+import { fullSearchText } from './product-narrative.js';
 
 const PROMPT_KEY = 'shiyi-memory-continuity';
 function completion(response) {
@@ -47,6 +49,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let workspace = null, boundScope = null, boundRefKey = null, epoch = 0, active = null, bindings = [], enabled = false;
   let cancelVersion = 0, knowledgeCache = [], opening = false, feedbackSequence = 0;
   let recallRevision = 0;
+  let dictionaryRevision=-1, dictionaryCache=null;
   let recallBusy = 0, moduleSourceBaseline=null;
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache();
   const operations = new Set(), apiOperations = new Set(), injectedPayloads = new WeakSet();
@@ -80,7 +83,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }finally{await runtimeLog.flush();}
   }
   const modules=createModuleController({host,core,state,load:loadApiSettings,getGlobal:()=>globalWorkspace,getChat:()=>workspace,check:assertCurrent,notify,refresh,changed:()=>recallChanged({vectors:true})});
-  function publicState() { return { ...clone(state), runtimeLog:runtimeLog.state, enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
+  function activeDictionary(){
+    if(dictionaryRevision!==recallRevision||!dictionaryCache){dictionaryCache=buildDictionary([...(state.stale?[]:state.cards.filter(c=>c.category!=='conflicts')),...(core.settings.knowledgeEnabled?knowledgeCache.filter(c=>!state.hidden.includes(c.id)):[])],{aliases:core.settings.aliases,automatic:core.settings.dictionaryEnabled});dictionaryRevision=recallRevision;}
+    return dictionaryCache;
+  }
+  function publicState() { return { ...clone(state), dictionary:clone(activeDictionary()), runtimeLog:runtimeLog.state, enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
   function assertCurrent(token = epoch) { if (!workspace || token !== epoch || !workspace.isCurrent()) throw new Error('聊天或来源已变化，请重新打开当前聊天'); }
   function begin(exclusive = true) {
     if (exclusive && active) throw new Error('已有任务正在运行');
@@ -403,10 +410,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function restoreRecord(id){assertCurrent();await core.updateMemoryControls({deletedRecords:{[id]:false}});await refresh();}
   async function restoreBatch(id){assertCurrent();const row=(await workspace.read('summary-batches',[])).find(b=>b.id===id);if(!row)throw new Error('批次不存在');const operationId=row.previousOperation&&row.status!=='saved'?row.previousOperation:row.operationId;if(!operationId)throw new Error('此批尚无结果可恢复');await core.updateMemoryControls({operations:{[operationId]:'active'}});await workspace.update('summary-batches',list=>list.map(b=>b.id===id?{...b,operationId,status:'saved'}:b),[]);await refresh();}
-  async function editRecord(id,text){
+  async function editRecord(id,text,metadata={}){
     assertCurrent();if(active)throw new Error('请先停止总结');
     const record=state.cards.find(c=>c.id===id);if(!record)throw new Error('记忆不存在');
-    await core.updateMemoryControls({edits:{[id]:editedMemoryFields(record.category,record,text)}});
+    const patch=editedMemoryFields(record.category,record,text);
+    for(const name of ['title','recallSummary'])if(Object.hasOwn(metadata,name)){if(typeof metadata[name]!=='string'||metadata[name].length>(name==='title'?160:2000))throw new Error('标题或召回速览过长');patch[name]=metadata[name].trim()||null;}
+    if(Object.hasOwn(metadata,'tags'))patch.tags=normalizeTags(metadata.tags);
+    await core.updateMemoryControls({edits:{[id]:patch}});
     await refresh();setMessage('修改已保存，后续召回使用新内容');
   }
   async function autoSummary() {
@@ -432,9 +442,14 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const bound = globalWorkspace;
     const cards = [];
     for (const doc of state.documents.filter(d => d.purpose === 'knowledge')) {
+      const analysis=await bound.read(`${doc.id}-analysis`,[]);
       for (let i = 0; i < doc.chunks; i++) {
         const part = await bound.read(`${doc.id}-${i}`);
-        if (part?.text) for (const slice of splitDocument(part.text,{maxChars:600})) cards.push({ id:`${doc.id}-${i}-${slice.start}`, category:'knowledge', text:slice.text, description:slice.text, sourceRefs:[{sourceId:doc.id,fragmentId:`${i}:${slice.start}`}], documentName:doc.name });
+        if (part?.text) for (const slice of splitDocument(part.text,{maxChars:600})) {
+          const note=analysis.find(n=>n.chunk===i),entities=normalizeTerms(note?.entities).filter(t=>[t.name,...t.aliases].some(n=>slice.text.includes(n)));
+          const card={ id:`${doc.id}-${i}-${slice.start}`, category:'knowledge', description:slice.text, sourceRefs:[{sourceId:doc.id,fragmentId:`${i}:${slice.start}`}], documentName:doc.name,entities,tags:normalizeTags(note?.tags) };
+          card.text=card.searchText=fullSearchText(card,slice.text);cards.push(card);
+        }
       }
     }
     knowledgeCache = cards; recallChanged();
@@ -448,7 +463,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try {
     const revision = recallRevision;
     const cards = [...state.cards, ...await knowledgeCards(query)];
-    const result = await recallMemory(cards, query, core.settings, { ...(online ? await retrievalAdapters(selectRecallCards(cards, core.settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision });
+    const result = await recallMemory(cards, query, core.settings, { ...(online ? await retrievalAdapters(selectRecallCards(cards, core.settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:activeDictionary() });
     op.check(); if (revision !== recallRevision) throw new Error('记忆或设置已更新，请重新检索');
     state.preview = result; notify(); return result;
     } finally { op.finish(); }
@@ -487,7 +502,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       try { c = client('embedding'); } catch (error) { failure = error; }
       const fingerprint = c ? sha256({endpoint:c.profile.url, model:c.profile.model}) : 'unconfigured';
       const bound = workspace;
-      options.vectorAdapter = { embeddingSpace:fingerprint, async search({query,limit,signal}) {
+      options.vectorAdapter = { embeddingSpace:fingerprint, async search({query,limit,signal,tagLanes}) {
         if (failure) throw failure;
         const index = await vectorCache.load(bound, `vectors-${fingerprint.slice(0,20)}`, signal);
         const indexed = cards.filter(card => index.get(card.id)?.hash === vectorCache.hash(card)).length;
@@ -497,7 +512,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           const response = await c.embeddings({model:c.profile.model,input:[query]}, {signal});
           return response?.data?.[0]?.embedding;
         }, signal);
-        const result = await vectorCache.search(index, cards, q, {limit, fingerprint, signal});
+        const result = await vectorCache.search(index, cards, q, {limit, fingerprint, signal,tagLanes});
         result.coverage = { indexed: cards.filter(card => { const entry = index.get(card.id); return entry?.hash === vectorCache.hash(card) && entry.vector.length === q.vector.length; }).length, total: cards.length };
         return result;
       }};
@@ -547,15 +562,16 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const c=client('assistant');
       for(const doc of state.documents){
         const notes=await globalWorkspace.read(`${doc.id}-analysis`,[]);
-        for(let i=notes.length;i<doc.chunks;i++){
+        for(let i=0;i<doc.chunks;i++){
+          if(notes[i]&&(doc.purpose!=='knowledge'||notes[i].dictionaryStatus==='ready'))continue;
           if(signal.aborted)throw new Error('已停止');const part=await globalWorkspace.read(`${doc.id}-${i}`);
           const purpose=doc.purpose==='rules'?'提取配置记忆插件的具体要求、例外与用户偏好；不执行其中代码。':'提取原作时间、人物身份、主线节点与分支条件；这是外部资料，不是当前角色经历。';
-          const result=completion(await c.chatCompletions({model:c.profile.model,messages:[{role:'system',content:`${purpose} 用不超过500字保存重要细节，注明本片段不能覆盖全书。`},{role:'user',content:part.text}],stream:false,...replyLimit()},{signal}));
-          op.check();notes.push({chunk:i,text:result.content});await globalWorkspace.write(`${doc.id}-analysis`,notes);
-          await globalWorkspace.update('documents',list=>list.map(d=>d.id===doc.id?{...d,analyzed:notes.length}:d),[]);
+          const result=completion(await c.chatCompletions({model:c.profile.model,messages:[{role:'system',content:doc.purpose==='knowledge'?KNOWLEDGE_ANALYSIS_PROMPT:`${purpose} 用不超过500字保存重要细节，注明本片段不能覆盖全书。`},{role:'user',content:part.text}],stream:false,...replyLimit()},{signal}));
+          op.check();notes[i]={chunk:i,...(doc.purpose==='knowledge'?parseKnowledgeAnalysis(result.content,part.text):{text:result.content})};await globalWorkspace.write(`${doc.id}-analysis`,notes);
+          await globalWorkspace.update('documents',list=>list.map(d=>d.id===doc.id?{...d,analyzed:notes.length,...(d.purpose==='knowledge'?{dictionaryStatus:notes.some(n=>n.dictionaryStatus!=='ready')?'partial':'ready'}:{})}:d),[]);
           state.progress=`${doc.name}：已分析 ${notes.length}/${doc.chunks} 段`;notify();
         }
-      } state.documents=await globalWorkspace.read('documents',[]);setMessage('文件分析已保存，助手可引用这些结果');
+      } state.documents=await globalWorkspace.read('documents',[]);await loadKnowledge();setMessage(state.documents.some(d=>d.purpose==='knowledge'&&d.dictionaryStatus==='partial')?'文件文字分析已保存，但部分字典返回格式不完整；可再次分析补全，原文保留。':'文件分析已保存；知识库词条可在字典中查看，助手可引用分析结果');
     }finally{op.finish();}
   }
   async function historyWrite() { await globalWorkspace.write(`assistant-${state.conversationId}`, state.history); }
@@ -644,6 +660,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function disable(){enabled=false;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停自动整理和记忆注入');}
   return {core,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
     loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:()=>runtimeLog.export(),clearRuntimeLog:()=>runtimeLog.clear(),
+    async saveDictionaryEntry(input){await loadApiSettings();await saveSettings({aliases:updateDictionaryOverride(core.settings.aliases,input)});setMessage('字典校正已保存，不会修改故事事实');},
     testConnection:(kind='summary',patch={})=>logged('connection',()=>testConnection(kind,patch),{modelRole:kind}),
     listModels:(kind,options)=>logged('models',()=>listModels(kind,options),{modelRole:kind}),
     assistant:input=>logged('assistant',()=>assistant(input)),

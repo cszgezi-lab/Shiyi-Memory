@@ -1,5 +1,6 @@
 import { ValidationError } from './errors.js';
 import { validationDetails, valueType } from './validation-diagnostics.js';
+import { normalizeTerms, normalizeTags } from './product-dictionary.js';
 import {
   asArray,
   asString,
@@ -48,7 +49,7 @@ export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
   }),
   requiredFields: Object.freeze(['scope(host-bound)', 'operationId(host-bound)', 'expectedRevision(host-bound)', 'schemaVersion', 'events', 'awarenessChanges', 'entityFactChanges', 'relationshipChanges', 'personaChanges', 'commitmentChanges', 'performanceHints', 'summaryView', 'conflicts', 'coverage']),
   fields: Object.freeze({
-    events: Object.freeze(['id', 'sourceRefs', 'subject', 'action|description', 'object', 'state', 'epistemicStatus', 'perspective']),
+    events: Object.freeze(['id', 'title', 'description', 'recallSummary', 'participants', 'location', 'temporal', 'sourceRefs', 'subject', 'action', 'object', 'state', 'epistemicStatus', 'perspective']),
     awarenessChanges: Object.freeze(['id', 'eventRef|eventRefs', 'actorId|person|audience', 'knowledge|fact|content', 'status', 'via', 'learnedAt', 'sourceRefs']),
     entityFactChanges: Object.freeze(['id', 'entity|entityId', 'field|key', 'to|value|newValue', 'epistemicStatus', 'sourceRefs']),
     relationshipChanges: Object.freeze(['id', 'from|subject', 'to|object', 'evidenceKind', 'epistemicStatus', 'sourceRefs']),
@@ -62,10 +63,19 @@ export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
   floorSummaryRules: Object.freeze({
     cardinality: 'One independent row for EACH sourceMessages item, including user and non-story messages; do not combine floors. bridgeMessages are context only and must not get rows.',
     floorIndex: 'Copy sourceMessages[i].index (absolute host floor, not position in this batch).',
-    text: 'A non-empty concise summary of that floor and its immediate process. For non-story content, briefly describe its purpose without inventing story facts.',
+    text: '使用简体中文，完整记下本楼发生的事情与过程：参与者、触发原因、行动或对话、结果及新信息；保留正文明确的时间、地点、关键数值。不是标题或一句标签。有实质内容的长楼通常需要一段或数段；短答和非剧情消息按实际信息量记录，不凑字。不得替下一楼回应或合并楼层。',
     sourceRefs: 'Exactly one object: {sourceId: sourceMessages[i].id}; also copy fragmentId when present. Never use the floor number as sourceId.',
     id: 'A unique string per summary row. Empty arrays are allowed in other categories but not in summaryView for a non-empty sourceMessages range.',
   }),
+  narrativeRules: Object.freeze({
+    language: '所有供用户阅读的标题、描述、摘要、人物变化及解释使用简体中文。JSON 字段名、枚举值、来源 ID 保持契约原样；人名、作品名及确需逐字保留的原话不强行翻译。不要用英文动作句夹杂中文人名。',
+    eventBody: 'events 是能独立读懂的事件纪要，不是主谓宾标签。title 是短标题；description 是完整经过，串起事情为何开始、谁在何处参与、各方具体做了或说了什么、如何转折、最后实际停在哪里。保留影响理解的约束、否认、承诺、取消、关键物品/数值、尚未解决之处。复杂事件通常需要约 150–450 个汉字，可按信息量增加；这是撰写参考而非硬性字数，简单事件不灌水，复杂事件不为了短而漏事。多模块不能替代这份纪要，也不要把一批全部压成一件事。',
+    eventMetadata: 'participants 填参与该事件的人物姓名数组，不把仅被提及的人算在场，更不由参与者推断知情者；location 填原文地点，未知用 null。temporal 使用 assertedAt（本次表述时）、occurredAt（事情发生时）、plannedFor（原定）、actualAt（实际完成）区分各时间，值为有依据的日期或中文时期描述，未知为 null。回忆旧事和当前讲述分开，不能把中学时往事当成本轮刚发生。',
+    brief: 'recallSummary 是独立的中文召回速览，通常 60–120 字，保留核心因果、人物、结论和必要条件/否认，不能只是标题。详细 description 必须同时写，二者不能互相替代。插件检索完整纪要，再在本轮预算内选择速览或展开经过。无需另一次模型调用。',
+    facts: '时间不明就保留未知或明确的相对先后，不套现实日期，不补造年月日。只有已知锚点才能换算昨天/明天；保留原话时紧邻标注其原语境。说过不等于做到、表达不等于双方确认、回忆/传闻不等于亲历；角色明确情绪可记，推断必须标明且不能当事实。结果为取消、未接受或尚未完成时必须写清。',
+    completeness: '同一次请求同时输出逐楼经过、跨楼事件纪要及其余人物/知情/关系等变化。按正文信息量而非偏好的题材决定详细程度；普通互动中出现的新细节也不能丢。对照本批每一楼检查首尾、人物、时间和结果是否遗漏，不按数组顺序猜来源，不输出思考过程。',
+  }),
+  retrievalMetadataRules: '每类记录可附 entities:[{name:"正式名称",aliases:["本条来源中明确同指的别称"],kind:"人物|地点|组织|物品|术语之一"}] 和 tags:["具体中文主题"]，不另建无来源的全局词典。自动随总结生成，名称与别称必须出现在该记录 sourceRefs 指向的文字内；不凭原作常识合并，不把“他/她/老师”等泛称当别名。tags 通常 2–5 个具体主题（例如借书归还、转校手续），不用“重要、普通、事件”等无区分度标签。标签只帮助检索，不决定知情或人物身份。summaryView 也可有 recallSummary 速览，但 text 仍保留逐楼完整经过。',
   enums: Object.freeze({
     eventState: Object.freeze(['proposed', 'attempted', 'accepted', 'completed', 'declined', 'canceled']),
     epistemicStatus: Object.freeze(['observed', 'user_asserted', 'character_claim', 'inferred', 'unknown']),
@@ -370,6 +380,10 @@ function validateRawBundleShape(source) {
           issues.push({path,reason:'type_mismatch',expectedType:'object',actualType:valueType(record)});
           return;
         }
+        for(const [name,expectedType] of [['title','string'],['description','string'],['recallSummary','string'],['entities','array'],['tags','array']]){
+          if(record[name]==null)continue;
+          if(valueType(record[name])!==expectedType){errors.push(`${path}.${name} must be a ${expectedType}`);issues.push({path:`${path}.${name}`,reason:'type_mismatch',expectedType,actualType:valueType(record[name])});}
+        }
         const refs=record.sourceRefs??record.sources;
         // Check supplied refs before normalization can silently discard bad
         // entries. Omitted optional sources keep the existing later checks.
@@ -449,6 +463,8 @@ export function bindDraftBundle(modelOutput, {
   parentRange = null,
   childRange = null,
   sourceRefs = [],
+  sourceFloorIndices = [],
+  sourceTexts = [],
   sourceRevision = null,
   configVersion = '1',
   rulesVersion = '1',
@@ -478,6 +494,13 @@ export function bindDraftBundle(modelOutput, {
       return matched ?? clone(ref);
     });
     delete next.sources;
+    // Display floors are host-derived metadata, never supplied by the model.
+    delete next.sourceFloors;
+    const floors=sourceFloorIndices.filter(m=>Number.isSafeInteger(m.index)&&m.index>=0&&next.sourceRefs.some(ref=>ref.sourceId===m.sourceId&&ref.fragmentId===m.fragmentId)).map(m=>m.index);
+    if(floors.length)next.sourceFloors=[...new Set(floors)].sort((a,b)=>a-b);
+    const evidence=sourceTexts.filter(m=>next.sourceRefs.some(r=>r.sourceId===m.sourceId&&r.fragmentId===m.fragmentId)).map(m=>m.text).join('\n');
+    if(next.entities!==undefined)next.entities=normalizeTerms(next.entities).filter(t=>evidence.includes(t.name)).map(t=>({...t,aliases:t.aliases.filter(a=>evidence.includes(a))}));
+    if(next.tags!==undefined)next.tags=normalizeTags(next.tags);
     return next;
   };
   const bindCategory = category => normalizedCategory(source[category],category).map((record,index)=>bindEvidence(record,category,index));
