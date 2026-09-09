@@ -44,6 +44,8 @@ export class LocalBM25Index {
     this.b = b;
     this.documents = new Map();
     this.docFrequency = new Map();
+    this.postings = new Map();
+    this.entityPostings = new Map();
     this.totalLength = 0;
     this._nextIndex = 0;
     for (const record of records) this.add(record);
@@ -55,8 +57,16 @@ export class LocalBM25Index {
     const tokens = tokenizeChinese(textOf(record));
     const frequencies = new Map();
     for (const token of tokens) frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
-    for (const token of frequencies.keys()) this.docFrequency.set(token, (this.docFrequency.get(token) ?? 0) + 1);
+    for (const token of frequencies.keys()) {
+      this.docFrequency.set(token, (this.docFrequency.get(token) ?? 0) + 1);
+      if (!this.postings.has(token)) this.postings.set(token, new Set());
+      this.postings.get(token).add(id);
+    }
     const document = { id, record: clone(record), tokens, frequencies, entities: entitiesOf(record), length: tokens.length };
+    for (const entity of document.entities) {
+      if (!this.entityPostings.has(entity)) this.entityPostings.set(entity, new Set());
+      this.entityPostings.get(entity).add(id);
+    }
     this.documents.set(id, document);
     this.totalLength += tokens.length;
     return id;
@@ -65,7 +75,16 @@ export class LocalBM25Index {
   remove(id) {
     const document = this.documents.get(id);
     if (!document) return false;
-    for (const token of document.frequencies.keys()) this.docFrequency.set(token, Math.max(0, (this.docFrequency.get(token) ?? 1) - 1));
+    for (const token of document.frequencies.keys()) {
+      const count = (this.docFrequency.get(token) ?? 1) - 1;
+      if (count > 0) this.docFrequency.set(token, count); else this.docFrequency.delete(token);
+      this.postings.get(token)?.delete(id);
+      if (!this.postings.get(token)?.size) this.postings.delete(token);
+    }
+    for (const entity of document.entities) {
+      this.entityPostings.get(entity)?.delete(id);
+      if (!this.entityPostings.get(entity)?.size) this.entityPostings.delete(entity);
+    }
     this.totalLength -= document.length;
     this.documents.delete(id);
     return true;
@@ -76,6 +95,27 @@ export class LocalBM25Index {
     return document ? clone(document.record) : null;
   }
 
+  /** Metadata-only changes must refresh knowledge/time without re-tokenizing. */
+  upsert(record) {
+    const id = candidateId(record, this._nextIndex);
+    const previous = this.documents.get(id);
+    if (!previous || textOf(previous.record) !== textOf(record)) {
+      this.add(record);
+      return previous ? 'reindexed' : 'added';
+    }
+    for (const entity of previous.entities) {
+      this.entityPostings.get(entity)?.delete(id);
+      if (!this.entityPostings.get(entity)?.size) this.entityPostings.delete(entity);
+    }
+    previous.record = clone(record);
+    previous.entities = entitiesOf(record);
+    for (const entity of previous.entities) {
+      if (!this.entityPostings.has(entity)) this.entityPostings.set(entity, new Set());
+      this.entityPostings.get(entity).add(id);
+    }
+    return 'metadata';
+  }
+
   search(query, { limit = 20, entityIds = [], filter = null } = {}) {
     const queryText = normalizeText(query);
     const queryTokens = tokenizeChinese(queryText);
@@ -84,7 +124,11 @@ export class LocalBM25Index {
     const documentCount = this.documents.size || 1;
     const averageLength = this.totalLength / documentCount || 1;
     const candidates = [];
-    for (const document of this.documents.values()) {
+    const matching = new Set();
+    for (const token of uniqueQueryTokens) for (const id of this.postings.get(token) ?? []) matching.add(id);
+    for (const entity of wantedEntities) for (const id of this.entityPostings.get(entity) ?? []) matching.add(id);
+    for (const id of matching) {
+      const document = this.documents.get(id);
       if (typeof filter === 'function' && !filter(document.record)) continue;
       let score = 0;
       const termMatches = [];
@@ -103,19 +147,21 @@ export class LocalBM25Index {
       candidates.push({
         id: document.id,
         score,
-        record: clone(document.record),
+        record: document.record,
         channels: [exactEntities.length ? 'entity_exact' : null, termMatches.length ? 'bm25_cjk' : null].filter(Boolean),
         termMatches,
         exactEntities,
       });
     }
     candidates.sort((a, b) => b.score - a.score || String(a.id).localeCompare(String(b.id)));
-    return candidates.slice(0, Math.max(0, limit));
+    // Only copy returned records, not the entire matching corpus.
+    return candidates.slice(0, Math.max(0, limit)).map(candidate => ({ ...candidate, record: clone(candidate.record) }));
   }
 }
 
-const DEFAULT_VECTOR_TIMEOUT_MS = 1500;
-const DEFAULT_RERANK_TIMEOUT_MS = 1500;
+const DEFAULT_VECTOR_TIMEOUT_MS = 4000;
+const DEFAULT_RERANK_TIMEOUT_MS = 4000;
+const monotonicNow = () => globalThis.performance?.now?.() ?? Date.now();
 
 async function invokeWithDeadline(fn, args, {
   signal,
@@ -360,13 +406,25 @@ export async function retrieveMemories({
   rerankOptions = {},
   vectorOptions = {},
   vectorTimeoutMs,
+  totalTimeoutMs,
   repository = null,
   scope = null,
   signal,
 } = {}) {
   if (!index || typeof index.search !== 'function') throw new ShiyiError('a local BM25 index is required', 'RETRIEVAL_INDEX_REQUIRED');
   throwIfAborted(signal);
+  const startedAt = monotonicNow();
   const local = index.search(query, { limit: Math.max(limit, rerankOptions.maxCandidates ?? limit), entityIds, filter });
+  const onlineStartedAt = monotonicNow();
+  const finiteTimeout = (value, fallback) => Number.isFinite(value) && value > 0 ? value : fallback;
+  const vectorDeadline = finiteTimeout(vectorTimeoutMs ?? vectorOptions.timeoutMs ?? vectorOptions.deadlineMs ?? vectorAdapter?.timeoutMs, DEFAULT_VECTOR_TIMEOUT_MS);
+  const rerankDeadline = finiteTimeout(rerankOptions.timeoutMs ?? rerankOptions.deadlineMs, DEFAULT_RERANK_TIMEOUT_MS);
+  // No mandatory three-second quality cutoff. An explicit total protection
+  // is optional; otherwise retain the configured allowance of both stages.
+  const explicitTotal = Number.isFinite(totalTimeoutMs) && totalTimeoutMs > 0;
+  const onlineBudget = explicitTotal ? totalTimeoutMs : (vectorAdapter ? vectorDeadline : 0) + (reranker ? rerankDeadline : 0);
+  const remaining = () => Math.max(0, onlineBudget - (monotonicNow() - onlineStartedAt));
+  const stageTimeout = (requested, fallback) => Math.min(Number.isFinite(requested) && requested > 0 ? requested : fallback, remaining());
   const byId = new Map(local.map((candidate) => [String(candidate.id), candidate]));
   const trace = {
     query: String(query ?? ''),
@@ -375,16 +433,21 @@ export async function retrieveMemories({
     rerank: { status: reranker ? 'pending' : 'disabled', calls: 0 },
     fusion: { algorithm: 'weighted_rrf', rankConstant: 60, weights: { local: 1, vector: 1 } },
     fallbacks: [],
+    timings: { localMs: onlineStartedAt - startedAt, vectorMs: 0, rerankMs: 0 },
+    deadline: { totalTimeoutMs: onlineBudget, scope: 'online_stages_shared', mode: explicitTotal ? 'explicit_total' : 'per_api_allowance' },
   };
   const localRanks = new Map(local.map((candidate, index) => [String(candidate.id), index + 1]));
   const vectorRanks = new Map();
   if (vectorAdapter) {
+    const stageStarted = monotonicNow();
     try {
       const search = typeof vectorAdapter === 'function' ? vectorAdapter : vectorAdapter.search;
       if (typeof search !== 'function') throw new Error('vector adapter has no search function');
+      const timeoutMs = stageTimeout(vectorTimeoutMs ?? vectorOptions.timeoutMs ?? vectorOptions.deadlineMs ?? vectorAdapter.timeoutMs, DEFAULT_VECTOR_TIMEOUT_MS);
+      if (timeoutMs <= 0) throw new Error('shared deadline exceeded');
       const vectorResults = await invokeWithDeadline(search.bind(vectorAdapter), { query, limit, candidates: local.map((candidate) => candidate.id) }, {
         signal,
-        timeoutMs: vectorTimeoutMs ?? vectorOptions.timeoutMs ?? vectorOptions.deadlineMs ?? vectorAdapter.timeoutMs ?? DEFAULT_VECTOR_TIMEOUT_MS,
+        timeoutMs,
         label: 'vector search',
       });
       if (!Array.isArray(vectorResults)) throw new Error('vector adapter returned a non-array');
@@ -427,9 +490,16 @@ export async function retrieveMemories({
       vectorRanks.clear();
       for (const [id, rank] of stagedRanks) vectorRanks.set(id, rank);
       trace.vector = { status: 'passed', count: vectorResults.length };
+      if (vectorResults.coverage) {
+        trace.vector.coverage = { indexed: vectorResults.coverage.indexed, total: vectorResults.coverage.total };
+        if (vectorResults.coverage.indexed < vectorResults.coverage.total) trace.fallbacks.push({ channel: 'vector', reason: 'partial_index' });
+      }
     } catch (error) {
+      throwIfAborted(signal);
       trace.vector = { status: 'fallback', reason: error.message };
       trace.fallbacks.push({ channel: 'vector', reason: error.message });
+    } finally {
+      trace.timings.vectorMs = monotonicNow() - stageStarted;
     }
   }
   const rankConstant = Number.isFinite(vectorOptions.rankConstant) ? Math.max(1, Number(vectorOptions.rankConstant)) : 60;
@@ -445,16 +515,25 @@ export async function retrieveMemories({
     candidate.score = candidate.fusionScore;
     return candidate;
   }).sort((a, b) => b.score - a.score || (b.localScore ?? 0) - (a.localScore ?? 0) || String(a.id).localeCompare(String(b.id)));
-  if (reranker) {
+  throwIfAborted(signal);
+  if (reranker && remaining() <= 0) {
+    trace.rerank = { status: 'skipped', calls: 0, reason: 'shared_deadline' };
+    trace.fallbacks.push({ channel: 'rerank', reason: 'shared_deadline' });
+  } else if (reranker) {
+    const stageStarted = monotonicNow();
     trace.rerank.calls = 1;
-    const reranked = await invokeReranker(reranker, query, candidates, rerankOptions, signal);
+    const reranked = await invokeReranker(reranker, query, candidates, { ...rerankOptions, timeoutMs: stageTimeout(rerankOptions.timeoutMs ?? rerankOptions.deadlineMs, DEFAULT_RERANK_TIMEOUT_MS) }, signal);
     candidates = reranked.candidates;
     trace.rerank = { status: reranked.status, calls: 1, reason: reranked.reason, scores: reranked.scores };
     if (reranked.status === 'fallback') trace.fallbacks.push({ channel: 'rerank', reason: reranked.reason });
+    trace.timings.rerankMs = monotonicNow() - stageStarted;
   }
   throwIfAborted(signal);
   let returned = candidates.slice(0, limit);
   if (repository) returned = await hydrateCandidates(returned, repository, scope, trace);
+  trace.timings.totalMs = monotonicNow() - startedAt;
+  trace.deadline.elapsedMs = monotonicNow() - onlineStartedAt;
+  trace.degraded = trace.fallbacks.length > 0;
   return { candidates: returned, trace };
 }
 

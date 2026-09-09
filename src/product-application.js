@@ -4,7 +4,9 @@ import { createWorkspace, importTextDocument, splitDocument } from './product-wo
 import { sourceKey } from './product-sources.js';
 import { PRODUCT_SETTING_REGISTRY, persistedProductSettings, validateProductPatch } from './product-settings.js';
 import { ProviderClient } from './provider.js';
-import { memoryCards, recallMemory, readable, recordDescription } from './product-memory.js';
+import { memoryCards, recallMemory, readable, recordDescription, selectRecallCards, prepareRecallIndex } from './product-memory.js';
+import { RecallIndexCache } from './recall-cache.js';
+import { ProductVectorCache } from './product-vector-cache.js';
 import { clone, sha256, makeId, estimateUnits, stableStringify } from './utils.js';
 import { createProductFetch } from './product-network.js';
 
@@ -30,6 +32,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let hostAdapter = adapter;
   let workspace = null, boundScope = null, epoch = 0, active = null, bindings = [], enabled = false;
   let cancelVersion = 0, knowledgeCache = [], opening = false;
+  let recallRevision = 0;
+  let recallBusy = 0;
+  const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache();
   const operations = new Set(), injectedPayloads = new WeakSet();
   const keys = { summary: '', assistant: '', embedding: '', rerank: '' };
   const core = controller ?? createProductShellController({ host, adapterFactory: h => (hostAdapter ??= new HostAdapter(h)), adapter, fetchImpl, onChange: () => notify(), runtimeRules: () => `当前故事日期：${core.settings.storyDate || '未知'}。外部权威状态（只读）：${externalState()}` });
@@ -46,6 +51,21 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       finish() { operations.delete(controller); if (active === controller) active = null; notify(); } };
   }
   function abortAll() { cancelVersion++; for (const op of operations) op.abort(); }
+  function recallChanged({ clear = false, vectors = false } = {}) {
+    recallRevision++; state.preview = null; state.actual = null;
+    if (clear) recallCache.clear();
+    if (clear || vectors) vectorCache.clear();
+  }
+  async function warmRecall() {
+    const token = epoch, revision = recallRevision;
+    const cards = [...state.cards, ...knowledgeCache.filter(card => !state.hidden.includes(card.id))];
+    try {
+      await prepareRecallIndex(recallCache, cards, core.settings, { scopeKey: stableStringify(boundScope), revision });
+      assertCurrent(token);
+    } catch (error) {
+      if (token === epoch && revision === recallRevision) throw error;
+    }
+  }
   function setMessage(message) { state.message = message; notify(); }
   function externalState() {
     const paths=String(core.settings.externalStatePaths??'').split('\n').map(p=>p.trim()).filter(Boolean);
@@ -67,6 +87,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function stopListeners() { for (const off of bindings.splice(0)) { try { await off(); } catch { /* tracked by host */ } } }
   function invalidate(reason) {
     epoch++; abortAll(); state.stale = true; state.preview = null; state.actual = null;
+    recallChanged({ clear: true });
     clearPrompt(); state.status = 'stale'; setMessage(reason === 'CHAT_CHANGED' ? '聊天已切换，点击开始使用以加载当前聊天' : '正文已修改，旧记忆已暂停注入；重新整理相关范围后恢复');
   }
   async function open() {
@@ -81,7 +102,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const result = await core.bindCurrentChat();
     checkOpen();
     if (result.status !== 'ready' || result.persistence !== 'available') throw new Error(core.state.errorMessage ?? '当前聊天尚未保存或宿主存储不可用');
-    epoch++; knowledgeCache = [];
+    epoch++; knowledgeCache = []; recallChanged({ clear: true });
     workspace = createWorkspace(core.workspace());
     if(boundScope&&stableStringify(boundScope)!==stableStringify(core.state.scope)){for(const key of Object.keys(keys))keys[key]='';core.setSessionCredential('');}
     boundScope = core.state.scope;
@@ -111,6 +132,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     await workspace.write('ui', { draft: state.draft, conversationId: state.conversationId, savedThrough: state.savedThrough });
   }
   async function refresh() {
+    recallBusy++; recallChanged();
+    try {
     const token = epoch, bound = workspace; assertCurrent(token);
     const view = await core.readMemoryView(); assertCurrent(token);
     const validity = await core.sourceValidity(view.records ?? {});
@@ -118,15 +141,19 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const valid = new Set(validity.validKeys);
     const filtered = Object.fromEntries(Object.entries(view.records ?? {}).map(([key, records]) => [key, Array.isArray(records) ? records.filter(record => (record.sourceRefs ?? []).every(ref => valid.has(sourceKey(ref)))) : records]));
     state.cards = memoryCards(filtered, { hidden: state.hidden });
+    recallChanged();
     state.sourceStatus = {invalid:validity.invalidKeys.length,unknown:validity.unknownKeys.length};
     const docs = await bound.read('documents', []); assertCurrent(token);
-    state.documents = docs; notify(); return view;
+    state.documents = docs; await warmRecall(); assertCurrent(token); notify(); return view;
+    } finally { recallBusy--; }
   }
   async function saveSettings(patch) {
     const token=epoch; assertCurrent(token); const validated = validateProductPatch(patch);
     const result = await core.saveSettings(validated);
     assertCurrent(token);
     if (result.status !== 'saved') throw new Error('设置尚未保存，请重试');
+    recallChanged({ vectors: Object.keys(validated).some(key => /^(embedding|vector)/.test(key)) });
+    await warmRecall(); assertCurrent(token);
     if (!core.settings.injectionEnabled) await clearPrompt();
     setMessage('设置已保存'); return result;
   }
@@ -173,6 +200,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     finally { op.finish(); }
   }
   async function loadKnowledge() {
+    recallBusy++; recallChanged();
+    try {
     const token = epoch, bound = workspace;
     const cards = [];
     for (const doc of state.documents.filter(d => d.purpose === 'knowledge')) {
@@ -181,27 +210,32 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         if (part?.text) for (const slice of splitDocument(part.text,{maxChars:600})) cards.push({ id:`${doc.id}-${i}-${slice.start}`, category:'knowledge', text:slice.text, description:slice.text, sourceRefs:[{sourceId:doc.id,fragmentId:`${i}:${slice.start}`}], documentName:doc.name });
       }
     }
-    assertCurrent(token); knowledgeCache = cards;
+    assertCurrent(token); knowledgeCache = cards; recallChanged(); await warmRecall();
+    } finally { recallBusy--; }
   }
-  async function knowledgeCards() { return core.settings.knowledgeEnabled ? knowledgeCache : []; }
+  async function knowledgeCards() { return core.settings.knowledgeEnabled ? knowledgeCache.filter(card => !state.hidden.includes(card.id)) : []; }
   async function preview(query, { online = false } = {}) {
     assertCurrent(); if(state.stale) throw new Error('正文已修改，先重新整理');
+    if (recallBusy) throw new Error('记忆正在更新，请稍后检索');
     const op=begin(false);
     try {
+    const revision = recallRevision;
     const cards = [...state.cards, ...await knowledgeCards(query)];
-    const result = await recallMemory(cards, query, core.settings, { ...(online ? await retrievalAdapters(cards) : {}),signal:op.signal });
-    op.check(); state.preview = result; notify(); return result;
+    const result = await recallMemory(cards, query, core.settings, { ...(online ? await retrievalAdapters(selectRecallCards(cards, core.settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision });
+    op.check(); if (revision !== recallRevision) throw new Error('记忆或设置已更新，请重新检索');
+    state.preview = result; notify(); return result;
     } finally { op.finish(); }
   }
   async function inject(payload) {
     if (!enabled || !core.settings.injectionEnabled || state.stale || !workspace?.isCurrent()) return;
     if (!payload || !Array.isArray(payload.messages) || injectedPayloads.has(payload)) return;
     const token = epoch;
+    const revision = recallRevision;
     const messages = payload.messages;
     const query = messages.filter(m=>m?.role==='user').slice(-2).map(m=>typeof m.content==='string'?m.content:'').join('\n');
     try {
       const result = await preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled });
-      assertCurrent(token); if (!enabled || !core.settings.injectionEnabled || !result.text) return;
+      assertCurrent(token); if (revision !== recallRevision || !enabled || !core.settings.injectionEnabled || !result.text) return;
       const role = ['system','user'].includes(core.settings.injectionRole) ? core.settings.injectionRole : 'system';
       const external=externalState();
       let content=result.text;
@@ -212,26 +246,38 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       if(core.settings.injectionPosition === 'start') messages.unshift(item); else messages.splice(Math.max(0,messages.length - 1), 0, item);
       injectedPayloads.add(payload);
       state.actual = { ...result, text:content, usedUnits:estimateUnits(content), previewOnly:false, sent:false, stage:'request_prepared', preparedAt:Date.now() };
+      if (result.degraded) state.message = '本轮记忆已加入；在线检索未完全可用，召回可能不完整，请查看本轮注入。';
       notify();
     } catch { setMessage('本轮记忆未加入请求：来源变化或检索失败'); }
   }
   async function retrievalAdapters(cards) {
     const options = {};
     if (core.settings.vectorEnabled) {
-      const c = client('embedding');
-      const fingerprint = sha256({endpoint:c.profile.url, model:c.profile.model});
+      // Setup failures belong to this optional lane, not the local baseline.
+      let c, failure;
+      try { c = client('embedding'); } catch (error) { failure = error; }
+      const fingerprint = c ? sha256({endpoint:c.profile.url, model:c.profile.model}) : 'unconfigured';
+      const bound = workspace;
       options.vectorAdapter = { embeddingSpace:fingerprint, async search({query,limit,signal}) {
-        const index = await workspace.read(`vectors-${fingerprint.slice(0,20)}`, {});
-        const response = await c.embeddings({model:c.profile.model,input:[query]}, {signal});
-        const q = response?.data?.[0]?.embedding;
-        if(!Array.isArray(q)||q.some(v=>!Number.isFinite(v))) throw new Error('查询向量无效');
-        const norm = v=>Math.sqrt(v.reduce((s,x)=>s+x*x,0));
-        return cards.flatMap(card=>{const entry=index[card.id]; if(entry?.hash!==sha256(card.text)||entry.vector?.length!==q.length) return []; const score=entry.vector.reduce((s,x,i)=>s+x*q[i],0)/(norm(entry.vector)*norm(q)); return Number.isFinite(score)?[{id:card.id,score,embeddingSpace:fingerprint}]:[];}).sort((a,b)=>b.score-a.score).slice(0,limit);
-      } };
+        if (failure) throw failure;
+        const index = await vectorCache.load(bound, `vectors-${fingerprint.slice(0,20)}`, signal);
+        const indexed = cards.filter(card => index.get(card.id)?.hash === vectorCache.hash(card)).length;
+        if (!cards.length) return [];
+        if (!indexed) throw new Error('向量索引尚未建立或已过期');
+        const q = await vectorCache.query(query, async () => {
+          const response = await c.embeddings({model:c.profile.model,input:[query]}, {signal});
+          return response?.data?.[0]?.embedding;
+        }, signal);
+        const result = await vectorCache.search(index, cards, q, {limit, fingerprint, signal});
+        result.coverage = { indexed: cards.filter(card => { const entry = index.get(card.id); return entry?.hash === vectorCache.hash(card) && entry.vector.length === q.vector.length; }).length, total: cards.length };
+        return result;
+      }};
     }
     if (core.settings.rerankEnabled) {
-      const c = client('rerank');
+      let c, failure;
+      try { c = client('rerank'); } catch (error) { failure = error; }
       options.reranker = async ({query,candidates,signal}) => {
+        if (failure) throw failure;
         const result = await c.rerank({model:c.profile.model,query,documents:candidates.map(x=>recordDescription(x.record??x)),top_n:candidates.length},{signal});
         if (!Array.isArray(result.results) || result.results.length !== candidates.length) throw new Error('重排结果数量不匹配');
         const seen=new Set();
@@ -252,16 +298,19 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         const ordered=[...data].sort((a,b)=>a.index-b.index); const dimension=ordered[0]?.embedding?.length;
         ordered.forEach((entry,n)=>{if(entry.index!==n||!dimension||entry.embedding?.length!==dimension||entry.embedding.some(v=>!Number.isFinite(v)))throw new Error('向量响应无效');});
         ordered.forEach((entry,n)=>{index[batch[n].id]={hash:sha256(batch[n].text),vector:entry.embedding};});
-        await workspace.write(key,index); state.progress=`已建索引 ${Math.min(i+16,todo.length)}/${todo.length}`; notify();
+        await workspace.write(key,index); op.check(); recallChanged({vectors:true}); state.progress=`已建索引 ${Math.min(i+16,todo.length)}/${todo.length}`; notify();
       }setMessage('向量索引已保存');
     } finally {op.finish();}
   }
   async function addDocument(input) { assertCurrent(); const op=begin(); try { const doc = await importTextDocument(op.workspace,input); op.check(); await refresh(); await loadKnowledge(); setMessage('文件已解析为文字并保存；尚未发送给模型'); return doc; } finally {op.finish();} }
   async function removeDocument(id) {
     assertCurrent(); const doc=state.documents.find(d=>d.id===id);if(!doc)return;
+    recallBusy++; recallChanged();
+    try {
     await workspace.update('documents',list=>list.filter(d=>d.id!==id),[]);
     for(let i=0;i<doc.chunks;i++)await workspace.remove(`${doc.id}-${i}`);
     await workspace.remove(`${doc.id}-analysis`); await refresh(); await loadKnowledge();setMessage('资料已删除，聊天原文未改变');
+    } finally { recallBusy--; }
   }
   async function analyzeDocuments() {
     assertCurrent(); const op=begin(), token=epoch, signal=op.signal;
@@ -355,15 +404,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function newConversation(){assertCurrent();if(active)throw new Error('请先停止助手');const id=makeId('conversation');state.conversationId=id;state.history=[];state.draft='';state.conversations=await workspace.update('conversations',list=>[...list,{id,title:`配置对话 ${list.length+1}`}],[{id:'main',title:'配置对话'}]);await saveUi();notify();}
   async function selectConversation(id){assertCurrent();if(active)throw new Error('请先停止助手');if(!state.conversations.some(c=>c.id===id))throw new Error('会话不存在');state.conversationId=id;state.history=await workspace.read(`assistant-${id}`,[]);await saveUi();notify();}
   async function deleteConversation(){assertCurrent();if(active)throw new Error('请先停止助手');await workspace.remove(`assistant-${state.conversationId}`);state.history=[];state.conversations=await workspace.update('conversations',list=>list.filter(c=>c.id!==state.conversationId),[]);await newConversation();setMessage('助手对话已删除，已应用设置和记忆未改变');}
-  async function hideRecord(id){assertCurrent();state.hidden=await workspace.update('hidden',list=>[...new Set([...list,id])],[]);await refresh();}
+  async function hideRecord(id){assertCurrent();recallBusy++;recallChanged();try{state.hidden=await workspace.update('hidden',list=>[...new Set([...list,id])],[]);await refresh();}finally{recallBusy--;}}
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
   async function stop(){abortAll();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
-  async function disable(){enabled=false;await stop();await stopListeners();await clearPrompt();setMessage('已暂停自动整理和记忆注入');}
+  async function disable(){enabled=false;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停自动整理和记忆注入');}
   return {core,get state(){return publicState();},open,refresh,saveSettings,testConnection,summarize,preview,addDocument,removeDocument,analyzeDocuments,assistant,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,buildVectors,stop,disable,
     async remember(text,people=''){assertCurrent();await core.remember(text,{people});await refresh();setMessage('记事已保存');},
     get draftContext(){return `${epoch}:${state.conversationId}`;},
     async setDraft(value,context=`${epoch}:${state.conversationId}`){if(context!==`${epoch}:${state.conversationId}`)return;state.draft=value;await saveUi();},
-    setKey(kind,value){if(!(kind in keys))throw new Error('未知连接');keys[kind]=String(value??'');if(kind==='summary')core.setSessionCredential(keys[kind]);},
+    setKey(kind,value){if(!(kind in keys))throw new Error('未知连接');keys[kind]=String(value??'');if(kind==='summary')core.setSessionCredential(keys[kind]);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true});},
     exportSettings(){return {kind:'shiyi-config',version:1,settings:persistedProductSettings(core.settings)};},
     async exportBackup(){assertCurrent();return {kind:'shiyi-backup',version:1,scope:boundScope,settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>workspace.read(`${d.id}-${i}`)))}))),assistant:state.history};},
     async dispose(){await disable();epoch++;await core.dispose();},

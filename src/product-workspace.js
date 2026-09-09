@@ -64,6 +64,10 @@ export async function importTextDocument(workspace, { name, text, purpose = 'kno
   if (!/\.(md|txt|json)$/i.test(name)) throw new Error('支持 MD、TXT、JSON 文本');
   if (typeof text !== 'string' || !text.trim()) throw new Error('文件没有可读取的文字');
   if (new TextEncoder().encode(text).length > 20 * 1024 * 1024) throw new Error('单个文件上限 20 MB，请拆分后导入');
+  if (/\.json$/i.test(name)) {
+    try { JSON.parse(text.replace(/^\uFEFF/, '')); }
+    catch { throw new Error('JSON 格式无效，请修正后重新导入；原有资料未改变'); }
+  }
   const id = makeId('doc');
   const chunks = splitDocument(text);
   for (let i = 0; i < chunks.length; i++) await workspace.write(`${id}-${i}`, chunks[i]);

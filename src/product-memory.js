@@ -7,16 +7,32 @@ export function recordDescription(record) {
   if (record.field || record.key) return `${readable(record.entity ?? record.entityId ?? record.subject)} · ${record.field ?? record.key}：${readable(record.to ?? record.value ?? record.newValue)}`;
   return readable(record.description ?? record.content ?? record.text ?? record.summary ?? record.knowledge ?? record.fact ?? [record.subject ?? record.from ?? record.person, record.action ?? record.aspect ?? record.evidenceKind, record.object ?? record.to].filter(Boolean).join(' · '));
 }
+function dependencyIndex(records, keysFor) {
+  const index = new Map();
+  records.forEach((record, position) => {
+    for (const key of new Set(keysFor(record).filter(Boolean))) {
+      if (!index.has(key)) index.set(key, []);
+      index.get(key).push({ position, record });
+    }
+  });
+  return keys => {
+    const found = new Map();
+    for (const key of keys) for (const entry of index.get(key) ?? []) found.set(entry.position, entry.record);
+    return [...found].sort((a, b) => a[0] - b[0]).map(([, record]) => record);
+  };
+}
 export function memoryCards(records = {}, { hidden = [], knowledge = [] } = {}) {
   const ignored = new Set(hidden);
   const cards = [];
+  const awarenessFor = dependencyIndex(records.awarenessChanges ?? [], a => [a.eventRef, ...(a.eventRefs ?? [])]);
+  const followUpsFor = dependencyIndex(records.commitmentChanges ?? [], a => [a.eventRef, a.completionOf, a.correctionOf, ...(a.eventRefs ?? [])]);
   for (const category of Object.keys(CATEGORY_LABELS)) {
     if (['awarenessChanges', 'knowledge'].includes(category)) continue;
     for (const record of records[category] ?? []) {
       if (ignored.has(record.id) || ['retracted', 'superseded'].includes(record.lifecycleState)) continue;
       const refIds = new Set([record.id, record.eventRef, ...(record.eventRefs ?? [])].filter(Boolean));
-      const awareness = (records.awarenessChanges ?? []).filter(a => [a.eventRef, ...(a.eventRefs ?? [])].some(id => refIds.has(id)));
-      const followUps = (records.commitmentChanges ?? []).filter(a => a.id !== record.id && [a.eventRef, a.completionOf, a.correctionOf, ...(a.eventRefs ?? [])].some(id => refIds.has(id)));
+      const awareness = awarenessFor(refIds);
+      const followUps = followUpsFor(refIds).filter(a => a.id !== record.id);
       const description = recordDescription(record);
       cards.push({ ...clone(record), id: record.id, category, description, text: description, awareness, followUps, temporal: record.temporal ?? record.storyTime ?? record.time ?? null });
     }
@@ -57,11 +73,21 @@ export function expandAliases(query, aliases = '') {
   for (const line of aliases.split('\n')) { const names = line.split(/[=,，]/).map(s => s.trim()).filter(Boolean); if (names.length && names.some(n => query.includes(n))) out += ` ${names.join(' ')}`; }
   return out;
 }
-export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal } = {}) {
-  const selected = cards.filter(c => c.category !== 'conflicts' && (settings.personaEnabled || !['entityFactChanges','personaChanges','relationshipChanges'].includes(c.category)) && (settings.performanceEnabled || c.category !== 'performanceHints') && (settings.knowledgeEnabled || c.category !== 'knowledge'));
-  const index = new LocalBM25Index(selected, { k1: settings.bm25K1, b: settings.bm25B });
+export function selectRecallCards(cards, settings) {
+  return cards.filter(c => !['retracted', 'superseded'].includes(c.lifecycleState) && c.category !== 'conflicts' && (settings.personaEnabled || !['entityFactChanges','personaChanges','relationshipChanges'].includes(c.category)) && (settings.performanceEnabled || c.category !== 'performanceHints') && (settings.knowledgeEnabled || c.category !== 'knowledge'));
+}
+export function prepareRecallIndex(cache, cards, settings, { scopeKey, revision, signal } = {}) {
+  if (revision === undefined) throw new Error('recall cache requires a snapshot revision');
+  return cache.prepare(selectRecallCards(cards, settings), { scopeKey, revision: { snapshot: revision, persona: settings.personaEnabled, performance: settings.performanceEnabled, knowledge: settings.knowledgeEnabled }, k1: settings.bm25K1, b: settings.bm25B, signal });
+}
+export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision } = {}) {
+  const startedAt = globalThis.performance?.now?.() ?? Date.now();
+  const selected = selectRecallCards(cards, settings);
+  const prepared = indexCache ? await prepareRecallIndex(indexCache, selected, settings, { scopeKey, revision, signal }) : null;
+  const index = prepared?.index ?? new LocalBM25Index(selected, { k1: settings.bm25K1, b: settings.bm25B });
   const q = expandAliases(query, settings.aliases);
-  const result = await retrieveMemories({ index, query: q, limit: settings.retrievalLimit, vectorAdapter, reranker, signal,
+  const result = await retrieveMemories({ index, query: q, limit: Math.max(settings.retrievalLimit, settings.retrievalCandidateLimit ?? 24), vectorAdapter, reranker, signal,
+    totalTimeoutMs: settings.retrievalTimeoutMs,
     vectorTimeoutMs: settings.vectorTimeoutMs, vectorOptions: { rankConstant: settings.fusionRankConstant, localWeight: settings.fusionLocalWeight, vectorWeight: settings.vectorWeight },
     rerankOptions: { timeoutMs: settings.rerankTimeoutMs, maxCandidates: settings.rerankMaxCandidates } });
   // Entity facts are an explicit metadata lane, not another model call.
@@ -88,5 +114,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     packed.push(item.record); content += `\n\n${part}`;
   }
   if (!packed.length) content = '';
-  return { status: 'preview', previewOnly: true, sent: false, text: content, cards: packed, usedUnits: content ? estimateUnits(content) : 0, omitted, trace: result.trace };
+  result.trace.index = prepared?.stats ?? { status: 'uncached', size: selected.length };
+  result.trace.timings.recallMs = (globalThis.performance?.now?.() ?? Date.now()) - startedAt;
+  return { status: 'preview', previewOnly: true, sent: false, degraded: result.trace.degraded, text: content, cards: packed, usedUnits: content ? estimateUnits(content) : 0, omitted, trace: result.trace };
 }
