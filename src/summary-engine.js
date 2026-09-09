@@ -146,6 +146,7 @@ function makeInstructions(focus, rules) {
   return [
     'Return one JSON DraftBundle for this complete source range.',
     'Use all required category keys, including empty arrays where there is no change.',
+    'In summaryView, write one concise source-grounded summary per sourceMessage, with its floorIndex and sourceRefs. Include what happened and its immediate process; mark non-story content briefly. Never manufacture details to fill a category.',
     'Do not invent scope, operationId, expectedRevision, paths, executable code, or permissions.',
     'Keep expression, response, mutual confirmation, public scope, state, epistemic status, perspective, time, and follow-up distinct.',
     'A recalled event includes its awareness, temporal context, and lifecycle dependencies as one unit.',
@@ -225,7 +226,7 @@ function defineModelAlias(target, key, value) {
 
 /** P1 one-request-per-segment orchestration with atomic bundle commits. */
 export class SummaryEngine {
-  constructor({ model, repository, maxInputUnits = 12000, maxSourceUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, now = () => Date.now() } = {}) {
+  constructor({ model, repository, maxInputUnits = 12000, maxSourceUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, now = () => Date.now() } = {}) {
     this.model = modelInvoker(model);
     if (!repository || typeof repository.commitBundle !== 'function') throw new ValidationError('SummaryEngine requires a MemoryRepository');
     this.repository = repository;
@@ -233,6 +234,7 @@ export class SummaryEngine {
     // that also needs small body chunks for continuation can opt into the
     // separate maxSourceUnits split quota without weakening that ceiling.
     this.maxInputUnits = maxInputUnits;
+    this.requireFloorSummaries=requireFloorSummaries;
     this.maxSourceUnits = Number.isFinite(maxSourceUnits) && maxSourceUnits > 0 ? maxSourceUnits : null;
     this.outputReserveUnits = Number.isFinite(outputReserveUnits) ? Math.max(0, outputReserveUnits) : null;
     this.maxRelevantRecords = Math.max(1, Number(maxRelevantRecords) || 64);
@@ -338,7 +340,7 @@ export class SummaryEngine {
         // serialized input payload measured immediately before adapter I/O.
         const explicitInputBudget = Number.isFinite(child.budgets?.inputUnits) && child.budgets.inputUnits >= 0;
         const configuredLimit = explicitInputBudget ? Number(child.budgets.inputUnits) : (Number(this.maxInputUnits) || 12000);
-        const contentQuota = Math.max(0, configuredLimit - sourceUnits - bridgeUnits - focusRulesUnits);
+        const contentQuota = Math.max(0, configuredLimit - sourceUnits - bridgeUnits - focusRulesUnits - schemaUnits - 1500);
         const context = relevantRecords
           ? await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages: child.bridgeMessages, budgetUnits: contentQuota, relevantRecords })
           : await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages: child.bridgeMessages, budgetUnits: contentQuota });
@@ -422,6 +424,27 @@ export class SummaryEngine {
         // declared budget overflow before any adapter call.  The local
         // estimate is explicitly a bounded planning unit, not provider token
         // accounting or a claim about tokenizer behavior.
+        // Optional previous memories must fit after the complete wire envelope,
+        // not consume the room reserved for schema and source evidence.
+        const wireUnits=()=>estimateUnits(JSON.stringify(typeof this.model.providerPayload==='function'?this.model.providerPayload(request):request));
+        while(wireUnits()>configuredLimit){
+          const entries=Object.entries(request.relevantRecords).filter(([,rows])=>Array.isArray(rows)&&rows.length);
+          if(!entries.length)break;
+          // Keep source-overlapping evidence ahead of merely optional history.
+          const ids=new Set(child.sourceMessages.map(m=>m.id));
+          const candidates=entries.flatMap(([category,rows])=>rows.map((record,index)=>({category,record,index,score:sourceOverlap(record,ids)?1:0})));
+          candidates.sort((a,b)=>a.score-b.score||b.index-a.index);
+          const removed=candidates[0];request.relevantRecords[removed.category].splice(removed.index,1);
+          if(removed.category==='events')request.relevantRecords.awarenessChanges=(request.relevantRecords.awarenessChanges??[]).filter(a=>a.eventRef!==removed.record.id&&!(a.eventRefs??[]).includes(removed.record.id));
+          const remaining=Object.values(request.relevantRecords).flatMap(rows=>Array.isArray(rows)?rows:[]);
+          extractionContext.coverage.relevantRecordIds=remaining.map(r=>r.id);
+          budget.relevantRecordCount=remaining.length;budget.omittedRelevantRecords=context.selection.candidateCount-remaining.length;
+          extractionContext.coverage.omittedRelevantRecords=budget.omittedRelevantRecords;
+          budget.contextTruncated=true;budget.strategy='bounded_partial_context';
+          budget.sections.relevantRecords=estimateUnits(JSON.stringify(request.relevantRecords));
+          budget.usedInputUnits=sourceUnits+bridgeUnits+focusRulesUnits+budget.sections.relevantRecords;
+          budget.totalReservedUnits=budget.usedInputUnits+schemaUnits+outputReserveUnits;
+        }
         if (typeof this.model.providerPayload === 'function') {
           budget.measurement = 'serialized_provider_payload_estimate_units';
           const providerPayload = this.model.providerPayload(request);
@@ -462,6 +485,15 @@ export class SummaryEngine {
         throwIfAborted(signal);
         const output = await parseModelResponse(raw);
         ensureAllCategories(output);
+        if(this.requireFloorSummaries){
+          const fail=()=>{const error=new SummaryResponseError('missing independent floor summaries');error.code='FLOOR_SUMMARY_MISSING';throw error;};
+          if(!Array.isArray(output.summaryView)||output.summaryView.length!==child.sourceMessages.length)fail();
+          for(const message of child.sourceMessages){
+            const rows=output.summaryView.filter(row=>Array.isArray(row.sourceRefs)&&row.sourceRefs.length===1&&(row.sourceRefs[0].sourceId??row.sourceRefs[0].id)===message.id&&(!row.sourceRefs[0].fragmentId||row.sourceRefs[0].fragmentId===message.fragmentId));
+            if(rows.length!==1||!['text','description','summary','content'].some(key=>typeof rows[0][key]==='string'&&rows[0][key].trim()))fail();
+            rows[0].floorIndex=message.index;
+          }
+        }
         const sourceRefs = sourceRefsFor(child);
         const bundle = bindDraftBundle(output, {
           scope: child.scope,

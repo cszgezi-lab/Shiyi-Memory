@@ -89,3 +89,9 @@
 @media(max-width:700px){
  #shiyi-product-shell input[type=file]{font-size:14px}
 }
+/* Nine memory areas remain visible on an empty chat. */
+.sy-root .sy-category-grid {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0;}
+.sy-root .sy-category-grid button {min-width:0;display:flex;flex-direction:column;align-items:flex-start;padding:10px;}
+.sy-root .sy-category-grid small {font-size:12px;opacity:.7;}
+.sy-root .sy-category-grid button.active {border-color:var(--sy-accent,#75b9a2);background:rgba(94,150,129,.18);}
+.sy-root [data-batches] details details {padding:8px 0;border-top:1px solid rgba(128,128,128,.2);}

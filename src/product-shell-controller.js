@@ -2,6 +2,7 @@ import {
   createSummaryBatch,
   splitSummaryBatch,
   bindDraftBundle,
+  SUMMARY_OUTPUT_CONTRACT,
 } from './contracts.js';
 import { MemoryRepository } from './repository.js';
 import { LocalBM25Index, retrieveAndPack } from './retrieval.js';
@@ -9,7 +10,7 @@ import { SummaryEngine } from './summary-engine.js';
 import { HostAdapter } from './host-adapter.js';
 import { productFailure } from './product-feedback.js';
 import { verifyProductSources } from './product-sources.js';
-import { makeId, clone, stableStringify, sha256 } from './utils.js';
+import { makeId, clone, stableStringify, sha256, estimateUnits } from './utils.js';
 import {
   captureProductHostSession,
   createProductTransport,
@@ -161,7 +162,7 @@ export function createProductShellController({
   let generation = 0;
   let subscriptions = [];
   let settingsLoaded = false;
-  let globalApiSettings = null, legacyApiSettings = {};
+  let globalApiSettings = null, legacyApiSettings = {}, legacySettings = {};
   let sessionStore = null;
   let repository = null;
   let engine = null;
@@ -271,6 +272,7 @@ export function createProductShellController({
         ? await store.tryGetJson({ namespace: PRODUCT_SETTINGS_NAMESPACE, key: settingsKey() })
         : { found: true, value: await store.getJson({ namespace: PRODUCT_SETTINGS_NAMESPACE, key: settingsKey() }) };
       legacyApiSettings = found?.found ? splitProductSettings(found.value??{}).api : {};
+      legacySettings = found?.found ? Object.fromEntries(Object.entries(found.value??{}).filter(([key])=>key in persistedProductSettings())) : {};
       if (found?.found && found.value) state.settings = normalizeProductSettings(found.value, { includeSessionSecret: false });
       if (globalApiSettings) Object.assign(state.settings,globalApiSettings);
       state.settingsStatus = found?.found ? 'readback_verified' : 'defaults_unpersisted';
@@ -281,6 +283,8 @@ export function createProductShellController({
   }
 
   function settingsKey() { return `${PRODUCT_SETTINGS_KEY}-${sha256(state.scope).slice(0, 24)}`; }
+
+  function sourceSplitUnits(){return Math.max(256,Math.floor((state.settings.inputBudgetUnits-estimateUnits(JSON.stringify(SUMMARY_OUTPUT_CONTRACT))-estimateUnits(state.settings.recordingRules)-2000)/2.5));}
 
   function createRepository(session, store) {
     repository = new MemoryRepository({
@@ -302,10 +306,10 @@ export function createProductShellController({
             focusSpec: state.job?.focusSpec ?? null,
             inputBudget: state.settings.inputBudgetUnits,
             outputBudget: state.settings.outputBudgetUnits,
-            outputReserveUnits: state.settings.outputBudgetUnits,
+            outputReserveUnits: 0,
             recordingRules: state.settings.recordingRules,
           });
-          const children = splitSummaryBatch(batch, { maxInputUnits: state.settings.inputBudgetUnits });
+          const children = splitSummaryBatch(batch, { maxInputUnits: sourceSplitUnits() });
           return children.find((child) => child.operationId === bundle.operationId)?.sourceRevision ?? batch.sourceRevision;
         } catch {
           return null;
@@ -406,7 +410,7 @@ export function createProductShellController({
         requestedRange: range.requestedRange,
         inputBudget: state.settings.inputBudgetUnits,
         outputBudget: state.settings.outputBudgetUnits,
-        outputReserveUnits: state.settings.outputBudgetUnits,
+        outputReserveUnits: 0,
         recordingRules: state.settings.recordingRules,
       });
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
@@ -447,7 +451,7 @@ export function createProductShellController({
     return null;
   }
 
-  async function startSummary({ focus = state.focus, confirmedFocus = state.focusConfirmed, trigger = 'manual' } = {}) {
+  async function startSummary({ focus = state.focus, confirmedFocus = state.focusConfirmed, trigger = 'manual', requireFloorSummaries = false, operationId = makeId('product-summary') } = {}) {
     if (state.status === PRODUCT_SHELL_STATUS.INVALIDATED) return { status: state.status, errorCode: state.errorCode };
     if (!state.session || !repository) return { status: PRODUCT_SHELL_STATUS.UNAVAILABLE, errorCode: state.capabilities.persistence === 'unavailable' ? 'PERSISTENCE_UNAVAILABLE' : 'CHAT_IDENTITY_NOT_READY' };
     if (activeTask) return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: 'HOST_CONTRACT_INVALID' };
@@ -469,6 +473,7 @@ export function createProductShellController({
         providerModel: state.settings.providerModel,
         providerAuthMode: state.settings.providerAuthMode,
         deadlineMs: state.settings.deadlineMs,
+        outputBudgetUnits: state.settings.outputBudgetUnits,
       };
       transport = transportFactory(profile, { sessionApiKey: state.sessionApiKey ?? '', fetchImpl });
     }
@@ -482,7 +487,6 @@ export function createProductShellController({
     const token = currentToken();
     const expectedRevision = await repository.getCommittedRevision(state.scope);
     if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
-    const operationId = makeId('product-summary');
     const focusSpec = { mode: needsConfirmation ? mode : 'inherit', confirmed: true, focus: normalizedFocus || null };
     const batch = createSummaryBatch({
       scope: state.scope,
@@ -495,7 +499,7 @@ export function createProductShellController({
       rulesVersion: 'product-shell-1',
       inputBudget: state.settings.inputBudgetUnits,
       outputBudget: state.settings.outputBudgetUnits,
-      outputReserveUnits: state.settings.outputBudgetUnits,
+      outputReserveUnits: 0,
       recordingRules: [state.settings.recordingRules, runtimeRules()].filter(Boolean).join('\n'),
       trigger,
     });
@@ -505,7 +509,9 @@ export function createProductShellController({
     state.draft = { range: clone(state.range), focus: normalizedFocus, focusConfirmed: confirmedFocus === true, status: 'running' };
     mark(PRODUCT_SHELL_STATUS.RUNNING);
     state.capabilities.summary = 'running';
-    engine = new SummaryEngine({ repository, model: summaryModel, maxInputUnits: state.settings.inputBudgetUnits, outputReserveUnits: state.settings.outputBudgetUnits, now });
+    const summaryRepository=Object.create(repository);
+    summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId]})).records;
+    engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: sourceSplitUnits(), requireFloorSummaries, outputReserveUnits: 0, now });
     try {
       const result = await engine.process(batch, { signal: abortController.signal });
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
@@ -631,6 +637,7 @@ export function createProductShellController({
       providerModel: state.settings.providerModel,
       providerAuthMode: state.settings.providerAuthMode,
       deadlineMs: state.settings.deadlineMs,
+        outputBudgetUnits: state.settings.outputBudgetUnits,
     }, { sessionApiKey: state.sessionApiKey ?? '', fetchImpl });
     transport = candidate;
     if (candidate.status !== 'ready') return { status: PRODUCT_SHELL_STATUS.UNAVAILABLE, errorCode: candidate.errorCode };
@@ -645,7 +652,7 @@ export function createProductShellController({
     return { status: 'session_only', configured: Boolean(state.sessionApiKey) };
   }
 
-  async function remember(textValue, { people = '' } = {}) {
+  async function remember(textValue, { people = '', category='events',subject='',target='',field='补充信息',eventRef='',context='当前聊天',term='直至用户修改' } = {}) {
     const content = text(textValue);
     if (!content || content.length > 12000) throw new Error('记事需要 1–12000 字');
     if (!repository || !state.session || state.status === 'invalidated' || activeTask) throw new Error('请先打开当前聊天，等待当前整理结束');
@@ -655,6 +662,23 @@ export function createProductShellController({
     const operationId = makeId('user-note'), sourceRevision = sha256(content), sourceRefs = [{ sourceId: operationId, hash: sourceRevision, version: 1 }];
     const eventId = makeId('note');
     const output = { events: [{ id: eventId, subject: '用户补充设定', description: content, state: 'completed', epistemicStatus: 'user_asserted', perspective: 'unknown', sourceRefs }], awarenessChanges: people.split(/[,，]/).map(p=>p.trim()).filter(Boolean).map(person=>({ id: makeId('aware'), eventRef: eventId, person, knowledge: content, status: 'known', via: 'user_confirmed', learnedAt: {kind:'unknown'}, sourceRefs })), entityFactChanges: [], relationshipChanges: [], personaChanges: [], commitmentChanges: [], performanceHints: [], summaryView: [], conflicts: [], coverage: { sourceRefs, processed: sourceRefs, excluded: [], unprocessed: [] } };
+    if(category!=='events'){
+      if(!['awarenessChanges','entityFactChanges','relationshipChanges','personaChanges','commitmentChanges','performanceHints','summaryView','conflicts'].includes(category))throw new Error('未知记忆类别');
+      output.events=[];output.awarenessChanges=[];
+      const base={id:eventId,sourceRefs,description:content,epistemicStatus:'user_asserted'};
+      if(['entityFactChanges','relationshipChanges','personaChanges','awarenessChanges'].includes(category)&&!subject.trim())throw new Error('请填写人物或主体');
+      if(['relationshipChanges','personaChanges'].includes(category)&&!target.trim())throw new Error('请填写关系对象');
+      const fields={
+        awarenessChanges:{eventRef,person:subject,knowledge:content,status:'known',via:'user_confirmed',learnedAt:{kind:'unknown'}},
+        entityFactChanges:{entity:subject,field:field||'补充信息',to:content},
+        relationshipChanges:{from:subject,to:target,evidenceKind:'user_confirmed'},
+        personaChanges:{subject,aspect:field||'变化',object:target,context,scope:'当前关系与场景',term},
+        commitmentChanges:{subject:subject||people||'用户确认',content,state:'proposed'},
+      };
+      if(category==='relationshipChanges')fields[category].evidenceKind='expression';
+      if(category==='awarenessChanges'&&!eventRef)throw new Error('请选择关联事件；不会凭空推断知情来源');
+      output[category]=[{...base,...(fields[category]??{})}];
+    }
     const bundle = bindDraftBundle(output, { scope: session.scope, operationId, expectedRevision, sourceRefs, sourceRevision });
     manualOperation = { id: operationId, sourceRevision, token };
     try {
@@ -674,6 +698,7 @@ export function createProductShellController({
       counts: summaryCounts(snapshot.records),
       events: clone(snapshot.records.events),
       records: clone(snapshot.records),
+      controls: clone(snapshot.manifest?.controls??{}),
       awarenessChanges: clone(snapshot.records.awarenessChanges),
       temporal: clone(snapshot.records.events.map((event) => event.temporal ?? event.storyTime ?? event.time ?? { kind: 'unknown' })),
       sources: clone(snapshot.records.coverage?.sourceRefs ?? []),
@@ -699,6 +724,9 @@ export function createProductShellController({
     get state() { return cloneState(state); },
     get settings() { return clone(state.settings); },
     get legacyApiSettings() { return clone(legacyApiSettings); },
+    get legacySettings() { return clone(legacySettings); },
+    useGlobalSettings(patch) { globalApiSettings=validateProductPatch(patch);Object.assign(state.settings,globalApiSettings);transport=null; },
+    async historyTail(){ if(!state.session)throw new Error('请先打开聊天');const session=state.session, token=currentToken();const range=await readProductHostRange(session,{count:1});if(!tokenValid(token,session))throw new Error('聊天已变化');return range.endIndex; },
     useGlobalApiSettings(patch) {
       const {api,chat}=splitProductSettings(validateProductPatch(patch));
       if(Object.keys(chat).length)throw new Error('全局连接仅接受 API 字段');
@@ -715,6 +743,7 @@ export function createProductShellController({
     testConnection,
     setSessionCredential,
     readMemoryView,
+    async updateMemoryControls(patch){if(!repository||!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');const token=currentToken(),session=state.session;const check=()=>{if(!tokenValid(token,session))throw new Error('聊天已变化');};check();return repository.updateControls(session.scope,patch,{check});},
     remember,
     sourceValidity,
     workspace() {

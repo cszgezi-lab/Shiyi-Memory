@@ -12,8 +12,8 @@ export const PRODUCT_SETTINGS_VERSION = 1;
 
 const DEFINITIONS = [
   { key: 'messageCount', label: '最近消息数', defaultValue: 8, type: 'integer', min: 1, max: 200, consumers: ['ProductShellController.readRange'] },
-  { key: 'inputBudgetUnits', label: '总结输入预算', defaultValue: 12000, type: 'integer', min: 256, max: 100000, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
-  { key: 'outputBudgetUnits', label: '总结输出预留', defaultValue: 2400, type: 'integer', min: 0, max: 50000, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
+  { key: 'inputBudgetUnits', label: '总结输入预算', defaultValue: 12000, type: 'integer', min: 256, max: 1000000, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
+  { key: 'outputBudgetUnits', label: '总结回复上限（Token）', defaultValue: 4096, type: 'integer', min: 0, max: 131072, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
   { key: 'deadlineMs', label: '请求截止时间', defaultValue: 120000, type: 'integer', min: 100, max: 600000, consumers: ['ProductShellController.transport', 'ProviderClient'] },
   { key: 'focusMode', label: '侧重点确认方式', defaultValue: 'ask_manual', type: 'enum', values: ['inherit', 'ask_manual', 'ask_every'], consumers: ['ProductShellController.startSummary', 'SummaryEngine'] },
 
@@ -51,7 +51,9 @@ const DEFINITIONS = [
   { key: 'assistantModel', label: '助手模型', defaultValue: '', type: 'string', maxLength: 240, consumers: ['ProductApplication.assistant'] },
   { key: 'assistantEndpointMode', label: '助手地址模式', defaultValue: 'base', type: 'enum', values: ['base', 'exact'], consumers: ['ProductApplication.assistant'] },
   { key: 'assistantAuthMode', label: '助手认证方式', defaultValue: 'bearer', type: 'enum', values: ['none', 'bearer', 'api-key'], consumers: ['ProductApplication.assistant'] },
-  { key: 'assistantBudgetUnits', label: '助手输入预算（估算）', defaultValue: 16000, type: 'integer', min: 2000, max: 100000, consumers: ['ProductApplication.assistant'] },
+  { key: 'assistantBudgetUnits', label: '助手输入预算（估算）', defaultValue: 16000, type: 'integer', min: 2000, max: 1000000, consumers: ['ProductApplication.assistant'] },
+  { key: 'assistantOutputTokens', label: '助手回复上限（Token）', defaultValue: 4096, type: 'integer', min: 0, max: 131072, consumers: ['ProductApplication.assistant'] },
+  { key: 'summaryBatchSize', label: '每多少楼记录一次', defaultValue: 10, type: 'integer', min: 1, max: 200, consumers: ['ProductApplication.summarize'] },
   { key: 'autoSummaryEnabled', label: '回复后自动整理', defaultValue: false, type: 'boolean', consumers: ['ProductApplication.autoSummary'] },
   { key: 'autoSummaryEvery', label: '每新增多少条消息整理', defaultValue: 12, type: 'integer', min: 1, max: 200, consumers: ['ProductApplication.autoSummary'] },
   { key: 'storyDate', label: '当前故事日期（可留空）', defaultValue: '', type: 'string', maxLength: 32, consumers: ['ProductApplication.pack'] },
@@ -172,7 +174,7 @@ export const PRODUCT_PERSISTED_SETTING_KEYS = PERSISTED_KEYS;
 // Credentials remain runtime-only and are deliberately absent from this list.
 export const PRODUCT_API_SETTING_KEYS = Object.freeze([
   ...['provider','assistant','embedding','rerank'].flatMap(prefix => ['Endpoint','EndpointMode','Model','AuthMode'].map(suffix => prefix + suffix)),
-  'assistantFollowSummary','deadlineMs','assistantBudgetUnits',
+  'assistantFollowSummary','deadlineMs','assistantBudgetUnits','assistantOutputTokens',
 ]);
 export function splitProductSettings(patch) {
   const api = {}, chat = {};

@@ -10,8 +10,8 @@ const copy = {
   autoSummaryEvery:['每新增多少楼自动整理','一条聊天消息算一楼。'],
   recordingRules:['长期记录偏好','告诉总结模型哪些内容值得记住。'],
   focusMode:['总结侧重点','手动总结时可以临时补充要求。'],
-  inputBudgetUnits:['总结输入预算','控制一批正文的输入长度。'],
-  outputBudgetUnits:['总结输出预留','为总结结果留出上下文空间。'],
+  inputBudgetUnits:['总结输入预算','估算正文、提示词和相关记忆的输入长度；不是回复上限。'],
+  outputBudgetUnits:['总结回复上限（Token）','0 表示沿用服务商默认值。'],
   excludedTags:['忽略的正文标签','标签中的内容不参与总结，用逗号分隔。'],
   injectionEnabled:['自动注入相关记忆','发送聊天时，把相关记忆加入本轮请求。'],
   retrievalLimit:['每次最多注入几条',''],
@@ -34,12 +34,14 @@ const copy = {
   retrievalTimeoutMs:['总检索超时（毫秒）','0 表示分别使用向量与重排的超时设置。'],
   vectorTimeoutMs:['向量超时（毫秒）',''], rerankTimeoutMs:['重排超时（毫秒）',''],
   worldMode:['故事类型','同人的原作设定不等于当前聊天已经发生的事实。'],
-  knowledgeEnabled:['检索已导入资料','将当前聊天的作品资料纳入召回。'],
+  knowledgeEnabled:['检索已导入资料','全局资料库作为原作参照，不会合并其他聊天的经历。'],
   aliases:['人物别名','每行填写：主名=别名,别名。'],
   externalStatePaths:['只读变量路径','读取指定的 chatMetadata 或 lastMessageExtra 字段，不改写 MVU。'],
   storyDate:['故事日期参照（兼容设置）','未知留空，不使用现实日期代替剧情日期。'],
   deadlineMs:['模型请求超时（毫秒）','120000 即 2 分钟。'],
-  assistantBudgetUnits:['助手输入预算','限制一次配置对话带入的资料长度。'],
+  assistantBudgetUnits:['助手输入预算','估算对话、文件和工具说明的输入长度；不是回复上限。'],
+  assistantOutputTokens:['助手回复上限（Token）','0 表示沿用服务商默认值。'],
+  summaryBatchSize:['每多少楼记录一次','10 楼一批：1–300 楼会分成 30 批。'],
   assistantFollowSummary:['沿用总结模型','共用地址、模型和本次 Key，无需再填一遍。'],
 };
 
@@ -59,7 +61,7 @@ const advanced = (title, keys) => `<details class="sy-advanced"><summary>${title
 const card = (title, body) => `<div class="sy-card"><h4>${title}</h4>${body}</div>`;
 
 export const SETTING_GROUPS = Object.freeze({
-  recording: ['messageCount','autoSummaryEnabled','autoSummaryEvery','recordingRules','focusMode','inputBudgetUnits','outputBudgetUnits','excludedTags'],
+  recording: ['messageCount','autoSummaryEnabled','autoSummaryEvery','recordingRules','focusMode','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
   injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','injectionPosition','injectionRole'],
   retrieval: ['vectorEnabled','rerankEnabled','retrievalCandidateLimit','rerankMaxCandidates','bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant','distributedEnabled','distributedStrategy','distributedChannel','retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs'],
   world: ['worldMode','knowledgeEnabled','aliases','externalStatePaths','storyDate'],
@@ -89,7 +91,7 @@ export function apiSettingsHTML() {
     ${setting(`${prefix}Model`, '模型名称', '', '选择列表中的模型，或手动填写')}
     <p class="sy-help" role="status" data-model-status="${kind}"></p></div>
     <details class="sy-advanced"><summary>高级连接选项（通常不用改）</summary>${setting(`${prefix}EndpointMode`, '地址如何使用', `默认只补 ${resource}，绝不补 /v1。填完整接口地址时可选“不补路径”。`)}${setting(`${prefix}AuthMode`, 'Key 发送方式', '一般保持“标准 Key”；不需要 Key 可留空或选“无需 Key”。只有服务商明确要求时才改用 x-api-key。')}${field('模型列表地址（可选）', `<input data-models-url="${kind}" placeholder="留空时按 API 地址推导 /models" autocomplete="off">`)}</details>
-    </div><div class="sy-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></section>`).join('') + card('请求设置', setting('deadlineMs') + setting('assistantBudgetUnits'));
+    </div><div class="sy-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></section>`).join('') + card('请求设置', setting('deadlineMs') + setting('assistantBudgetUnits') + setting('assistantOutputTokens'));
 }
 
 // Upgrade opt-in: never replace a custom endpoint, model, or a deliberate zero/false.

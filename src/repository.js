@@ -338,7 +338,7 @@ export class MemoryRepository {
 
   async getCommittedRevision(scope) { return (await this._getPointer(normalizeScope(scope))).committedRevision; }
 
-  async readScope(scope) {
+  async readScope(scope, { includeOperations = [] } = {}) {
     const frozenScope = normalizeScope(scope);
     const pointer = await this._getPointer(frozenScope);
     if (!pointer.manifestRef) return { scope: frozenScope, committedRevision: 0, records: emptyRecords(), pointer, manifest: null };
@@ -356,7 +356,38 @@ export class MemoryRepository {
       if (sha256(found.value) !== ref.sha256) throw new PersistenceError(`immutable chunk hash mismatch: ${ref.key}`);
       chunks.push(found.value);
     }
-    return { scope: frozenScope, committedRevision: pointer.committedRevision, records: mergeRecords(chunks), pointer, manifest };
+    const controls=manifest.controls??{operations:{},deletedRecords:{},edits:{}};
+    const parent=id=>id?.split('/child-')[0];
+    const visible=chunk=>!['pending','deleted'].includes(controls.operations?.[parent(chunk.operationId)])||includeOperations.includes(parent(chunk.operationId));
+    const records=mergeRecords(chunks.filter(visible));
+    records.history=chunks.map(chunk=>({revision:chunk.committedRevision,operationId:chunk.operationId,sourceRevision:chunk.sourceRevision,createdAt:chunk.createdAt,coverage:clone(chunk.coverage),categories:Object.fromEntries(CATEGORIES.map(k=>[k,clone(chunk[k]??[])])),excluded:!visible(chunk)}));
+    for(const category of CATEGORIES)records[category]=records[category].filter(r=>!controls.deletedRecords?.[r.id]).map(r=>controls.edits?.[r.id]?{...r,...clone(controls.edits[r.id]),epistemicStatus:'user_asserted'}:r);
+    const eventIds=new Set(records.events.map(r=>r.id));
+    records.awarenessChanges=records.awarenessChanges.filter(r=>[r.eventRef,...(r.eventRefs??[])].filter(Boolean).every(id=>eventIds.has(id)));
+    return { scope: frozenScope, committedRevision: pointer.committedRevision, records, pointer, manifest };
+  }
+
+  /** Recoverable view changes: immutable evidence is retained, projection is atomic. */
+  async updateControls(scope, patch, { check=()=>{} }={}) {
+    const frozen=normalizeScope(scope);
+    return withScopeLock(this.store,frozen,async()=>{
+      check();const previous=await this.readScope(frozen),keys=this._keys(frozen);
+      const controls=clone(previous.manifest?.controls??{});
+      for(const key of ['operations','deletedRecords','edits'])controls[key]={...controls[key],...clone(patch[key]??{})};
+      const revision=previous.committedRevision+1,operationId=makeId('memory-view');
+      const manifest={schemaVersion:1,kind:'memory-manifest',scope:frozen,scopeKey:scopeKey(frozen),committedRevision:revision,chunks:previous.manifest?.chunks??[],controls,operationId,createdAt:this.now()};
+      const manifestSha256=sha256(manifest),manifestRef=`${keys.manifestPrefix}-${revision}-${manifestSha256.slice(0,20)}`;
+      await this.store.setJson({namespace:this.namespace,key:manifestRef,value:manifest});
+      const actual=await optionalGet(this.store,{namespace:this.namespace,key:manifestRef});
+      if(!actual.found||sha256(actual.value)!==manifestSha256)throw new PersistenceError('memory controls readback failed');
+      check();const current=await this._getPointer(frozen);
+      if(current.committedRevision!==previous.committedRevision)throw new RevisionConflictError('memory controls revision changed');
+      const pointer={schemaVersion:1,kind:'memory-pointer',scope:frozen,scopeKey:scopeKey(frozen),committedRevision:revision,manifestRef,manifestSha256,operationId,updatedAt:this.now()};
+      await this.store.setJson({namespace:this.namespace,key:keys.pointer,value:pointer});
+      const readback=await this._getPointer(frozen);check();
+      if(stableStringify(readback)!==stableStringify(pointer))throw new PersistenceError('memory controls pointer readback failed');
+      return {status:'saved',committedRevision:revision};
+    });
   }
 
   async _findReceipt(operationId) {
@@ -394,7 +425,7 @@ export class MemoryRepository {
     // Validate references against the authoritative same-scope snapshot.  A
     // later batch may add awareness or a correction for an older event, but a
     // record from another scope/branch is never accepted as context.
-    const previous = await this.readScope(frozenScope);
+    const previous = await this.readScope(frozenScope,{includeOperations:[operationId.split('/child-')[0]]});
     const knownRecordIds = new Set();
     for (const category of CATEGORIES) {
       for (const record of previous.records?.[category] ?? []) if (record?.id) knownRecordIds.add(record.id);
@@ -451,6 +482,7 @@ export class MemoryRepository {
         scopeKey: scopeKey(frozenScope),
         committedRevision: revision,
         chunks: [...(previous.manifest?.chunks ?? []), { key: chunkKey, sha256: chunkHash }],
+        ...(previous.manifest?.controls?{controls:clone(previous.manifest.controls)}:{}),
         operationId,
         sourceRevision,
         bundleHash,

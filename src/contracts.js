@@ -982,14 +982,11 @@ export function splitSummaryBatch(batch, { maxInputUnits = 12000 } = {}) {
     let offset = 0;
     let fragmentIndex = 0;
     while (offset < characters.length) {
-      const part = [];
-      while (offset < characters.length) {
-        const next = `${part.join('')}${characters[offset]}`;
-        if (part.length && estimateUnits(next) > limit) break;
-        part.push(characters[offset]);
-        offset += 1;
-      }
-      const piece = part.join('');
+      // Boundaries preserve original code points. Binary search avoids repeatedly
+      // normalizing an ever-growing prefix for each individual character.
+      let low=offset+1,high=characters.length,best=offset+1;
+      while(low<=high){const end=Math.floor((low+high)/2);if(estimateUnits(characters.slice(offset,end).join(''))<=limit){best=end;low=end+1;}else high=end-1;}
+      const piece=characters.slice(offset,best).join('');offset=best;
       if (current.length) flush();
       current.push({ ...clone(message), text: piece, fragmentId: `${message.id}#${fragmentIndex}` });
       currentUnits = estimateUnits(piece);

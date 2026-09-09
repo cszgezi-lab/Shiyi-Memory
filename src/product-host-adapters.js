@@ -234,7 +234,7 @@ export function createProductTransport(profile = {}, { sessionApiKey = '', fetch
     model: {
       profile: publicProfile,
       async chatCompletions(payload, options = {}) {
-        try { return await client.chatCompletions(payload, options); } finally { clearTransportLog(); }
+        try { return await client.chatCompletions({...payload,...(profile.outputBudgetUnits>0?{max_tokens:profile.outputBudgetUnits}:{})}, options); } finally { clearTransportLog(); }
       },
     },
     async testConnection({ payload = null, signal } = {}) {

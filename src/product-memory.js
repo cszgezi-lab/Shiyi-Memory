@@ -1,7 +1,7 @@
 import { LocalBM25Index, retrieveMemories } from './retrieval.js';
 import { estimateUnits, clone } from './utils.js';
 
-export const CATEGORY_LABELS = Object.freeze({ events: '事件', awarenessChanges: '知情', entityFactChanges: '人物与事实', relationshipChanges: '关系', personaChanges: '人设变化', commitmentChanges: '约定', performanceHints: '演绎参考', summaryView: '摘要', conflicts: '待核对', knowledge: '资料' });
+export const CATEGORY_LABELS = Object.freeze({ events: '事件', awarenessChanges: '知情', entityFactChanges: '人物与事实', relationshipChanges: '关系', personaChanges: '人设变化', commitmentChanges: '约定', performanceHints: '演绎参考', summaryView: '楼层摘要', conflicts: '待核对', knowledge: '资料' });
 export const readable = value => typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value);
 export function recordDescription(record) {
   if (record.field || record.key) return `${readable(record.entity ?? record.entityId ?? record.subject)} · ${record.field ?? record.key}：${readable(record.to ?? record.value ?? record.newValue)}`;
@@ -21,13 +21,13 @@ function dependencyIndex(records, keysFor) {
     return [...found].sort((a, b) => a[0] - b[0]).map(([, record]) => record);
   };
 }
-export function memoryCards(records = {}, { hidden = [], knowledge = [] } = {}) {
+export function memoryCards(records = {}, { hidden = [], knowledge = [], includeAwareness = false } = {}) {
   const ignored = new Set(hidden);
   const cards = [];
   const awarenessFor = dependencyIndex(records.awarenessChanges ?? [], a => [a.eventRef, ...(a.eventRefs ?? [])]);
   const followUpsFor = dependencyIndex(records.commitmentChanges ?? [], a => [a.eventRef, a.completionOf, a.correctionOf, ...(a.eventRefs ?? [])]);
   for (const category of Object.keys(CATEGORY_LABELS)) {
-    if (['awarenessChanges', 'knowledge'].includes(category)) continue;
+    if (category==='knowledge'||category==='awarenessChanges'&&!includeAwareness)continue;
     for (const record of records[category] ?? []) {
       if (ignored.has(record.id) || ['retracted', 'superseded'].includes(record.lifecycleState)) continue;
       const refIds = new Set([record.id, record.eventRef, ...(record.eventRefs ?? [])].filter(Boolean));
@@ -74,7 +74,7 @@ export function expandAliases(query, aliases = '') {
   return out;
 }
 export function selectRecallCards(cards, settings) {
-  return cards.filter(c => !['retracted', 'superseded'].includes(c.lifecycleState) && c.category !== 'conflicts' && (settings.personaEnabled || !['entityFactChanges','personaChanges','relationshipChanges'].includes(c.category)) && (settings.performanceEnabled || c.category !== 'performanceHints') && (settings.knowledgeEnabled || c.category !== 'knowledge'));
+  return cards.filter(c => c.category !== 'awarenessChanges' && !['retracted', 'superseded'].includes(c.lifecycleState) && c.category !== 'conflicts' && (settings.personaEnabled || !['entityFactChanges','personaChanges','relationshipChanges'].includes(c.category)) && (settings.performanceEnabled || c.category !== 'performanceHints') && (settings.knowledgeEnabled || c.category !== 'knowledge'));
 }
 export function prepareRecallIndex(cache, cards, settings, { scopeKey, revision, signal } = {}) {
   if (revision === undefined) throw new Error('recall cache requires a snapshot revision');

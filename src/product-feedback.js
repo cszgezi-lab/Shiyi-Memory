@@ -8,6 +8,8 @@ const NETWORK = {
   'network.request_failed':'网络请求失败，请检查服务是否可访问。',
 };
 const CODES = {
+  FLOOR_SUMMARY_MISSING:'模型没有返回完整的逐楼摘要，本批未完成。请重试、减少每批楼数或提高回复上限。',
+  INPUT_BUDGET_EXCEEDED:'输入超过预算，请提高总结输入预算或减少每批楼数；未完成部分不会注入。',
   TIMEOUT:NETWORK['network.timeout'], CANCELED:'任务已停止；已保存内容保留。',
   MODEL_UNAVAILABLE:'请先在 API 中填写并保存总结地址与模型。',
   PROVIDER_PROFILE_INVALID:'API 地址或认证配置不正确。',
