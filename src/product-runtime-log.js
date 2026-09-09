@@ -1,6 +1,7 @@
 import { clone, stableStringify } from './utils.js';
 import { productStoreFromSession } from './product-host-adapters.js';
 import { PRODUCT_VERSION } from './product-release.js';
+import { safeValidationIssues } from './validation-diagnostics.js';
 
 export const RUNTIME_LOG_ADDRESS = Object.freeze({ namespace: 'shiyi-product-diagnostics', key: 'runtime-v1' });
 export const RUNTIME_LOG_LIMIT = 200;
@@ -11,6 +12,9 @@ const FINISH_REASONS = new Set(['stop','length','max_tokens','truncated','abort'
 const NUMBERS = ['batchNumber','childIndex','startIndex','endIndex','sourceCount','inputLimit','inputUnits','maxTokens','elapsedMs','status','expected','received','covered','invalidRows','duplicateCount','promptTokens','completionTokens','totalTokens','reasoningTokens','responseChars','savedBatches'];
 export function safeLogDetails(value = {}) {
   const result = {};
+  const issues=safeValidationIssues(value?.validationIssues);
+  if(issues.length)result.validationIssues=issues;
+  if(Number.isSafeInteger(value?.validationIssueCount)&&value.validationIssueCount>=0)result.validationIssueCount=value.validationIssueCount;
   for (const key of NUMBERS) if (Number.isSafeInteger(value?.[key]) && value[key] >= 0) result[key] = value[key];
   for (const key of ['missingFloors','duplicateFloors','emptyFloors']) if (Array.isArray(value?.[key])) result[key] = [...new Set(value[key].filter(n => Number.isSafeInteger(n) && n >= 0))].slice(0,200);
   if (value?.finishReason !== undefined) result.finishReason = FINISH_REASONS.has(value.finishReason) ? value.finishReason : 'unknown';

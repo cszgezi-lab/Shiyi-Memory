@@ -1,4 +1,5 @@
 import { ValidationError } from './errors.js';
+import { validationDetails, valueType } from './validation-diagnostics.js';
 import {
   asArray,
   asString,
@@ -35,6 +36,16 @@ export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
   kind: 'DraftBundle',
   categories: DRAFT_CATEGORIES,
   requiredCategories: DRAFT_CATEGORIES,
+  categoryTypes: Object.freeze(Object.fromEntries(DRAFT_CATEGORIES.map(category=>[category,category==='coverage'?'object':'array of record objects']))),
+  sourceRefRules: 'Every record sourceRefs is an array. Copy exact sourceMessages/bridgeMessages id strings as {sourceId:id}, plus fragmentId ONLY when supplied. Do not use floor numbers, record IDs or invent locators. Omit hash, contentHash, version and swipeId: the host binds them from the frozen input. Event links use eventRef/eventRefs, never sourceRefs.',
+  coverageRules: Object.freeze({
+    type: 'coverage is always an OBJECT, never an array or null, even when there are no events.',
+    sourceRefs: 'Array of references for the input sourceMessages range, not bridgeMessages.',
+    processed: 'Array of references actually processed, using the same {sourceId, fragmentId if present} format as record sources. Do not output floor numbers, booleans, counts or status objects keyed by floor.',
+    bridgeRefs: 'Array of bridge references if used; these do not count as newly processed floors.',
+    excluded: 'Array of intentionally excluded sources, each {sourceId, fragmentId if present, reason}. Empty [] if none.',
+    unprocessed: 'Array of sources not processed, each {sourceId, fragmentId if present, reason}. Empty [] only if none. Each input source must have exactly one status; do not claim processing that did not occur.',
+  }),
   requiredFields: Object.freeze(['scope(host-bound)', 'operationId(host-bound)', 'expectedRevision(host-bound)', 'schemaVersion', 'events', 'awarenessChanges', 'entityFactChanges', 'relationshipChanges', 'personaChanges', 'commitmentChanges', 'performanceHints', 'summaryView', 'conflicts', 'coverage']),
   fields: Object.freeze({
     events: Object.freeze(['id', 'sourceRefs', 'subject', 'action|description', 'object', 'state', 'epistemicStatus', 'perspective']),
@@ -60,6 +71,7 @@ export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
     epistemicStatus: Object.freeze(['observed', 'user_asserted', 'character_claim', 'inferred', 'unknown']),
     awarenessStatus: Object.freeze(['known', 'heard', 'suspected', 'mistaken', 'explicitly_unaware']),
     awarenessVia: Object.freeze(['witnessed', 'heard_in_scene', 'read', 'told', 'background', 'user_confirmed', 'special_ability']),
+    relationEvidenceKind: Object.freeze(['expression', 'response', 'mutual_confirmation', 'boundary', 'shared_experience', 'habit']),
     perspective: Object.freeze(['first_person', 'second_person', 'third_person', 'omniscient', 'unknown']),
   }),
 });
@@ -309,13 +321,17 @@ function normalizedCategory(value, category) {
   return Array.isArray(value) ? clone(value) : [];
 }
 
-function validateRawCoverageShape(coverage) {
+function validateRawCoverageShape(coverage, issues) {
   const errors = [];
-  if (!isPlainObject(coverage)) return ['coverage must be an object'];
+  if (!isPlainObject(coverage)) {
+    issues.push({path:'coverage',reason:'type_mismatch',expectedType:'object',actualType:valueType(coverage)});
+    return ['coverage must be an object'];
+  }
   const arrayFields = ['sourceRefs', 'bridgeRefs', 'processed', 'excluded', 'unprocessed'];
   for (const key of arrayFields) {
     if (coverage[key] !== undefined && !Array.isArray(coverage[key])) {
       errors.push(`coverage.${key} must be an array`);
+      issues.push({path:`coverage.${key}`,reason:'type_mismatch',expectedType:'array',actualType:valueType(coverage[key])});
       continue;
     }
     const values = coverage[key] ?? [];
@@ -324,9 +340,13 @@ function validateRawCoverageShape(coverage) {
       if (key === 'excluded' || key === 'unprocessed') {
         const validString = typeof item === 'string' && item.trim();
         const validObject = isPlainObject(item) && normalizeSourceRefs([item]).length === 1;
-        if (!validString && !validObject) errors.push(`coverage.${key}[${index}] must identify a source`);
+        if (!validString && !validObject) {
+          errors.push(`coverage.${key}[${index}] must identify a source`);
+          issues.push({path:`coverage.${key}[${index}]`,reason:'invalid_source_ref',actualType:valueType(item)});
+        }
       } else if (!normalizeSourceRefs([item]).length) {
         errors.push(`coverage.${key}[${index}] must be a valid source reference`);
+        issues.push({path:`coverage.${key}[${index}]`,reason:'invalid_source_ref',actualType:valueType(item)});
       }
     }
   }
@@ -334,17 +354,38 @@ function validateRawCoverageShape(coverage) {
 }
 
 function validateRawBundleShape(source) {
-  const errors = [];
+  const errors = [], issues = [];
   for (const category of DRAFT_CATEGORIES) {
     if (!(category in source)) continue;
     if (category === 'coverage') {
-      if (!isPlainObject(source[category])) errors.push(`${category} must be an object`);
+      errors.push(...validateRawCoverageShape(source.coverage,issues));
     } else if (!Array.isArray(source[category])) {
       errors.push(`${category} must be an array`);
+      issues.push({path:category,reason:'type_mismatch',expectedType:'array',actualType:valueType(source[category])});
+    } else {
+      source[category].forEach((record,index)=>{
+        const path=`${category}[${index}]`;
+        if(!isPlainObject(record)){
+          errors.push(`${path} must be an object`);
+          issues.push({path,reason:'type_mismatch',expectedType:'object',actualType:valueType(record)});
+          return;
+        }
+        const refs=record.sourceRefs??record.sources;
+        // Check supplied refs before normalization can silently discard bad
+        // entries. Omitted optional sources keep the existing later checks.
+        if(refs===undefined)return;
+        if(!Array.isArray(refs)){
+          errors.push(`${path}.sourceRefs must be an array`);
+          issues.push({path:`${path}.sourceRefs`,reason:'type_mismatch',expectedType:'array',actualType:valueType(refs)});
+        }else refs.forEach((ref,refIndex)=>{
+          if(normalizeSourceRefs([ref]).length)return;
+          errors.push(`${path}.sourceRefs contains an invalid reference`);
+          issues.push({path:`${path}.sourceRefs[${refIndex}]`,reason:'invalid_source_ref',actualType:valueType(ref)});
+        });
+      });
     }
   }
-  if ('coverage' in source) errors.push(...validateRawCoverageShape(source.coverage));
-  if (errors.length) throw new ValidationError('DraftBundle contains malformed category types', { errors });
+  if (errors.length) throw new ValidationError('DraftBundle contains malformed category types', { errors, validationIssueCount:issues.length, validationIssues:issues.slice(0,24) });
 }
 
 function sourceEvidenceKey(ref) {
@@ -376,6 +417,8 @@ function bindEvidenceRef(ref, candidates, field) {
     throw new ValidationError(`${field} has ambiguous source evidence`, {
       sourceId: ref.sourceId,
       candidates: matches.map((candidate) => sourceEvidenceKey(candidate)),
+      validationIssueCount:1,
+      validationIssues:[{path:field,reason:'source_ambiguous',candidateCount:matches.length}],
     });
   }
   if (matches.length === 1) return clone(matches[0]);
@@ -388,6 +431,8 @@ function bindEvidenceRef(ref, candidates, field) {
     throw new ValidationError(`${field} cannot resolve source evidence`, {
       sourceId: ref.sourceId,
       candidates: candidates.map((candidate) => sourceEvidenceKey(candidate)),
+      validationIssueCount:1,
+      validationIssues:[{path:field,reason:'source_mismatch',candidateCount:candidates.length,locatorFields:['version','swipeId','fragmentId','contentHash','hash'].filter(key=>ref[key]!==undefined)}],
     });
   }
   return null;
@@ -422,12 +467,12 @@ export function bindDraftBundle(modelOutput, {
     list.push(ref);
     evidenceBySource.set(ref.sourceId, list);
   }
-  const bindEvidence = (record) => {
+  const bindEvidence = (record, category, recordIndex) => {
     const next = clone(record);
     const raw = normalizeSourceRefs(record?.sourceRefs ?? record?.sources ?? []);
     next.sourceRefs = raw.map((ref, index) => {
       const candidates = evidenceBySource.get(ref.sourceId) ?? [];
-      const matched = bindEvidenceRef(ref, candidates, `record.sourceRefs[${index}]`);
+      const matched = bindEvidenceRef(ref, candidates, `${category}[${recordIndex}].sourceRefs[${index}]`);
       // Unknown refs are retained for the later allowed-source validation;
       // known-but-ambiguous refs fail above rather than being last-write-wins.
       return matched ?? clone(ref);
@@ -435,6 +480,7 @@ export function bindDraftBundle(modelOutput, {
     delete next.sources;
     return next;
   };
+  const bindCategory = category => normalizedCategory(source[category],category).map((record,index)=>bindEvidence(record,category,index));
   const bundle = {
     schemaVersion: 1,
     kind: 'DraftBundle',
@@ -447,15 +493,15 @@ export function bindDraftBundle(modelOutput, {
     sourceRevision: sourceRevision ? String(sourceRevision) : null,
     parentRange: parentRange ? clone(parentRange) : null,
     childRange: childRange ? clone(childRange) : null,
-    events: normalizedCategory(source.events, 'events').map(bindEvidence),
-    awarenessChanges: normalizedCategory(source.awarenessChanges, 'awarenessChanges').map(bindEvidence),
-    entityFactChanges: normalizedCategory(source.entityFactChanges, 'entityFactChanges').map(bindEvidence),
-    relationshipChanges: normalizedCategory(source.relationshipChanges, 'relationshipChanges').map(bindEvidence),
-    personaChanges: normalizedCategory(source.personaChanges, 'personaChanges').map(bindEvidence),
-    commitmentChanges: normalizedCategory(source.commitmentChanges, 'commitmentChanges').map(bindEvidence),
-    performanceHints: normalizedCategory(source.performanceHints, 'performanceHints').map(bindEvidence),
-    summaryView: normalizedCategory(source.summaryView, 'summaryView').map(bindEvidence),
-    conflicts: normalizedCategory(source.conflicts, 'conflicts').map(bindEvidence),
+    events: bindCategory('events'),
+    awarenessChanges: bindCategory('awarenessChanges'),
+    entityFactChanges: bindCategory('entityFactChanges'),
+    relationshipChanges: bindCategory('relationshipChanges'),
+    personaChanges: bindCategory('personaChanges'),
+    commitmentChanges: bindCategory('commitmentChanges'),
+    performanceHints: bindCategory('performanceHints'),
+    summaryView: bindCategory('summaryView'),
+    conflicts: bindCategory('conflicts'),
     coverage: normalizedCategory(source.coverage, 'coverage'),
     binding: {
       sourceRefs: boundEvidenceRefs,
@@ -922,6 +968,7 @@ export function validateDraftBundle(bundle, {
   return {
     valid: errors.length === 0,
     errors,
+    ...validationDetails(errors),
     isolated,
     duplicateMentions: deduped.duplicates,
     normalized: clone(value),

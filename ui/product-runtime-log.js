@@ -1,6 +1,7 @@
 import { LOG_TASKS, LOG_PHASES } from '../src/product-runtime-log.js';
 import { esc } from '../src/product-settings-ui.js';
 import { failureText } from '../src/product-feedback.js';
+import { safeValidationIssues, validationIssueText } from '../src/validation-diagnostics.js';
 
 export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help">本机最近 200 条。仅记录运行状态与数值，不记录 Key、聊天正文、附件或模型原始回复。</p><div class="sy-actions"><button type="button" data-log-export>导出日志</button><button type="button" data-log-clear>清空日志</button></div><label class="sy-field"><span>显示</span><select data-log-filter><option value="all">全部记录</option><option value="issues">失败与警告</option><option value="summary">总结</option><option value="api">API 与助手</option></select></label><p data-log-storage class="sy-help" role="status"></p><div data-log-list></div><div class="sy-batch-pagination"><button type="button" data-log-prev>上一页</button><span data-log-page></span><button type="button" data-log-next>下一页</button></div>`;}
 const fields={batchNumber:'总结批次',childIndex:'内部子批（从 0 计）',sourceCount:'读取消息数',inputLimit:'输入预算',inputUnits:'实际输入估算',elapsedMs:'耗时（毫秒）',status:'HTTP 状态',expected:'应有逐楼摘要',received:'收到摘要条数',covered:'完整对应楼数',invalidRows:'来源无效或多楼合并',duplicateCount:'重复摘要条数',promptTokens:'服务报告输入 Token',completionTokens:'服务报告输出 Token',totalTokens:'服务报告总 Token',reasoningTokens:'其中推理 Token',responseChars:'回复文本字符数',savedBatches:'保存批数'};
@@ -14,8 +15,13 @@ function detailsHTML(entry){
   if(d.truncated!==undefined)lines.push(['截断标记',d.truncated?'服务明确报告截断':'未收到截断标记']);
   for(const [key,label] of Object.entries(fields))if(d[key]!==undefined&&!['expected','received','covered','childIndex'].includes(key)&&!(d[key]===0&&['invalidRows','duplicateCount'].includes(key)))lines.push([label,d[key]]);
   if(d.childIndex>0)lines.push(['拆分序号',d.childIndex+1]);
+  const issues=safeValidationIssues(d.validationIssues);
+  if(issues.length){
+    lines.push(['校验问题',`${d.validationIssueCount??issues.length} 项${d.validationIssueCount>issues.length?`（显示前 ${issues.length} 项）`:''}；方括号内是从 0 开始的记录位置，不是聊天楼层`]);
+    for(const issue of issues)lines.push(['校验字段',validationIssueText(issue)]);
+  }
   if(d.code)lines.push(['错误',failureText({code:d.code,details:d})]);
-  return lines.map(([label,value])=>`<div class="sy-log-detail${label==='错误'?' sy-log-wide':''}"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('');
+  return lines.map(([label,value])=>`<div class="sy-log-detail${['错误','校验问题','校验字段'].includes(label)?' sy-log-wide':''}"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('');
 }
 export function mountRuntimeLog({panel,app,run,host,download}){
   const $=s=>panel.querySelector(s);let page=1,state=null,signature='';const opened=new Set();

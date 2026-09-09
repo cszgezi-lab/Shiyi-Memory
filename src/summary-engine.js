@@ -152,7 +152,8 @@ function evidenceRefsFor(child) {
 function makeInstructions(focus, rules) {
   return [
     'Return one JSON DraftBundle for this complete source range.',
-    'Use all required category keys, including empty arrays where there is no change.',
+    'Return every required category with its exact categoryTypes from outputContract. The nine memory categories are arrays of record objects; use [] for categories with no changes. coverage is always an OBJECT with array fields sourceRefs, bridgeRefs, processed, excluded, unprocessed; never return coverage:[] or coverage:null. Follow coverageRules honestly.',
+    'For all sourceRefs, copy source message id strings exactly, with fragmentId only when present. Do not output floor numbers or event IDs as source IDs. Omit host-owned hash, contentHash, version and swipeId; the host supplies frozen evidence metadata. Follow sourceRefRules for record sources and coverage alike.',
     'summaryView is NOT a batch overview. Write one row for EVERY sourceMessages item: {id, floorIndex: item.index, text, sourceRefs:[{sourceId:item.id, fragmentId:item.fragmentId if present}]}. Copy the source ID exactly. Never merge floors or omit user/non-story floors; do not summarize bridgeMessages. Briefly mark non-story content. Never manufacture details to fill a category.',
     'Do not invent scope, operationId, expectedRevision, paths, executable code, or permissions.',
     'Keep expression, response, mutual confirmation, public scope, state, epistemic status, perspective, time, and follow-up distinct.',

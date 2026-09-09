@@ -1,3 +1,5 @@
+import { validationIssueText } from './validation-diagnostics.js';
+
 const NETWORK = {
   'network.timeout':'请求超时，请重试或调整请求超时。',
   'network.connect_failed':'无法连接模型服务，请检查地址和网络。',
@@ -22,6 +24,7 @@ const CODES = {
   MODEL_UNAVAILABLE:'请先在 API 中填写并保存总结地址与模型。',
   PROVIDER_PROFILE_INVALID:'API 地址或认证配置不正确。',
   SUMMARY_RESPONSE_INVALID:'模型返回的内容不符合总结格式，本次结果未标记为成功。',
+  VALIDATION_ERROR:'返回内容未通过结构或来源校验，本次结果未保存。请查看运行日志的校验字段；这不等于回复上限不足。',
   SUMMARY_RESPONSE_ERROR:'模型响应中断或内容格式不正确，请重试。',
   PERSISTENCE_ERROR:'保存或读回校验失败，不能确认本次结果已保存。',
   PERSISTENCE_UNAVAILABLE:'当前聊天存储不可用，请确认聊天已保存。',
@@ -35,6 +38,10 @@ export function productFailure(error) {
   const rawStatus=Number(error?.details?.status);
   const status=Number.isInteger(rawStatus)&&rawStatus>=400&&rawStatus<=599?rawStatus:null;
   let message=HTTP[status]??NETWORK[code]??CODES[code];
+  if(code==='VALIDATION_ERROR'){
+    const issue=validationIssueText(error?.details?.validationIssues?.[0]);
+    if(issue)message=`${issue}。本次结果未保存；完整校验信息见运行日志。`;
+  }
   if(code==='FLOOR_SUMMARY_MISSING'&&['expected','received','covered'].every(k=>Number.isSafeInteger(error?.details?.[k])&&error.details[k]>=0)){
     const d=error.details;message=`收到 ${d.received} 条逐楼摘要，完整对应 ${d.covered}/${d.expected} 楼，本批未保存。请查看运行日志；这不代表回复上限不足。`;
   }
