@@ -29,7 +29,7 @@ import { buildDictionary, normalizeTerms, KNOWLEDGE_ANALYSIS_PROMPT, parseKnowle
 import { fullSearchText } from './product-narrative.js';
 import { sceneRecallQuery } from './product-recall-packing.js';
 import { sceneClockFromMessages } from './temporal.js';
-import { QUALITY_STORE_KEY,QUALITY_PROMPT,memoryQualityIssues,qualityGroups,qualityStatus,qualityEntryCurrent,qualityFingerprint,validateQualityReview,projectQualityRecords } from './product-memory-quality.js';
+import { QUALITY_STORE_KEY,QUALITY_PROMPT,memoryQualityIssues,qualityGroups,qualityStatus,qualityEntryCurrent,qualityFingerprint,validateQualityReview,validateQualityReviewPartial,projectQualityRecords } from './product-memory-quality.js';
 import { createInjectionLog } from './product-injection-log.js';
 import { ASSISTANT_SKILLS, assistantSkillCatalog, readAssistantSkill, assistantSettings } from './product-assistant-skills.js';
 import { MERGE_STORE_KEY, MERGE_JUDGE_PROMPT, mergeJobs, mergeDecision, mergeJudgeInput, validateMergeVote, projectMergedCards, sameMergeSnapshot, eventFingerprint } from './product-event-merge.js';
@@ -68,6 +68,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let vectorTimer=null,vectorJob=null,vectorCheckVersion=0,vectorStorageFailure=null;
   let injectionLog=null,vectorExcluded=[],mergeDecisions={},qualitySaved={};
   let tracking=false,trackingStart=null,disposed=false,followPending=false,followTimer=null,following=null,followVersion=0;
+  let qualityJob=null,automaticQualityQueue=[];
   const chatListeners=[],followWaiters=[];
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache(),knowledgeVectorCache=new ProductVectorCache();
   let knowledgeJob=false,automaticPaused=false,autoInvalidSources=new Set();
@@ -226,6 +227,29 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   function setMessage(message) { state.message = message; notify(); }
   function summaryFeedback(level,text,trigger) { state.feedback={id:++feedbackSequence,kind:'summary',level,text,trigger};setMessage(text); }
+  function queueAutomaticQuality(ids){
+    automaticQualityQueue=[...new Set([...automaticQualityQueue,...ids])];
+    if(qualityJob||disposed)return;
+    // Let the summary action finish and release its exclusive operation first.
+    // Automatic校对 is a background follow-up, never part of the summary's
+    // critical path and never allowed to make a saved batch look failed.
+    qualityJob=new Promise(resolve=>setTimeout(resolve,0)).then(async()=>{
+      while(automaticQualityQueue.length&&!disposed){
+        while(active&&!disposed)await new Promise(resolve=>setTimeout(resolve,25));
+        if(disposed)break;
+        const pending=automaticQualityQueue.splice(0),op=begin(false);
+        try{
+          const result=await processQuality(op,{recordIds:pending,automatic:true});
+          if(op.token===epoch&&(result.failed||result.unresolved))setMessage(`总结已保存；后台内容校对有 ${result.failed} 组未完成、${result.unresolved} 处待核对，可稍后单独重试。`);
+        }catch(error){
+          if(!['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error?.code)&&!disposed){
+            void reportError(error,{task:'quality',stage:'background'});
+            if(op.token===epoch)setMessage(`总结已保存；后台内容校对未完成：${failureText(error)}，可稍后单独重试。`);
+          }
+        }finally{op.finish();}
+      }
+    }).finally(()=>{qualityJob=null;if(automaticQualityQueue.length&&!disposed)queueAutomaticQuality([]);});
+  }
   function externalState({full=false}={}) {
     const paths=String(core.settings.externalStatePaths??'').split('\n').map(p=>p.trim()).filter(Boolean);
     if(!paths.length)return '未配置';
@@ -534,7 +558,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     if(!workspace)throw Object.assign(new Error('当前聊天尚未读取'),{code:'CHAT_REF_UNAVAILABLE'});
     batchSize??=core.settings.summaryBatchSize;
-    const op=begin();let saved=0,currentBatch=null,bookkeepingWarning=false,qualityWarning=false;
+    const op=begin();let saved=0,currentBatch=null,bookkeepingWarning=false,automaticQualityIds=[];
     summaryFeedback('running','正在读取总结范围…',trigger);
     try{
       // Read current source again only inside the same bound chat.
@@ -581,8 +605,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         await workspace.write('ui',{savedThrough:state.savedThrough}).catch(error=>{bookkeepingWarning=true;void reportError(error,{task:'storage',stage:'storage'});});await refresh();currentBatch=null;
         if(core.settings.autoQualityEnabled){
           const batch=state.batches.find(b=>b.operationId===operationId),ids=MEMORY_CATEGORIES.flatMap(k=>batch?.records?.[k]??[]).map(r=>r.id);
-          if(ids.length)try{const report=await processQuality(op,{recordIds:ids,automatic:true});qualityWarning ||= report.failed>0||report.unresolved>0;}
-          catch(error){if(op.signal.aborted||['CHAT_CHANGED','SOURCE_INVALIDATED','CANCELED'].includes(error.code))throw error;qualityWarning=true;void reportError(error,{task:'quality',stage:'background'});}
+          automaticQualityIds.push(...ids);
         }
       }
       // All source-valid summaries are already durable. Merge is a separate
@@ -595,8 +618,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       }
       const awaiting=(state.merges??[]).filter(j=>['pending','failed','uncertain','missing'].includes(j.status)).length;
       mergeWarning ||= (state.merges??[]).some(j=>['failed','uncertain','missing'].includes(j.status));
-      if(op.token===epoch)summaryFeedback(mergeWarning||bookkeepingWarning||qualityWarning?'warning':'success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${bookkeepingWarning?'批次进度资料待恢复，记忆正文已确认保存，无需重新生成。':''}${qualityWarning?'内容校对有待处理项，可在记忆 → 内容校对中查看或单独重试。':''}${awaiting||mergeWarning?'合并尚未全部完成，可在记录 → 事件合并中单独处理；无需重做总结。':''}`,trigger);
-      return {status:'saved',batches:saved,level:mergeWarning||bookkeepingWarning||qualityWarning?'warning':'success'};
+      if(automaticQualityIds.length)queueAutomaticQuality(automaticQualityIds);
+      if(op.token===epoch)summaryFeedback(mergeWarning||bookkeepingWarning?'warning':'success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${bookkeepingWarning?'批次进度资料待恢复，记忆正文已确认保存，无需重新生成。':''}${awaiting||mergeWarning?'合并尚未全部完成，可在记录 → 事件合并中单独处理；无需重做总结。':''}`,trigger);
+      return {status:'saved',batches:saved,level:mergeWarning||bookkeepingWarning?'warning':'success'};
     }catch(error){
       if(currentBatch&&workspace?.isCurrent()&&op.token===epoch){
         const failed={...currentBatch,status:op.signal.aborted?'interrupted':'failed',error:failureText(error)};
@@ -678,10 +702,20 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         runtimeLog.record({run,task:'quality',phase:'request',details:{requestId,inputUnits,inputLimit:core.settings.inputBudgetUnits,maxTokens:core.settings.outputBudgetUnits,sourceCount:sources.length,expected:ids.length}});
         const response=await c.chatCompletions(payload,{signal:op.signal,timeoutMs:core.settings.deadlineMs,requestId,onDiagnostic:e=>runtimeLog.record({run,task:'quality',...e})});op.check();
         runtimeLog.record({run,task:'quality',phase:'response',details:{finishReason:response.choices?.[0]?.finish_reason??'unknown',promptTokens:response.usage?.prompt_tokens,completionTokens:response.usage?.completion_tokens}});
-        entry=validateQualityReview(raw,ids,sources,jsonContent(completion(response).content),state.memoryControls);
+        const modelOutput=jsonContent(completion(response).content);
+        try{entry=validateQualityReview(raw,ids,sources,modelOutput,state.memoryControls);}
+        catch(error){
+          // Providers sometimes produce one unusable evidence quote alongside
+          // otherwise valid corrections. Salvage the independently valid
+          // rows; only those rows remain applied, while rejected rows stay
+          // eligible for the next retry.
+          if(error?.code!=='QUALITY_RESPONSE_INVALID')throw error;
+          entry=validateQualityReviewPartial(raw,ids,sources,modelOutput,state.memoryControls);
+          runtimeLog.record({run,task:'quality',phase:'partial_repair',level:'warning',details:{requestId,accepted:entry.updates.length+entry.additions.length,rejected:entry.rejected?.length??0}});
+        }
         await core.readQualitySources(targets);op.check();
-        corrected++;unresolved+=entry.issues.length;
-        runtimeLog.record({run,task:'quality',phase:'validate',level:entry.issues.length?'warning':'success',details:{received:entry.updates.length+entry.additions.length,invalidRows:entry.issues.length}});
+        corrected++;unresolved+=entry.issues.length+(entry.rejected?.length??0);
+        runtimeLog.record({run,task:'quality',phase:'validate',level:entry.issues.length||entry.rejected?.length?'warning':'success',details:{received:entry.updates.length+entry.additions.length,invalidRows:entry.issues.length,rejectedRows:entry.rejected?.length??0}});
       }catch(error){
         if(op.signal.aborted||['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error.code)){runtimeLog.record({run,task:'quality',phase:'canceled',level:'warning',details:errorDiagnostics(error)});throw error;}
         failed++;entry={status:'failed',anchors,at:Date.now(),error:failureText(error)};

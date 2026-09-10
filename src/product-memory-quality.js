@@ -63,6 +63,7 @@ function invalid(reason){return Object.assign(new Error(`记忆校对未通过�
 export function validateQualityReview(records,targets,sources,output,{edits={}}={}){
   if(!output||!['updates','additions','issues'].every(k=>Array.isArray(output[k]))||output.updates.length+output.additions.length>200||output.issues.length>100)throw invalid('返回格式或条数不正确');
   const byId=new Map(list(records).map(x=>[x.record.id,x])),targetSet=new Set(targets),sourceMap=new Map(sources.map(m=>[m.id,m]));
+  const targetSourceIds=new Set(targets.flatMap(id=>byId.get(id)?.record?.sourceRefs??[]).map(ref=>ref?.sourceId).filter(Boolean));
   const evidence=rows=>{
     if(!Array.isArray(rows)||!rows.length||rows.length>30)throw invalid('缺少原文依据');
     const found=rows.map(e=>{const m=sourceMap.get(e?.sourceId);if(!isPlainObject(e)||!m||typeof e.quote!=='string'||e.quote.trim().length<2||!m.text.includes(e.quote))throw invalid('依据不能对应原文');return m;});
@@ -103,7 +104,11 @@ export function validateQualityReview(records,targets,sources,output,{edits={}}=
     if(!isPlainObject(a))throw invalid('新增记录不正确');
     const anchor=byId.get(a.anchorId);if(!anchor||!targetSet.has(a.anchorId)||!['awarenessChanges','entityFactChanges'].includes(a.category))throw invalid('新增区块或来源锚点不正确');
     const proof=evidence(a.evidence),r=clone(a.record);if(!r||typeof r!=='object'||Array.isArray(r))throw invalid('新增记录不正确');
-    if(!proof.some(m=>anchor.record.sourceRefs?.some(ref=>ref.sourceId===m.id))||proof.some(m=>!m.sourceRef||!Number.isInteger(m.index)))throw invalid('新增依据不属于来源锚点');
+    // The anchor identifies the existing memory row being enriched; the
+    // evidence may come from any source in this review group. Requiring it to
+    // belong to the anchor row rejected valid cross-module facts when the
+    // event and character rows had different source spans.
+    if(!proof.some(m=>targetSourceIds.has(m.id))||proof.some(m=>!m.sourceRef||!Number.isInteger(m.index)))throw invalid('新增依据不属于本次校对来源');
     if(stableStringify(r).length>24000)throw invalid('新增记录过长');
     if(Object.keys(r).some(k=>!new Set(['eventRef','eventRefs','person','actorId','knowledge','status','via','learnedAt','entity','field','to','epistemicStatus','entities','tags','validFrom','validUntil','context']).has(k)))throw invalid('新增记录含未知字段');
     if(a.category==='awarenessChanges'){
@@ -117,6 +122,41 @@ export function validateQualityReview(records,targets,sources,output,{edits={}}=
   }
   for(const issue of output.issues){if(!issue||!Array.isArray(issue.recordIds)||!issue.recordIds.length||issue.recordIds.some(id=>!byId.has(id))||!issue.recordIds.some(id=>targetSet.has(id))||typeof issue.description!=='string'||!issue.description.trim()||issue.description.length>2000)throw invalid('疑点没有关联原记录');issues.push(clone(issue));}
   return {version:1,status:'reviewed',anchors:Object.fromEntries(targets.map(id=>[id,sha256(byId.get(id)?.record)])),updates,additions,issues,at:Date.now()};
+}
+
+// A single bad model row must not discard other independently evidenced
+// corrections from the same response. Validate each proposal in isolation,
+// then commit the accepted subset with the same strict validator. The anchors
+// intentionally cover accepted rows only, so a later retry can revisit rows
+// whose proposals were rejected.
+export function validateQualityReviewPartial(records,targets,sources,output,options={}){
+  if(!output||!Array.isArray(output.updates)||!Array.isArray(output.additions)||!Array.isArray(output.issues))throw invalid('返回格式或条数不正确');
+  const accepted={updates:[],additions:[],issues:[]},rejected=[];
+  const updateIds=new Set();
+  const tryOne=(kind,item)=>{
+    const candidate={updates:kind==='update'?[item]:[],additions:kind==='addition'?[item]:[],issues:kind==='issue'?[item]:[]};
+    try{
+      const checked=validateQualityReview(records,targets,sources,candidate,options);
+      if(kind==='update'&&checked.updates.length&&!updateIds.has(item.id)){accepted.updates.push(item);updateIds.add(item.id);}
+      if(kind==='addition'&&checked.additions.length)accepted.additions.push(item);
+      if(kind==='issue'&&checked.issues.length)accepted.issues.push(item);
+    }catch(error){
+      rejected.push({kind,id:item?.id??item?.anchorId??item?.recordIds?.[0]??null,reason:error?.details?.qualityReason??'校对项未通过原文与字段校验'});
+    }
+  };
+  for(const item of output.updates)tryOne('update',item);
+  for(const item of output.additions)tryOne('addition',item);
+  for(const item of output.issues)tryOne('issue',item);
+  if(!accepted.updates.length&&!accepted.additions.length&&!accepted.issues.length)throw invalid(rejected[0]?.reason??'没有一项校对结果通过验证');
+  const entry=validateQualityReview(records,targets,sources,accepted,options);
+  const acceptedAnchors=new Set([
+    ...entry.updates.map(row=>row.id),
+    ...entry.additions.map(row=>row.anchorId),
+    ...entry.issues.flatMap(row=>row.recordIds??[]),
+  ]);
+  entry.anchors=Object.fromEntries(Object.entries(entry.anchors).filter(([id])=>acceptedAnchors.has(id)));
+  if(rejected.length)entry.rejected=rejected.slice(0,100);
+  return entry;
 }
 
 export function projectQualityRecords(records,saved={},controls={}){

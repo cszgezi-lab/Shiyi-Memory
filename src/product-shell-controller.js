@@ -516,14 +516,28 @@ export function createProductShellController({
     const preflightAbort=new AbortController();abortController=preflightAbort;activeTask=operationId;
     state.draft={range:clone(state.range),focus:normalizedFocus,status:'running'};
     let frozen;
+    let privateTaskCheckpoint = 'not-needed';
     try{
     frozen=resume?await repository.readPrivateTask(state.scope,operationId):null;
     if(resume&&!frozen?.batch)throw Object.assign(new Error('没有可续跑的暂存任务，请重新生成'),{code:'RESUME_UNAVAILABLE'});
     if(frozen?.batch){
       const old=frozen.batch;
       if(old.sourceRevision!==batch.sourceRevision||stableStringify(old.focusSpec)!==stableStringify(batch.focusSpec)||stableStringify(old.rules)!==stableStringify(batch.rules))throw Object.assign(new Error('本批原文或记录规则已变化，请重新生成；未复用过期结果'),{code:'SOURCE_INVALIDATED'});
-      batch=old;expectedRevision=old.expectedRevision;
-    }else await repository.savePrivateTask(state.scope,operationId,{batch,splitUnits:sourceSplitUnits()});
+      batch=old;expectedRevision=old.expectedRevision;privateTaskCheckpoint='reused';
+    }else {
+      // This is only a recovery/resume cache.  It must never prevent the
+      // authoritative summary request from starting when its optional catalog
+      // entry cannot be written (for example after a chat rename or a stale
+      // mobile storage index).  The source batch remains frozen in memory for
+      // this run; a later manual resume can simply start a fresh run.
+      try {
+        await repository.savePrivateTask(state.scope,operationId,{batch,splitUnits:sourceSplitUnits()});
+        privateTaskCheckpoint='saved';
+      } catch (error) {
+        privateTaskCheckpoint='unavailable';
+        try { onDiagnostic({phase:'checkpoint_warning',level:'warning',details:{...safeLogDetails(errorDiagnostics(error)),storageArtifact:'batch-recovery'}}); } catch {/* diagnostics are advisory */}
+      }
+    }
       if(preflightAbort.signal.aborted||!tokenValid(token,session))throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
     }catch(error){
       if(activeTask===operationId){activeTask=null;abortController=null;}
@@ -534,7 +548,7 @@ export function createProductShellController({
     }
     abortController = preflightAbort;
     activeTask = operationId;
-    state.job = { operationId, focusSpec: clone(focusSpec), startedAt: now(), sourceRevision: batch.sourceRevision, splitUnits:frozen?.splitUnits??sourceSplitUnits() };
+    state.job = { operationId, focusSpec: clone(focusSpec), startedAt: now(), sourceRevision: batch.sourceRevision, splitUnits:frozen?.splitUnits??sourceSplitUnits(), privateTaskCheckpoint };
     state.draft = { range: clone(state.range), focus: normalizedFocus, focusConfirmed: confirmedFocus === true, status: 'running' };
     mark(PRODUCT_SHELL_STATUS.RUNNING);
     state.capabilities.summary = 'running';

@@ -2,6 +2,14 @@ import {clone,throwIfAborted,abortError} from './utils.js';
 import {safeValidationIssues} from './validation-diagnostics.js';
 
 export const transientSummaryError=e=>['TIMEOUT','network.timeout','network.connect_failed','network.body_interrupted'].includes(e?.code)||[408,429,500,502,503,504].includes(e?.details?.status)||e?.code==='SUMMARY_RESPONSE_ERROR'&&e?.details?.aborted===true;
+// A timeout usually means the payload exceeded the provider's effective
+// context/latency window.  Replaying it three times only turns one bad batch
+// into a several-minute mobile hang.  Keep two retries for quick, transient
+// service errors, but allow only one recovery retry for timeout/connectivity
+// failures; the next manual retry can use a smaller range or another model.
+export function recoveryAttemptLimit(error){
+  return ['TIMEOUT','network.timeout','network.connect_failed','network.body_interrupted'].includes(error?.code)||[408,504].includes(error?.details?.status) ? 1 : 2;
+}
 export function recoveryDelay(ms,signal){
   throwIfAborted(signal);
   return new Promise((resolve,reject)=>{

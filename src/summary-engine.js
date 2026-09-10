@@ -14,7 +14,7 @@ import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType } from 
 import { resolveEventMerges } from './event-consolidation.js';
 import { tokenizeChinese } from './retrieval.js';
 import { normalizeSummaryEnums, normalizePersonaValidity, repairableEnumTargets, createEnumRepairRequest, applyEnumCorrections } from './summary-enum-repair.js';
-import {transientSummaryError,recoveryDelay,repairCategories,categoryRepairRequest,applyCategoryRepair,missingFloorRequest} from './summary-recovery.js';
+import {transientSummaryError,recoveryAttemptLimit,recoveryDelay,repairCategories,categoryRepairRequest,applyCategoryRepair,missingFloorRequest} from './summary-recovery.js';
 
 function responseStatus(response) {
   return Number(response?.status ?? response?.statusCode ?? 200);
@@ -48,7 +48,7 @@ function stripJsonFence(text) {
   return fenced ? fenced[1].trim() : value;
 }
 
-async function parseModelResponse(raw, { onMetadata = () => {} } = {}) {
+async function parseModelResponse(raw, { onMetadata = () => {}, allowArray = false } = {}) {
   const status = responseStatus(raw);
   if (status < 200 || status >= 300) {
     const body = await readRawBody(raw).catch(() => '');
@@ -75,7 +75,10 @@ async function parseModelResponse(raw, { onMetadata = () => {} } = {}) {
   if (typeof payload === 'string') {
     try { payload = JSON.parse(stripJsonFence(payload)); } catch (error) { throw new SummaryResponseError('summary model content is not valid JSON', jsonFailure(error,stripJsonFence(payload),metadata)); }
   }
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new SummaryResponseError('summary model response must be an object',{...metadata,stage:'parse_content',reason:'invalid_model_root',contentType:contentType(payload)});
+  // A non-empty array is accepted only for the unambiguous one-category
+  // repair compatibility path.  An empty top-level array is still an invalid
+  // repair response: it cannot prove that an existing row was preserved.
+  if (!payload || typeof payload !== 'object' || (Array.isArray(payload) && (!allowArray || payload.length === 0))) throw new SummaryResponseError('summary model response must be an object',{...metadata,stage:'parse_content',reason:'invalid_model_root',contentType:contentType(payload)});
   if (payload.draftBundle && typeof payload.draftBundle === 'object') return payload.draftBundle;
   return payload;
 }
@@ -353,7 +356,7 @@ export class SummaryEngine {
         catch(error){
           error.details={...error.details,requestId:baseDetails.requestId,purpose};
           emit('response',{...baseDetails,...errorDiagnostics(error)},'error');
-          if(!this.recoveryEnabled||!transientSummaryError(error)||recoveryCalls>=2)throw error;
+          if(!this.recoveryEnabled||!transientSummaryError(error)||recoveryCalls>=recoveryAttemptLimit(error))throw error;
           // Long rate limits require user action later, not ignoring Retry-After
           // or holding a mobile task open indefinitely.
           if((error.details?.retryAfterMs??0)>5000)throw error;
@@ -545,8 +548,16 @@ export class SummaryEngine {
           const previousPhase=phase;phase='response_saved';
           const patch={binding:resultBinding,raw,retryModel:false};
           this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
-          await this.repository.savePrivateTask(child.scope,child.operationId,patch);
-          emit('response_saved',baseDetails,'success');
+          // Recovery storage is an optimization. A host may reject the
+          // private task catalog while the actual chat-store commit is still
+          // healthy. Never turn a valid model response into a failed summary
+          // solely because this optional cache could not be acknowledged.
+          try {
+            await this.repository.savePrivateTask(child.scope,child.operationId,patch);
+            emit('response_saved',baseDetails,'success');
+          } catch (error) {
+            emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'response-cache'},'warning');
+          }
           phase=previousPhase;
         };
         let raw;
@@ -667,8 +678,13 @@ export class SummaryEngine {
             try{
               const repairRaw=await invoke(categoryRepairRequest(request,bundle,categories,validation),baseDetails,{extra:true});
               phase='repair_response';
-              const fixed=await parseModelResponse(repairRaw,{onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});
-              const repaired=applyCategoryRepair(bundle,categories,fixed);
+              const fixed=await parseModelResponse(repairRaw,{allowArray:categories.length===1,onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});
+              // A number of OpenAI-compatible providers ignore the requested
+              // object shape for a one-category repair and return the array
+              // itself. It is unambiguous in this branch, so wrap it before
+              // applying the normal evidence/row-preservation checks.
+              const repairObject=Array.isArray(fixed)?{[categories[0]]:fixed}:fixed;
+              const repaired=applyCategoryRepair(bundle,categories,repairObject);
               if(!repaired)throw new ValidationError('category repair changed shape or dropped records',{...validation,stage:'repair',reason:'invalid_repair_shape'});
               const normalized=bindOutput(normalizePersonaValidity(normalizeSummaryEnums(repaired).output).output);
               const checked=validateDraftBundle(normalized,validationOptions);
