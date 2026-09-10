@@ -595,6 +595,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           if(event.phase==='partial_repair')summaryFeedback('running',`正在补齐缺失内容 · #${item.startIndex}–${item.endIndex}，不重做整批总结`,trigger);
           if(event.phase==='resume_response')summaryFeedback('running',`已读取上次模型结果 · #${item.startIndex}–${item.endIndex}，继续校验和保存`,trigger);
           if(event.phase==='resume_commit')summaryFeedback('running',`已确认上次提交成功，跳过这部分模型请求`,trigger);
+          if(event.phase==='recovery_compact')summaryFeedback('running',`接口响应异常，正在压缩无关历史后重试 · #${item.startIndex}–${item.endIndex}`,trigger);
           if(event.phase==='retry_wait')summaryFeedback('running',`模型服务暂时异常，稍后自动重试（本批额外恢复 ${event.details.recoveryCalls}/2 次）`,trigger);
         }});
         op.check();if(result.status!=='saved')throw Object.assign(new Error(core.state.errorMessage??'总结未保存'),{code:result.failure?.code??result.errorCode??'SUMMARY_RESPONSE_ERROR',details:result.errorDetails});

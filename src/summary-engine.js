@@ -94,7 +94,9 @@ function modelInvoker(model) {
     // second, independently estimated request.
     invoke.providerPayload = (request) => ({
       model: model.profile?.model,
-      ...(model.profile?.maxTokens>0?{max_tokens:model.profile.maxTokens}:{}),
+      ...(Number.isSafeInteger(request?.effectiveMaxTokens) && request.effectiveMaxTokens > 0
+        ? { max_tokens: request.effectiveMaxTokens }
+        : model.profile?.maxTokens > 0 ? { max_tokens: model.profile.maxTokens } : {}),
       messages: [
         { role: 'system', content: request.instructions },
         { role: 'user', content: JSON.stringify(request) },
@@ -245,6 +247,68 @@ function defineModelAlias(target, key, value) {
   });
 }
 
+// A failed large request should not be replayed with the same optional
+// history. Keep source-overlapping records first, shed unrelated history,
+// and update the diagnostic budget without touching frozen source evidence.
+function compactRecoveryContext(request, targetUnits, providerPayload) {
+  const measure = () => estimateUnits(JSON.stringify(typeof providerPayload === 'function' ? providerPayload(request) : request));
+  const beforeUnits = measure();
+  const records = request?.relevantRecords;
+  if (!records || typeof records !== 'object') return { changed: false, beforeUnits, afterUnits: beforeUnits, removed: 0 };
+  const sourceIds = new Set((request.sourceMessages ?? []).map(message => message?.id).filter(Boolean));
+  const entries = Object.entries(records).filter(([, rows]) => Array.isArray(rows) && rows.length);
+  const candidates = entries.flatMap(([category, rows]) => rows.map((record, index) => ({
+    category,
+    record,
+    index,
+    overlap: sourceOverlap(record, sourceIds) ? 1 : 0,
+    units: estimateUnits(stableStringify(record)),
+  })));
+  candidates.sort((a, b) => a.overlap - b.overlap || b.units - a.units || b.index - a.index);
+  let removed = 0;
+  while (measure() > targetUnits && candidates.length) {
+    const item = candidates.shift();
+    const rows = records[item.category];
+    const index = rows.indexOf(item.record);
+    if (index < 0) continue;
+    rows.splice(index, 1);
+    removed += 1;
+    if (item.category === 'events') {
+      records.awarenessChanges = (records.awarenessChanges ?? []).filter(awareness => awareness.eventRef !== item.record.id && !(awareness.eventRefs ?? []).includes(item.record.id));
+    }
+  }
+  const afterUnits = measure();
+  if (!removed) return { changed: false, beforeUnits, afterUnits, removed: 0 };
+  const remaining = Object.values(records).flatMap(rows => Array.isArray(rows) ? rows : []);
+  const budget = request.extractionContext?.budget;
+  if (budget) {
+    const relevantUnits = estimateUnits(JSON.stringify(records));
+    budget.sections.relevantRecords = relevantUnits;
+    budget.usedInputUnits = (budget.sections.source ?? 0) + (budget.sections.bridge ?? 0) + (budget.sections.focusRules ?? 0) + relevantUnits;
+    budget.totalReservedUnits = budget.usedInputUnits + (budget.sections.outputSchema ?? 0) + (budget.outputReserveUnits ?? 0);
+    budget.relevantRecordCount = remaining.length;
+    budget.omittedRelevantRecords = (budget.relevantCandidateCount ?? 0) - remaining.length;
+    budget.contextTruncated = true;
+    budget.strategy = 'recovery_context_shed';
+  }
+  const coverage = request.extractionContext?.coverage;
+  if (coverage) {
+    coverage.relevantRecordIds = remaining.map(record => record?.id).filter(Boolean);
+    coverage.relevantRecordCount = remaining.length;
+    coverage.omittedRelevantRecords = budget?.omittedRelevantRecords ?? 0;
+  }
+  return { changed: true, beforeUnits, afterUnits, removed };
+}
+
+function recoveryOutputLimit(request, configured) {
+  if (!Number.isSafeInteger(configured) || configured <= 0) return 0;
+  const sourceUnits = Number(request?.extractionContext?.budget?.sections?.source) || 0;
+  // This is only used after a transient failure. It remains a ceiling chosen
+  // by the user, but avoids asking a mobile gateway to reserve 40K output
+  // tokens for a normal 5–10 floor JSON bundle.
+  return Math.min(configured, Math.max(4096, Math.ceil(sourceUnits / 2.5)));
+}
+
 /** P1 one-request-per-segment orchestration with atomic bundle commits. */
 export class SummaryEngine {
   constructor({ model, repository, maxInputUnits = 12000, maxSourceUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, now = () => Date.now() } = {}) {
@@ -345,13 +409,15 @@ export class SummaryEngine {
     let recoveryCalls=0;
     const invoke=async(request,baseDetails,{extra=false}={})=>{
       if(extra&&++recoveryCalls>2)throw new ShiyiError('本次自动恢复预算已用完，已返回结果保留','RECOVERY_LIMIT');
-      const units=estimateUnits(JSON.stringify(this.model.providerPayload?.(request)??request));
-      if(units>this.maxInputUnits)throw new ShiyiError('补全请求超过输入预算','INPUT_BUDGET_EXCEEDED');
+      let compacted=false;
       for(;;){
         throwIfAborted(signal);state.requests++;
         const purpose=({ShiyiCategoryRepair:'category_repair',ShiyiFloorRepair:'floor_repair',ShiyiSummaryEnumRepair:'enum_repair'})[request.kind]??'summary';
         Object.assign(baseDetails,{requestId:diagnosticRequestId(),purpose,requestNumber:state.requests});
-        emit('request',{...baseDetails,inputUnits:units,maxTokens:this.model.providerPayload?.(request)?.max_tokens??0,recoveryCalls});
+        const providerPayload=typeof this.model.providerPayload==='function'?this.model.providerPayload(request):null;
+        const units=estimateUnits(JSON.stringify(providerPayload??request));
+        if(units>this.maxInputUnits)throw new ShiyiError('补全请求超过输入预算','INPUT_BUDGET_EXCEEDED');
+        emit('request',{...baseDetails,inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
         try{return await this.model(request,{signal,requestId:baseDetails.requestId,purpose});}
         catch(error){
           error.details={...error.details,requestId:baseDetails.requestId,purpose};
@@ -360,6 +426,16 @@ export class SummaryEngine {
           // Long rate limits require user action later, not ignoring Retry-After
           // or holding a mobile task open indefinitely.
           if((error.details?.retryAfterMs??0)>5000)throw error;
+          if(!compacted&&request.kind==='ShiyiSummaryRequest'){
+            const configuredLimit=Number(request.extractionContext?.budget?.limitUnits)||Number(this.maxInputUnits)||12000;
+            const targetUnits=Math.min(configuredLimit,48000);
+            const shed=compactRecoveryContext(request,targetUnits,requestPayload=>typeof this.model.providerPayload==='function'?this.model.providerPayload(requestPayload):requestPayload);
+            const configuredOutput=Number(providerPayload?.max_tokens)||Number(request.extractionContext?.budget?.outputBudgetUnits)||0;
+            const reducedOutput=recoveryOutputLimit(request,configuredOutput);
+            if(reducedOutput>0&&reducedOutput<configuredOutput)defineModelAlias(request,'effectiveMaxTokens',reducedOutput);
+            compacted=true;
+            emit('recovery_compact',{...baseDetails,beforeInputUnits:shed.beforeUnits,afterInputUnits:shed.afterUnits,removedRelevantRecords:shed.removed,recoveryInputTarget:targetUnits,requestedMaxTokens:configuredOutput,effectiveMaxTokens:reducedOutput||configuredOutput},'warning');
+          }
           recoveryCalls++;const retryDelayMs=Math.max(recoveryCalls*400,error.details?.retryAfterMs??0);
           emit('retry_wait',{...baseDetails,retryDelayMs,recoveryCalls,code:error.code,status:error.details?.status},'warning');
           await recoveryDelay(retryDelayMs,signal);
@@ -369,6 +445,10 @@ export class SummaryEngine {
     for (const child of children) {
       const childIndex = child.childRange.childIndex;
       if (completed.has(childIndex)) continue;
+      // Recovery budget is per source child. A failed early batch must not
+      // consume the retry/repair allowance of every later batch in a 1–300
+      // run.
+      recoveryCalls=0;
       let phase='request';
       const started=this.now();
       const baseDetails={childIndex,startIndex:child.sourceMessages[0]?.index,endIndex:child.sourceMessages.at(-1)?.index,sourceCount:child.sourceMessages.length};
@@ -420,9 +500,11 @@ export class SummaryEngine {
           },
           usedInputUnits: sourceUnits + bridgeUnits + focusRulesUnits + context.selection.usedUnits,
           totalReservedUnits: sourceUnits + bridgeUnits + focusRulesUnits + context.selection.usedUnits + schemaUnits + outputReserveUnits,
-          relevantRecordCount: Object.values(context.records).reduce((sum, values) => sum + (Array.isArray(values) ? values.length : 0), 0),
+            relevantRecordCount: Object.values(context.records).reduce((sum, values) => sum + (Array.isArray(values) ? values.length : 0), 0),
+          relevantCandidateCount: context.selection.candidateCount,
           omittedRelevantRecords: context.selection.omittedCount,
           contextTruncated: context.selection.omittedCount > 0,
+          outputBudgetUnits: Number.isFinite(child.budgets?.outputUnits) ? Math.max(0, child.budgets.outputUnits) : 0,
         };
         const extractionContext = {
           kind: 'ExtractionContext',

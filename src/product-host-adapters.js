@@ -239,7 +239,7 @@ export function createProductTransport(profile = {}, { sessionApiKey = '', fetch
     return { status: 'unavailable', errorCode: 'TRANSPORT_UNAVAILABLE', reason: 'provider_profile_invalid' };
   }
   const publicProfile = {
-    maxTokens: Number.isSafeInteger(profile.outputBudgetUnits) && profile.outputBudgetUnits>0 ? profile.outputBudgetUnits : 0,
+      maxTokens: Number.isSafeInteger(profile.outputBudgetUnits) && profile.outputBudgetUnits>0 ? profile.outputBudgetUnits : 0,
     endpointMode: client.profile.endpointMode,
     url: client.profile.url,
     model: client.profile.model,
@@ -259,7 +259,12 @@ export function createProductTransport(profile = {}, { sessionApiKey = '', fetch
     model: {
       profile: publicProfile,
       async chatCompletions(payload, options = {}) {
-        try { return await client.chatCompletions({...payload,...(profile.outputBudgetUnits>0?{max_tokens:profile.outputBudgetUnits}:{})}, options); } finally { clearTransportLog(); }
+        // The profile value is the user-facing ceiling. A recovery request may
+        // provide a smaller effective max_tokens after a timeout/502; do not
+        // overwrite that adaptive value on the way to the provider.
+        const body={...payload};
+        if (profile.outputBudgetUnits>0 && body.max_tokens===undefined) body.max_tokens=profile.outputBudgetUnits;
+        try { return await client.chatCompletions(body, options); } finally { clearTransportLog(); }
       },
     },
     async testConnection({ payload = null, signal } = {}) {

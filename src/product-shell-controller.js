@@ -33,6 +33,12 @@ import {
 export const PRODUCT_MEMORY_NAMESPACE = 'shiyi-product-memory';
 export const PRODUCT_SETTINGS_NAMESPACE = 'shiyi-product-settings';
 export const PRODUCT_SETTINGS_KEY = 'current';
+// The input budget is intentionally user-configurable, but a large value must
+// not turn one mobile summary request into an 80K+ prompt. This source-side
+// guard leaves room for the contract, rules, evidence bridge and output while
+// keeping normal 5–10 floor batches responsive. Oversized individual floors
+// are still split losslessly by splitSummaryBatch.
+export const SUMMARY_SOURCE_SAFETY_UNITS = 24000;
 
 export const PRODUCT_SHELL_STATUS = Object.freeze({
   IDLE: 'idle',
@@ -287,7 +293,10 @@ export function createProductShellController({
 
   function settingsKey() { return `${PRODUCT_SETTINGS_KEY}-${sha256(state.scope).slice(0, 24)}`; }
 
-  function sourceSplitUnits(){return Math.max(256,Math.floor((state.settings.inputBudgetUnits-estimateUnits(JSON.stringify(SUMMARY_OUTPUT_CONTRACT))-estimateUnits(state.settings.recordingRules)-2000)/2.5));}
+  function sourceSplitUnits(){
+    const planned=Math.floor((state.settings.inputBudgetUnits-estimateUnits(JSON.stringify(SUMMARY_OUTPUT_CONTRACT))-estimateUnits(state.settings.recordingRules)-2000)/2.5);
+    return Math.max(256,Math.min(SUMMARY_SOURCE_SAFETY_UNITS,planned));
+  }
 
   function createRepository(session, store) {
     repository = new MemoryRepository({
