@@ -23,10 +23,11 @@ export function consolidateSummaryBatches(rows,controls={}){
   }
   return {rows:result,retire,removed:rows.length-result.length};
 }
-export function pageSummaryBatches(batches,{query='',status='all',page=1,pageSize=10}={}) {
+export function pageSummaryBatches(batches,{query='',status='active',page=1,pageSize=10}={}) {
   const size=[10,20,50].includes(Number(pageSize))?Number(pageSize):10;
   const term=String(query).trim(),range=/^#?(\d+)\s*[-–~至]\s*#?(\d+)$/.exec(term),floor=/^#(\d+)$/.exec(term),number=/^第?\s*(\d+)\s*批$/.exec(term);
   const selected=[...batches].reverse().filter(b=>{
+    if(status==='active'&&b.status==='deleted')return false;
     if(status==='failed'&&!['failed','interrupted'].includes(b.status))return false;
     if(status==='pending'&&!['running','queued'].includes(b.status))return false;
     if(['saved','deleted'].includes(status)&&b.status!==status)return false;
@@ -37,7 +38,8 @@ export function pageSummaryBatches(batches,{query='',status='all',page=1,pageSiz
     return `${b.number} ${b.focus??''} ${b.error??''}`.toLowerCase().includes(term.toLowerCase());
   });
   const pages=Math.max(1,Math.ceil(selected.length/size)),current=Math.min(pages,Math.max(1,Number.isInteger(Number(page))?Number(page):1));
-  return {items:selected.slice((current-1)*size,current*size),page:current,pages,pageSize:size,total:selected.length,allTotal:batches.length};
+  const deletedTotal=batches.filter(b=>b.status==='deleted').length;
+  return {items:selected.slice((current-1)*size,current*size),page:current,pages,pageSize:size,total:selected.length,allTotal:batches.length,currentTotal:batches.length-deletedTotal,deletedTotal};
 }
 // The inactive UI range is deliberately absent from the submitted request.
 export function summarySelection({mode='recent',count,startIndex,endIndex,batchSize,focus=''}={}){

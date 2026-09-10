@@ -1,7 +1,8 @@
 import { LocalBM25Index, retrieveMemories, tokenizeChinese } from './retrieval.js';
 import { estimateUnits, clone } from './utils.js';
 import { buildDictionary, dictionaryQuery } from './product-dictionary.js';
-import { fullSearchText, narrativeText, stateLabel, awarenessLabel, viaLabel } from './product-narrative.js';
+import { fullSearchText, narrativeText, recordTitle, sourceFloors, stateLabel, awarenessLabel, viaLabel } from './product-narrative.js';
+import { hasStoryTime } from './temporal.js';
 
 export const CATEGORY_LABELS = Object.freeze({ events: '事件', awarenessChanges: '知情', entityFactChanges: '人物与事实', relationshipChanges: '关系', personaChanges: '人设变化', commitmentChanges: '约定', performanceHints: '演绎参考', summaryView: '楼层摘要', conflicts: '冲突与疑点', knowledge: '资料' });
 export const readable = value => typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value);
@@ -26,18 +27,34 @@ function dependencyIndex(records, keysFor) {
 export function memoryCards(records = {}, { hidden = [], knowledge = [], includeAwareness = false } = {}) {
   const ignored = new Set(hidden);
   const cards = [];
-  const awarenessFor = dependencyIndex(records.awarenessChanges ?? [], a => [a.eventRef, ...(a.eventRefs ?? [])]);
+  const visible=r=>!ignored.has(r.id)&&!['retracted','superseded'].includes(r.lifecycleState);
+  const links=r=>[r.eventRef,r.eventId,r.sourceEventId,...(r.eventRefs??[]),...(r.eventIds??[])].filter(Boolean);
+  const sameSource=(a,b)=>a.sourceId===b.sourceId&&['fragmentId','version','swipeId','hash','contentHash'].every(k=>(a[k]??null)===(b[k]??null));
+  const sharesSource=(a,b)=>(a.sourceRefs??[]).some(x=>(b.sourceRefs??[]).some(y=>sameSource(x,y)));
+  const events=(records.events??[]).filter(visible),eventById=new Map(events.map(e=>[e.id,e]));
+  const eventsBySource=dependencyIndex(events,e=>(e.sourceRefs??[]).map(r=>r.sourceId));
+  const awarenessFor = dependencyIndex((records.awarenessChanges ?? []).filter(visible),links);
   const followUpsFor = dependencyIndex(records.commitmentChanges ?? [], a => [a.eventRef, a.completionOf, a.correctionOf, ...(a.eventRefs ?? [])]);
   for (const category of Object.keys(CATEGORY_LABELS)) {
     if (category==='knowledge'||category==='awarenessChanges'&&!includeAwareness)continue;
     for (const record of records[category] ?? []) {
       if (ignored.has(record.id) || ['retracted', 'superseded'].includes(record.lifecycleState)) continue;
-      const refIds = new Set([record.id, record.eventRef, ...(record.eventRefs ?? [])].filter(Boolean));
+      const refIds = new Set([record.id,...links(record)].filter(Boolean));
       const awareness = awarenessFor(refIds);
       const followUps = followUpsFor(refIds).filter(a => a.id !== record.id);
       const description = recordDescription(record);
       const card={ ...clone(record), id: record.id, category, description, awareness, followUps, temporal: record.temporal ?? record.storyTime ?? record.time ?? null };
+      if(category==='summaryView'){
+        const explicit=links(record);
+        // Old summaries can reconnect by exact frozen source, never by names,
+        // similar text, floor number alone, or memories in another chat.
+        const related=explicit.length?explicit.map(id=>eventById.get(id)).filter(Boolean):eventsBySource((record.sourceRefs??[]).map(r=>r.sourceId)).filter(e=>sharesSource(e,record));
+        const notLater=a=>{const floors=sourceFloors(a);return Number.isInteger(record.floorIndex)&&floors.length?Math.max(...floors)<=record.floorIndex:sharesSource(a,record)&&(a.sourceRefs??[]).length===1;};
+        card.awareness=awarenessFor([record.id]).filter(notLater);
+        card.relatedEvents=[...new Map(related.map(e=>[e.id,e])).values()].map(e=>({id:e.id,title:recordTitle(e),participants:clone(e.participants??[]),location:clone(e.location??null),temporal:clone(e.temporal??e.storyTime??e.time??null),awareness:clone(awarenessFor([e.id]).filter(notLater))}));
+      }
       card.text=card.searchText=fullSearchText(card,description);
+      if(card.relatedEvents?.length)card.text=card.searchText+='\n'+card.relatedEvents.map(e=>fullSearchText(e,'')).join('\n');
       cards.push(card);
     }
   }
@@ -54,7 +71,18 @@ export function relativeStoryDate(value, now) {
   if (!d || !current) return narrativeText(value);
   const delta = Math.round((d.n - current.n) / 86400000);
   const relative = ({ '-2': '前天', '-1': '昨天', 0: '今天', 1: '明天', 2: '后天' })[delta] ?? `${Math.abs(delta)}天${delta < 0 ? '前' : '后'}`;
-  return `${d.text}（${relative}）`;
+  return `${narrativeText(value)}（${relative}）`;
+}
+function timeLines(time,settings){
+  if(!hasStoryTime(time))return [];
+  if(typeof time==='string')return [`故事时间：${relativeStoryDate(time,settings.storyDate)}`];
+  const lines=[];
+  for(const [key,label]of [['assertedAt','作出表述'],['occurredAt','事件发生'],['plannedFor','原定'],['actualAt','实际发生']])if(hasStoryTime(time[key]))lines.push(`${label}：${relativeStoryDate(time[key],settings.storyDate)}`);
+  if(!lines.length)lines.push(`故事时间：${relativeStoryDate(time,settings.storyDate)}`);
+  return lines;
+}
+function awarenessText(rows){
+  return rows.map(a=>`${narrativeText(a.actorId??a.person??a.personId??a.audience)}：${narrativeText(a.knowledge??a.fact??a.content)}〔${awarenessLabel(a.status??a.knowledgeStatus)}；${viaLabel(a.via)}${hasStoryTime(a.learnedAt)?`；获知时间：${narrativeText(a.learnedAt)}`:''}〕`).join('；');
 }
 export function renderMemoryCard(card, settings = {}, { body=card.description, metadataOnly=false, detail=false }={}) {
   const lines = metadataOnly?[]:[`[${CATEGORY_LABELS[card.category] ?? '记忆'}] ${body}`];
@@ -66,16 +94,22 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
   if (card.state) lines.push(`状态：${stateLabel(card.state)}`);
   if (card.epistemicStatus && card.epistemicStatus !== 'observed') lines.push(`性质：${({ user_asserted: '用户确认', inferred: '推测而非事实', character_claim: '角色自述', unknown: '未确认' })[card.epistemicStatus] ?? card.epistemicStatus}`);
   if (card.category === 'knowledge') lines.push('外部设定资料，不等于角色已经历或已知情。');
-  else if (card.awareness?.length) lines.push(`知情：${card.awareness.map(a => `${narrativeText(a.actorId ?? a.person ?? a.audience)}：${narrativeText(a.knowledge ?? a.fact ?? a.content)}〔${awarenessLabel(a.status)}；${viaLabel(a.via)}〕`).join('；')}`);
-  else lines.push('知情范围未确认，不据此让未获知的角色知情。');
-  if ((detail || settings.timeProtection) && card.temporal) {
-    const t = card.temporal;
-    if (typeof t === 'string') lines.push(`故事时间：${relativeStoryDate(t, settings.storyDate)}`);
-    else if(t.date)lines.push(`故事时间：${relativeStoryDate(t,settings.storyDate)}`);
-    else for (const [key, label] of [['assertedAt','作出表述'], ['occurredAt','事件发生'], ['plannedFor','原定'], ['actualAt','实际发生']]) if(t[key]) lines.push(`${label}：${relativeStoryDate(t[key], settings.storyDate)}`);
+  else if (card.awareness?.length) lines.push(`知情：${awarenessText(card.awareness)}`);
+  else if(!card.relatedEvents?.some(e=>e.awareness.length))lines.push('本条未关联知情记录，不等于无人知情；不能据此让所有角色知情。');
+  if(detail||settings.timeProtection)lines.push(...timeLines(card.temporal,settings));
+  if(card.relatedEvents?.length){
+    lines.push('关联事件（不代表全部发生在本楼，参与者不等于本楼全部在场）：');
+    for(const e of card.relatedEvents){
+      lines.push(`事件：${e.title}`);
+      if(e.participants.length)lines.push(`事件参与者：${narrativeText(e.participants)}`);
+      if(e.location)lines.push(`事件地点：${narrativeText(e.location)}`);
+      if(detail||settings.timeProtection)lines.push(...timeLines(e.temporal,settings));
+      if(e.awareness.length)lines.push(`截至本楼的知情记录：${awarenessText(e.awareness)}`);
+      else lines.push('该事件暂无可关联到本楼及此前的知情记录，不据参与者推断。');
+    }
   }
-  if(detail&&!card.temporal)lines.push('时间：原文未明确');
-  if(detail&&!card.location)lines.push('地点：原文未明确');
+  if(detail&&!hasStoryTime(card.temporal)&&!card.relatedEvents?.some(e=>hasStoryTime(e.temporal)))lines.push('时间：本条记录未提取');
+  if(detail&&!card.location&&!card.relatedEvents?.some(e=>e.location))lines.push('地点：本条记录未提取');
   for (const f of card.followUps ?? []) lines.push(`后续：${recordDescription(f)}〔${stateLabel(f.state) ?? '未确认'}〕`);
   if (card.context || card.validUntil || card.term) lines.push(`适用范围：${narrativeText(card.context)} ${narrativeText(card.validUntil ?? card.term)}`);
   return lines.join('\n');

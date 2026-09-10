@@ -1,5 +1,6 @@
 import { clone, stableStringify } from './utils.js';
 import { ValidationError } from './errors.js';
+import { compareStoryTimes, preciseStoryTime } from './temporal.js';
 
 const unique=values=>[...new Map(values.map(v=>[stableStringify(v),clone(v)])).values()];
 export function mergeEventDetails(previous,next){
@@ -7,8 +8,15 @@ export function mergeEventDetails(previous,next){
   for(const key of ['sourceRefs','sourceFloors','participants','entities','tags','keyDialogues','viewpoints']){
     if(Array.isArray(previous[key])||Array.isArray(next[key]))merged[key]=unique([...(previous[key]??[]),...(next[key]??[])]);
   }
-  merged.temporal={...(typeof previous.temporal==='object'?previous.temporal:{}),...Object.fromEntries(Object.entries(typeof next.temporal==='object'&&next.temporal?next.temporal:{}).filter(([,v])=>v!=null&&v!==''))};
-  if(typeof next.temporal==='string'||typeof previous.temporal==='string')merged.temporal=next.temporal??previous.temporal;
+  const timeObject=t=>{
+    if(typeof t==='string')return {occurredAt:t};
+    if(!t||t.kind==='unknown')return {};
+    const {date,...other}=t;
+    return date&&!other.occurredAt?{...other,occurredAt:other.time?{date,time:other.time}:date}:other;
+  };
+  const beforeTime=timeObject(previous.temporal),afterTime=timeObject(next.temporal);
+  merged.temporal={...beforeTime,...Object.fromEntries(Object.entries(afterTime).filter(([,v])=>v!=null&&v!==''))};
+  for(const key of ['occurredAt','assertedAt','plannedFor','actualAt','date'])if(key in beforeTime||key in afterTime)merged.temporal[key]=preciseStoryTime(beforeTime[key],afterTime[key]);
   if(!next.location&&previous.location)merged.location=previous.location;
   // Retain complementary sentences without turning one event into many cards.
   // Explicit later corrections remain visible alongside the earlier occurrence.
@@ -25,7 +33,7 @@ export function mergeEventDetails(previous,next){
 function occurrenceDate(e){const t=e.temporal;return typeof t==='string'?t:t?.occurredAt??t?.date;}
 function linkCompatible(a,b){
   const x=occurrenceDate(a),y=occurrenceDate(b);
-  return !(x&&y&&stableStringify(x)!==stableStringify(y));
+  return compareStoryTimes(x,y)==='compatible';
 }
 export function exactEventDuplicate(a,b){
   if(!linkCompatible(a,b))return false;
@@ -40,8 +48,10 @@ export function resolveEventMerges(bundle,relevantRecords={}){
   for(const [eventIndex,event] of (bundle.events??[]).entries()){
     let target=event.mergeInto;
     if(target){
-      const prior=known.get(target);
-      if(!prior||!linkCompatible(prior,event))throw new ValidationError('事件合并目标不存在或发生时间冲突',{validationIssueCount:1,validationIssues:[{path:`events[${eventIndex}].mergeInto`,reason:'invalid_event_merge'}]});
+      const prior=known.get(aliases.get(target)??target);
+      const relation=prior?compareStoryTimes(occurrenceDate(prior),occurrenceDate(event)):null;
+      const reason=!prior?'event_merge_target_missing':relation==='conflict'?'event_merge_time_conflict':relation==='unresolved'?'event_merge_time_unresolved':null;
+      if(reason)throw new ValidationError(!prior?'事件合并目标未提供':relation==='conflict'?'事件发生时间冲突':'事件时间尚不能确认一致',{validationIssueCount:1,validationIssues:[{path:`events[${eventIndex}].mergeInto`,reason}]});
       const canonical=aliases.get(target)??target;
       aliases.set(event.id,canonical);event.id=canonical;
       // Do not accept a new model-generated identity in place of the checked link.
@@ -53,7 +63,7 @@ export function resolveEventMerges(bundle,relevantRecords={}){
     const index=output.findIndex(e=>e.id===event.id||exactEventDuplicate(e,event));
     if(index>=0){aliases.set(event.id,output[index].id);output[index]=mergeEventDetails(output[index],event);}
     else output.push(event);
-    known.set(event.id,event);
+    known.set(event.id,output.find(e=>e.id===(aliases.get(event.id)??event.id))??event);
   }
   bundle.events=output;
   for(const category of Object.keys(bundle))if(Array.isArray(bundle[category]))for(const row of bundle[category]){

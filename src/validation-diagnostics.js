@@ -8,6 +8,9 @@ const types = new Set(['array','object','string','number','boolean','null','unde
 const locatorFields = new Set(['version','swipeId','fragmentId','hash','contentHash']);
 export const VALIDATION_ISSUE_LABELS = Object.freeze({
   invalid_event_merge:'合并目标未提供或事件发生时间冲突，旧记忆未改变',
+  event_merge_target_missing:'合并目标不在本次提供的事件中，旧记忆未改变',
+  event_merge_time_conflict:'新旧记录的事件发生时间确实冲突，旧记忆未改变',
+  event_merge_time_unresolved:'新旧记录的时间表述暂无法确认一致，未强行合并',
   type_mismatch:'字段类型不正确', invalid_source_ref:'来源引用格式不正确', source_mismatch:'来源版本、片段或校验信息与本批正文不一致',
   source_ambiguous:'来源对应多个片段，缺少准确定位', unknown_source:'引用了本批未提供的来源', missing_source:'缺少有效的正文来源',
   required:'缺少必填字段', invalid_enum:'字段值不在支持的选项中', duplicate_id:'记录编号重复', unknown_event:'引用的事件不存在',
