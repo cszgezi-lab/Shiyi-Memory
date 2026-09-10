@@ -40,7 +40,7 @@ export function productFailure(error) {
   let message=HTTP[status]??NETWORK[code]??CODES[code];
   if(code==='VALIDATION_ERROR'){
     const issue=validationIssueText(error?.details?.validationIssues?.[0]);
-    if(issue)message=`${issue}。本次结果未保存；完整校验信息见运行日志。`;
+    if(issue)message=`${error?.details?.repairAttempted?'已自动纠错一次，但仍未通过：':''}${issue}。本次结果未保存；完整校验信息见运行日志。`;
   }
   if(code==='FLOOR_SUMMARY_MISSING'&&['expected','received','covered'].every(k=>Number.isSafeInteger(error?.details?.[k])&&error.details[k]>=0)){
     const d=error.details;message=`收到 ${d.received} 条逐楼摘要，完整对应 ${d.covered}/${d.expected} 楼，本批未保存。请查看运行日志；这不代表回复上限不足。`;

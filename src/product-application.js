@@ -484,7 +484,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         state.progress=`第 ${i+1}/${planned.length} 批 · 已读取 #${item.startIndex}–${item.endIndex}，共 ${range.count} 楼`;
         runtimeLog.record({run:diagnosticRun,task:'summary',phase:'range',details:{batchNumber:item.number,startIndex:item.startIndex,endIndex:item.endIndex,sourceCount:range.count}});
         await readBatches(await core.readMemoryView());summaryFeedback('running',`正在总结 ${state.progress}`,trigger);
-        const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,excludeOperations:currentBatch.attempts,requireFloorSummaries:true,onDiagnostic:event=>runtimeLog.record({run:diagnosticRun,task:'summary',...event,details:{...event.details,batchNumber:item.number}})});
+        const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,excludeOperations:currentBatch.attempts,requireFloorSummaries:true,onDiagnostic:event=>{
+          runtimeLog.record({run:diagnosticRun,task:'summary',...event,details:{...event.details,batchNumber:item.number}});
+          if(op.token!==epoch||op.signal.aborted)return;
+          if(event.phase==='repair_request')summaryFeedback('running',`正在自动纠正 ${event.details.repairFields} 个字段 · #${item.startIndex}–${item.endIndex}，无需重做整批总结`,trigger);
+          if(event.phase==='repair_complete')summaryFeedback('running',`字段纠错通过，正在保存 #${item.startIndex}–${item.endIndex}`,trigger);
+        }});
         op.check();if(result.status!=='saved')throw Object.assign(new Error(core.state.errorMessage??'总结未保存'),{code:result.failure?.code??result.errorCode??'SUMMARY_RESPONSE_ERROR',details:result.errorDetails});
         await core.updateMemoryControls({operations:{...Object.fromEntries(currentBatch.attempts.map(id=>[id,'deleted'])),[operationId]:'active'}});op.check();
         currentBatch={...currentBatch,status:'saved',savedOperationId:operationId,requests:result.requests,updatedAt:Date.now()};

@@ -15,6 +15,9 @@ function detailsHTML(entry){
   if(d.truncated!==undefined)lines.push(['截断标记',d.truncated?'服务明确报告截断':'未收到截断标记']);
   for(const [key,label] of Object.entries(fields))if(d[key]!==undefined&&!['expected','received','covered','childIndex'].includes(key)&&!(d[key]===0&&['invalidRows','duplicateCount'].includes(key)))lines.push([label,d[key]]);
   if(d.childIndex>0)lines.push(['拆分序号',d.childIndex+1]);
+  if(d.normalizedFields!==undefined)lines.push(['本地兼容字段',d.normalizedFields]);
+  if(d.repairFields!==undefined)lines.push(['自动纠错字段',d.repairFields]);
+  if(d.repairAttempted)lines.push(['自动纠错','已尝试一次，未通过校验；没有强行保存']);
   const issues=safeValidationIssues(d.validationIssues);
   if(issues.length){
     lines.push(['校验问题',`${d.validationIssueCount??issues.length} 项${d.validationIssueCount>issues.length?`（显示前 ${issues.length} 项）`:''}；方括号内是从 0 开始的记录位置，不是聊天楼层`]);

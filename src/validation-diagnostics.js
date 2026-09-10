@@ -77,6 +77,8 @@ export function validationDetails(errors = []) {
 export function validationIssueText(value) {
   const issue=safeValidationIssues([value])[0];if(!issue)return '';
   let text=`${issue.path}：${VALIDATION_ISSUE_LABELS[issue.reason]}`;
+  const awareness=/^awarenessChanges\[(\d+)\]\.(status|via)$/.exec(issue.path);
+  if(awareness)text=`第 ${Number(awareness[1])+1} 条知情记录的${awareness[2]==='status'?'知情状态':'获知途径'}（${issue.path}）：${VALIDATION_ISSUE_LABELS[issue.reason]}`;
   if(issue.expectedType)text+=`（需要 ${issue.expectedType}${issue.actualType?`，收到 ${issue.actualType}`:''}）`;
   if(issue.locatorFields?.length)text+=`；检查字段：${issue.locatorFields.join('、')}`;
   if(issue.candidateCount!==undefined)text+=`；候选来源 ${issue.candidateCount} 个`;

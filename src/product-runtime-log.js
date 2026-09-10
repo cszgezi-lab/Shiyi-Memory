@@ -6,10 +6,10 @@ import { safeValidationIssues } from './validation-diagnostics.js';
 export const RUNTIME_LOG_ADDRESS = Object.freeze({ namespace: 'shiyi-product-diagnostics', key: 'runtime-v1' });
 export const RUNTIME_LOG_LIMIT = 200;
 export const LOG_TASKS = Object.freeze({ summary:'总结', connection:'连接测试', models:'拉取模型', assistant:'配置助手', knowledge:'知识库分析', vectors:'建立向量索引', import:'导入文件', recall:'召回预览' });
-export const LOG_PHASES = Object.freeze({ start:'任务开始', range:'读取楼层', request:'发送模型请求', response:'收到模型响应', floors:'检查逐楼摘要', validate:'校验记忆内容', commit:'保存记忆', complete:'任务完成', failed:'任务失败', canceled:'任务停止' });
+export const LOG_PHASES = Object.freeze({ start:'任务开始', range:'读取楼层', request:'发送模型请求', response:'收到模型响应', normalize:'兼容状态写法', repair_request:'正在自动纠正字段', repair_response:'收到字段纠错结果', repair_complete:'字段纠错通过', repair_failed:'字段纠错未通过', repair_skipped:'跳过字段纠错', floors:'检查逐楼摘要', validate:'校验记忆内容', commit:'保存记忆', complete:'任务完成', failed:'任务失败', canceled:'任务停止' });
 const CODES = new Set(['OPERATION_FAILED','FLOOR_SUMMARY_MISSING','MODEL_OUTPUT_TRUNCATED','MODEL_OUTPUT_BLOCKED','INPUT_BUDGET_EXCEEDED','COVERAGE_INCOMPLETE','SUMMARY_RESPONSE_ERROR','SUMMARY_RESPONSE_INVALID','VALIDATION_ERROR','PROVIDER_HTTP_ERROR','PROVIDER_REQUEST_FAILED','PROVIDER_PROFILE_INVALID','MODEL_UNAVAILABLE','TIMEOUT','CANCELED','CHAT_REF_UNAVAILABLE','CHAT_HANDLE_UNAVAILABLE','CHAT_IDENTITY_NOT_READY','HISTORY_UNAVAILABLE','CHAT_CHANGED','SOURCE_INVALIDATED','SCOPE_CONFLICT','REVISION_CONFLICT','PERSISTENCE_ERROR','PERSISTENCE_UNAVAILABLE','HOST_CONTRACT_INVALID','network.timeout','network.connect_failed','network.proxy_failed','network.dns_failed','network.tls_failed','network.body_interrupted','network.request_failed']);
 const FINISH_REASONS = new Set(['stop','length','max_tokens','truncated','abort','content_filter','tool_calls','end_turn','unknown']);
-const NUMBERS = ['batchNumber','childIndex','startIndex','endIndex','sourceCount','inputLimit','inputUnits','maxTokens','elapsedMs','status','expected','received','covered','invalidRows','duplicateCount','promptTokens','completionTokens','totalTokens','reasoningTokens','responseChars','savedBatches'];
+const NUMBERS = ['batchNumber','childIndex','startIndex','endIndex','sourceCount','inputLimit','inputUnits','maxTokens','elapsedMs','status','expected','received','covered','invalidRows','duplicateCount','promptTokens','completionTokens','totalTokens','reasoningTokens','responseChars','savedBatches','normalizedFields','repairFields'];
 export function safeLogDetails(value = {}) {
   const result = {};
   const issues=safeValidationIssues(value?.validationIssues);
@@ -19,6 +19,7 @@ export function safeLogDetails(value = {}) {
   for (const key of ['missingFloors','duplicateFloors','emptyFloors']) if (Array.isArray(value?.[key])) result[key] = [...new Set(value[key].filter(n => Number.isSafeInteger(n) && n >= 0))].slice(0,200);
   if (value?.finishReason !== undefined) result.finishReason = FINISH_REASONS.has(value.finishReason) ? value.finishReason : 'unknown';
   if (typeof value?.truncated === 'boolean') result.truncated = value.truncated;
+  if (typeof value?.repairAttempted === 'boolean') result.repairAttempted = value.repairAttempted;
   if (value?.code !== undefined) result.code = CODES.has(value.code) ? value.code : 'OPERATION_FAILED';
   if (['summary','assistant','embedding','rerank'].includes(value?.modelRole)) result.modelRole = value.modelRole;
   return result;

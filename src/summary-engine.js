@@ -12,6 +12,7 @@ import { requireIndependentFloorSummaries } from './floor-summaries.js';
 import { safeLogDetails } from './product-runtime-log.js';
 import { resolveEventMerges } from './event-consolidation.js';
 import { tokenizeChinese } from './retrieval.js';
+import { normalizeSummaryEnums, repairableEnumTargets, createEnumRepairRequest, applyEnumCorrections } from './summary-enum-repair.js';
 
 function responseStatus(response) {
   return Number(response?.status ?? response?.statusCode ?? 200);
@@ -162,6 +163,7 @@ function makeInstructions(focus, rules) {
     'summaryView is NOT a batch overview. Write one row for EVERY sourceMessages item: {id, floorIndex: item.index, text, participants, location, temporal, eventRefs, sourceRefs:[{sourceId:item.id, fragmentId:item.fragmentId if present}]}. Follow floorSummaryRules.metadata and floorSummaryRules.awareness. Copy the source ID exactly. Never merge floors or omit user/non-story floors; do not summarize bridgeMessages. Briefly mark non-story content. Never manufacture details to fill a category.',
     'Do not invent scope, operationId, expectedRevision, paths, executable code, or permissions.',
     'Keep expression, response, mutual confirmation, public scope, state, epistemic status, perspective, time, and follow-up distinct.',
+    '知情字段 status 只用 known/heard/suspected/mistaken/explicitly_unaware；获知途径写 via，不把 witnessed/told 放到 status。未知或未提及不等于明确不知情，没有依据时不要编造知情记录。枚举技术值不能翻译为中文。',
     'A recalled event includes its awareness, temporal context, and lifecycle dependencies as one unit.',
     'bridgeMessages are context only: do not count them as a new occurrence unless a sourceMessage supplies new evidence.',
     'Read focus, recording rules, source range, bridge context, relevant records, output schema, and budget only from the structured request envelope.',
@@ -502,11 +504,13 @@ export class SummaryEngine {
         const raw = await this.model(request, { signal });
         throwIfAborted(signal);
         phase='response';
-        const output = await parseModelResponse(raw,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started})});
+        const parsed = await parseModelResponse(raw,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started})});
+        const {output,normalizedFields}=normalizeSummaryEnums(parsed);
+        if(normalizedFields)emit('normalize',{...baseDetails,normalizedFields},'success');
         ensureAllCategories(output);
         phase='validate';
         const sourceRefs = sourceRefsFor(child);
-        const bundle = bindDraftBundle(output, {
+        let bundle = bindDraftBundle(output, {
           scope: child.scope,
           operationId: child.operationId,
           expectedRevision: child.expectedRevision,
@@ -532,7 +536,7 @@ export class SummaryEngine {
         // which of those refs it processed.  Overwriting processed here would
         // make an explicit unprocessed gap look complete.
         bundle.coverage.sourceRefs = clone(sourceRefs);
-        const validation = validateDraftBundle(bundle, {
+        const validationOptions = {
           expectedBinding: { scope: child.scope, operationId: child.operationId, expectedRevision: child.expectedRevision },
           allowedSourceIds: new Set([...child.sourceMessages, ...child.bridgeMessages].map((message) => message.id)),
           knownRecordIds: context.ids ?? new Set(),
@@ -541,7 +545,37 @@ export class SummaryEngine {
           enforceCorrectionAuthority: true,
           trustedCorrectionIds: correctionAuthorizations,
           newSourceIds: child.sourceMessages.map((message) => message.id),
-        });
+        };
+        let validation = validateDraftBundle(bundle,validationOptions);
+        const repairTargets=repairableEnumTargets(bundle,validation);
+        if(!validation.valid&&repairTargets.length){
+          // A single bounded field-only correction. Normal summaries retain one
+          // model call. Source, scope, chronology and coverage rules stay intact.
+          const repairRequest=createEnumRepairRequest(bundle,repairTargets,request);
+          const repairUnits=estimateUnits(JSON.stringify(this.model.providerPayload?.(repairRequest)??repairRequest));
+          if(repairUnits<=configuredLimit){
+            phase='repair_request';
+            const repairStarted=this.now();
+            emit('repair_request',{...baseDetails,...safeLogDetails(validation),repairFields:repairTargets.length,inputLimit:configuredLimit,inputUnits:repairUnits,maxTokens:this.model.providerPayload?.(repairRequest)?.max_tokens??0},'warning');
+            throwIfAborted(signal);
+            state.requests++;
+            this.requestLog.push({operationId:child.operationId,parentOperationId:batch.operationId,childIndex,kind:'enum_repair',sourceIds:repairRequest.sourceMessages.map(m=>m.id)});
+            const repairRaw=await this.model(repairRequest,{signal});
+            throwIfAborted(signal);
+            phase='repair_response';
+            const correction=await parseModelResponse(repairRaw,{onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata,elapsedMs:this.now()-repairStarted})});
+            const corrected=applyEnumCorrections(bundle,repairTargets,correction);
+            if(corrected){
+              const checked=validateDraftBundle(corrected,validationOptions);
+              if(checked.valid){bundle=corrected;validation=checked;emit('repair_complete',{...baseDetails,repairFields:repairTargets.length,elapsedMs:this.now()-repairStarted},'success');}
+            }
+            phase='validate';
+            if(!validation.valid){
+              emit('repair_failed',{...baseDetails,...safeLogDetails(validation),repairFields:repairTargets.length},'error');
+              throw new ValidationError('enum correction did not pass validation',{...validation,repairAttempted:true});
+            }
+          }else emit('repair_skipped',{...baseDetails,inputLimit:configuredLimit,inputUnits:repairUnits,code:'INPUT_BUDGET_EXCEEDED'},'warning');
+        }
         if (!validation.valid) throw new ValidationError('summary DraftBundle failed validation', validation);
         const coverage = coverageState(bundle.coverage, sourceRefs);
         if (!coverage.complete) {
