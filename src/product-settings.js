@@ -12,8 +12,8 @@ export const PRODUCT_SETTINGS_VERSION = 1;
 
 const DEFINITIONS = [
   { key: 'messageCount', label: '最近消息数', defaultValue: 8, type: 'integer', min: 1, max: 200, consumers: ['ProductShellController.readRange'] },
-  { key: 'inputBudgetUnits', label: '总结输入预算', defaultValue: 12000, type: 'integer', min: 256, max: 1000000, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
-  { key: 'outputBudgetUnits', label: '总结回复上限（Token）', defaultValue: 4096, type: 'integer', min: 0, max: 131072, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
+  { key: 'inputBudgetUnits', label: '总结输入预算', defaultValue: 24000, type: 'integer', min: 256, max: 1000000, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
+  { key: 'outputBudgetUnits', label: '总结回复上限（Token）', defaultValue: 8192, type: 'integer', min: 0, max: 131072, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
   { key: 'deadlineMs', label: '请求截止时间', defaultValue: 120000, type: 'integer', min: 100, max: 600000, consumers: ['ProductShellController.transport', 'ProviderClient'] },
   { key: 'focusMode', label: '侧重点确认方式', defaultValue: 'ask_manual', type: 'enum', values: ['inherit', 'ask_manual', 'ask_every'], consumers: ['ProductShellController.startSummary', 'SummaryEngine'] },
 
@@ -24,15 +24,15 @@ const DEFINITIONS = [
   { key: 'retrievalTimeoutMs', label: '在线总超时保护（毫秒，0 沿用各接口时限）', defaultValue: 0, type: 'integer', min: 0, max: 60000, consumers: ['ProductApplication.recall', 'retrieveMemories'] },
   { key: 'retrievalBudgetUnits', label: '本地召回预算', defaultValue: 1800, type: 'integer', min: 0, max: 50000, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
   { key: 'vectorEnabled', label: '向量召回', defaultValue: false, type: 'boolean', consumers: ['ProductShellController.previewRecall'] },
-  { key: 'vectorAutoUpdate', label: '后台更新向量索引', defaultValue: false, type: 'boolean', consumers: ['ProductApplication.scheduleVectorUpdate'] },
+  { key: 'vectorAutoUpdate', label: '后台更新向量索引', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.scheduleVectorUpdate'] },
   { key: 'vectorWeight', label: '向量融合权重', defaultValue: 1, type: 'number', min: 0, max: 100, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
   { key: 'fusionRankConstant', label: '融合 rank constant', defaultValue: 60, type: 'number', min: 1, max: 10000, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
   { key: 'fusionLocalWeight', label: '本地融合权重', defaultValue: 1, type: 'number', min: 0, max: 100, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
   { key: 'rerankEnabled', label: '重排', defaultValue: false, type: 'boolean', consumers: ['ProductShellController.previewRecall'] },
   { key: 'rerankTimeoutMs', label: '重排截止时间', defaultValue: 4000, type: 'integer', min: 50, max: 60000, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
-  { key: 'distributedEnabled', label: '分类通道召回', defaultValue: false, type: 'boolean', consumers: ['ProductApplication.recall'] },
+  { key: 'distributedEnabled', label: '分类通道召回', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.recall'] },
   { key: 'distributedChannel', label: '指定通道（memory 或 knowledge）', defaultValue: 'disabled', type: 'string', maxLength: 80, consumers: ['ProductApplication.recall'] },
-  { key: 'distributedStrategy', label: '分类通道策略', defaultValue: 'disabled', type: 'enum', values: ['disabled', 'broadcast', 'leader_only'], consumers: ['ProductApplication.recall'] },
+  { key: 'distributedStrategy', label: '分类通道策略', defaultValue: 'broadcast', type: 'enum', values: ['disabled', 'broadcast', 'leader_only'], consumers: ['ProductApplication.recall'] },
 
   { key: 'providerEndpoint', label: 'Provider 地址', defaultValue: '', type: 'string', maxLength: 2048, consumers: ['ProductShellController.transport', 'ProviderClient'] },
   { key: 'providerEndpointMode', label: 'Provider 地址模式', defaultValue: 'base', type: 'enum', values: ['base', 'exact'], consumers: ['ProductShellController.transport', 'resolveProviderEndpoint'] },
@@ -44,6 +44,7 @@ const DEFINITIONS = [
   { key: 'rerankModel', label: 'Rerank 模型', defaultValue: 'BAAI/bge-reranker-v2-m3', type: 'string', maxLength: 240, consumers: ['ProductApplication.rerank'] },
 
   { key: 'injectionEnabled', label: '自动注入', defaultValue: false, type: 'boolean', consumers: ['ProductShellController.injectionStatus'] },
+  { key: 'injectionLogEnabled', label: '保存注入日志', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.inject'] },
   { key: 'injectionPosition', label: '注入位置', defaultValue: 'before_last', type: 'enum', values: ['start','before_last'], consumers: ['ProductApplication.inject'] },
   { key: 'injectionRole', label: '注入角色', defaultValue: 'system', type: 'enum', values: ['system','user'], consumers: ['ProductApplication.inject'] },
   { key: 'recordingRules', label: '长期记录偏好', defaultValue: '保存有来源的事实和细节；区分计划与完成、事实与推测；记录时间、知情范围和人物变化。', type: 'string', maxLength: 24000, consumers: ['ProductShellController.createBatch'] },
@@ -54,7 +55,7 @@ const DEFINITIONS = [
   { key: 'assistantAuthMode', label: '助手认证方式', defaultValue: 'bearer', type: 'enum', values: ['none', 'bearer', 'api-key'], consumers: ['ProductApplication.assistant'] },
   { key: 'assistantBudgetUnits', label: '助手输入预算（估算）', defaultValue: 16000, type: 'integer', min: 2000, max: 1000000, consumers: ['ProductApplication.assistant'] },
   { key: 'assistantOutputTokens', label: '助手回复上限（Token）', defaultValue: 4096, type: 'integer', min: 0, max: 131072, consumers: ['ProductApplication.assistant'] },
-  { key: 'summaryBatchSize', label: '每多少楼记录一次', defaultValue: 10, type: 'integer', min: 1, max: 200, consumers: ['ProductApplication.summarize'] },
+  { key: 'summaryBatchSize', label: '每多少楼记录一次', defaultValue: 5, type: 'integer', min: 1, max: 200, consumers: ['ProductApplication.summarize'] },
   { key: 'autoSummaryEnabled', label: '回复后自动整理', defaultValue: false, type: 'boolean', consumers: ['ProductApplication.autoSummary'] },
   { key: 'autoSummaryEvery', label: '每新增多少条消息整理', defaultValue: 12, type: 'integer', min: 1, max: 200, consumers: ['ProductApplication.autoSummary'] },
   { key: 'storyDate', label: '当前故事日期（可留空）', defaultValue: '', type: 'string', maxLength: 32, consumers: ['ProductApplication.pack'] },

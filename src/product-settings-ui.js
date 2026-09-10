@@ -14,6 +14,7 @@ const copy = {
   outputBudgetUnits:['总结回复上限（Token）','0 表示沿用服务商默认值。'],
   excludedTags:['忽略的正文标签','标签中的内容不参与总结，用逗号分隔。'],
   injectionEnabled:['自动注入相关记忆','发送聊天时，把相关记忆加入本轮请求。'],
+  injectionLogEnabled:['保存注入日志','本聊天保留最近 30 次结果及注入片段；不保存 Key 或完整 API 请求，导出默认不含剧情内容。'],
   retrievalLimit:['每次最多注入几条',''],
   retrievalBudgetUnits:['注入长度上限',''],
   timeProtection:['注入日期参照','附带事件日期和时间关系。'],
@@ -67,7 +68,7 @@ const card = (title, body) => `<div class="sy-card"><h4>${title}</h4>${body}</di
 
 export const SETTING_GROUPS = Object.freeze({
   recording: ['messageCount','autoSummaryEnabled','autoSummaryEvery','recordingRules','focusMode','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
-  injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','injectionPosition','injectionRole'],
+  injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','injectionPosition','injectionRole','injectionLogEnabled'],
   vectors: ['vectorEnabled','vectorAutoUpdate'],
   retrieval: ['rerankEnabled','tagRecallEnabled','tagCandidateLimit','retrievalCandidateLimit','rerankMaxCandidates','bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant','distributedEnabled','distributedStrategy','distributedChannel','retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs'],
   world: ['worldMode','knowledgeEnabled','dictionaryEnabled','aliases','externalStatePaths','storyDate'],

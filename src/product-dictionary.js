@@ -16,15 +16,15 @@ export function normalizeTerms(value) {
 export function normalizeTags(value) { return [...new Set((Array.isArray(value)?value:[]).filter(v=>typeof v==='string'&&v.trim().length>=2&&v.trim().length<=40).map(clean))].slice(0,12); }
 export function manualDictionary(value='') {
   return String(value).split('\n').flatMap(line=>{
-    const disabled=line.trim().startsWith('!'),[names,related='']=line.trim().replace(/^!/,'').split('|'),parts=names.split(/[=,，]/).map(clean);
+    const deleted=line.trim().startsWith('!!'),disabled=line.trim().startsWith('!'),[names,related='']=line.trim().replace(/^!+/, '').split('|'),parts=names.split(/[=,，]/).map(clean);
     if(!validTerm(parts[0]))return [];
-    return [{name:parts[0],aliases:parts.slice(1).filter(validTerm),indexWords:related.split(/[,，]/).filter(validTerm).map(clean),kind:'术语',disabled,manual:true}];
+    return [{name:parts[0],aliases:parts.slice(1).filter(validTerm),indexWords:related.split(/[,，]/).filter(validTerm).map(clean),kind:'术语',disabled,deleted,manual:true}];
   });
 }
-export function updateDictionaryOverride(value,{name,aliases='',indexWords='',disabled=false,remove=false}) {
+export function updateDictionaryOverride(value,{name,aliases='',indexWords='',disabled=false,deleted=false,remove=false}) {
   if(!validTerm(name)||/[=,，\n!|]/.test(name))throw new Error('词条名称需要 1–80 字，不能包含分隔符');
-  const rest=String(value??'').split('\n').filter(line=>key(line.trim().replace(/^!/,'').split(/[=,，|]/)[0])!==key(name));
-  if(!remove){const names=Array.isArray(aliases)?aliases:String(aliases).split(/[,，\n]/),related=Array.isArray(indexWords)?indexWords:String(indexWords).split(/[,，\n]/);if([...names,...related].some(n=>clean(n)&&(!validTerm(n)||/[=|!\n]/.test(n))))throw new Error('别称及检索词需要 1–80 字，不使用“他、她、主角”等泛称');rest.push(`${disabled?'!':''}${name.trim()}=${names.map(clean).filter(Boolean).join(',')}${related.some(clean)?` | ${related.map(clean).filter(Boolean).join(',')}`:''}`);}
+  const rest=String(value??'').split('\n').filter(line=>key(line.trim().replace(/^!+/,'').split(/[=,，|]/)[0])!==key(name));
+  if(!remove){const names=Array.isArray(aliases)?aliases:String(aliases).split(/[,，\n]/),related=Array.isArray(indexWords)?indexWords:String(indexWords).split(/[,，\n]/);if([...names,...related].some(n=>clean(n)&&(!validTerm(n)||/[=|!\n]/.test(n))))throw new Error('别称及检索词需要 1–80 字，不使用“他、她、主角”等泛称');rest.push(`${deleted?'!!':disabled?'!':''}${name.trim()}=${names.map(clean).filter(Boolean).join(',')}${related.some(clean)?` | ${related.map(clean).filter(Boolean).join(',')}`:''}`);}
   const result=rest.filter(Boolean).join('\n');if(result.length>12000)throw new Error('手动字典超过可保存长度');return result;
 }
 export function buildDictionary(cards=[],{aliases='',automatic=true}={}) {

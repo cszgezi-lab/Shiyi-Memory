@@ -1,4 +1,4 @@
-import { clone, stableStringify } from './utils.js';
+import { clone, stableStringify, sha256 } from './utils.js';
 import { ValidationError } from './errors.js';
 import { compareStoryTimes, preciseStoryTime } from './temporal.js';
 
@@ -43,7 +43,7 @@ export function exactEventDuplicate(a,b){
 
 /** Resolve only explicit links to events actually shown in this request (or
  * earlier events in this output). Similar topic/tags alone never imply identity. */
-export function resolveEventMerges(bundle,relevantRecords={}){
+export function resolveEventMerges(bundle,relevantRecords={}, {deferUnresolved=false,onDeferred=()=>{}}={}){
   const known=new Map((relevantRecords.events??[]).map(e=>[e.id,e])),aliases=new Map(),output=[];
   for(const [eventIndex,event] of (bundle.events??[]).entries()){
     let target=event.mergeInto;
@@ -51,6 +51,18 @@ export function resolveEventMerges(bundle,relevantRecords={}){
       const prior=known.get(aliases.get(target)??target);
       const relation=prior?compareStoryTimes(occurrenceDate(prior),occurrenceDate(event)):null;
       const reason=!prior?'event_merge_target_missing':relation==='conflict'?'event_merge_time_conflict':relation==='unresolved'?'event_merge_time_unresolved':null;
+      if(reason==='event_merge_time_unresolved'&&deferUnresolved){
+        // Preserve both sourced accounts without treating an unparseable date
+        // as either the same occurrence or a proven contradiction.
+        const previousId=event.id;
+        const stamp=sha256({operationId:bundle.operationId,eventIndex,id:previousId,target}).slice(0,24);
+        event.id=`tmp-merge-review-${stamp}`;aliases.set(previousId,event.id);
+        event.mergeReview={status:'pending',reason:'time_unresolved',targetId:prior.id,targetTitle:prior.title??'',previousTime:clone(occurrenceDate(prior)),proposedTime:clone(occurrenceDate(event))};
+        delete event.mergeInto;delete event.identityKey;delete event.eventIdentity;
+        bundle.conflicts??=[];
+        bundle.conflicts.push({id:`tmp-merge-note-${stamp}`,eventRef:event.id,description:'此条记录请求与已有事件合并，但两种时间表述尚无法确认一致；本条已独立保存，旧事件未改动。请核对发生时间后再合并。',sourceRefs:clone(event.sourceRefs)});
+        output.push(event);known.set(event.id,event);onDeferred({eventIndex,reason});continue;
+      }
       if(reason)throw new ValidationError(!prior?'事件合并目标未提供':relation==='conflict'?'事件发生时间冲突':'事件时间尚不能确认一致',{validationIssueCount:1,validationIssues:[{path:`events[${eventIndex}].mergeInto`,reason}]});
       const canonical=aliases.get(target)??target;
       aliases.set(event.id,canonical);event.id=canonical;

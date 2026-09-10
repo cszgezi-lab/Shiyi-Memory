@@ -504,7 +504,14 @@ export function bindDraftBundle(modelOutput, {
     const floors=sourceFloorIndices.filter(m=>Number.isSafeInteger(m.index)&&m.index>=0&&next.sourceRefs.some(ref=>ref.sourceId===m.sourceId&&ref.fragmentId===m.fragmentId)).map(m=>m.index);
     if(floors.length)next.sourceFloors=[...new Set(floors)].sort((a,b)=>a-b);
     const evidence=sourceTexts.filter(m=>next.sourceRefs.some(r=>r.sourceId===m.sourceId&&r.fragmentId===m.fragmentId)).map(m=>m.text).join('\n');
-    if(next.entities!==undefined)next.entities=normalizeTerms(next.entities).filter(t=>evidence.includes(t.name)).map(t=>({...t,aliases:t.aliases.filter(a=>evidence.includes(a))}));
+    const canonical=[...(Array.isArray(next.participants)?next.participants:[]),next.person].filter(n=>typeof n==='string').map(name=>({name,kind:'人物',aliases:[]}));
+    for(const name of [next.subject,next.entity])if(typeof name==='string')canonical.push({name,kind:'术语',aliases:[]});
+    if(typeof next.location==='string')canonical.push({name:next.location,kind:'地点',aliases:[]});
+    const terms=new Map();
+    for(const term of normalizeTerms([...(Array.isArray(next.entities)?next.entities:[]),...canonical]))if(evidence.includes(term.name)){
+      const key=term.name.toLocaleLowerCase(),previous=terms.get(key);terms.set(key,{...(previous??term),aliases:[...new Set([...(previous?.aliases??[]),...term.aliases.filter(a=>evidence.includes(a))])]});
+    }
+    next.entities=[...terms.values()];
     if(next.tags!==undefined)next.tags=normalizeTags(next.tags);
     return bindCharacterDetails(next,evidence);
   };

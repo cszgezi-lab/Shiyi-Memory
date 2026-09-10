@@ -98,6 +98,10 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
   for(const q of dialogues)lines.push(`关键台词：${q.speaker}${q.to?` 对 ${q.to}`:''}：「${q.text}」${q.context?`〔${q.context}〕`:''}${q.meaning?`；体现：${q.meaning}`:''}`);
   if(dialogues.length)lines.push('原话仅作当时语境的证据，不要求复读；说过不等于仍持相同态度。');
   if (card.state) lines.push(`状态：${stateLabel(card.state)}`);
+  if (card.mergeReview?.status==='pending') {
+    lines.push('合并待核对：与已有记录的发生时间尚未确认一致，暂存独立；不据此认定发生了两次。');
+    if(detail)lines.push(`旧记录发生时间：${narrativeText(card.mergeReview.previousTime)||'未提取'}；本次提取：${narrativeText(card.mergeReview.proposedTime)||'未提取'}`);
+  }
   if (card.epistemicStatus && card.epistemicStatus !== 'observed') lines.push(`性质：${({ user_asserted: '用户确认', inferred: '推测而非事实', character_claim: '角色自述', unknown: '未确认' })[card.epistemicStatus] ?? card.epistemicStatus}`);
   if (card.category === 'knowledge') lines.push('外部设定资料，不等于角色已经历或已知情。');
   else if (card.awareness?.length) lines.push(`知情：${awarenessText(card.awareness)}`);
@@ -188,7 +192,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     const excerpt=relevantPassage(item.record.description,item.record.recallSummary,focusQuery);
     const body=excerpt?`${brief}\n相关经过：${excerpt}`:brief;
     const coveredBy=coveredRecallRecord(item.record,body,chosen);
-    const decision={id:item.id,title:recordTitle(item.record),category:item.record.category,reason:recallSelectionReason(item)};
+    const decision={id:item.id,title:recordTitle(item.record),category:item.record.category,reason:recallSelectionReason(item),scores:{keyword:item.localScore??null,vector:item.vectorScore??null,fusion:item.fusionScore??null,final:item.score??null}};
     if(coveredBy){decisions.push({...decision,status:'duplicate',coveredBy});omitted.push(item.id);continue;}
     let part = renderMemoryCard(item.record, settings,{body,query:focusQuery});
     let usedBody=body,usedExcerpt=Boolean(excerpt);

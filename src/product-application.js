@@ -23,6 +23,8 @@ import { createRuntimeLog, safeLogDetails } from './product-runtime-log.js';
 import { buildDictionary, normalizeTerms, KNOWLEDGE_ANALYSIS_PROMPT, parseKnowledgeAnalysis, updateDictionaryOverride, normalizeTags } from './product-dictionary.js';
 import { fullSearchText } from './product-narrative.js';
 import { sceneRecallQuery } from './product-recall-packing.js';
+import { createInjectionLog } from './product-injection-log.js';
+import { ASSISTANT_SKILLS, assistantSkillCatalog, readAssistantSkill, assistantSettings } from './product-assistant-skills.js';
 
 const PROMPT_KEY = 'shiyi-memory-continuity';
 function completion(response) {
@@ -34,6 +36,8 @@ function completion(response) {
 function jsonContent(text) { return JSON.parse(String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); }
 const tool = (name, description, properties, required = []) => ({ type: 'function', function: { name, description, parameters: { type: 'object', properties, required, additionalProperties: false } } });
 const ASSISTANT_TOOLS = [
+  tool('read_skill','读取插件内置、版本化的配置规则。先按用户任务选择规则，再读取 settings 提出可应用方案。',{id:{type:'string',enum:ASSISTANT_SKILLS.map(s=>s.id)}},['id']),
+  tool('inspect_recall','只读当前聊天字典、向量覆盖率和最近注入诊断摘要。不返回注入正文、不调用模型。',{}),
   tool('list_modules', '读取用户自定义区块定义（全局），不含聊天数据。', {}),
   tool('inspect_mvu', '只读列出当前聊天 MVU 可绑定的路径和类型，不返回无关变量值。没有聊天时先请用户加载聊天。', {}),
   tool('propose_module', '提出新增/修改/归档扩展区块方案，用户应用后生效。未知记录目标需先询问；MVU 路径不可猜测，先 inspect_mvu。', {action:{type:'string',enum:['upsert','archive']},id:{type:'string'},module:{type:'object',properties:{id:{type:'string'},name:{type:'string'},description:{type:'string'},subject:{type:'string'},mode:{type:'string',enum:['manual','summary','mvu']},enabled:{type:'boolean'},inject:{type:'boolean'},fields:{type:'array',items:{type:'object',properties:{id:{type:'string'},label:{type:'string'},type:{type:'string',enum:['text','number','boolean']},path:{type:'array',items:{type:'string'}}},required:['id','label','type'],additionalProperties:false}}},required:['name','mode','fields'],additionalProperties:false},explanation:{type:'string'}}, ['action']),
@@ -53,6 +57,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let dictionaryRevision=-1, dictionaryCache=null;
   let recallBusy = 0, moduleSourceBaseline=null;
   let vectorTimer=null,vectorJob=null,vectorCheckVersion=0;
+  let injectionLog=null,vectorExcluded=[];
   let tracking=false,trackingStart=null,disposed=false,followPending=false,followTimer=null,following=null,followVersion=0;
   const chatListeners=[],followWaiters=[];
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache();
@@ -91,7 +96,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(dictionaryRevision!==recallRevision||!dictionaryCache){dictionaryCache=buildDictionary([...(state.stale?[]:state.cards.filter(c=>c.category!=='conflicts')),...(core.settings.knowledgeEnabled?knowledgeCache.filter(c=>!state.hidden.includes(c.id)):[])],{aliases:core.settings.aliases,automatic:core.settings.dictionaryEnabled});dictionaryRevision=recallRevision;}
     return dictionaryCache;
   }
-  function publicState() { return { ...clone(state), dictionary:clone(activeDictionary()), runtimeLog:runtimeLog.state, enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
+  function publicState() { return { ...clone(state), injectionLog:workspace?.isCurrent()?injectionLog?.state:null, dictionary:clone(activeDictionary()), runtimeLog:runtimeLog.state, enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
   function assertCurrent(token = epoch) { if (!workspace || token !== epoch || !workspace.isCurrent()) throw Object.assign(new Error('聊天或来源已变化，旧聊天操作已停止'),{code:'CHAT_CHANGED'}); }
   function begin(exclusive = true) {
     if (exclusive && active) throw new Error('已有任务正在运行');
@@ -123,7 +128,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     })().finally(()=>{globalLoading=null;});return globalLoading;
   }
   function recallChanged({ clear = false, vectors = false, scheduleVectors = true } = {}) {
-    recallRevision++; state.preview = null; state.actual = null;
+    recallRevision++; state.preview = null; if(clear)state.actual = null;
     if (clear) recallCache.clear();
     if (clear || vectors) vectorCache.clear();
     clearTimeout(vectorTimer);vectorTimer=null;vectorCheckVersion++;
@@ -131,13 +136,21 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     state.vectorIndex={status:workspace?.isCurrent()?'not_checked':'no_chat'};
     if(!disposed&&workspace?.isCurrent())vectorTimer=setTimeout(()=>{vectorTimer=null;void refreshVectorStatus({schedule:scheduleVectors});},250);
   }
-  function vectorCards(){return selectRecallCards([...state.cards,...knowledgeCache.filter(c=>!state.hidden.includes(c.id))],core.settings);}
+  function vectorCards({all=false}={}){return selectRecallCards([...state.cards,...knowledgeCache.filter(c=>!state.hidden.includes(c.id))],core.settings).filter(c=>all||!vectorExcluded.includes(c.id));}
+  async function excludeVector(id,excluded=true){
+    assertCurrent();const token=epoch,bound=workspace;
+    if(!vectorCards({all:true}).some(c=>c.id===id))throw new Error('记忆不存在，请刷新');
+    vectorJob?.cancel();
+    const next=excluded?[...new Set([...vectorExcluded,id])]:vectorExcluded.filter(x=>x!==id);
+    await bound.write('vector-excluded',next);assertCurrent(token);vectorExcluded=next;
+    recallChanged({vectors:true});setMessage(excluded?'已排除该条向量；记忆正文保留，关键词仍可检索。':'已恢复向量索引资格；启用后台更新后会自动补建。');
+  }
   async function listVectorEntries({query='',page=1,status='all'}={}){
     assertCurrent();const token=epoch,revision=recallRevision,c=client('embedding'),bound=workspace;
     const fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model}),entries=await vectorCache.load(bound,`vectors-${fingerprint.slice(0,20)}`);
     assertCurrent(token);if(revision!==recallRevision)throw new Error('记忆已变化，请刷新索引列表');
     const q=String(query).trim().toLocaleLowerCase();
-    const rows=vectorCards().map(card=>({id:card.id,title:card.title??card.recallSummary??card.description?.slice(0,80)??'记忆',category:card.category,status:entries.get(card.id)?.hash===vectorCache.hash(card)?'indexed':entries.has(card.id)?'stale':'missing'}))
+    const rows=vectorCards({all:true}).map(card=>({id:card.id,title:card.title??card.recallSummary??card.description?.slice(0,80)??'记忆',category:card.category,status:vectorExcluded.includes(card.id)?'excluded':entries.get(card.id)?.hash===vectorCache.hash(card)?'indexed':entries.has(card.id)?'stale':'missing'}))
       .filter(row=>(status==='all'||row.status===status)&&row.title.toLocaleLowerCase().includes(q));
     const pages=Math.max(1,Math.ceil(rows.length/20)),current=Math.min(pages,Math.max(1,Math.floor(Number(page)||1)));
     return {rows:rows.slice((current-1)*20,current*20),total:rows.length,page:current,pages};
@@ -281,10 +294,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if (result.status !== 'ready' || result.persistence !== 'available') throw Object.assign(new Error(core.state.errorMessage ?? '当前聊天尚未保存或宿主存储不可用'),{code:result.errorCode??'PERSISTENCE_UNAVAILABLE'});
     epoch++; knowledgeCache = []; recallChanged({ clear: true });
     workspace = createWorkspace(core.workspace());
+    {const current=workspace;injectionLog=createInjectionLog({workspace:current,onChange:()=>{if(workspace===current)notify();}});await injectionLog.load();checkOpen();}
     await apiSettings.adoptLegacy(core.legacySettings);checkOpen();
     core.setSessionCredential(effectiveKeys().summary);
     boundScope = core.state.scope;boundRefKey=targetKey;
-    const [ui,hidden]=await Promise.all([workspace.read('ui',{savedThrough:-1}),workspace.read('hidden',[])]);
+    const [ui,hidden,excludedVectors]=await Promise.all([workspace.read('ui',{savedThrough:-1}),workspace.read('hidden',[]),workspace.read('vector-excluded',[])]);
+    checkOpen();vectorExcluded=Array.isArray(excludedVectors)?excludedVectors.filter(id=>typeof id==='string'):[];
     checkOpen();assertCurrent();Object.assign(state,{savedThrough:ui.savedThrough??-1,hidden,preview:null,actual:null,stale:false});
     await migrateWorkspace();
     await normalizeBatchRanges();
@@ -497,7 +512,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         saved++;state.savedThrough=Math.max(state.savedThrough,item.endIndex);state.stale=false;
         await workspace.write('ui',{savedThrough:state.savedThrough});await refresh();currentBatch=null;
       }
-      summaryFeedback('success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。`,trigger);
+      summaryFeedback('success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${state.cards.some(c=>c.mergeReview?.status==='pending')?'存在合并待核对记录，可在冲突与疑点中查看。':''}`,trigger);
       return {status:'saved',batches:saved};
     }catch(error){
       if(currentBatch&&workspace?.isCurrent()&&op.token===epoch){
@@ -605,17 +620,22 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     } finally { op.finish(); }
   }
   async function inject(payload) {
-    if (!enabled || !core.settings.injectionEnabled || state.stale || !workspace?.isCurrent()) return;
     if (!payload || !Array.isArray(payload.messages) || injectedPayloads.has(payload)) return;
+    const log=injectionLog,started=Date.now(),initialToken=epoch;
+    const audit=(status,options={})=>{if(log&&core.settings.injectionLogEnabled)log.append({status,budgetUnits:core.settings.retrievalBudgetUnits,elapsedMs:Date.now()-started,...options});};
+    if(!enabled||!core.settings.injectionEnabled){injectedPayloads.add(payload);audit('disabled');return;}
+    if(state.stale||!workspace?.isCurrent()){injectedPayloads.add(payload);audit(state.stale?'stale':'unavailable');return;}
+    injectedPayloads.add(payload);
     await syncModulesQuietly();
-    if(state.stale||!workspace?.isCurrent())return;
+    if(state.stale||!workspace?.isCurrent()||epoch!==initialToken){audit('changed');return;}
     const token = epoch;
     const revision = recallRevision;
     const messages = payload.messages;
     const {intent:query,context}=sceneRecallQuery(messages);
     try {
       const result = await preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context });
-      assertCurrent(token); if (revision !== recallRevision || !enabled || !core.settings.injectionEnabled || !result.text) return;
+      assertCurrent(token); if (revision !== recallRevision || !enabled || !core.settings.injectionEnabled){audit('changed');return;}
+      if(!result.text){audit('empty',{query,result});return;}
       const role = ['system','user'].includes(core.settings.injectionRole) ? core.settings.injectionRole : 'system';
       const external=externalState();
       let content=result.text;
@@ -626,13 +646,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       if(core.settings.injectionPosition === 'start') messages.unshift(item); else messages.splice(Math.max(0,messages.length - 1), 0, item);
       injectedPayloads.add(payload);
       state.actual = { ...result, text:content, usedUnits:estimateUnits(content), previewOnly:false, sent:false, stage:'request_prepared', preparedAt:Date.now() };
+      audit('prepared',{query,text:content,result:state.actual,role,position:core.settings.injectionPosition});
       if (result.degraded) state.message = '本轮记忆已加入；在线检索未完全可用，召回可能不完整，请查看本轮注入。';
       notify();
-    } catch { setMessage('本轮记忆未加入请求：来源变化或检索失败'); }
+    } catch { audit(token===epoch?'failed':'changed',{query});if(token===epoch)setMessage('本轮记忆未加入请求：来源变化或检索失败'); }
   }
   async function retrievalAdapters(cards) {
     const options = {};
     if (core.settings.vectorEnabled) {
+      const allowedCards=cards.filter(card=>!vectorExcluded.includes(card.id));
       // Setup failures belong to this optional lane, not the local baseline.
       let c, failure;
       try { c = client('embedding'); } catch (error) { failure = error; }
@@ -641,15 +663,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       options.vectorAdapter = { embeddingSpace:fingerprint, async search({query,limit,signal,tagLanes,categoryLanes}) {
         if (failure) throw failure;
         const index = await vectorCache.load(bound, `vectors-${fingerprint.slice(0,20)}`, signal);
-        const indexed = cards.filter(card => index.get(card.id)?.hash === vectorCache.hash(card)).length;
-        if (!cards.length) return [];
+        const indexed = allowedCards.filter(card => index.get(card.id)?.hash === vectorCache.hash(card)).length;
+        if (!allowedCards.length) return [];
         if (!indexed) throw new Error('向量索引尚未建立或已过期');
         const q = await vectorCache.query(query, async () => {
           const response = await c.embeddings({model:c.profile.model,input:[query]}, {signal});
           return response?.data?.[0]?.embedding;
         }, signal);
-        const result = await vectorCache.search(index, cards, q, {limit, fingerprint, signal,tagLanes,categoryLanes});
-        result.coverage = { indexed: cards.filter(card => { const entry = index.get(card.id); return entry?.hash === vectorCache.hash(card) && entry.vector.length === q.vector.length; }).length, total: cards.length };
+        const result = await vectorCache.search(index, allowedCards, q, {limit, fingerprint, signal,tagLanes,categoryLanes});
+        result.coverage = { indexed: allowedCards.filter(card => { const entry = index.get(card.id); return entry?.hash === vectorCache.hash(card) && entry.vector.length === q.vector.length; }).length, total: allowedCards.length };
         return result;
       }};
     }
@@ -759,7 +781,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         }
         overview=JSON.stringify(next);state.progress=`已归并资料索引 ${reductions} 轮`;notify();
       }
-      const messages=[{role:'system',content:system},{role:'system',content:JSON.stringify({documents:manifest,analysisOverview:overview,detailAccess:'read_document；概览不是原文的全部细节'})}];
+      const messages=[{role:'system',content:system+'\n内置配置规则：'+JSON.stringify(assistantSkillCatalog())+'\n'+readAssistantSkill('start').text+'\n针对用户的问题先用 read_skill 读取对应规则。缺少工具时仅准备方案，不声称执行。'},{role:'system',content:JSON.stringify({documents:manifest,analysisOverview:overview,detailAccess:'read_document；概览不是原文的全部细节'})}];
       const history=state.history.slice(-24).map(({role,content})=>({role,content}));
       const budget=core.settings.assistantBudgetUnits;
       while(history.length>1&&estimateUnits(JSON.stringify([...messages,...history]))>budget-2500) history.shift();
@@ -771,8 +793,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         catch(error) {
           if(![400,422].includes(error?.details?.status) || turn>0)throw error;
           op.check();
-          const registry=Object.values(PRODUCT_SETTING_REGISTRY).filter(d=>d.persisted!==false).map(({key,type,min,max,values,maxLength})=>({key,type,min,max,values,maxLength,current:core.settings[key]}));
-          const plain=[...messages,{role:'system',content:`此服务可能不支持工具调用。只输出 JSON：{\"reply\":\"给用户的话\",\"settingsPatch\":{},\"explanation\":\"理由\"}。缺少信息时提出必要问题，settingsPatch为空。非空方案仍须用户应用。如需自定义区块，可增加 modulePlan:{action:'upsert',module:{id?,name,mode:'manual'|'summary'|'mvu',subject,description,fields:[{id,label,type:'text'|'number'|'boolean',path?:string[]}],inject:boolean},explanation}。已有区块：${JSON.stringify(state.modules)}。当前已探测 MVU 路径：${JSON.stringify(state.mvuPaths)}。路径未探测时请用户点击扩展模块的读取变量；不得猜测路径。可用字段：${JSON.stringify(registry)}`}];
+          const registry=assistantSettings(core.settings);
+          const plain=[...messages,{role:'system',content:JSON.stringify(ASSISTANT_SKILLS)},{role:'system',content:`此服务可能不支持工具调用。只输出 JSON：{\"reply\":\"给用户的话\",\"settingsPatch\":{},\"explanation\":\"理由\"}。缺少信息时提出必要问题，settingsPatch为空。非空方案仍须用户应用。如需自定义区块，可增加 modulePlan:{action:'upsert',module:{id?,name,mode:'manual'|'summary'|'mvu',subject,description,fields:[{id,label,type:'text'|'number'|'boolean',path?:string[]}],inject:boolean},explanation}。已有区块：${JSON.stringify(state.modules)}。当前已探测 MVU 路径：${JSON.stringify(state.mvuPaths)}。路径未探测时请用户点击扩展模块的读取变量；不得猜测路径。可用字段：${JSON.stringify(registry)}`}];
           if(estimateUnits(JSON.stringify(plain))>budget)throw new Error('兼容模式输入超过预算，请提高助手输入预算');
           const fallback=completion(await c.chatCompletions({model:c.profile.model,messages:plain,stream:false,...replyLimit()},{signal}));op.check();
           const plan=jsonContent(fallback.content);
@@ -785,7 +807,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         if(!response.tool_calls?.length){setMessage('助手回复已保存');return;}
         messages.push(response);
         for(const call of response.tool_calls){op.check();let result;try{const args=JSON.parse(call.function.arguments??'{}');
-          if(call.function.name==='settings')result=Object.values(PRODUCT_SETTING_REGISTRY).filter(d=>d.persisted!==false).map(({key,label,type,min,max,values,maxLength})=>({key,label,type,min,max,values,maxLength,current:core.settings[key]}));
+          if(call.function.name==='settings')result=assistantSettings(core.settings);
+          else if(call.function.name==='read_skill')result=readAssistantSkill(args.id);
+          else if(call.function.name==='inspect_recall'){const inspected=workspace;const recent=injectionLog?await injectionLog.export():null;op.check();result=inspected===workspace&&workspace?.isCurrent()&&!state.stale?{dictionary:activeDictionary(),vectorIndex:state.vectorIndex,recentInjections:recent?.entries.slice(-3)??[],boundary:'诊断只表示请求准备，未确认服务收到。'}:{status:'no_current_chat'};}
           else if(call.function.name==='list_modules')result=state.modules;
           else if(call.function.name==='inspect_mvu')result=await modules.inspect();
           else if(call.function.name==='propose_module')result=await modules.propose(args);
@@ -817,6 +841,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   return {core,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
     startChatTracking,followCurrentChat,
     loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:()=>runtimeLog.export(),clearRuntimeLog:()=>runtimeLog.clear(),
+    async exportInjectionLog(options){assertCurrent();return injectionLog.export(options);},
+    async clearInjectionLog(){assertCurrent();await injectionLog.clear();},
+    async removeInjectionLog(id){assertCurrent();await injectionLog.remove(id);},
     async saveDictionaryEntry(input){await loadApiSettings();await saveSettings({aliases:updateDictionaryOverride(core.settings.aliases,input)});setMessage('字典校正已保存，不会修改故事事实');},
     testConnection:(kind='summary',patch={})=>logged('connection',()=>testConnection(kind,patch),{modelRole:kind}),
     listModels:(kind,options)=>logged('models',()=>listModels(kind,options),{modelRole:kind}),
@@ -825,6 +852,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     buildVectors:(options)=>logged('vectors',()=>buildVectors(options)),
     refreshVectorStatus,
     listVectorEntries,
+    excludeVector,
     addDocument:input=>logged('import',()=>addDocument(input)),
     preview:(...args)=>logged('recall',()=>preview(...args)),
     async remember(text,people='',options={}){assertCurrent();await core.remember(text,{people,...options});await refresh();setMessage('记事已保存');},
@@ -834,6 +862,6 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     setKey(kind,value,endpoint){if(!Object.hasOwn(keys,kind))throw new Error('未知连接');keyEdited.add(kind);keyVersions[kind]=(keyVersions[kind]??0)+1;keys[kind]=String(value??'');keyOrigins[kind]=credentialOrigin(endpoint??core.settings[`${prefixFor(kind)}Endpoint`]);if(kind==='summary')core.setSessionCredential(effectiveKeys().summary);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true,scheduleVectors:false});},
     exportSettings(){return {kind:'shiyi-config',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings)};},
     async exportBackup(){assertCurrent();return {kind:'shiyi-backup',version:1,scope:boundScope,modules:clone(state.modules),moduleSnapshots:clone(state.moduleSnapshots),settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`)))}))),assistant:state.history};},
-    async dispose(){disposed=true;tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of chatListeners.splice(0)){try{await off();}catch{}}await disable();epoch++;await core.dispose();for(const resolve of followWaiters.splice(0))resolve(publicState());await runtimeLog.flush();},
+    async dispose(){disposed=true;tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of chatListeners.splice(0)){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();for(const resolve of followWaiters.splice(0))resolve(publicState());await runtimeLog.flush();},
   };
 }

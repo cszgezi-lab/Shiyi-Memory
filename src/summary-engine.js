@@ -525,7 +525,7 @@ export class SummaryEngine {
           focusVersion: focusFingerprint(child.focusSpec, child.focusVersion),
           correctionAuthorizations,
         });
-        resolveEventMerges(bundle,request.relevantRecords);
+        resolveEventMerges(bundle,request.relevantRecords,{deferUnresolved:true,onDeferred:({eventIndex,reason})=>emit('merge_deferred',{...baseDetails,validationIssueCount:1,validationIssues:[{path:`events[${eventIndex}].mergeInto`,reason}]},'warning')});
         if(this.requireFloorSummaries){
           phase='floors';
           const details=requireIndependentFloorSummaries(bundle,child.sourceMessages);
