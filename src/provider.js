@@ -151,7 +151,8 @@ export class ProviderClient {
         const timeoutError = new ShiyiError(`${resource} request timed out`, 'TIMEOUT', { timeoutMs: effectiveTimeout });
         throw timeoutError;
       }
-      throw error;
+      if(error?.code||error?.name==='AbortError')throw error;
+      throw new ShiyiError('provider network request failed', 'network.request_failed', error?.details);
     } finally {
       if (timer) clearTimeout(timer);
       controller.signal.removeEventListener('abort', onAbort);

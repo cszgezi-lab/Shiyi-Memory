@@ -172,6 +172,7 @@
 @media(max-width:430px){#shiyi-product-shell .sy-card {padding:10px;margin:8px 0;}#shiyi-product-shell .sy-category-grid {gap:6px;}#shiyi-floating-window>.sy-nav button {font-size:13px;white-space:nowrap;}}
 #shiyi-product-shell .sy-dictionary-row>.sy-tag {margin-left:8px;}
 #shiyi-product-shell [data-vector-entries] .sy-info-row {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px;}
+#shiyi-product-shell .sy-vector-error {grid-column:1/-1;line-height:1.5;overflow-wrap:anywhere;color:var(--sy-text);opacity:.82;}
 #shiyi-product-shell [data-vector-entries] button {min-width:0;font-size:13px;padding:8px;}
 #shiyi-product-shell [data-injection-row]>summary small {display:block;font-size:12px;opacity:.7;margin-top:4px;}
 #shiyi-product-shell [data-injection-row] .sy-packet {max-height:22em;overflow:auto;font-size:13px;}

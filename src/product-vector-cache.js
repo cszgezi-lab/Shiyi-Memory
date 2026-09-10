@@ -6,6 +6,11 @@ export function vectorNorm(vector) {
   return Number.isFinite(norm) ? norm : 0;
 }
 
+export function validVectorEntry(entry) {
+  if(!vectorNorm(entry?.vector))return false;
+  return entry.segments===undefined || Array.isArray(entry.segments)&&entry.segments.length>0&&entry.segments.every(v=>Array.isArray(v)&&v.length===entry.vector.length&&vectorNorm(v));
+}
+
 export function vectorIndexCoverage(cards, entries, hash) {
   let indexed=0,stale=0,missing=0;
   const dimensions=new Set();
@@ -47,8 +52,8 @@ export class ProductVectorCache {
       const entries = new Map();
       let processed = 0;
       for (const [id, entry] of Object.entries(raw ?? {})) {
-        const norm = vectorNorm(entry?.vector);
-        if (norm && typeof entry.hash === 'string') entries.set(id, { ...entry, norm });
+        const norm = validVectorEntry(entry)?vectorNorm(entry.vector):0;
+        if (norm && typeof entry.hash === 'string') entries.set(id, { ...entry, norm,segmentNorms:entry.segments?.map(vectorNorm) });
         if (++processed % 128 === 0) {
           await new Promise(resolve => setTimeout(resolve, 0));
           throwIfAborted(signal);
@@ -89,9 +94,14 @@ export class ProductVectorCache {
     for (const card of cards) {
       const entry = entries.get(card.id);
       if (entry?.hash === this.hash(card) && entry.vector.length === query.vector.length) {
-        let dot = 0;
-        for (let i = 0; i < entry.vector.length; i++) dot += entry.vector[i] * query.vector[i];
-        const score = dot / (entry.norm * query.norm);
+        let score=-Infinity;
+        const vectors=entry.segments??[entry.vector];
+        for(let part=0;part<vectors.length;part++){
+          const vector=vectors[part];
+          let dot = 0;
+          for (let i = 0; i < vector.length; i++) dot += vector[i] * query.vector[i];
+          score=Math.max(score,dot / ((entry.segmentNorms?.[part]??(vector===entry.vector?entry.norm:vectorNorm(vector))) * query.norm));
+        }
         if (Number.isFinite(score)) matches.push({ id: card.id, score, embeddingSpace: fingerprint, tags:card.tags??[],category:card.category });
       }
       if (++processed % 128 === 0) {

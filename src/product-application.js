@@ -7,6 +7,7 @@ import { ProviderClient } from './provider.js';
 import { memoryCards, recallMemory, readable, recordDescription, selectRecallCards, prepareRecallIndex, relevantPassage } from './product-memory.js';
 import { RecallIndexCache } from './recall-cache.js';
 import { ProductVectorCache, vectorNorm, vectorIndexCoverage } from './product-vector-cache.js';
+import { buildVectorIndex, embeddingVectors, normalizeVectorJobs, vectorJobKey, vectorStagingKey, vectorFailure, vectorFailureCounts } from './product-vector-indexer.js';
 import { clone, sha256, makeId, estimateUnits, stableStringify } from './utils.js';
 import { createProductFetch } from './product-network.js';
 import { productApiProfile, fetchProductModels } from './product-model-list.js';
@@ -84,7 +85,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try{
       if(version!==cancelVersion)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
       const result=await fn(run);
-      runtimeLog.record({run,task,phase:'complete',level:result?.level==='warning'?'warning':'success',details:{...details,elapsedMs:Date.now()-started,savedBatches:result?.batches}});
+      runtimeLog.record({run,task,phase:'complete',level:result?.level==='warning'?'warning':'success',details:{...details,...(task==='vectors'?{indexedItems:result?.indexed,pendingItems:result?.pending,failedItems:result?.failed,requestNumber:result?.requests}:{}),elapsedMs:Date.now()-started,savedBatches:result?.batches}});
       return result;
     }catch(error){
       const canceled=['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error?.code)||error?.name==='AbortError';
@@ -148,11 +149,17 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function listVectorEntries({query='',page=1,status='all'}={}){
     assertCurrent();const token=epoch,revision=recallRevision,c=client('embedding'),bound=workspace;
-    const fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model}),entries=await vectorCache.load(bound,`vectors-${fingerprint.slice(0,20)}`);
+    const fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model}),key=`vectors-${fingerprint.slice(0,20)}`;
+    const jobs=normalizeVectorJobs(await bound.read(vectorJobKey(key),null)),entries=await vectorCache.load(bound,jobs.rebuilding?vectorStagingKey(key):key);
     assertCurrent(token);if(revision!==recallRevision)throw new Error('记忆已变化，请刷新索引列表');
     const q=String(query).trim().toLocaleLowerCase();
-    const rows=vectorCards({all:true}).map(card=>({id:card.id,title:card.title??card.recallSummary??card.description?.slice(0,80)??'记忆',category:card.category,status:vectorExcluded.includes(card.id)?'excluded':entries.get(card.id)?.hash===vectorCache.hash(card)?'indexed':entries.has(card.id)?'stale':'missing'}))
-      .filter(row=>(status==='all'||row.status===status)&&row.title.toLocaleLowerCase().includes(q));
+    const rows=vectorCards({all:true}).map(card=>{
+      const issue=vectorFailure(card,jobs);
+      const status=vectorExcluded.includes(card.id)?'excluded':entries.get(card.id)?.hash===vectorCache.hash(card)?'indexed':issue?'failed':entries.has(card.id)?'stale':'missing';
+      return {id:card.id,title:card.title??card.recallSummary??card.description?.slice(0,80)??'记忆',category:card.category,status,
+        ...(status==='failed'?{error:failureText({code:issue.code,details:{status:issue.status}}),attempts:issue.attempts}:{}),
+        segments:entries.get(card.id)?.segments?.length??(entries.has(card.id)?1:0)};
+    }).filter(row=>(status==='all'||row.status===status||status==='unfinished'&&['failed','missing','stale'].includes(row.status))&&row.title.toLocaleLowerCase().includes(q));
     const pages=Math.max(1,Math.ceil(rows.length/20)),current=Math.min(pages,Math.max(1,Math.floor(Number(page)||1)));
     return {rows:rows.slice((current-1)*20,current*20),total:rows.length,page:current,pages};
   }
@@ -160,16 +167,20 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const version=++vectorCheckVersion,token=epoch,revision=recallRevision,bound=workspace;
     if(!bound?.isCurrent()||state.stale){state.vectorIndex={status:'no_chat'};notify();return state.vectorIndex;}
     try{
-      const c=client('embedding'),fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model});
-      const entries=await vectorCache.load(bound,`vectors-${fingerprint.slice(0,20)}`),coverage=vectorIndexCoverage(vectorCards(),entries,card=>vectorCache.hash(card));
+      const c=client('embedding'),fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model}),key=`vectors-${fingerprint.slice(0,20)}`;
+      const jobs=normalizeVectorJobs(await bound.read(vectorJobKey(key),null)),cards=vectorCards(),entries=await vectorCache.load(bound,jobs.rebuilding?vectorStagingKey(key):key),coverage=vectorIndexCoverage(cards,entries,card=>vectorCache.hash(card));
+      const failure=vectorFailureCounts(cards,entries,jobs);
       if(version!==vectorCheckVersion||token!==epoch||revision!==recallRevision||!bound.isCurrent())return;
-      state.vectorIndex={...coverage,status:vectorJob?'updating':!coverage.total?'empty':coverage.mixed?'mixed':coverage.pending?'pending':'ready',model:c.profile.model,checkedAt:Date.now()};
+      const stopped=state.vectorIndex?.status==='stopped';
+      const status=vectorJob?'updating':!coverage.total?'empty':coverage.mixed?'mixed':!coverage.pending?'ready':failure.blocked||failure.failed?'error':stopped?'stopped':'pending';
+      const issue=failure.blocked??cards.map(c=>vectorFailure(c,jobs)).find(Boolean);
+      state.vectorIndex={...coverage,...failure,rebuilding:jobs.rebuilding,status,model:c.profile.model,checkedAt:Date.now(),...(status==='error'&&issue?{message:failureText({code:issue.code,details:{status:issue.status}})}:{})};
       notify();
-      if(schedule&&core.settings.vectorEnabled&&core.settings.vectorAutoUpdate&&coverage.pending&&!vectorJob&&!disposed&&!active&&!recallBusy){
-        vectorTimer=setTimeout(()=>{vectorTimer=null;if(!disposed&&token===epoch&&revision===recallRevision&&!active&&!recallBusy)void logged('vectors',()=>buildVectors({background:true})).catch(()=>{});},500);
+      if(schedule&&core.settings.vectorEnabled&&core.settings.vectorAutoUpdate&&coverage.pending>failure.failed&&!failure.blocked&&!vectorJob&&!disposed&&!active&&!recallBusy){
+        vectorTimer=setTimeout(()=>{vectorTimer=null;if(!disposed&&token===epoch&&revision===recallRevision&&!active&&!recallBusy)void logged('vectors',run=>buildVectors({background:true,diagnosticRun:run})).catch(()=>{});},500);
       }
       return clone(state.vectorIndex);
-    }catch(error){if(version===vectorCheckVersion&&token===epoch){state.vectorIndex={status:'unavailable',message:'索引暂不可读，请检查向量配置后刷新状态。'};notify();}}
+    }catch(error){if(version===vectorCheckVersion&&token===epoch){state.vectorIndex={status:'unavailable',message:failureText(error)};notify();}}
   }
   async function warmRecall() {
     const token = epoch, revision = recallRevision;
@@ -420,7 +431,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function testConnection(kind = 'summary', patch = {}) {
     const op=beginApi();
     try { await loadApiSettings();op.check();const c = client(kind, patch); let result,report={ok:true,connected:true,completionReady:true,level:'success',message:'连接测试成功。'};
-      if (kind === 'embedding') { result = await c.embeddings({ model: c.profile.model, input: ['connection check'] },op); if (!Array.isArray(result?.data?.[0]?.embedding)) throw new Error('服务没有返回向量'); }
+      if (kind === 'embedding') { result = await c.embeddings({ model: c.profile.model, input: ['connection check'], encoding_format:'float' },op); embeddingVectors(result,1); }
       else if (kind === 'rerank') { result = await c.rerank({ model: c.profile.model, query: '连接', documents: ['连接测试'], top_n: 1 },op); if (!Array.isArray(result?.results)) throw new Error('服务没有返回重排结果'); }
       else report=inspectChatConnection(await c.chatCompletions(chatConnectionPayload(c.profile.model),op));
       op.check(); setMessage(report.message); return { ...report,kind };
@@ -744,8 +755,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         if (!allowedCards.length) return [];
         if (!indexed) throw new Error('向量索引尚未建立或已过期');
         const q = await vectorCache.query(query, async () => {
-          const response = await c.embeddings({model:c.profile.model,input:[query]}, {signal});
-          return response?.data?.[0]?.embedding;
+          const response = await c.embeddings({model:c.profile.model,input:[query],encoding_format:'float'}, {signal});
+          return embeddingVectors(response,1)[0];
         }, signal);
         const result = await vectorCache.search(index, allowedCards, q, {limit, fingerprint, signal,tagLanes,categoryLanes});
         result.coverage = { indexed: allowedCards.filter(card => { const entry = index.get(card.id); return entry?.hash === vectorCache.hash(card) && entry.vector.length === q.vector.length; }).length, total: allowedCards.length };
@@ -771,35 +782,30 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     return options;
   }
-  async function buildVectors({background=false,rebuild=false}={}) {
+  async function buildVectors({background=false,rebuild=false,ids=null,diagnosticRun}={}) {
     assertCurrent();if(vectorJob)throw new Error('向量索引正在更新');
     const op=begin(!background),token=epoch,signal=op.signal,revision=recallRevision,bound=workspace;
-    const cancellation=new AbortController();
-    const job={cancel:()=>cancellation.abort()};vectorJob=job;
+    const cancellation=new AbortController(),job={cancel:()=>cancellation.abort()};vectorJob=job;
+    clearTimeout(vectorTimer);vectorTimer=null;
     const check=()=>{op.check();if(cancellation.signal.aborted||revision!==recallRevision)throw Object.assign(new Error('记忆已更新，本次索引任务停止'),{code:'CANCELED'});};
     const combined=new AbortController(),cancelRequest=()=>combined.abort();
     signal.addEventListener('abort',cancelRequest,{once:true});cancellation.signal.addEventListener('abort',cancelRequest,{once:true});
-    const requestSignal=combined.signal;
     try {
-      const c=client('embedding');
-      const fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model}), key=`vectors-${fingerprint.slice(0,20)}`;
-      const cards=vectorCards(), index=rebuild?{}:await bound.read(key,{});check();
-      const todo=cards.filter(card=>index[card.id]?.hash!==sha256(card.text)||!vectorNorm(index[card.id]?.vector));
-      state.vectorIndex={status:'updating',total:cards.length,indexed:cards.length-todo.length,pending:todo.length,model:c.profile.model};notify();
-      for(let i=0;i<todo.length;i+=16){check();const batch=todo.slice(i,i+16); const result=await c.embeddings({model:c.profile.model,input:batch.map(c=>c.text)},{signal:requestSignal});check();
-        const data=result?.data; if(!Array.isArray(data)||data.length!==batch.length)throw new Error('向量数量不匹配');
-        const ordered=[...data].sort((a,b)=>a.index-b.index); const dimension=ordered[0]?.embedding?.length;
-        ordered.forEach((entry,n)=>{if(entry.index!==n||!dimension||entry.embedding?.length!==dimension||!vectorNorm(entry.embedding))throw new Error('向量响应无效');});
-        const retained=cards.filter(card=>!batch.some(b=>b.id===card.id)&&index[card.id]?.hash===sha256(card.text));
-        if(retained.some(card=>index[card.id].vector?.length!==dimension))throw new Error('服务返回的向量维度发生变化，请在向量页面重建全部索引');
-        ordered.forEach((entry,n)=>{index[batch[n].id]={hash:sha256(batch[n].text),vector:entry.embedding};});
-        await bound.write(key,index);check();
-        state.vectorIndex={status:'updating',total:cards.length,indexed:cards.length-todo.length+Math.min(i+16,todo.length),pending:Math.max(0,todo.length-i-16),model:c.profile.model};notify();
-        await new Promise(resolve=>setTimeout(resolve,0));
-      }
-      if(!background)setMessage('向量索引已保存');
-    }catch(error){if(token===epoch&&revision===recallRevision){state.vectorIndex={...state.vectorIndex,status:signal.aborted?'stopped':'error',message:'索引更新未完成，已保存部分保留；可重试。'};notify();}throw error;
-    } finally {signal.removeEventListener('abort',cancelRequest);cancellation.signal.removeEventListener('abort',cancelRequest);if(vectorJob===job)vectorJob=null;vectorCache.clear();op.finish();if(token===epoch&&revision===recallRevision&&state.vectorIndex?.status!=='error'&&state.vectorIndex?.status!=='stopped')await refreshVectorStatus();}
+      const c=client('embedding'),fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model}),key=`vectors-${fingerprint.slice(0,20)}`;
+      const report=await buildVectorIndex({cards:vectorCards(),workspace:bound,key,client:c,check,signal:combined.signal,background,rebuild,ids,
+        diagnostic:(phase,details,level='info')=>runtimeLog.record({run:diagnosticRun,task:'vectors',phase,level,details:{transport:'browser_direct',...details}}),
+        progress:stats=>{check();state.vectorIndex={...stats,status:'updating',model:c.profile.model};notify();}
+      });
+      check();report.message=`向量已保存 ${report.indexed??0}/${report.total??0} 条${report.pending?`，剩余 ${report.pending} 条待补建`:''}；未重新总结聊天。`;if(!background)setMessage(report.message);
+      return report;
+    }catch(error){
+      if(token===epoch&&revision===recallRevision){state.vectorIndex={...state.vectorIndex,status:combined.signal.aborted?'stopped':'error',message:failureText(error)};notify();}
+      throw error;
+    }finally{
+      signal.removeEventListener('abort',cancelRequest);cancellation.signal.removeEventListener('abort',cancelRequest);
+      if(vectorJob===job)vectorJob=null;vectorCache.clear();op.finish();
+      if(token===epoch&&revision===recallRevision)await refreshVectorStatus();
+    }
   }
   async function addDocument(input) { await loadApiSettings();const op=beginApi();try{const doc=await importTextDocument(globalWorkspace,input);op.check();state.documents=await globalWorkspace.read('documents',[]);await loadKnowledge();setMessage('文件已解析为文字，保存在全局资料库；尚未发送给模型');return doc;}finally{op.finish();} }
   async function removeDocument(id) {
@@ -926,7 +932,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     listModels:(kind,options)=>logged('models',()=>listModels(kind,options),{modelRole:kind}),
     assistant:input=>logged('assistant',()=>assistant(input)),
     analyzeDocuments:()=>logged('knowledge',()=>analyzeDocuments()),
-    buildVectors:(options)=>logged('vectors',()=>buildVectors(options)),
+    buildVectors:(options)=>logged('vectors',run=>buildVectors({...options,diagnosticRun:run})),
+    retryVectors:(ids=null)=>logged('vectors',run=>buildVectors({ids,diagnosticRun:run})),
     refreshVectorStatus,
     listVectorEntries,
     excludeVector,

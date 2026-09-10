@@ -1,6 +1,6 @@
 /** TT v2.2.0 public compatibility route. No host secret lookup or global fetch patch. */
 export function createProductFetch(host, fetchImpl = globalThis.fetch) {
-  return async (url, init = {}) => {
+  const transport = async (url, init = {}) => {
     const target = new URL(url);
     if (!['http:', 'https:'].includes(target.protocol)) throw new Error('API 地址只支持 HTTP(S)');
     if (host?.__TAURITAVERN__?.api && target.pathname.endsWith('/models') && !target.search && !target.hash && init.method === 'GET') {
@@ -25,5 +25,15 @@ export function createProductFetch(host, fetchImpl = globalThis.fetch) {
       });
     }
     return fetchImpl.call(host, url, init);
+  };
+  return async (url,init={})=>{
+    try{return await transport(url,init);}
+    catch(error){
+      const target=new URL(url),native=host?.__TAURITAVERN__?.api&&!target.search&&!target.hash&&((target.pathname.endsWith('/models')&&init.method==='GET')||(target.pathname.endsWith('/chat/completions')&&(init.method??'POST')==='POST'));
+      // A rejected WebView fetch cannot distinguish CORS from DNS/TLS failures.
+      // Record only the route, never raw URLs, request text or credentials.
+      if(error&&typeof error==='object')error.details={...error.details,transport:native?'tt_native':'browser_direct'};
+      throw error;
+    }
   };
 }

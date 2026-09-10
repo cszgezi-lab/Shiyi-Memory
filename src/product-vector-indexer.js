@@ -1,0 +1,141 @@
+import { sha256 } from './utils.js';
+import { splitDocument } from './product-workspace.js';
+import { vectorNorm, validVectorEntry } from './product-vector-cache.js';
+import { ShiyiError, PersistenceError } from './errors.js';
+import { providerEnvelopeFailure, productFailure } from './product-feedback.js';
+
+const fail = (code, details) => new ShiyiError('向量索引未完成', code, details);
+export const vectorJobKey = key => `${key}-jobs-v1`;
+export const vectorStagingKey = key => `${key}-rebuild-v1`;
+export function normalizeVectorJobs(raw) {
+  return raw?.version === 1 ? {version:1, failures:raw.failures??{}, parts:raw.parts??{}, blocked:raw.blocked??null,rebuilding:raw.rebuilding===true} : {version:1,failures:{},parts:{},blocked:null,rebuilding:false};
+}
+export function vectorFailure(card, jobs) { const entry=jobs.failures?.[card.id];return entry?.hash===sha256(card.text)?entry:null; }
+export function vectorFailureCounts(cards, entries, jobs) {
+  const pending=cards.filter(c=>entries.get(c.id)?.hash!==sha256(c.text));
+  return {failed:pending.filter(c=>vectorFailure(c,jobs)).length,blocked:jobs.blocked};
+}
+
+/** A missing index is unambiguous only for a single input. Never guess which
+ * memory owns a vector in a malformed multi-input response. */
+export function embeddingVectors(response, expected) {
+  if(response?.error)throw providerEnvelopeFailure(response);
+  const data=response?.data;
+  if(!Array.isArray(data)||data.length!==expected)throw fail('VECTOR_RESPONSE_COUNT',{requestItems:expected,receivedVectors:Array.isArray(data)?data.length:0});
+  const ordered=[...data].sort((a,b)=>(a?.index??0)-(b?.index??0));
+  if(ordered.some((e,i)=>e?.index!==i&&!(expected===1&&e?.index==null)))throw fail('VECTOR_RESPONSE_INDEX',{requestItems:expected});
+  const dimension=ordered[0]?.embedding?.length;
+  if(ordered.some(e=>!vectorNorm(e?.embedding)||e.embedding.length!==dimension))throw fail('VECTOR_RESPONSE_INVALID',{requestItems:expected});
+  return ordered.map(e=>e.embedding);
+}
+
+/** Derived index checkpoint, independent of summary commits. Source text is
+ * never shortened or rewritten. Long cards retain every segment for max-cosine
+ * recall; the first vector also keeps older index readers compatible. */
+export async function buildVectorIndex({cards, workspace, key, client, check=()=>{}, signal, background=false, rebuild=false, ids=null, diagnostic=()=>{}, progress=()=>{}}) {
+  const jobs=normalizeVectorJobs(await workspace.read(vectorJobKey(key),null));check();
+  const startRebuild=rebuild&&!jobs.rebuilding;
+  if(startRebuild){jobs.rebuilding=true;jobs.parts={};jobs.failures={};}
+  // Publish a rebuilt space only when it is complete; interruption leaves the
+  // previous coherent space available for recall and the staging space resumable.
+  const writeKey=jobs.rebuilding?vectorStagingKey(key):key;
+  let index=startRebuild?{}:await workspace.read(writeKey,{});check();
+  const hashes=new Map(cards.map(c=>[c.id,sha256(c.text)]));
+  const validIds=new Set(cards.filter(c=>index[c.id]?.hash===hashes.get(c.id)&&validVectorEntry(index[c.id])).map(c=>c.id));
+  const complete=c=>validIds.has(c.id);
+  const selected=c=>!ids||ids.includes(c.id);
+  let requests=0,splitRequests=0;
+  const selectedCards=cards.filter(c=>selected(c)&&!complete(c));
+  if(background&&jobs.blocked)return {level:'warning',blocked:true};
+  if(!background)jobs.blocked=null;
+  for(const [id,f]of Object.entries(jobs.failures))if(!hashes.has(id)||hashes.get(id)!==f.hash)delete jobs.failures[id];
+  for(const [id,p]of Object.entries(jobs.parts))if(!hashes.has(id)||hashes.get(id)!==p.hash)delete jobs.parts[id];
+  const todo=selectedCards.filter(c=>!background||!vectorFailure(c,jobs));
+  const snapshot=()=>({total:cards.length,indexed:validIds.size,pending:cards.length-validIds.size,failed:cards.filter(c=>!complete(c)&&jobs.failures[c.id]?.hash===hashes.get(c.id)).length,requests,blocked:jobs.blocked,rebuilding:jobs.rebuilding});
+  const persist=async(name,value)=>{check();try{await workspace.write(name,value);}catch(error){check();throw new PersistenceError('向量索引保存校验失败');}check();};
+  const saveJobs=()=>persist(vectorJobKey(key),jobs);
+  const recordFailure=(card,error)=>{
+    const f=productFailure(error),previous=jobs.failures[card.id];
+    jobs.failures[card.id]={hash:hashes.get(card.id),code:f.code,...(f.status?{status:f.status}:{}),attempts:(previous?.attempts??0)+1,at:Date.now()};
+  };
+  const work=[],plans=new Map();
+  // Character chunks are deliberately conservative, not advertised as exact
+  // tokenizer limits. Smaller embedding models may still reject an input.
+  const maxChars=/bge-large-(?:zh|en)-v1\.5|bce-embedding-base_v1/i.test(client.profile.model)?240:1800;
+  for(const card of todo){
+    const chunks=splitDocument(String(card.text??''),{maxChars});
+    if(!card.text?.trim()||chunks.length>256){recordFailure(card,fail(card.text?.trim()?'VECTOR_INPUT_TOO_LARGE':'VECTOR_INPUT_EMPTY'));continue;}
+    const inputs=chunks.map(p=>({text:p.text,hash:sha256(p.text)}));
+    plans.set(card.id,inputs);
+    const old=jobs.parts[card.id];
+    const parts=old?.hash===hashes.get(card.id)&&old.inputs?.length===inputs.length?old:{hash:hashes.get(card.id),inputs:inputs.map(p=>({hash:p.hash}))};
+    jobs.parts[card.id]=parts;
+    for(let i=0;i<inputs.length;i++){
+      if(parts.inputs[i]?.hash!==inputs[i].hash)parts.inputs[i]={hash:inputs[i].hash};
+      if(!vectorNorm(parts.inputs[i].vector))work.push({card,part:i,text:inputs[i].text});
+    }
+  }
+  if(startRebuild)await persist(writeKey,{});
+  await saveJobs();progress(snapshot());
+  const publishReady=async()=>{
+    const changed=[];
+    const next={...index};
+    for(const card of todo){
+      const parts=jobs.parts[card.id]?.inputs,plan=plans.get(card.id);
+      if(!plan||parts?.length!==plan.length||!parts.every((p,i)=>p.hash===plan[i].hash&&vectorNorm(p.vector)))continue;
+      const vectors=parts.map(p=>p.vector),dimension=vectors[0].length;
+      if(vectors.some(v=>v.length!==dimension))throw fail('VECTOR_DIMENSION_MISMATCH',{vectorDimensions:dimension});
+      next[card.id]={hash:hashes.get(card.id),vector:vectors[0],...(vectors.length>1?{segments:vectors}:{})};changed.push(card.id);
+    }
+    if(changed.length){
+      await persist(writeKey,next);index=next;
+      for(const id of changed)validIds.add(id);
+      for(const card of todo)if(complete(card)){delete jobs.parts[card.id];delete jobs.failures[card.id];plans.delete(card.id);}
+      await saveJobs();
+    }
+  };
+  let fatal=null,consecutiveInputFailures=0;
+  async function send(batch){
+    check();requests++;const started=Date.now(),details={requestNumber:requests,requestItems:batch.length,inputChars:batch.reduce((n,x)=>n+x.text.length,0),longestInputChars:Math.max(...batch.map(x=>x.text.length)),modelRole:'embedding'};
+    diagnostic('request',details);
+    let vectors;
+    try{
+      const response=await client.embeddings({model:client.profile.model,input:batch.map(x=>x.text),encoding_format:'float'},{signal});check();
+      diagnostic('response',{...details,receivedVectors:Array.isArray(response?.data)?response.data.length:0,elapsedMs:Date.now()-started});
+      vectors=embeddingVectors(response,batch.length);
+      const dimension=vectors[0].length;
+      const retained=cards.filter(complete);
+      const staged=Object.values(jobs.parts).flatMap(p=>p.inputs??[]).filter(p=>vectorNorm(p.vector));
+      if(retained.some(c=>index[c.id].vector.length!==dimension)||staged.some(p=>p.vector.length!==dimension))throw fail('VECTOR_DIMENSION_MISMATCH',{vectorDimensions:dimension});
+    }catch(error){
+      check();const f=productFailure(error);
+      diagnostic('vector_failed',{...details,code:f.code,transport:error?.details?.transport,...(f.status?{status:f.status}:{}),elapsedMs:Date.now()-started},'warning');
+      // Input/batch incompatibility can be isolated without resubmitting a
+      // successful item. Global service errors stop immediately, not N retries.
+      if(batch.length>1&&splitRequests<32&&([400,413,422].includes(f.status)||['VECTOR_RESPONSE_COUNT','VECTOR_RESPONSE_INDEX'].includes(f.code))){
+        splitRequests++;diagnostic('vector_split',{requestItems:batch.length},'warning');
+        const middle=Math.ceil(batch.length/2);await send(batch.slice(0,middle));if(!fatal)await send(batch.slice(middle));return;
+      }
+      for(const card of new Map(batch.map(x=>[x.card.id,x.card])).values())recordFailure(card,error);
+      if([400,413,422].includes(f.status))consecutiveInputFailures++;
+      if(![400,413,422].includes(f.status)||consecutiveInputFailures>=3){jobs.blocked={code:f.code,...(f.status?{status:f.status}:{}),at:Date.now()};fatal=error;}
+      await saveJobs();progress(snapshot());return;
+    }
+    consecutiveInputFailures=0;
+    batch.forEach((item,i)=>{jobs.parts[item.card.id].inputs[item.part].vector=vectors[i];});
+    await saveJobs();await publishReady();progress(snapshot());
+    diagnostic('vector_commit',{indexedItems:snapshot().indexed,pendingItems:snapshot().pending,failedItems:snapshot().failed,vectorDimensions:vectors[0].length});
+    await new Promise(resolve=>setTimeout(resolve,0));check();
+  }
+  await publishReady();
+  for(let offset=0;offset<work.length&&!fatal;){
+    const batch=[];let chars=0;
+    while(offset<work.length&&batch.length<16&&(batch.length===0||chars+work[offset].text.length<=6000)){const item=work[offset++];batch.push(item);chars+=item.text.length;}
+    await send(batch);
+  }
+  const result=snapshot();progress(result);
+  if(fatal)throw Object.assign(fatal,{details:{...fatal.details,indexedItems:result.indexed,pendingItems:result.pending,failedItems:result.failed}});
+  if(todo.some(c=>!complete(c)))throw fail('VECTOR_INDEX_INCOMPLETE',{indexedItems:result.indexed,pendingItems:result.pending,failedItems:result.failed});
+  if(jobs.rebuilding&&cards.every(complete)){await persist(key,index);jobs.rebuilding=false;await saveJobs();}
+  return {...result,level:'success'};
+}
