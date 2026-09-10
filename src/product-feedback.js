@@ -10,6 +10,8 @@ const NETWORK = {
   'network.request_failed':'网络请求失败，请检查服务是否可访问。',
 };
 const CODES = {
+  RECOVERY_LIMIT:'本批自动恢复已达到 2 次，已返回的结果暂存保留。可继续未完成任务；不会无上限调用模型。',
+  RESUME_UNAVAILABLE:'本批没有可续跑的暂存任务（旧版本或已过保留期），请点击重新生成；旧记忆不会提前删除。',
   VECTOR_RESPONSE_COUNT:'向量返回数量与输入不符；已保存的索引保留，请在向量页重试未完成项。',
   VECTOR_RESPONSE_INDEX:'服务返回的向量序号缺失、重复或越界，无法安全对应记忆。',
   VECTOR_RESPONSE_INVALID:'服务没有返回有效的浮点向量；请确认选择的是向量模型。',
@@ -24,7 +26,9 @@ const CODES = {
   CHAT_HANDLE_UNAVAILABLE:'TT 未能提供当前聊天读取接口，请重新进入这段对话后重试。',
   HISTORY_UNAVAILABLE:'当前聊天正文未读到，或所选范围为空。请等待正文加载完成并检查楼层范围。',
   CHAT_CHANGED:'聊天已切换，旧聊天操作已停止；当前聊天会自动加载。',
-  SOURCE_INVALIDATED:'所选正文已修改，本次已停止；请按修改后的内容重新总结。',
+  SOURCE_INVALIDATED:'所选正文或记录规则已变化，本次已停止；请按修改后的内容重新生成。',
+  REVISION_CONFLICT:'当前聊天记忆已发生变化，旧草稿未覆盖新记录。请重新生成此批；旧成功结果仍保留。',
+  SCOPE_CONFLICT:'暂存任务与当前聊天或批次不一致，已阻止混用；请确认聊天后重新生成。',
   FLOOR_SUMMARY_MISSING:'逐楼摘要未完整对应所选楼层，本批未保存。这不等于回复上限不足；请查看运行日志中的缺失楼层和结束原因。',
   MODEL_OUTPUT_TRUNCATED:'服务明确报告输出被截断，本批未保存。请查看运行日志中的实际回复上限、结束原因和用量。',
   MODEL_OUTPUT_BLOCKED:'模型服务拦截了输出，本批未保存；提高回复上限不能解决此问题。',

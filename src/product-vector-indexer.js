@@ -8,6 +8,7 @@ import { vectorStorageArtifact } from './product-vector-storage.js';
 const fail = (code, details) => new ShiyiError('向量索引未完成', code, details);
 export const vectorJobKey = key => `${key}-jobs-v1`;
 export const vectorStagingKey = key => `${key}-rebuild-v1`;
+export const vectorResponseKey = key => `${key}-response-jobs-v1`;
 export function normalizeVectorJobs(raw) {
   return raw?.version === 1 ? {version:1, failures:raw.failures??{}, parts:raw.parts??{}, blocked:raw.blocked??null,rebuilding:raw.rebuilding===true} : {version:1,failures:{},parts:{},blocked:null,rebuilding:false};
 }
@@ -47,6 +48,7 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
   const selected=c=>!ids||ids.includes(c.id);
   let requests=0,splitRequests=0;
   const selectedCards=cards.filter(c=>selected(c)&&!complete(c));
+  if(!selectedCards.length&&!jobs.rebuilding)return {total:cards.length,indexed:validIds.size,pending:cards.length-validIds.size,failed:0,requests:0,level:'success'};
   if(background&&jobs.blocked)return {level:'warning',blocked:true};
   if(!background)jobs.blocked=null;
   for(const [id,f]of Object.entries(jobs.failures))if(!hashes.has(id)||hashes.get(id)!==f.hash)delete jobs.failures[id];
@@ -70,6 +72,8 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
     jobs.failures[card.id]={hash:hashes.get(card.id),code:f.code,...(f.status?{status:f.status}:{}),attempts:(previous?.attempts??0)+1,at:Date.now()};
   };
   const work=[],plans=new Map();
+  const response=await workspace.read(vectorResponseKey(key),null);check();
+  const received=new Map(!startRebuild&&response?.version===1&&response.rebuilding===jobs.rebuilding&&Array.isArray(response.items)?response.items.map(p=>[`${p.cardId}:${p.part}`,p]):[]);
   // Character chunks are deliberately conservative, not advertised as exact
   // tokenizer limits. Smaller embedding models may still reject an input.
   const maxChars=/bge-large-(?:zh|en)-v1\.5|bce-embedding-base_v1/i.test(client.profile.model)?240:1800;
@@ -83,6 +87,8 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
     jobs.parts[card.id]=parts;
     for(let i=0;i<inputs.length;i++){
       if(parts.inputs[i]?.hash!==inputs[i].hash)parts.inputs[i]={hash:inputs[i].hash};
+      const cached=received.get(`${card.id}:${i}`);
+      if(cached?.cardHash===hashes.get(card.id)&&cached.textHash===inputs[i].hash&&vectorNorm(cached.vector))parts.inputs[i].vector=cached.vector;
       if(!vectorNorm(parts.inputs[i].vector))work.push({card,part:i,text:inputs[i].text});
     }
   }
@@ -95,7 +101,7 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
       const parts=jobs.parts[card.id]?.inputs,plan=plans.get(card.id);
       if(!plan||parts?.length!==plan.length||!parts.every((p,i)=>p.hash===plan[i].hash&&vectorNorm(p.vector)))continue;
       const vectors=parts.map(p=>p.vector),dimension=vectors[0].length;
-      if(vectors.some(v=>v.length!==dimension))throw fail('VECTOR_DIMENSION_MISMATCH',{vectorDimensions:dimension});
+      if(vectors.some(v=>v.length!==dimension)||Object.values(next).some(e=>validVectorEntry(e)&&e.vector.length!==dimension))throw fail('VECTOR_DIMENSION_MISMATCH',{vectorDimensions:dimension});
       next[card.id]={hash:hashes.get(card.id),vector:vectors[0],...(vectors.length>1?{segments:vectors}:{})};changed.push(card.id);
     }
     if(changed.length){
@@ -133,6 +139,12 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
       await saveJobs();progress(snapshot());return;
     }
     consecutiveInputFailures=0;
+    // One bounded response journal per profile; confirmed before mutating the
+    // long-lived progress/index documents. A failed checkpoint can resume from
+    // this journal after restart, using exact content hashes, never row position.
+    const receivedResponse={version:1,rebuilding:jobs.rebuilding,items:batch.map((item,i)=>({cardId:item.card.id,cardHash:hashes.get(item.card.id),part:item.part,textHash:sha256(item.text),vector:vectors[i]}))};
+    if(new TextEncoder().encode(JSON.stringify(receivedResponse)).length>8*1024*1024)throw fail('VECTOR_RESPONSE_INVALID',{requestItems:batch.length});
+    await persist(vectorResponseKey(key),receivedResponse);
     batch.forEach((item,i)=>{jobs.parts[item.card.id].inputs[item.part].vector=vectors[i];});
     await saveJobs();await publishReady();progress(snapshot());
     diagnostic('vector_commit',{indexedItems:snapshot().indexed,pendingItems:snapshot().pending,failedItems:snapshot().failed,vectorDimensions:vectors[0].length});
@@ -148,5 +160,6 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
   if(fatal)throw Object.assign(fatal,{details:{...fatal.details,indexedItems:result.indexed,pendingItems:result.pending,failedItems:result.failed}});
   if(todo.some(c=>!complete(c)))throw fail('VECTOR_INDEX_INCOMPLETE',{indexedItems:result.indexed,pendingItems:result.pending,failedItems:result.failed});
   if(jobs.rebuilding&&cards.every(complete)){await persist(key,index);jobs.rebuilding=false;await saveJobs();}
+  await workspace.remove?.(vectorResponseKey(key)).catch(()=>{});
   return {...result,level:'success'};
 }

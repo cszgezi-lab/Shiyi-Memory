@@ -13,6 +13,7 @@ import { safeLogDetails } from './product-runtime-log.js';
 import { resolveEventMerges } from './event-consolidation.js';
 import { tokenizeChinese } from './retrieval.js';
 import { normalizeSummaryEnums, normalizePersonaValidity, repairableEnumTargets, createEnumRepairRequest, applyEnumCorrections } from './summary-enum-repair.js';
+import {transientSummaryError,recoveryDelay,repairCategories,categoryRepairRequest,applyCategoryRepair,missingFloorRequest} from './summary-recovery.js';
 
 function responseStatus(response) {
   return Number(response?.status ?? response?.statusCode ?? 200);
@@ -241,7 +242,7 @@ function defineModelAlias(target, key, value) {
 
 /** P1 one-request-per-segment orchestration with atomic bundle commits. */
 export class SummaryEngine {
-  constructor({ model, repository, maxInputUnits = 12000, maxSourceUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, now = () => Date.now() } = {}) {
+  constructor({ model, repository, maxInputUnits = 12000, maxSourceUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, now = () => Date.now() } = {}) {
     this.model = modelInvoker(model);
     if (!repository || typeof repository.commitBundle !== 'function') throw new ValidationError('SummaryEngine requires a MemoryRepository');
     this.repository = repository;
@@ -251,6 +252,7 @@ export class SummaryEngine {
     this.maxInputUnits = maxInputUnits;
     this.requireFloorSummaries=requireFloorSummaries;
     this.stageCrossBatchMerges=stageCrossBatchMerges;
+    this.recoveryEnabled=recoveryEnabled;
     this.maxSourceUnits = Number.isFinite(maxSourceUnits) && maxSourceUnits > 0 ? maxSourceUnits : null;
     this.outputReserveUnits = Number.isFinite(outputReserveUnits) ? Math.max(0, outputReserveUnits) : null;
     this.maxRelevantRecords = Math.max(1, Number(maxRelevantRecords) || 64);
@@ -314,7 +316,7 @@ export class SummaryEngine {
       for (const childIndex of completed) {
         const plan = splitPlan[childIndex];
         const receipt = checkpoint.receipts.find((item) => item?.operationId === plan.operationId);
-        const persisted = await this.repository.getOperationReceipt(plan.operationId);
+        const persisted = this.repository.recoverOperationReceipt?await this.repository.recoverOperationReceipt(batch.scope,plan.operationId):await this.repository.getOperationReceipt(plan.operationId);
         if (!receipt || !persisted || persisted.scopeKey !== checkpointBinding.scopeKey || persisted.bundleHash !== receipt.bundleHash || persisted.committedRevision !== plan.expectedRevision + 1) {
           throw new ScopeConflictError('summary checkpoint completed child lacks a matching committed receipt', { childIndex, operationId: plan.operationId });
         }
@@ -335,6 +337,25 @@ export class SummaryEngine {
       startedAt: this.now(),
     };
     if (completed.size === children.length) return state;
+    let recoveryCalls=0;
+    const invoke=async(request,baseDetails,{extra=false}={})=>{
+      if(extra&&++recoveryCalls>2)throw new ShiyiError('本次自动恢复预算已用完，已返回结果保留','RECOVERY_LIMIT');
+      const units=estimateUnits(JSON.stringify(this.model.providerPayload?.(request)??request));
+      if(units>this.maxInputUnits)throw new ShiyiError('补全请求超过输入预算','INPUT_BUDGET_EXCEEDED');
+      for(;;){
+        throwIfAborted(signal);state.requests++;
+        try{return await this.model(request,{signal});}
+        catch(error){
+          if(!this.recoveryEnabled||!transientSummaryError(error)||recoveryCalls>=2)throw error;
+          // Long rate limits require user action later, not ignoring Retry-After
+          // or holding a mobile task open indefinitely.
+          if((error.details?.retryAfterMs??0)>5000)throw error;
+          recoveryCalls++;const retryDelayMs=Math.max(recoveryCalls*400,error.details?.retryAfterMs??0);
+          emit('retry_wait',{...baseDetails,retryDelayMs,recoveryCalls,code:error.code,status:error.details?.status},'warning');
+          await recoveryDelay(retryDelayMs,signal);
+        }
+      }
+    };
     for (const child of children) {
       const childIndex = child.childRange.childIndex;
       if (completed.has(childIndex)) continue;
@@ -343,6 +364,13 @@ export class SummaryEngine {
       const baseDetails={childIndex,startIndex:child.sourceMessages[0]?.index,endIndex:child.sourceMessages.at(-1)?.index,sourceCount:child.sourceMessages.length};
       try {
         throwIfAborted(signal);
+        if(this.recoveryEnabled&&this.repository.recoverOperationReceipt){
+          const receipt=await this.repository.recoverOperationReceipt(batch.scope,child.operationId);
+          if(receipt){
+            if(receipt.sourceRevision!==child.sourceRevision||receipt.committedRevision!==child.expectedRevision+1)throw new ScopeConflictError('saved child no longer matches frozen task');
+            state.receipts.push(receipt);completed.add(childIndex);state.completedChildren=[...completed];emit('resume_commit',baseDetails,'success');continue;
+          }
+        }
         const focusForChild = focusGate(child.focusSpec);
         const wireFocusSpec = serializableFocusSpec(child.focusSpec);
         const effectiveRules = child.rules ?? child.focusSpec?.rules ?? child.focusSpec?.focusRules ?? null;
@@ -500,9 +528,29 @@ export class SummaryEngine {
           }
         }
         this.requestLog.push({ operationId: child.operationId, parentOperationId: batch.operationId, childIndex, sourceIds: child.sourceMessages.map((message) => message.id) });
-        state.requests += 1;
         emit('request',{...baseDetails,inputLimit:configuredLimit,inputUnits:wireUnits(),maxTokens:this.model.providerPayload?.(request)?.max_tokens??0});
-        const raw = await this.model(request, { signal });
+        const resultBinding=sha256({sourceRevision:child.sourceRevision,scope:child.scope,rules:child.rules,focus:child.focusSpec,configVersion:child.configVersion});
+        const prior=this.recoveryEnabled?await this.repository.readPrivateTask?.(child.scope,child.operationId):null;
+        if(prior?.binding&&prior.binding!==resultBinding)throw new ScopeConflictError('saved response source or rules changed');
+        const keepResponse=async raw=>{
+          throwIfAborted(signal);
+          if(!this.recoveryEnabled||!this.repository.savePrivateTask)return;
+          const previousPhase=phase;phase='response_saved';
+          const patch={binding:resultBinding,raw,retryModel:false};
+          this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
+          await this.repository.savePrivateTask(child.scope,child.operationId,patch);
+          emit('response_saved',baseDetails,'success');
+          phase=previousPhase;
+        };
+        let raw;
+        if(prior?.raw!==undefined&&!prior.retryModel){raw=prior.raw;emit('resume_response',baseDetails,'success');}
+        else{
+          raw=await invoke(request,baseDetails);
+          if(this.recoveryEnabled){
+            if(typeof raw?.text==='function'||raw?.body!==undefined)raw={status:responseStatus(raw),body:await readRawBody(raw)};
+            await keepResponse(raw);
+          }
+        }
         throwIfAborted(signal);
         phase='response';
         const parsed = await parseModelResponse(raw,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started})});
@@ -512,7 +560,7 @@ export class SummaryEngine {
         ensureAllCategories(output);
         phase='validate';
         const sourceRefs = sourceRefsFor(child);
-        let bundle = bindDraftBundle(output, {
+        const bindOutput = value => bindDraftBundle(value, {
           scope: child.scope,
           operationId: child.operationId,
           expectedRevision: child.expectedRevision,
@@ -527,10 +575,35 @@ export class SummaryEngine {
           focusVersion: focusFingerprint(child.focusSpec, child.focusVersion),
           correctionAuthorizations,
         });
+        let bundle=bindOutput(output);
         resolveEventMerges(bundle,request.relevantRecords,{deferUnresolved:true,stageCrossBatch:this.stageCrossBatchMerges,onDeferred:({eventIndex,reason})=>emit('merge_deferred',{...baseDetails,validationIssueCount:1,validationIssues:[{path:`events[${eventIndex}].mergeInto`,reason}]},'info')});
         if(this.requireFloorSummaries){
           phase='floors';
-          const details=requireIndependentFloorSummaries(bundle,child.sourceMessages);
+          let details;
+          try{details=requireIndependentFloorSummaries(bundle,child.sourceMessages);}
+          catch(error){
+            if(!this.recoveryEnabled||error.details?.invalidRows||error.details?.duplicateCount||error.details?.emptyFloors?.length||!error.details?.missingFloors?.length)throw error;
+            const missing=child.sourceMessages.filter(m=>error.details.missingFloors.includes(m.index));
+            emit('partial_repair',{...baseDetails,repairFields:missing.length},'warning');
+            let fixed;
+            const repairRaw=await invoke(missingFloorRequest(request,bundle,missing),baseDetails,{extra:true});
+            try{fixed=await parseModelResponse(repairRaw,{onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});}
+            catch(repairError){
+              if(signal?.aborted)throw repairError;
+              emit('repair_failed',{...baseDetails,code:repairError.code},'error');
+              error.details.repairAttempted=true;throw error;
+            }
+            if(!Array.isArray(fixed?.summaryView)||Object.keys(fixed).length!==1)throw error;
+            fixed.summaryView=bindOutput({summaryView:fixed.summaryView}).summaryView;
+            requireIndependentFloorSummaries(fixed,missing);
+            // Floor rows are not cross-record link targets. Assign stable IDs
+            // for the verified missing source instead of colliding with an ID
+            // such as "floor-1" already used in the complete part.
+            for(const row of fixed.summaryView)row.id=`repair-floor-${sha256([child.operationId,row.sourceRefs]).slice(0,24)}`;
+            bundle.summaryView.push(...fixed.summaryView);
+            details=requireIndependentFloorSummaries(bundle,child.sourceMessages);
+            await keepResponse(bundle);
+          }
           emit('floors',{...baseDetails,...details},'success');
         }
         phase='validate';emit('validate',baseDetails);
@@ -560,16 +633,16 @@ export class SummaryEngine {
             const repairStarted=this.now();
             emit('repair_request',{...baseDetails,...safeLogDetails(validation),repairFields:repairTargets.length,inputLimit:configuredLimit,inputUnits:repairUnits,maxTokens:this.model.providerPayload?.(repairRequest)?.max_tokens??0},'warning');
             throwIfAborted(signal);
-            state.requests++;
+            if(this.recoveryEnabled&&recoveryCalls>=2)throw new ShiyiError('本次自动恢复预算已用完','RECOVERY_LIMIT');
             this.requestLog.push({operationId:child.operationId,parentOperationId:batch.operationId,childIndex,kind:'enum_repair',sourceIds:repairRequest.sourceMessages.map(m=>m.id)});
-            const repairRaw=await this.model(repairRequest,{signal});
+            const repairRaw=await invoke(repairRequest,baseDetails,{extra:this.recoveryEnabled});
             throwIfAborted(signal);
             phase='repair_response';
             const correction=await parseModelResponse(repairRaw,{onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata,elapsedMs:this.now()-repairStarted})});
             const corrected=applyEnumCorrections(bundle,repairTargets,correction);
             if(corrected){
               const checked=validateDraftBundle(corrected,validationOptions);
-              if(checked.valid){bundle=corrected;validation=checked;emit('repair_complete',{...baseDetails,repairFields:repairTargets.length,elapsedMs:this.now()-repairStarted},'success');}
+              if(checked.valid){bundle=corrected;validation=checked;await keepResponse(bundle);emit('repair_complete',{...baseDetails,repairFields:repairTargets.length,elapsedMs:this.now()-repairStarted},'success');}
             }
             phase='validate';
             if(!validation.valid){
@@ -577,6 +650,19 @@ export class SummaryEngine {
               throw new ValidationError('enum correction did not pass validation',{...validation,repairAttempted:true});
             }
           }else emit('repair_skipped',{...baseDetails,inputLimit:configuredLimit,inputUnits:repairUnits,code:'INPUT_BUDGET_EXCEEDED'},'warning');
+        }
+        if(!validation.valid&&this.recoveryEnabled){
+          const categories=repairCategories(validation);
+          if(categories.length){
+            emit('partial_repair',{...baseDetails,repairFields:categories.length},'warning');
+            const fixed=await parseModelResponse(await invoke(categoryRepairRequest(request,bundle,categories),baseDetails,{extra:true}));
+            const repaired=applyCategoryRepair(bundle,categories,fixed);
+            if(repaired){
+              const normalized=bindOutput(normalizePersonaValidity(normalizeSummaryEnums(repaired).output).output);
+              const checked=validateDraftBundle(normalized,validationOptions);
+              if(checked.valid){bundle=normalized;validation=checked;await keepResponse(bundle);emit('repair_complete',{...baseDetails,repairFields:categories.length},'success');}
+            }
+          }
         }
         if (!validation.valid) throw new ValidationError('summary DraftBundle failed validation', validation);
         const coverage = coverageState(bundle.coverage, sourceRefs);
@@ -605,16 +691,21 @@ export class SummaryEngine {
           failedChildIndexes: state.failedChildren,
           totalChildren: children.length,
           receipts: clone(state.receipts),
-        });
+        }).catch(error=>emit('checkpoint_warning',{...baseDetails,code:error.code},'warning'));
         if (typeof onProgress === 'function') await onProgress(clone(state));
       } catch (error) {
+        if(this.recoveryEnabled&&!signal?.aborted&&phase==='response'&&['MODEL_OUTPUT_TRUNCATED','SUMMARY_RESPONSE_ERROR','SUMMARY_RESPONSE_INVALID','MODEL_OUTPUT_BLOCKED'].includes(error?.code)){
+          // An incomplete/blocked response cannot be repaired as a complete JSON
+          // draft. A manual retry may use a newly selected model/output budget.
+          await this.repository.savePrivateTask?.(child.scope,child.operationId,{retryModel:true}).catch(()=>{});
+        }
         emit(phase,{...baseDetails,...safeLogDetails(error?.details),code:signal?.aborted?'CANCELED':error?.code,elapsedMs:this.now()-started},signal?.aborted?'warning':'error');
         if (error?.name === 'AbortError' || error?.code === 'CANCELED' || signal?.aborted) {
           state.status = 'canceled';
           state.canceledChild = childIndex;
           if (typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
             status: 'canceled', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), completedChildIndexes: [...completed].sort((a, b) => a - b), failedChildIndexes: state.failedChildren, totalChildren: children.length, receipts: clone(state.receipts),
-          });
+          }).catch(e=>emit('checkpoint_warning',{code:e.code},'warning'));
           throw (error?.name === 'AbortError' ? error : abortError());
         }
         if (error?.code === 'COVERAGE_INCOMPLETE') {
@@ -623,14 +714,14 @@ export class SummaryEngine {
           state.unprocessedChildren = [...new Set([...(state.unprocessedChildren ?? []), childIndex])];
           if (typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
             status: 'partial', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), parentRange: clone(batch.parentRange), completedChildIndexes: [...completed].sort((a, b) => a - b), failedChildIndexes: state.failedChildren, partialChildIndexes: state.unprocessedChildren, totalChildren: children.length, receipts: clone(state.receipts), coverage: clone(error.details?.coverage ?? null),
-          });
+          }).catch(e=>emit('checkpoint_warning',{code:e.code},'warning'));
           throw error;
         }
         state.status = 'failed';
         state.failedChildren.push(childIndex);
         if (typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
           status: 'failed', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), completedChildIndexes: [...completed].sort((a, b) => a - b), failedChildIndexes: state.failedChildren, totalChildren: children.length, receipts: clone(state.receipts), error: { code: error.code, message: error.message },
-        });
+        }).catch(e=>emit('checkpoint_warning',{code:e.code},'warning'));
         throw error;
       }
     }
@@ -638,7 +729,8 @@ export class SummaryEngine {
     state.completedAt = this.now();
     if (typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
       status: 'done', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), parentRange: clone(batch.parentRange), completedChildIndexes: state.completedChildren, failedChildIndexes: [], totalChildren: children.length, receipts: clone(state.receipts),
-    });
+    }).catch(e=>emit('checkpoint_warning',{code:e.code},'warning'));
+    if(this.recoveryEnabled)for(const child of children)await this.repository.clearPrivateTask?.(batch.scope,child.operationId).catch(()=>{});
     return state;
   }
 

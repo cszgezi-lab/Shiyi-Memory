@@ -314,7 +314,7 @@ export function createProductShellController({
             outputReserveUnits: 0,
             recordingRules: state.settings.recordingRules,
           });
-          const children = splitSummaryBatch(batch, { maxInputUnits: sourceSplitUnits() });
+          const children = splitSummaryBatch(batch, { maxInputUnits: state.job?.splitUnits??sourceSplitUnits() });
           return children.find((child) => child.operationId === bundle.operationId)?.sourceRevision ?? batch.sourceRevision;
         } catch {
           return null;
@@ -461,7 +461,7 @@ export function createProductShellController({
     return null;
   }
 
-  async function startSummary({ focus = state.focus, confirmedFocus = state.focusConfirmed, trigger = 'manual', requireFloorSummaries = false, operationId = makeId('product-summary'), excludeOperations = [], onDiagnostic = () => {} } = {}) {
+  async function startSummary({ focus = state.focus, confirmedFocus = state.focusConfirmed, trigger = 'manual', requireFloorSummaries = false, operationId = makeId('product-summary'), resume = false, excludeOperations = [], onDiagnostic = () => {} } = {}) {
     if (state.status === PRODUCT_SHELL_STATUS.INVALIDATED) return { status: state.status, errorCode: state.errorCode };
     if (!state.session || !repository) return { status: PRODUCT_SHELL_STATUS.UNAVAILABLE, errorCode: state.capabilities.persistence === 'unavailable' ? 'PERSISTENCE_UNAVAILABLE' : 'CHAT_IDENTITY_NOT_READY' };
     if (activeTask) return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: 'HOST_CONTRACT_INVALID' };
@@ -495,10 +495,10 @@ export function createProductShellController({
     }
     const session = state.session;
     const token = currentToken();
-    const expectedRevision = await repository.getCommittedRevision(state.scope);
+    let expectedRevision = await repository.getCommittedRevision(state.scope);
     if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
     const focusSpec = { mode: needsConfirmation ? mode : 'inherit', confirmed: true, focus: normalizedFocus || null };
-    const batch = createSummaryBatch({
+    let batch = createSummaryBatch({
       scope: state.scope,
       operationId,
       expectedRevision,
@@ -513,9 +513,28 @@ export function createProductShellController({
       recordingRules: [state.settings.recordingRules, runtimeRules()].filter(Boolean).join('\n'),
       trigger,
     });
-    abortController = new AbortController();
+    const preflightAbort=new AbortController();abortController=preflightAbort;activeTask=operationId;
+    state.draft={range:clone(state.range),focus:normalizedFocus,status:'running'};
+    let frozen;
+    try{
+    frozen=resume?await repository.readPrivateTask(state.scope,operationId):null;
+    if(resume&&!frozen?.batch)throw Object.assign(new Error('没有可续跑的暂存任务，请重新生成'),{code:'RESUME_UNAVAILABLE'});
+    if(frozen?.batch){
+      const old=frozen.batch;
+      if(old.sourceRevision!==batch.sourceRevision||stableStringify(old.focusSpec)!==stableStringify(batch.focusSpec)||stableStringify(old.rules)!==stableStringify(batch.rules))throw Object.assign(new Error('本批原文或记录规则已变化，请重新生成；未复用过期结果'),{code:'SOURCE_INVALIDATED'});
+      batch=old;expectedRevision=old.expectedRevision;
+    }else await repository.savePrivateTask(state.scope,operationId,{batch,splitUnits:sourceSplitUnits()});
+      if(preflightAbort.signal.aborted||!tokenValid(token,session))throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
+    }catch(error){
+      if(activeTask===operationId){activeTask=null;abortController=null;}
+      if(preflightAbort.signal.aborted||!tokenValid(token,session))return {status:PRODUCT_SHELL_STATUS.CANCELED,errorCode:'CANCELED',operationId};
+      mark(PRODUCT_SHELL_STATUS.FAILED,errorCode(error,'PERSISTENCE_ERROR'),'任务暂存未完成，原文与侧重点保留。');
+      state.draft={range:clone(state.range),focus:normalizedFocus,status:'retryable'};
+      return {status:PRODUCT_SHELL_STATUS.FAILED,errorCode:error.code??'PERSISTENCE_ERROR',failure:productFailure(error),errorDetails:safeLogDetails(error.details),operationId};
+    }
+    abortController = preflightAbort;
     activeTask = operationId;
-    state.job = { operationId, focusSpec: clone(focusSpec), startedAt: now(), sourceRevision: batch.sourceRevision };
+    state.job = { operationId, focusSpec: clone(focusSpec), startedAt: now(), sourceRevision: batch.sourceRevision, splitUnits:frozen?.splitUnits??sourceSplitUnits() };
     state.draft = { range: clone(state.range), focus: normalizedFocus, focusConfirmed: confirmedFocus === true, status: 'running' };
     mark(PRODUCT_SHELL_STATUS.RUNNING);
     state.capabilities.summary = 'running';
@@ -523,7 +542,7 @@ export function createProductShellController({
     const validateBundle=summaryBundleValidator();
     summaryRepository.commitBundle=async (...args)=>{validateBundle(args[0]);return repository.commitBundle(...args);};
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations})).records;
-    engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: sourceSplitUnits(), requireFloorSummaries, stageCrossBatchMerges:true, outputReserveUnits: 0, now });
+    engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
     try {
       const result = await engine.process(batch, { signal: abortController.signal, onDiagnostic });
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };

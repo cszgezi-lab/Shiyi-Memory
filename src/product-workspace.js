@@ -2,13 +2,15 @@ import { clone, sha256, stableStringify, makeId } from './utils.js';
 import { isMissingProductEntry } from './product-host-adapters.js';
 import { PersistenceError } from './errors.js';
 import { encodeVectorDocument, decodeVectorDocument, vectorStorageArtifact } from './product-vector-storage.js';
+import {losslessStore,verifiedWrite} from './reliable-storage.js';
 
 const NS = 'shiyi-product-workspace';
 const queues = new WeakMap();
 
 /** Small UI/assistant documents; memory facts remain in MemoryRepository. */
 export function createWorkspace(bound) {
-  const { store, scope, isCurrent } = bound;
+  const { scope, isCurrent } = bound;
+  const store=losslessStore(bound.store);
   const prefix = sha256(scope).slice(0, 24);
   const guard = () => { if (!isCurrent()) throw new Error('聊天已变化，请重新打开当前聊天'); };
   const storageError = (name, storageStage) => new PersistenceError(
@@ -32,12 +34,10 @@ export function createWorkspace(bound) {
   async function write(name, value) {
     guard();
     const frozen = encodeVectorDocument(name, clone(value));
-    try { await store.setJson({ namespace: NS, key: `${prefix}-${name}`, value: frozen }); }
-    catch { guard(); throw storageError(name, 'write'); }
-    guard();
     let actual;
-    try { actual = await readRaw(name); }
-    catch { guard(); throw storageError(name, 'readback'); }
+    try { actual=await verifiedWrite(store,{namespace:NS,key:`${prefix}-${name}`},frozen); }
+    catch(error) { guard(); throw storageError(name,error?.details?.storageStage??'write'); }
+    guard();
     if (stableStringify(actual) !== stableStringify(frozen)) throw storageError(name, 'compare');
     return decodeVectorDocument(name, actual);
   }

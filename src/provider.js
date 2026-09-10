@@ -101,7 +101,9 @@ export async function parseProviderJson(response, { requireStatus = true } = {})
   const status = Number(response?.status ?? response?.statusCode ?? 200);
   if (requireStatus && (status < 200 || status >= 300)) {
     const body = await readBody(response).catch(() => '');
-    throw new ShiyiError(`provider returned HTTP ${status}`, 'PROVIDER_HTTP_ERROR', { status, body: body.slice(0, 1000) });
+    const header=response?.headers?.get?.('retry-after'),seconds=header&&Number(header);
+    const retryAfterMs=header?(Number.isFinite(seconds)?Math.max(0,seconds*1000):Math.max(0,Date.parse(header)-Date.now())):0;
+    throw new ShiyiError(`provider returned HTTP ${status}`, 'PROVIDER_HTTP_ERROR', { status, body: body.slice(0, 1000),...(Number.isFinite(retryAfterMs)&&retryAfterMs>0?{retryAfterMs}: {}) });
   }
   const text = await readBody(response);
   try { return JSON.parse(text); } catch (error) {

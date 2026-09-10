@@ -14,6 +14,7 @@ import {
 } from './contracts.js';
 import { clone, isPlainObject, makeId, sha256, stableStringify } from './utils.js';
 import { mergeEventDetails, exactEventDuplicate } from './event-consolidation.js';
+import {losslessStore,verifiedWrite} from './reliable-storage.js';
 
 const DEFAULT_NAMESPACE = 'shiyi-memory-core';
 const CATEGORIES = [
@@ -308,11 +309,12 @@ function materializeBundle(bundle, scope, existingAliases = {}, previousRecords 
 export class MemoryRepository {
   constructor({ store, namespace = DEFAULT_NAMESPACE, now = () => Date.now(), verifySourceRevision = null } = {}) {
     if (!store || typeof store.setJson !== 'function') throw new ValidationError('MemoryRepository requires a JSON store');
-    this.store = store;
+    this.store = losslessStore(store);
     this.namespace = namespace;
     this.now = now;
     this.verifySourceRevision = verifySourceRevision;
     this._checkpointCache = new Map();
+    this._responseCache = new Map();
     // Kept for diagnostics/backward compatibility.  Actual coordination is
     // shared by all repositories using this store in `STORE_SCOPE_LOCKS`.
     this._writeTail = Promise.resolve();
@@ -382,15 +384,12 @@ export class MemoryRepository {
       const revision=previous.committedRevision+1,operationId=makeId('memory-view');
       const manifest={schemaVersion:1,kind:'memory-manifest',scope:frozen,scopeKey:scopeKey(frozen),committedRevision:revision,chunks:previous.manifest?.chunks??[],controls,operationId,createdAt:this.now()};
       const manifestSha256=sha256(manifest),manifestRef=`${keys.manifestPrefix}-${revision}-${manifestSha256.slice(0,20)}`;
-      await this.store.setJson({namespace:this.namespace,key:manifestRef,value:manifest});
-      const actual=await optionalGet(this.store,{namespace:this.namespace,key:manifestRef});
-      if(!actual.found||sha256(actual.value)!==manifestSha256)throw new PersistenceError('memory controls readback failed');
+      await verifiedWrite(this.store,{namespace:this.namespace,key:manifestRef},manifest);
       check();const current=await this._getPointer(frozen);
       if(current.committedRevision!==previous.committedRevision)throw new RevisionConflictError('memory controls revision changed');
       const pointer={schemaVersion:1,kind:'memory-pointer',scope:frozen,scopeKey:scopeKey(frozen),committedRevision:revision,manifestRef,manifestSha256,operationId,updatedAt:this.now()};
-      await this.store.setJson({namespace:this.namespace,key:keys.pointer,value:pointer});
-      const readback=await this._getPointer(frozen);check();
-      if(stableStringify(readback)!==stableStringify(pointer))throw new PersistenceError('memory controls pointer readback failed');
+      await verifiedWrite(this.store,{namespace:this.namespace,key:keys.pointer},pointer);
+      check();
       return {status:'saved',committedRevision:revision};
     });
   }
@@ -422,7 +421,8 @@ export class MemoryRepository {
     }
     const current = await this._getPointer(frozenScope);
     if (current.operationId === operationId && current.bundleHash === bundleHash && current.committedRevision >= expectedRevision) {
-      return { operationId, committedRevision: current.committedRevision, manifestRef: current.manifestRef, idempotent: true, readbackVerified: true };
+      await this.readScope(frozenScope);
+      return { operationId, scope:clone(frozenScope),scopeKey:scopeKey(frozenScope),sourceRevision,bundleHash,expectedRevision,committedRevision: current.committedRevision, manifestRef: current.manifestRef, idempotent: true, readbackVerified: true };
     }
     if (current.committedRevision !== expectedRevision) {
       throw new RevisionConflictError('expected revision does not match committed revision', { expectedRevision, actualRevision: current.committedRevision });
@@ -465,6 +465,7 @@ export class MemoryRepository {
     const chunk = {
       schemaVersion: 1,
       kind: 'immutable-memory-chunk',
+      bundleHash,
       scope: clone(frozenScope),
       scopeKey: scopeKey(frozenScope),
       operationId,
@@ -477,9 +478,7 @@ export class MemoryRepository {
     };
     const chunkHash = sha256(chunk);
     try {
-      await this.store.setJson({ namespace: this.namespace, key: chunkKey, value: chunk });
-      const chunkReadback = await optionalGet(this.store, { namespace: this.namespace, key: chunkKey });
-      if (!chunkReadback.found || sha256(chunkReadback.value) !== chunkHash) throw new PersistenceError('immutable chunk readback verification failed');
+      await verifiedWrite(this.store,{namespace:this.namespace,key:chunkKey},chunk);
       const manifest = {
         schemaVersion: 1,
         kind: 'memory-manifest',
@@ -495,9 +494,7 @@ export class MemoryRepository {
       };
       const manifestRef = `${keys.manifestPrefix}-${revision}-${sha256(manifest).slice(0, 20)}`;
       const manifestSha256 = sha256(manifest);
-      await this.store.setJson({ namespace: this.namespace, key: manifestRef, value: manifest });
-      const manifestReadback = await optionalGet(this.store, { namespace: this.namespace, key: manifestRef });
-      if (!manifestReadback.found || sha256(manifestReadback.value) !== sha256(manifest)) throw new PersistenceError('manifest readback verification failed');
+      await verifiedWrite(this.store,{namespace:this.namespace,key:manifestRef},manifest);
       // Source storage may be edited while the immutable chunk/manifest are
       // being written.  Recheck immediately before the mutable pointer write
       // so the new revision can never become visible for stale input.
@@ -520,9 +517,7 @@ export class MemoryRepository {
         bundleHash,
         updatedAt: this.now(),
       };
-      await this.store.setJson({ namespace: this.namespace, key: keys.pointer, value: pointer });
-      const pointerReadback = await optionalGet(this.store, { namespace: this.namespace, key: keys.pointer });
-      if (!pointerReadback.found || stableStringify(pointerReadback.value) !== stableStringify(pointer)) throw new PersistenceError('committed pointer readback verification failed');
+      await verifiedWrite(this.store,{namespace:this.namespace,key:keys.pointer},pointer);
       const receipt = {
         schemaVersion: 1,
         operationId,
@@ -537,8 +532,10 @@ export class MemoryRepository {
         committedAt: this.now(),
       };
       // A receipt is diagnostic/idempotency metadata.  Pointer is written only
-      // after every immutable piece has verified; receipt failure is surfaced.
-      await this.store.setJson({ namespace: this.namespace, key: this._operationKey(operationId), value: receipt });
+      // after every immutable piece has verified. Missing receipts are recovered
+      // from that verified chain, not treated as a failed memory commit.
+      try{await verifiedWrite(this.store,{namespace:this.namespace,key:this._operationKey(operationId)},receipt);}
+      catch{receipt.receiptPending=true;}
       return clone(receipt);
     } catch (error) {
       if (error instanceof PersistenceError || error instanceof RevisionConflictError || error instanceof ScopeConflictError) throw error;
@@ -560,8 +557,8 @@ export class MemoryRepository {
       ...(frozenScope ? { scope: frozenScope, scopeKey: scopeKey(frozenScope) } : {}),
     };
     const cacheKey = `${frozenScope ? scopeKey(frozenScope) : '*'}|${operationId}`;
+    await verifiedWrite(this.store,{namespace:this.namespace,key:this._checkpointKey(operationId,frozenScope)},value);
     this._checkpointCache.set(cacheKey, value);
-    if (typeof this.store.setJson === 'function') await this.store.setJson({ namespace: this.namespace, key: this._checkpointKey(operationId, frozenScope), value });
     return clone(value);
   }
 
@@ -583,6 +580,66 @@ export class MemoryRepository {
   async getOperationReceipt(operationId) {
     const found = await this._findReceipt(operationId);
     return found.found ? clone(found.value) : null;
+  }
+
+  async recoverOperationReceipt(scope,operationId){
+    const found=await this.getOperationReceipt(operationId);
+    if(found){if(found.scopeKey!==scopeKey(scope))throw new ScopeConflictError('receipt scope mismatch');return found;}
+    const snapshot=await this.readScope(scope),p=snapshot.pointer;
+    if(p.operationId!==operationId){
+      for(const ref of snapshot.manifest?.chunks??[]){
+        const {value:c}=await optionalGet(this.store,{namespace:this.namespace,key:ref.key});
+        if(c?.operationId===operationId&&c.bundleHash&&sha256(c)===ref.sha256)return {operationId,scope:clone(scope),scopeKey:scopeKey(scope),sourceRevision:c.sourceRevision,bundleHash:c.bundleHash,committedRevision:c.committedRevision,readbackVerified:true};
+      }
+      return null;
+    }
+    return {operationId,scope:clone(scope),scopeKey:scopeKey(scope),sourceRevision:p.sourceRevision,bundleHash:p.bundleHash,committedRevision:p.committedRevision,manifestRef:p.manifestRef,readbackVerified:true};
+  }
+
+  async readPrivateTask(scope,operationId) {
+    const address={namespace:this.namespace,key:safeKey('task',`${scopeKey(scope)}|${operationId}`)};
+    const found=await optionalGet(this.store,address);
+    const volatile=this._responseCache.get(`${scopeKey(scope)}|${operationId}`);
+    if(!found.found)return clone(volatile??null);
+    if(found.value?.scopeKey!==scopeKey(scope)||found.value?.operationId!==operationId)throw new ScopeConflictError('private task scope mismatch');
+    if(found.value.updatedAt<this.now()-7*86400000&&!volatile)return null;
+    return clone({...found.value,...volatile});
+  }
+
+  async savePrivateTask(scope,operationId,patch) {
+    const previous=await this.readPrivateTask(scope,operationId);
+    const next={...previous,...clone(patch),scopeKey:scopeKey(scope),operationId,updatedAt:this.now()};
+    delete next.volatile;
+    if(new TextEncoder().encode(JSON.stringify(next)).length>8*1024*1024)throw new PersistenceError('任务暂存超过 8 MB，请缩小批次',{storageStage:'write'});
+    await verifiedWrite(this.store,{namespace:this.namespace,key:safeKey('task',`${scopeKey(scope)}|${operationId}`)},next);
+    this._responseCache.delete(`${scopeKey(scope)}|${operationId}`);
+    // Bounded private recovery storage; never enumerated by memory exports.
+    const catalogAddress={namespace:this.namespace,key:safeKey('task-catalog',scopeKey(scope))};
+    const catalog=await optionalGet(this.store,catalogAddress);
+    const entry={operationId,updatedAt:this.now(),bytes:new TextEncoder().encode(JSON.stringify(next)).length};
+    const rows=[...(Array.isArray(catalog.value)?catalog.value:[]).filter(r=>r.operationId!==operationId),entry];
+    let total=rows.reduce((n,r)=>n+r.bytes,0);
+    const parent=operationId.split('/child-')[0];
+    while(rows.length>24||total>32*1024*1024||rows.length>1&&rows[0].updatedAt<this.now()-7*86400000){
+      const index=rows.findIndex(r=>r.operationId!==operationId&&r.operationId!==parent);
+      if(index<0)break;
+      const [old]=rows.splice(index,1);total-=old.bytes;
+      if(this.store.deleteJson)await this.store.deleteJson({namespace:this.namespace,key:safeKey('task',`${scopeKey(scope)}|${old.operationId}`)});
+    }
+    await verifiedWrite(this.store,catalogAddress,rows);
+    return clone(next);
+  }
+
+  retainPrivateResponse(scope,operationId,patch){
+    if(new TextEncoder().encode(JSON.stringify(patch)).length>8*1024*1024)return;
+    const key=`${scopeKey(scope)}|${operationId}`;
+    this._responseCache.set(key,{...clone(patch),scopeKey:scopeKey(scope),operationId,volatile:true});
+    while(this._responseCache.size>2)this._responseCache.delete(this._responseCache.keys().next().value);
+  }
+
+  async clearPrivateTask(scope,operationId){
+    this._responseCache.delete(`${scopeKey(scope)}|${operationId}`);
+    if(this.store.deleteJson)await this.store.deleteJson({namespace:this.namespace,key:safeKey('task',`${scopeKey(scope)}|${operationId}`)});
   }
 
   async listRecords(scope) { return (await this.readScope(scope)).records; }

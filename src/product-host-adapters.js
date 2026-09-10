@@ -1,6 +1,7 @@
 import { ProviderClient } from './provider.js';
 import { ShiyiError } from './errors.js';
 import { clone, sha256, stableStringify } from './utils.js';
+import {losslessStore} from './reliable-storage.js';
 
 export const PRODUCT_HOST_ERROR_CODES = Object.freeze([
   'CHAT_IDENTITY_NOT_READY',
@@ -204,7 +205,7 @@ export function productStoreFromSession(session) {
     ...(store.getJson?{getJson:args=>store.getJson(args)}:{}),
     ...(store.deleteJson?{deleteJson:args=>store.deleteJson(args)}:{}),
   };
-  stores.set(store,wrapped);return wrapped;
+  const reliable=losslessStore(wrapped);stores.set(store,reliable);return reliable;
 }
 
 export function safeProductError(error, fallback = 'PROVIDER_REQUEST_FAILED') {

@@ -21,6 +21,8 @@ function detailsHTML(entry){
   if(d.normalizedFields!==undefined)lines.push(['本地兼容字段',d.normalizedFields]);
   if(d.defaultedValidityFields)lines.push(['未注明有效期的人设变化',`${d.defaultedValidityFields} 条；保留为期限未确认，不推定永久变化`]);
   if(d.repairFields!==undefined)lines.push(['自动纠错字段',d.repairFields]);
+  if(d.recoveryCalls!==undefined)lines.push(['本批额外恢复调用',`${d.recoveryCalls} / 2`]);
+  if(d.retryDelayMs!==undefined)lines.push(['重试前等待',`${d.retryDelayMs} 毫秒`]);
   if(d.repairAttempted)lines.push(['自动纠错','已尝试一次，未通过校验；没有强行保存']);
   const issues=safeValidationIssues(d.validationIssues);
   if(issues.length){
