@@ -12,7 +12,7 @@ import { requireIndependentFloorSummaries } from './floor-summaries.js';
 import { safeLogDetails } from './product-runtime-log.js';
 import { resolveEventMerges } from './event-consolidation.js';
 import { tokenizeChinese } from './retrieval.js';
-import { normalizeSummaryEnums, repairableEnumTargets, createEnumRepairRequest, applyEnumCorrections } from './summary-enum-repair.js';
+import { normalizeSummaryEnums, normalizePersonaValidity, repairableEnumTargets, createEnumRepairRequest, applyEnumCorrections } from './summary-enum-repair.js';
 
 function responseStatus(response) {
   return Number(response?.status ?? response?.statusCode ?? 200);
@@ -506,8 +506,9 @@ export class SummaryEngine {
         throwIfAborted(signal);
         phase='response';
         const parsed = await parseModelResponse(raw,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started})});
-        const {output,normalizedFields}=normalizeSummaryEnums(parsed);
-        if(normalizedFields)emit('normalize',{...baseDetails,normalizedFields},'success');
+        const enums=normalizeSummaryEnums(parsed);
+        const {output,defaultedValidityFields}=normalizePersonaValidity(enums.output);
+        if(enums.normalizedFields||defaultedValidityFields)emit('normalize',{...baseDetails,normalizedFields:enums.normalizedFields,defaultedValidityFields},'success');
         ensureAllCategories(output);
         phase='validate';
         const sourceRefs = sourceRefsFor(child);

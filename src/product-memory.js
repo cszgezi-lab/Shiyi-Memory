@@ -135,7 +135,12 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
   if(detail&&!hasStoryTime(card.temporal)&&!card.relatedEvents?.some(e=>hasStoryTime(e.temporal)))lines.push('时间：本条记录未提取');
   if(detail&&!card.location&&!card.relatedEvents?.some(e=>e.location))lines.push('地点：本条记录未提取');
   for (const f of card.followUps ?? []) lines.push(`后续：${recordDescription(f)}〔${stateLabel(f.state) ?? '未确认'}〕`);
-  if (card.context || card.validUntil || card.term) lines.push(`适用范围：${narrativeText(card.context)} ${narrativeText(card.validUntil ?? card.term)}`);
+  if(card.category==='personaChanges'){
+    lines.push(`变化人物：${narrativeText(card.subject??card.person??card.entity)}；针对对象：${narrativeText(card.object??card.objectRef)}`);
+    lines.push(`适用情境与范围：${narrativeText(card.context)}；${narrativeText(card.scope)}`);
+    const validity=card.expiresAt??card.validUntil??card.term??card.duration;
+    lines.push(validity?`有效期：${narrativeText(validity)}`:'有效期未确认；仅用于上述对象、情境与范围，不推定永久变化。');
+  }else if (card.context || card.validUntil || card.term) lines.push(`适用范围：${narrativeText(card.context)} ${narrativeText(card.validUntil ?? card.term)}`);
   return lines.join('\n');
 }
 export function expandAliases(query, aliases = '') {

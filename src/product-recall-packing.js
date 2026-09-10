@@ -33,6 +33,8 @@ function guardSignature(record) {
   return stableStringify({ temporal: record.temporal??null, participants: record.participants??[], location: record.location??null,
     awareness: rows(record.awareness), state: record.state??null, epistemicStatus: record.epistemicStatus??null,
     followUps: rows(record.followUps), context: record.context??null, validUntil: record.validUntil??null,
+    expiresAt:record.expiresAt??null,term:record.term??null,duration:record.duration??null,
+    subject:record.subject??record.person??record.entity??null,object:record.object??record.objectRef??null,aspect:record.aspect??record.field??record.key??null,
     viewpoints: record.viewpoints??[], keyDialogues: record.keyDialogues??[], customModuleId: record.customModuleId??null,scope:record.scope??null });
 }
 

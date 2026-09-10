@@ -1,5 +1,7 @@
 import { clone, sha256, stableStringify, makeId } from './utils.js';
 import { isMissingProductEntry } from './product-host-adapters.js';
+import { PersistenceError } from './errors.js';
+import { encodeVectorDocument, decodeVectorDocument, vectorStorageArtifact } from './product-vector-storage.js';
 
 const NS = 'shiyi-product-workspace';
 const queues = new WeakMap();
@@ -9,26 +11,35 @@ export function createWorkspace(bound) {
   const { store, scope, isCurrent } = bound;
   const prefix = sha256(scope).slice(0, 24);
   const guard = () => { if (!isCurrent()) throw new Error('聊天已变化，请重新打开当前聊天'); };
-  async function read(name, fallback = null) {
+  const storageError = (name, storageStage) => new PersistenceError(
+    ({read:'当前聊天资料读取失败，请重试',write:'资料写入失败，尚未确认保存',readback:'资料写入后读取失败，尚未确认保存',compare:'保存读回不一致，尚未确认保存'})[storageStage]??'资料保存校验失败',
+    { storageStage, ...(vectorStorageArtifact(name) ? {storageArtifact:vectorStorageArtifact(name)} : {}) });
+  async function readRaw(name, fallback = null) {
     guard();
     const key = `${prefix}-${name}`;
     let found;
     try { found = store.tryGetJson ? await store.tryGetJson({ namespace: NS, key }) : { found: true, value: await store.getJson({ namespace: NS, key }) }; }
     catch (error) {
       if (!store.tryGetJson && isMissingProductEntry(error)) found = { found:false };
-      else throw new Error('当前聊天资料读取失败，请重试');
+      else { guard(); throw storageError(name, 'read'); }
     }
     guard();
     return clone(found?.found && found.value !== undefined ? found.value : fallback);
   }
+  async function read(name, fallback = null) {
+    return decodeVectorDocument(name, await readRaw(name, fallback));
+  }
   async function write(name, value) {
     guard();
-    const frozen = clone(value);
-    await store.setJson({ namespace: NS, key: `${prefix}-${name}`, value: frozen });
+    const frozen = encodeVectorDocument(name, clone(value));
+    try { await store.setJson({ namespace: NS, key: `${prefix}-${name}`, value: frozen }); }
+    catch { guard(); throw storageError(name, 'write'); }
     guard();
-    const actual = await read(name);
-    if (stableStringify(actual) !== stableStringify(frozen)) throw new Error('保存读回不一致，尚未确认保存');
-    return actual;
+    let actual;
+    try { actual = await readRaw(name); }
+    catch { guard(); throw storageError(name, 'readback'); }
+    if (stableStringify(actual) !== stableStringify(frozen)) throw storageError(name, 'compare');
+    return decodeVectorDocument(name, actual);
   }
   function update(name, callback, fallback = null) {
     let byKey = queues.get(store); if (!byKey) { byKey = new Map(); queues.set(store, byKey); }

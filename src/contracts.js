@@ -61,6 +61,7 @@ export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
     conflicts: Object.freeze(['id', 'sourceRefs']),
     coverage: Object.freeze(['sourceRefs', 'bridgeRefs', 'processed', 'excluded', 'unprocessed']),
   }),
+  personaValidityRule: '人设变化必须有具体对象、情境、范围与正文来源。有效期有明确依据时填写 expiresAt/validUntil/term/duration；没有明确期限就填 expiresAt:null，不猜日期，不自动判作永久人设。',
   floorSummaryRules: Object.freeze({
     cardinality: 'One independent row for EACH sourceMessages item, including user and non-story messages; do not combine floors. bridgeMessages are context only and must not get rows.',
     floorIndex: 'Copy sourceMessages[i].index (absolute host floor, not position in this batch).',

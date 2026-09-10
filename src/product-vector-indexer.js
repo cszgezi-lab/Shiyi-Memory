@@ -3,6 +3,7 @@ import { splitDocument } from './product-workspace.js';
 import { vectorNorm, validVectorEntry } from './product-vector-cache.js';
 import { ShiyiError, PersistenceError } from './errors.js';
 import { providerEnvelopeFailure, productFailure } from './product-feedback.js';
+import { vectorStorageArtifact } from './product-vector-storage.js';
 
 const fail = (code, details) => new ShiyiError('向量索引未完成', code, details);
 export const vectorJobKey = key => `${key}-jobs-v1`;
@@ -52,7 +53,17 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
   for(const [id,p]of Object.entries(jobs.parts))if(!hashes.has(id)||hashes.get(id)!==p.hash)delete jobs.parts[id];
   const todo=selectedCards.filter(c=>!background||!vectorFailure(c,jobs));
   const snapshot=()=>({total:cards.length,indexed:validIds.size,pending:cards.length-validIds.size,failed:cards.filter(c=>!complete(c)&&jobs.failures[c.id]?.hash===hashes.get(c.id)).length,requests,blocked:jobs.blocked,rebuilding:jobs.rebuilding});
-  const persist=async(name,value)=>{check();try{await workspace.write(name,value);}catch(error){check();throw new PersistenceError('向量索引保存校验失败');}check();};
+  const persist=async(name,value)=>{
+    check();
+    try{await workspace.write(name,value);}
+    catch(error){
+      check();
+      const details={storageArtifact:vectorStorageArtifact(name),storageStage:error?.details?.storageStage??'unknown',indexedItems:validIds.size,pendingItems:cards.length-validIds.size};
+      diagnostic('vector_storage_failed',{...details,code:'PERSISTENCE_ERROR'},'error');
+      throw new PersistenceError('向量索引保存校验失败',details);
+    }
+    check();
+  };
   const saveJobs=()=>persist(vectorJobKey(key),jobs);
   const recordFailure=(card,error)=>{
     const f=productFailure(error),previous=jobs.failures[card.id];

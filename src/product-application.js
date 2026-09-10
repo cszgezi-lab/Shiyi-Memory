@@ -58,7 +58,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let recallRevision = 0;
   let dictionaryRevision=-1, dictionaryCache=null;
   let recallBusy = 0, moduleSourceBaseline=null;
-  let vectorTimer=null,vectorJob=null,vectorCheckVersion=0;
+  let vectorTimer=null,vectorJob=null,vectorCheckVersion=0,vectorStorageFailure=null;
   let injectionLog=null,vectorExcluded=[],mergeDecisions={};
   let tracking=false,trackingStart=null,disposed=false,followPending=false,followTimer=null,following=null,followVersion=0;
   const chatListeners=[],followWaiters=[];
@@ -170,13 +170,14 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const c=client('embedding'),fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model}),key=`vectors-${fingerprint.slice(0,20)}`;
       const jobs=normalizeVectorJobs(await bound.read(vectorJobKey(key),null)),cards=vectorCards(),entries=await vectorCache.load(bound,jobs.rebuilding?vectorStagingKey(key):key),coverage=vectorIndexCoverage(cards,entries,card=>vectorCache.hash(card));
       const failure=vectorFailureCounts(cards,entries,jobs);
+      const storageFailure=vectorStorageFailure?.workspace===bound&&vectorStorageFailure.key===key?vectorStorageFailure.error:null;
       if(version!==vectorCheckVersion||token!==epoch||revision!==recallRevision||!bound.isCurrent())return;
       const stopped=state.vectorIndex?.status==='stopped';
-      const status=vectorJob?'updating':!coverage.total?'empty':coverage.mixed?'mixed':!coverage.pending?'ready':failure.blocked||failure.failed?'error':stopped?'stopped':'pending';
-      const issue=failure.blocked??cards.map(c=>vectorFailure(c,jobs)).find(Boolean);
-      state.vectorIndex={...coverage,...failure,rebuilding:jobs.rebuilding,status,model:c.profile.model,checkedAt:Date.now(),...(status==='error'&&issue?{message:failureText({code:issue.code,details:{status:issue.status}})}:{})};
+      const status=vectorJob?'updating':storageFailure?'error':!coverage.total?'empty':coverage.mixed?'mixed':!coverage.pending?'ready':failure.blocked||failure.failed?'error':stopped?'stopped':'pending';
+      const issue=storageFailure??failure.blocked??cards.map(c=>vectorFailure(c,jobs)).find(Boolean);
+      state.vectorIndex={...coverage,...failure,rebuilding:jobs.rebuilding,status,model:c.profile.model,checkedAt:Date.now(),...(status==='error'&&issue?{message:failureText({code:issue.code,details:issue.details??{status:issue.status}})}:{})};
       notify();
-      if(schedule&&core.settings.vectorEnabled&&core.settings.vectorAutoUpdate&&coverage.pending>failure.failed&&!failure.blocked&&!vectorJob&&!disposed&&!active&&!recallBusy){
+      if(schedule&&core.settings.vectorEnabled&&core.settings.vectorAutoUpdate&&coverage.pending>failure.failed&&!failure.blocked&&!storageFailure&&!vectorJob&&!disposed&&!active&&!recallBusy){
         vectorTimer=setTimeout(()=>{vectorTimer=null;if(!disposed&&token===epoch&&revision===recallRevision&&!active&&!recallBusy)void logged('vectors',run=>buildVectors({background:true,diagnosticRun:run})).catch(()=>{});},500);
       }
       return clone(state.vectorIndex);
@@ -784,6 +785,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function buildVectors({background=false,rebuild=false,ids=null,diagnosticRun}={}) {
     assertCurrent();if(vectorJob)throw new Error('向量索引正在更新');
+    if(!background)vectorStorageFailure=null;
+    let storageKey;
     const op=begin(!background),token=epoch,signal=op.signal,revision=recallRevision,bound=workspace;
     const cancellation=new AbortController(),job={cancel:()=>cancellation.abort()};vectorJob=job;
     clearTimeout(vectorTimer);vectorTimer=null;
@@ -792,6 +795,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     signal.addEventListener('abort',cancelRequest,{once:true});cancellation.signal.addEventListener('abort',cancelRequest,{once:true});
     try {
       const c=client('embedding'),fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model}),key=`vectors-${fingerprint.slice(0,20)}`;
+      storageKey=key;
       const report=await buildVectorIndex({cards:vectorCards(),workspace:bound,key,client:c,check,signal:combined.signal,background,rebuild,ids,
         diagnostic:(phase,details,level='info')=>runtimeLog.record({run:diagnosticRun,task:'vectors',phase,level,details:{transport:'browser_direct',...details}}),
         progress:stats=>{check();state.vectorIndex={...stats,status:'updating',model:c.profile.model};notify();}
@@ -799,6 +803,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       check();report.message=`向量已保存 ${report.indexed??0}/${report.total??0} 条${report.pending?`，剩余 ${report.pending} 条待补建`:''}；未重新总结聊天。`;if(!background)setMessage(report.message);
       return report;
     }catch(error){
+      if(error?.code==='PERSISTENCE_ERROR'&&token===epoch)vectorStorageFailure={workspace:bound,key:storageKey,error};
       if(token===epoch&&revision===recallRevision){state.vectorIndex={...state.vectorIndex,status:combined.signal.aborted?'stopped':'error',message:failureText(error)};notify();}
       throw error;
     }finally{

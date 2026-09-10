@@ -44,6 +44,19 @@ export function normalizeSummaryEnums(output) {
   return {output:value,normalizedFields};
 }
 
+/** Missing duration means unknown, not permanent. The full validator still
+ * requires a subject, target, context, scope and evidence before any commit. */
+export function normalizePersonaValidity(output) {
+  const value=clone(output);let defaultedValidityFields=0;
+  if(Array.isArray(value?.personaChanges))for(const row of value.personaChanges){
+    if(!row||typeof row!=='object'||Array.isArray(row))continue;
+    if(!['expiresAt','validUntil','term','duration'].some(key=>Object.hasOwn(row,key))){
+      row.expiresAt=null;defaultedValidityFields++;
+    }
+  }
+  return {output:value,defaultedValidityFields};
+}
+
 function targetFor(bundle,path) {
   const match=/^([a-zA-Z]+)\[(0|[1-9]\d{0,6})\]\.([a-zA-Z]+)$/.exec(path??'');
   if(!match)return null;
