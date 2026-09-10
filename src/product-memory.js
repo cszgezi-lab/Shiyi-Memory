@@ -3,6 +3,7 @@ import { estimateUnits, clone } from './utils.js';
 import { buildDictionary, dictionaryQuery } from './product-dictionary.js';
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, stateLabel, awarenessLabel, viaLabel } from './product-narrative.js';
 import { hasStoryTime } from './temporal.js';
+import { coveredRecallRecord, recallSelectionReason } from './product-recall-packing.js';
 
 export const CATEGORY_LABELS = Object.freeze({ events: '事件', awarenessChanges: '知情', entityFactChanges: '人物与事实', relationshipChanges: '关系', personaChanges: '人设变化', commitmentChanges: '约定', performanceHints: '演绎参考', summaryView: '楼层摘要', conflicts: '冲突与疑点', knowledge: '资料' });
 export const readable = value => typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value);
@@ -84,13 +85,18 @@ function timeLines(time,settings){
 function awarenessText(rows){
   return rows.map(a=>`${narrativeText(a.actorId??a.person??a.personId??a.audience)}：${narrativeText(a.knowledge??a.fact??a.content)}〔${awarenessLabel(a.status??a.knowledgeStatus)}；${viaLabel(a.via)}${hasStoryTime(a.learnedAt)?`；获知时间：${narrativeText(a.learnedAt)}`:''}〕`).join('；');
 }
-export function renderMemoryCard(card, settings = {}, { body=card.description, metadataOnly=false, detail=false }={}) {
+export function renderMemoryCard(card, settings = {}, { body=card.description, metadataOnly=false, detail=false, query=null }={}) {
   const lines = metadataOnly?[]:[`[${CATEGORY_LABELS[card.category] ?? '记忆'}] ${body}`];
   if (Array.isArray(card.participants)&&card.participants.length)lines.push(`参与人物：${narrativeText(card.participants)}`);
   if (card.location)lines.push(`地点：${narrativeText(card.location)}`);
-  for(const v of (card.viewpoints??[]).slice(0,detail?8:2))lines.push(`观念 / 态度：${v.holder}${v.target?` 对 ${v.target}`:''}：${v.content}${v.context?`〔${v.context}〕`:''}${v.basis?`（${v.basis}）`:''}`);
-  for(const q of (card.keyDialogues??[]).slice(0,detail?8:2))lines.push(`关键台词：${q.speaker}${q.to?` 对 ${q.to}`:''}：「${q.text}」${q.context?`〔${q.context}〕`:''}${q.meaning?`；体现：${q.meaning}`:''}`);
-  if(card.keyDialogues?.length)lines.push('原话仅作当时语境的证据，不要求复读；说过不等于仍持相同态度。');
+  const names=[...(card.participants??[]),...(card.entities??[]).flatMap(e=>typeof e==='string'?[e]:[e.name,...(e.aliases??[])])].filter(n=>typeof n==='string');
+  const topics=query===null?[]:tokenizeChinese(query).filter(t=>t.length>1&&!names.some(n=>n.includes(t))&&!/^(什么|怎么|为什么|这次|那个|这个|现在|是否|一下|告诉|关于|他们|她们)$/.test(t));
+  const relevant=text=>detail||query===null||topics.some(t=>String(text).toLocaleLowerCase().includes(t));
+  const viewpoints=(card.viewpoints??[]).filter(v=>relevant(`${v.content} ${v.context??''} ${v.target??''}`)).slice(0,detail?8:2);
+  const dialogues=(card.keyDialogues??[]).filter(q=>relevant(`${q.text} ${q.context??''} ${q.meaning??''}`)||query!==null&&/原话|台词|说过什么/.test(query)).slice(0,detail?8:2);
+  for(const v of viewpoints)lines.push(`观念 / 态度：${v.holder}${v.target?` 对 ${v.target}`:''}：${v.content}${v.context?`〔${v.context}〕`:''}${v.basis?`（${v.basis}）`:''}`);
+  for(const q of dialogues)lines.push(`关键台词：${q.speaker}${q.to?` 对 ${q.to}`:''}：「${q.text}」${q.context?`〔${q.context}〕`:''}${q.meaning?`；体现：${q.meaning}`:''}`);
+  if(dialogues.length)lines.push('原话仅作当时语境的证据，不要求复读；说过不等于仍持相同态度。');
   if (card.state) lines.push(`状态：${stateLabel(card.state)}`);
   if (card.epistemicStatus && card.epistemicStatus !== 'observed') lines.push(`性质：${({ user_asserted: '用户确认', inferred: '推测而非事实', character_claim: '角色自述', unknown: '未确认' })[card.epistemicStatus] ?? card.epistemicStatus}`);
   if (card.category === 'knowledge') lines.push('外部设定资料，不等于角色已经历或已知情。');
@@ -138,7 +144,7 @@ export function prepareRecallIndex(cache, cards, settings, { scopeKey, revision,
   if (revision === undefined) throw new Error('recall cache requires a snapshot revision');
   return cache.prepare(selectRecallCards(cards, settings), { scopeKey, revision: { snapshot: revision, persona: settings.personaEnabled, performance: settings.performanceEnabled, knowledge: settings.knowledgeEnabled }, k1: settings.bm25K1, b: settings.bm25B, signal });
 }
-export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null } = {}) {
+export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null,focusQuery=query } = {}) {
   const startedAt = globalThis.performance?.now?.() ?? Date.now();
   const selected = selectRecallCards(cards, settings);
   const prepared = indexCache ? await prepareRecallIndex(indexCache, selected, settings, { scopeKey, revision, signal }) : null;
@@ -146,58 +152,56 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const lexicon=dictionary??buildDictionary(selected,{aliases:settings.aliases,automatic:settings.dictionaryEnabled!==false});
   const matched=dictionaryQuery(query,lexicon),q=matched.query;
   const tagLanes=settings.tagRecallEnabled===false?[]:matched.tags.map(tag=>({tag,limit:settings.tagCandidateLimit??4}));
-  const result = await retrieveMemories({ index, query: q, limit: Math.max(settings.retrievalLimit, settings.retrievalCandidateLimit ?? 24), vectorAdapter, reranker, signal,
+  const categoryLanes=settings.distributedEnabled&&settings.distributedStrategy==='broadcast'
+    ? [...new Set(selected.map(c=>c.category))].filter(category=>category!=='summaryView').map(category=>({category,limit:settings.tagCandidateLimit??4})) : [];
+  const filter=settings.distributedEnabled&&settings.distributedStrategy==='leader_only'
+    ? c=>(c.category==='knowledge'?'knowledge':'memory')===settings.distributedChannel : undefined;
+  const result = await retrieveMemories({ index, query: q, limit: Math.max(settings.retrievalLimit, settings.retrievalCandidateLimit ?? 24), vectorAdapter, reranker, signal,categoryLanes,filter,
     entityIds:matched.entities,tagLanes,
     totalTimeoutMs: settings.retrievalTimeoutMs,
     vectorTimeoutMs: settings.vectorTimeoutMs, vectorOptions: { rankConstant: settings.fusionRankConstant, localWeight: settings.fusionLocalWeight, vectorWeight: settings.vectorWeight },
     rerankOptions: { timeoutMs: settings.rerankTimeoutMs, maxCandidates: settings.rerankMaxCandidates } });
   // Entity facts are an explicit metadata lane, not another model call.
-  const identities = selected.filter(c => {const name=readable(c.entity??c.entityId);return c.category==='entityFactChanges'&&name.length>0&&(matched.entities.includes(name)||(!lexicon.entries.some(e=>e.name===name)&&String(query).includes(name)));});
+  const identities = selected.filter(c => {const name=readable(c.entity??c.entityId);return (!filter||filter(c))&&c.category==='entityFactChanges'&&name.length>0&&(matched.entities.includes(name)||(!lexicon.entries.some(e=>e.name===name)&&String(query).includes(name)));});
   let candidates = [...identities.map(record => ({ id: record.id, record, channels: ['entity_identity'] })), ...result.candidates];
-  if (settings.distributedEnabled) {
-    if (settings.distributedStrategy === 'leader_only') candidates = candidates.filter(c => (c.record.category === 'knowledge' ? 'knowledge' : 'memory') === settings.distributedChannel);
-    else if (settings.distributedStrategy === 'broadcast') {
-      const groups = [...new Set(result.candidates.map(c => c.record.category))];
-      const lanes = groups.map(g => result.candidates.filter(c => c.record.category === g));
-      const interleaved = [];
-      for (let n = 0; n < settings.retrievalLimit; n++) for(const lane of lanes) if(lane[n]) interleaved.push(lane[n]);
-      candidates = [...identities.map(record => ({ id: record.id, record })), ...interleaved];
-    }
-  }
   const seen = new Set(); candidates = candidates.filter(c => !seen.has(c.id) && seen.add(c.id));
+  // Present a canonical event before its floor duplicate, without changing
+  // relative order of unrelated events or deleting any stored floor summary.
+  const byId=new Map(candidates.map(c=>[c.id,c])),ordered=[],placed=new Set();
+  for(const c of candidates){
+    const links=c.record.category==='summaryView'?(c.record.relatedEvents??[]).map(e=>e.id):[];
+    for(const id of links)if(byId.get(id)?.record.category==='events'&&!placed.has(id)){ordered.push(byId.get(id));placed.add(id);}
+    if(!placed.has(c.id)){ordered.push(c);placed.add(c.id);}
+  }
+  candidates=ordered;
   const header = ['[拾忆：有来源的连续性参考，不是必须重演的剧情]', '只让角色使用其实际知情范围；未知不等于全员已知。不要因召回而反复引用台词或加速关系。', settings.storyDate ? `当前故事日期：${settings.storyDate}。旧引语的昨天/明天以原事件时间为准。` : '当前故事日期未确认，不套用现实日期。', settings.worldMode === 'fanfiction' ? '同人资料是原作参照；当前分支的时期、身份和已经发生的事实优先，不强行回归原作。' : '按当前原创分支记录，不凭资料提前推进主线。'].join('\n');
   const ambiguity=matched.ambiguities.map(a=>`称呼“${a.name}”尚未区分：${a.owners.join('、')}；不得合并这些对象的经历。`).join('\n');
   const packetHeader=[header,ambiguity].filter(Boolean).join('\n');
   let content = packetHeader;
-  const packed = [], omitted = [], portions=[];
+  const packed = [], omitted = [], portions=[], chosen=[],decisions=[];
+  let excerpts=0;
   const budget = settings.retrievalBudgetUnits;
   for (const item of candidates) {
     const brief=typeof item.record.recallSummary==='string'&&item.record.recallSummary.trim()?item.record.recallSummary:item.record.description;
-    const part = renderMemoryCard(item.record, settings,{body:brief});
-    if (packed.length >= settings.retrievalLimit || estimateUnits(`${content}\n\n${part}`) > budget) { omitted.push(item.id); continue; }
-    packed.push(item.record);portions.push(part);content += `\n\n${part}`;
-  }
-  // Reserve room for the selected records first, then expand the most relevant
-  // narratives. No sentence cutting, and knowledge/time guards remain atomic.
-  let expanded=0;
-  let excerpts=0;
-  for(let i=0;i<packed.length;i++){
-    const full=renderMemoryCard(packed[i],settings);
-    if(full===portions[i])continue;
-    const proposed=[packetHeader,...portions.map((part,n)=>n===i?full:part)].join('\n\n');
-    if(estimateUnits(proposed)<=budget){portions[i]=full;content=proposed;expanded++;}
-    else {
-      const excerpt=relevantPassage(packed[i].description,packed[i].recallSummary,q);
-      if(!excerpt)continue;
-      const part=renderMemoryCard(packed[i],settings,{body:`${packed[i].recallSummary}\n相关经过（节选）：${excerpt}`});
-      const proposal=[packetHeader,...portions.map((p,n)=>n===i?part:p)].join('\n\n');
-      if(estimateUnits(proposal)<=budget){portions[i]=part;content=proposal;excerpts++;}
-    }
+    // Detail is driven by the original request, not by available space or
+    // expanded alias names. Store/search the full narrative without sending it.
+    const excerpt=relevantPassage(item.record.description,item.record.recallSummary,focusQuery);
+    const body=excerpt?`${brief}\n相关经过：${excerpt}`:brief;
+    const coveredBy=coveredRecallRecord(item.record,body,chosen);
+    const decision={id:item.id,title:recordTitle(item.record),category:item.record.category,reason:recallSelectionReason(item)};
+    if(coveredBy){decisions.push({...decision,status:'duplicate',coveredBy});omitted.push(item.id);continue;}
+    let part = renderMemoryCard(item.record, settings,{body,query:focusQuery});
+    let usedBody=body,usedExcerpt=Boolean(excerpt);
+    if(estimateUnits(`${content}\n\n${part}`)>budget&&excerpt){part=renderMemoryCard(item.record,settings,{body:brief,query:focusQuery});usedBody=brief;usedExcerpt=false;}
+    if (packed.length >= settings.retrievalLimit || estimateUnits(`${content}\n\n${part}`) > budget) { omitted.push(item.id);decisions.push({...decision,status:packed.length>=settings.retrievalLimit?'limit':'budget'});continue; }
+    packed.push(item.record);portions.push(part);chosen.push({record:item.record,body:usedBody});content += `\n\n${part}`;
+    if(usedExcerpt)excerpts++;
+    decisions.push({...decision,status:'selected',detail:usedExcerpt?'excerpt':'brief',detailOmitted:Boolean(excerpt)&&!usedExcerpt});
   }
   if (!packed.length) content = '';
   result.trace.index = prepared?.stats ?? { status: 'uncached', size: selected.length };
   result.trace.dictionary={matched:matched.terms,ambiguous:lexicon.entries.filter(e=>e.ambiguous.length).length};
-  result.trace.packing={selected:packed.length,expanded,excerpts,brief:packed.length-expanded-excerpts,omitted:omitted.length};
+  result.trace.packing={selected:packed.length,expanded:0,excerpts,brief:packed.length-excerpts,omitted:omitted.length,duplicates:decisions.filter(d=>d.status==='duplicate').length,decisions};
   result.trace.timings.recallMs = (globalThis.performance?.now?.() ?? Date.now()) - startedAt;
   return { status: 'preview', previewOnly: true, sent: false, degraded: result.trace.degraded, text: content, cards: packed, usedUnits: content ? estimateUnits(content) : 0, omitted, trace: result.trace };
 }

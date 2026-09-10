@@ -4,9 +4,9 @@ import { createWorkspace, importTextDocument, splitDocument } from './product-wo
 import { sourceKey } from './product-sources.js';
 import { PRODUCT_SETTING_REGISTRY, persistedProductSettings, validateProductPatch, splitProductSettings } from './product-settings.js';
 import { ProviderClient } from './provider.js';
-import { memoryCards, recallMemory, readable, recordDescription, selectRecallCards, prepareRecallIndex } from './product-memory.js';
+import { memoryCards, recallMemory, readable, recordDescription, selectRecallCards, prepareRecallIndex, relevantPassage } from './product-memory.js';
 import { RecallIndexCache } from './recall-cache.js';
-import { ProductVectorCache } from './product-vector-cache.js';
+import { ProductVectorCache, vectorNorm, vectorIndexCoverage } from './product-vector-cache.js';
 import { clone, sha256, makeId, estimateUnits, stableStringify } from './utils.js';
 import { createProductFetch } from './product-network.js';
 import { productApiProfile, fetchProductModels } from './product-model-list.js';
@@ -22,6 +22,7 @@ import { createCredentialStore, credentialOrigin } from './product-credentials.j
 import { createRuntimeLog, safeLogDetails } from './product-runtime-log.js';
 import { buildDictionary, normalizeTerms, KNOWLEDGE_ANALYSIS_PROMPT, parseKnowledgeAnalysis, updateDictionaryOverride, normalizeTags } from './product-dictionary.js';
 import { fullSearchText } from './product-narrative.js';
+import { sceneRecallQuery } from './product-recall-packing.js';
 
 const PROMPT_KEY = 'shiyi-memory-continuity';
 function completion(response) {
@@ -51,6 +52,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let recallRevision = 0;
   let dictionaryRevision=-1, dictionaryCache=null;
   let recallBusy = 0, moduleSourceBaseline=null;
+  let vectorTimer=null,vectorJob=null,vectorCheckVersion=0;
   let tracking=false,trackingStart=null,disposed=false,followPending=false,followTimer=null,following=null,followVersion=0;
   const chatListeners=[],followWaiters=[];
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache();
@@ -120,10 +122,40 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       await loadKnowledge();notify();return core.settings;
     })().finally(()=>{globalLoading=null;});return globalLoading;
   }
-  function recallChanged({ clear = false, vectors = false } = {}) {
+  function recallChanged({ clear = false, vectors = false, scheduleVectors = true } = {}) {
     recallRevision++; state.preview = null; state.actual = null;
     if (clear) recallCache.clear();
     if (clear || vectors) vectorCache.clear();
+    clearTimeout(vectorTimer);vectorTimer=null;vectorCheckVersion++;
+    vectorJob?.cancel();
+    state.vectorIndex={status:workspace?.isCurrent()?'not_checked':'no_chat'};
+    if(!disposed&&workspace?.isCurrent())vectorTimer=setTimeout(()=>{vectorTimer=null;void refreshVectorStatus({schedule:scheduleVectors});},250);
+  }
+  function vectorCards(){return selectRecallCards([...state.cards,...knowledgeCache.filter(c=>!state.hidden.includes(c.id))],core.settings);}
+  async function listVectorEntries({query='',page=1,status='all'}={}){
+    assertCurrent();const token=epoch,revision=recallRevision,c=client('embedding'),bound=workspace;
+    const fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model}),entries=await vectorCache.load(bound,`vectors-${fingerprint.slice(0,20)}`);
+    assertCurrent(token);if(revision!==recallRevision)throw new Error('记忆已变化，请刷新索引列表');
+    const q=String(query).trim().toLocaleLowerCase();
+    const rows=vectorCards().map(card=>({id:card.id,title:card.title??card.recallSummary??card.description?.slice(0,80)??'记忆',category:card.category,status:entries.get(card.id)?.hash===vectorCache.hash(card)?'indexed':entries.has(card.id)?'stale':'missing'}))
+      .filter(row=>(status==='all'||row.status===status)&&row.title.toLocaleLowerCase().includes(q));
+    const pages=Math.max(1,Math.ceil(rows.length/20)),current=Math.min(pages,Math.max(1,Math.floor(Number(page)||1)));
+    return {rows:rows.slice((current-1)*20,current*20),total:rows.length,page:current,pages};
+  }
+  async function refreshVectorStatus({schedule=false}={}){
+    const version=++vectorCheckVersion,token=epoch,revision=recallRevision,bound=workspace;
+    if(!bound?.isCurrent()||state.stale){state.vectorIndex={status:'no_chat'};notify();return state.vectorIndex;}
+    try{
+      const c=client('embedding'),fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model});
+      const entries=await vectorCache.load(bound,`vectors-${fingerprint.slice(0,20)}`),coverage=vectorIndexCoverage(vectorCards(),entries,card=>vectorCache.hash(card));
+      if(version!==vectorCheckVersion||token!==epoch||revision!==recallRevision||!bound.isCurrent())return;
+      state.vectorIndex={...coverage,status:vectorJob?'updating':!coverage.total?'empty':coverage.mixed?'mixed':coverage.pending?'pending':'ready',model:c.profile.model,checkedAt:Date.now()};
+      notify();
+      if(schedule&&core.settings.vectorEnabled&&core.settings.vectorAutoUpdate&&coverage.pending&&!vectorJob&&!disposed&&!active&&!recallBusy){
+        vectorTimer=setTimeout(()=>{vectorTimer=null;if(!disposed&&token===epoch&&revision===recallRevision&&!active&&!recallBusy)void logged('vectors',()=>buildVectors({background:true})).catch(()=>{});},500);
+      }
+      return clone(state.vectorIndex);
+    }catch(error){if(version===vectorCheckVersion&&token===epoch){state.vectorIndex={status:'unavailable',message:'索引暂不可读，请检查向量配置后刷新状态。'};notify();}}
   }
   async function warmRecall() {
     const token = epoch, revision = recallRevision;
@@ -554,14 +586,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     } finally { recallBusy--; }
   }
   async function knowledgeCards() { return core.settings.knowledgeEnabled ? knowledgeCache.filter(card => !state.hidden.includes(card.id)) : []; }
-  async function preview(query, { online = false } = {}) {
+  async function preview(query, { online = false, context='' } = {}) {
     assertCurrent(); if(state.stale) throw new Error('正文已修改，先重新整理');
     if (recallBusy) throw new Error('记忆正在更新，请稍后检索');
     const op=begin(false);
     try {
     const revision = recallRevision;
     const cards = [...state.cards, ...await knowledgeCards(query)];
-    const result = await recallMemory(cards, query, core.settings, { ...(online ? await retrievalAdapters(selectRecallCards(cards, core.settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:activeDictionary() });
+    const lookup=context?`${query}\n最近剧情参照：${context}\n当前询问：${query}`:query;
+    const result = await recallMemory(cards, lookup, core.settings, { ...(online ? await retrievalAdapters(selectRecallCards(cards, core.settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:activeDictionary(),focusQuery:query });
     op.check(); if (revision !== recallRevision) throw new Error('记忆或设置已更新，请重新检索');
     state.preview = result; notify(); return result;
     } finally { op.finish(); }
@@ -574,9 +607,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const token = epoch;
     const revision = recallRevision;
     const messages = payload.messages;
-    const query = messages.filter(m=>m?.role==='user').slice(-2).map(m=>typeof m.content==='string'?m.content:'').join('\n');
+    const {intent:query,context}=sceneRecallQuery(messages);
     try {
-      const result = await preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled });
+      const result = await preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context });
       assertCurrent(token); if (revision !== recallRevision || !enabled || !core.settings.injectionEnabled || !result.text) return;
       const role = ['system','user'].includes(core.settings.injectionRole) ? core.settings.injectionRole : 'system';
       const external=externalState();
@@ -600,7 +633,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       try { c = client('embedding'); } catch (error) { failure = error; }
       const fingerprint = c ? sha256({endpoint:c.profile.url, model:c.profile.model}) : 'unconfigured';
       const bound = workspace;
-      options.vectorAdapter = { embeddingSpace:fingerprint, async search({query,limit,signal,tagLanes}) {
+      options.vectorAdapter = { embeddingSpace:fingerprint, async search({query,limit,signal,tagLanes,categoryLanes}) {
         if (failure) throw failure;
         const index = await vectorCache.load(bound, `vectors-${fingerprint.slice(0,20)}`, signal);
         const indexed = cards.filter(card => index.get(card.id)?.hash === vectorCache.hash(card)).length;
@@ -610,7 +643,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           const response = await c.embeddings({model:c.profile.model,input:[query]}, {signal});
           return response?.data?.[0]?.embedding;
         }, signal);
-        const result = await vectorCache.search(index, cards, q, {limit, fingerprint, signal,tagLanes});
+        const result = await vectorCache.search(index, cards, q, {limit, fingerprint, signal,tagLanes,categoryLanes});
         result.coverage = { indexed: cards.filter(card => { const entry = index.get(card.id); return entry?.hash === vectorCache.hash(card) && entry.vector.length === q.vector.length; }).length, total: cards.length };
         return result;
       }};
@@ -620,7 +653,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       try { c = client('rerank'); } catch (error) { failure = error; }
       options.reranker = async ({query,candidates,signal}) => {
         if (failure) throw failure;
-        const result = await c.rerank({model:c.profile.model,query,documents:candidates.map(x=>recordDescription(x.record??x)),top_n:candidates.length},{signal});
+        const documents=candidates.map(x=>{const record=x.record??x,body=recordDescription(record),brief=record.recallSummary;
+          // New records expose a full-search narrative plus a compact brief.
+          // The reranker sees the brief and query-specific evidence, not an
+          // ever-growing entire merged event. Legacy records stay untruncated.
+          return brief?[record.title,brief,relevantPassage(body,brief,query)].filter(Boolean).join('\n'):body;
+        });
+        const result = await c.rerank({model:c.profile.model,query,documents,top_n:candidates.length},{signal});
         if (!Array.isArray(result.results) || result.results.length !== candidates.length) throw new Error('重排结果数量不匹配');
         const seen=new Set();
         return result.results.map(item=>{if(!Number.isInteger(item.index)||item.index<0||item.index>=candidates.length||seen.has(item.index))throw new Error('重排索引无效');seen.add(item.index);return {id:candidates[item.index].id,score:item.relevance_score??item.score};});
@@ -628,21 +667,35 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     return options;
   }
-  async function buildVectors() {
-    assertCurrent(); const op=begin(), token=epoch, signal=op.signal;
+  async function buildVectors({background=false,rebuild=false}={}) {
+    assertCurrent();if(vectorJob)throw new Error('向量索引正在更新');
+    const op=begin(!background),token=epoch,signal=op.signal,revision=recallRevision,bound=workspace;
+    const cancellation=new AbortController();
+    const job={cancel:()=>cancellation.abort()};vectorJob=job;
+    const check=()=>{op.check();if(cancellation.signal.aborted||revision!==recallRevision)throw Object.assign(new Error('记忆已更新，本次索引任务停止'),{code:'CANCELED'});};
+    const combined=new AbortController(),cancelRequest=()=>combined.abort();
+    signal.addEventListener('abort',cancelRequest,{once:true});cancellation.signal.addEventListener('abort',cancelRequest,{once:true});
+    const requestSignal=combined.signal;
     try {
       const c=client('embedding');
       const fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model}), key=`vectors-${fingerprint.slice(0,20)}`;
-      const cards=selectRecallCards([...state.cards,...await knowledgeCards('')],core.settings), index=await workspace.read(key,{});
-      const todo=cards.filter(card=>index[card.id]?.hash!==sha256(card.text));
-      for(let i=0;i<todo.length;i+=16){const batch=todo.slice(i,i+16); const result=await c.embeddings({model:c.profile.model,input:batch.map(c=>c.text)},{signal}); assertCurrent(token); if(signal.aborted)throw new Error('已停止');
+      const cards=vectorCards(), index=rebuild?{}:await bound.read(key,{});check();
+      const todo=cards.filter(card=>index[card.id]?.hash!==sha256(card.text)||!vectorNorm(index[card.id]?.vector));
+      state.vectorIndex={status:'updating',total:cards.length,indexed:cards.length-todo.length,pending:todo.length,model:c.profile.model};notify();
+      for(let i=0;i<todo.length;i+=16){check();const batch=todo.slice(i,i+16); const result=await c.embeddings({model:c.profile.model,input:batch.map(c=>c.text)},{signal:requestSignal});check();
         const data=result?.data; if(!Array.isArray(data)||data.length!==batch.length)throw new Error('向量数量不匹配');
         const ordered=[...data].sort((a,b)=>a.index-b.index); const dimension=ordered[0]?.embedding?.length;
-        ordered.forEach((entry,n)=>{if(entry.index!==n||!dimension||entry.embedding?.length!==dimension||entry.embedding.some(v=>!Number.isFinite(v)))throw new Error('向量响应无效');});
+        ordered.forEach((entry,n)=>{if(entry.index!==n||!dimension||entry.embedding?.length!==dimension||!vectorNorm(entry.embedding))throw new Error('向量响应无效');});
+        const retained=cards.filter(card=>!batch.some(b=>b.id===card.id)&&index[card.id]?.hash===sha256(card.text));
+        if(retained.some(card=>index[card.id].vector?.length!==dimension))throw new Error('服务返回的向量维度发生变化，请在向量页面重建全部索引');
         ordered.forEach((entry,n)=>{index[batch[n].id]={hash:sha256(batch[n].text),vector:entry.embedding};});
-        await workspace.write(key,index); op.check(); recallChanged({vectors:true}); state.progress=`已建索引 ${Math.min(i+16,todo.length)}/${todo.length}`; notify();
-      }setMessage('向量索引已保存');
-    } finally {op.finish();}
+        await bound.write(key,index);check();
+        state.vectorIndex={status:'updating',total:cards.length,indexed:cards.length-todo.length+Math.min(i+16,todo.length),pending:Math.max(0,todo.length-i-16),model:c.profile.model};notify();
+        await new Promise(resolve=>setTimeout(resolve,0));
+      }
+      if(!background)setMessage('向量索引已保存');
+    }catch(error){if(token===epoch&&revision===recallRevision){state.vectorIndex={...state.vectorIndex,status:signal.aborted?'stopped':'error',message:'索引更新未完成，已保存部分保留；可重试。'};notify();}throw error;
+    } finally {signal.removeEventListener('abort',cancelRequest);cancellation.signal.removeEventListener('abort',cancelRequest);if(vectorJob===job)vectorJob=null;vectorCache.clear();op.finish();if(token===epoch&&revision===recallRevision&&state.vectorIndex?.status!=='error'&&state.vectorIndex?.status!=='stopped')await refreshVectorStatus();}
   }
   async function addDocument(input) { await loadApiSettings();const op=beginApi();try{const doc=await importTextDocument(globalWorkspace,input);op.check();state.documents=await globalWorkspace.read('documents',[]);await loadKnowledge();setMessage('文件已解析为文字，保存在全局资料库；尚未发送给模型');return doc;}finally{op.finish();} }
   async function removeDocument(id) {
@@ -754,7 +807,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function deleteConversation(){await loadApiSettings();if(assistantActive)throw new Error('请先停止助手');await globalWorkspace.remove(`assistant-${state.conversationId}`);state.history=[];state.conversations=await globalWorkspace.update('conversations',list=>list.filter(c=>c.id!==state.conversationId),[]);await newConversation();setMessage('助手对话已删除，已应用设置和记忆未改变');}
   async function hideRecord(id){assertCurrent();recallBusy++;recallChanged();try{state.hidden=await workspace.update('hidden',list=>[...new Set([...list,id])],[]);await refresh();}finally{recallBusy--;}}
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
-  async function stop(){abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
+  async function stop(){clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停自动整理和记忆注入，仍会跟随聊天加载记忆');}
   return {core,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
     startChatTracking,followCurrentChat,
@@ -764,14 +817,16 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     listModels:(kind,options)=>logged('models',()=>listModels(kind,options),{modelRole:kind}),
     assistant:input=>logged('assistant',()=>assistant(input)),
     analyzeDocuments:()=>logged('knowledge',()=>analyzeDocuments()),
-    buildVectors:()=>logged('vectors',()=>buildVectors()),
+    buildVectors:(options)=>logged('vectors',()=>buildVectors(options)),
+    refreshVectorStatus,
+    listVectorEntries,
     addDocument:input=>logged('import',()=>addDocument(input)),
     preview:(...args)=>logged('recall',()=>preview(...args)),
     async remember(text,people='',options={}){assertCurrent();await core.remember(text,{people,...options});await refresh();setMessage('记事已保存');},
     get draftContext(){return `global:${state.conversationId}`;},
     async exportGlobalBackup(){await loadApiSettings();return {kind:'shiyi-global-backup',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`))),analysis:await globalWorkspace.read(`${d.id}-analysis`,[])}))),conversations:await Promise.all(state.conversations.map(async c=>({...c,messages:await globalWorkspace.read(`assistant-${c.id}`,[])})))};},
     async setDraft(value,context=`global:${state.conversationId}`){await loadApiSettings();if(context!==`global:${state.conversationId}`)return;state.draft=value;await saveUi();},
-    setKey(kind,value,endpoint){if(!Object.hasOwn(keys,kind))throw new Error('未知连接');keyEdited.add(kind);keyVersions[kind]=(keyVersions[kind]??0)+1;keys[kind]=String(value??'');keyOrigins[kind]=credentialOrigin(endpoint??core.settings[`${prefixFor(kind)}Endpoint`]);if(kind==='summary')core.setSessionCredential(effectiveKeys().summary);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true});},
+    setKey(kind,value,endpoint){if(!Object.hasOwn(keys,kind))throw new Error('未知连接');keyEdited.add(kind);keyVersions[kind]=(keyVersions[kind]??0)+1;keys[kind]=String(value??'');keyOrigins[kind]=credentialOrigin(endpoint??core.settings[`${prefixFor(kind)}Endpoint`]);if(kind==='summary')core.setSessionCredential(effectiveKeys().summary);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true,scheduleVectors:false});},
     exportSettings(){return {kind:'shiyi-config',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings)};},
     async exportBackup(){assertCurrent();return {kind:'shiyi-backup',version:1,scope:boundScope,modules:clone(state.modules),moduleSnapshots:clone(state.moduleSnapshots),settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`)))}))),assistant:state.history};},
     async dispose(){disposed=true;tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of chatListeners.splice(0)){try{await off();}catch{}}await disable();epoch++;await core.dispose();for(const resolve of followWaiters.splice(0))resolve(publicState());await runtimeLog.flush();},

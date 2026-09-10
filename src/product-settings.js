@@ -24,6 +24,7 @@ const DEFINITIONS = [
   { key: 'retrievalTimeoutMs', label: '在线总超时保护（毫秒，0 沿用各接口时限）', defaultValue: 0, type: 'integer', min: 0, max: 60000, consumers: ['ProductApplication.recall', 'retrieveMemories'] },
   { key: 'retrievalBudgetUnits', label: '本地召回预算', defaultValue: 1800, type: 'integer', min: 0, max: 50000, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
   { key: 'vectorEnabled', label: '向量召回', defaultValue: false, type: 'boolean', consumers: ['ProductShellController.previewRecall'] },
+  { key: 'vectorAutoUpdate', label: '后台更新向量索引', defaultValue: false, type: 'boolean', consumers: ['ProductApplication.scheduleVectorUpdate'] },
   { key: 'vectorWeight', label: '向量融合权重', defaultValue: 1, type: 'number', min: 0, max: 100, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
   { key: 'fusionRankConstant', label: '融合 rank constant', defaultValue: 60, type: 'number', min: 1, max: 10000, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
   { key: 'fusionLocalWeight', label: '本地融合权重', defaultValue: 1, type: 'number', min: 0, max: 100, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },

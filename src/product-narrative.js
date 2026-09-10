@@ -38,5 +38,5 @@ export function recallExplanation(trace={}){
   const matched=(trace.dictionary?.matched??[]).map(t=>`${t.matched.join('、')} → ${t.name}`);
   const tags=(trace.tags?.lanes??[]).map(l=>l.tag);
   const status=s=>({passed:'完成',disabled:'未启用',fallback:'未完成，已降级',skipped:'已跳过'})[s]??'未使用';
-  return [`字典匹配：${matched.join('；')||'没有命中词条'}`,`标签辅助：${tags.join('、')||'本轮没有触发相关标签'}`,`关键词候选：${trace.local?.count??0} 条；语义检索：${status(trace.vector?.status)}；重排：${status(trace.rerank?.status)}`,`本轮注入：${trace.packing?.selected??0} 条，其中展开完整经过 ${trace.packing?.expanded??0} 条、相关句段 ${trace.packing?.excerpts??0} 条。`,'只有命中的记忆按预算加入；没有把全部字典和标签发送给聊天模型。'].join('\n');
+  return [`字典匹配：${matched.join('；')||'没有命中词条'}`,`标签辅助：${tags.join('、')||'本轮没有触发相关标签'}`,`关键词候选：${trace.local?.count??0} 条；语义检索：${status(trace.vector?.status)}；重排：${status(trace.rerank?.status)}`,`本轮注入：${trace.packing?.selected??0} 条，补充相关经过 ${trace.packing?.excerpts??0} 条，省去重复记录 ${trace.packing?.duplicates??0} 条。`,`耗时：关键词 ${Math.round(trace.timings?.localMs??0)} ms · 向量 ${Math.round(trace.timings?.vectorMs??0)} ms · 重排 ${Math.round(trace.timings?.rerankMs??0)} ms`,...(trace.packing?.decisions??[]).map(d=>`${({selected:'已选',duplicate:'已去重',budget:'篇幅不足',limit:'数量上限'})[d.status]??'候选'} · ${d.title}：${d.reason}${d.detailOmitted?'；相关经过未能放入':''}`),'只有命中的记忆按预算加入；没有把全部字典和标签发送给聊天模型。'].join('\n');
 }

@@ -21,6 +21,7 @@ const copy = {
   performanceEnabled:['注入人物演绎参考','使用有记录依据的变化，不编造内心。'],
   injectionPosition:['记忆放置位置',''], injectionRole:['记忆消息角色',''],
   vectorEnabled:['向量检索','按语义寻找记忆；需要配置向量 API。'],
+  vectorAutoUpdate:['后台更新索引','启用向量后，记忆变化会自动调用向量 API 补建索引，不等待发送聊天时才处理。'],
   rerankEnabled:['重排筛选','再次比较候选记忆的相关性；需要配置重排 API。'],
   retrievalCandidateLimit:['初选记忆数量','先找出候选，再筛选用于注入的记忆。'],
   rerankMaxCandidates:['交给重排的记忆数量',''],
@@ -28,7 +29,7 @@ const copy = {
   bm25B:['长短记忆的平衡','减少长记录仅因字多而靠前的情况。'],
   vectorWeight:['语义检索权重',''], fusionLocalWeight:['关键词检索权重',''],
   fusionRankConstant:['合并排名平滑值','数值越大，前后名次的差距越平缓。'],
-  distributedEnabled:['分类检索','将聊天记忆和知识库分开检索。'],
+  distributedEnabled:['分类检索','先从事件、人物、约定和资料等分类找候选，再统一筛选。'],
   distributedStrategy:['分类检索方式',''],
   distributedChannel:['指定检索类别','仅指定通道时填写 memory 或 knowledge。'],
   retrievalTimeoutMs:['总检索超时（毫秒）','0 表示分别使用向量与重排的超时设置。'],
@@ -67,14 +68,16 @@ const card = (title, body) => `<div class="sy-card"><h4>${title}</h4>${body}</di
 export const SETTING_GROUPS = Object.freeze({
   recording: ['messageCount','autoSummaryEnabled','autoSummaryEvery','recordingRules','focusMode','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
   injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','injectionPosition','injectionRole'],
-  retrieval: ['vectorEnabled','rerankEnabled','tagRecallEnabled','tagCandidateLimit','retrievalCandidateLimit','rerankMaxCandidates','bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant','distributedEnabled','distributedStrategy','distributedChannel','retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs'],
+  vectors: ['vectorEnabled','vectorAutoUpdate'],
+  retrieval: ['rerankEnabled','tagRecallEnabled','tagCandidateLimit','retrievalCandidateLimit','rerankMaxCandidates','bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant','distributedEnabled','distributedStrategy','distributedChannel','retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs'],
   world: ['worldMode','knowledgeEnabled','dictionaryEnabled','aliases','externalStatePaths','storyDate'],
 });
 export function settingsSection(kind) {
   const keys = SETTING_GROUPS[kind];
   if (kind === 'recording') return card('记录偏好', fields(keys.slice(0,5)) + advanced('总结高级设置', keys.slice(5)));
   if (kind === 'injection') return card('把记忆交给 AI', fields(keys.slice(0,6)) + advanced('注入位置', keys.slice(6)));
-  if (kind === 'retrieval') return card('召回设置', fields(['vectorEnabled','rerankEnabled','retrievalCandidateLimit','rerankMaxCandidates']) + advanced('标签辅助召回',['tagRecallEnabled','tagCandidateLimit']) + advanced('关键词与融合',['bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant']) + advanced('分类检索',['distributedEnabled','distributedStrategy','distributedChannel']) + advanced('超时保护',['retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs']));
+  if (kind === 'vectors') return card('向量索引',fields(keys));
+  if (kind === 'retrieval') return card('召回策略', fields(['rerankEnabled','retrievalCandidateLimit','rerankMaxCandidates']) + advanced('标签辅助召回',['tagRecallEnabled','tagCandidateLimit']) + advanced('关键词与融合',['bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant']) + advanced('分类检索',['distributedEnabled','distributedStrategy','distributedChannel']) + advanced('超时保护',['retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs']));
   return card('世界与资料', fields(['worldMode','knowledgeEnabled','dictionaryEnabled','aliases']) + advanced('变量与日期兼容设置',['externalStatePaths','storyDate']));
 }
 

@@ -6,6 +6,14 @@ export function vectorNorm(vector) {
   return Number.isFinite(norm) ? norm : 0;
 }
 
+export function vectorIndexCoverage(cards, entries, hash) {
+  let indexed=0,stale=0,missing=0;
+  const dimensions=new Set();
+  for(const card of cards){const entry=entries.get(card.id);if(entry?.hash===hash(card)&&entry.norm){indexed++;dimensions.add(entry.vector.length);}else if(entry)stale++;else missing++;}
+  // A mixed embedding space is not a complete usable index.
+  return {total:cards.length,indexed,pending:cards.length-indexed,stale,missing,dimensions:[...dimensions],mixed:dimensions.size>1};
+}
+
 /** Derived, per-chat memory only. No credentials, query text or vectors are
  * exported to settings, reports or other application instances.
  */
@@ -72,7 +80,7 @@ export class ProductVectorCache {
     while (this.queries.size > 16) this.queries.delete(this.queries.keys().next().value);
     return value;
   }
-  async search(entries, cards, query, { limit, fingerprint, signal, tagLanes=[] } = {}) {
+  async search(entries, cards, query, { limit, fingerprint, signal, tagLanes=[],categoryLanes=[] } = {}) {
     const generation = this.generation;
     const check = () => { throwIfAborted(signal); if (generation !== this.generation) throw abortError('vector snapshot changed'); };
     check();
@@ -84,7 +92,7 @@ export class ProductVectorCache {
         let dot = 0;
         for (let i = 0; i < entry.vector.length; i++) dot += entry.vector[i] * query.vector[i];
         const score = dot / (entry.norm * query.norm);
-        if (Number.isFinite(score)) matches.push({ id: card.id, score, embeddingSpace: fingerprint, tags:card.tags??[] });
+        if (Number.isFinite(score)) matches.push({ id: card.id, score, embeddingSpace: fingerprint, tags:card.tags??[],category:card.category });
       }
       if (++processed % 128 === 0) {
         await new Promise(resolve => setTimeout(resolve, 0));
@@ -97,6 +105,7 @@ export class ProductVectorCache {
     // Reuse one query embedding and one cosine pass for the global and tag
     // lanes. Filtered candidates can enter even below the global top-k.
     for(const lane of tagLanes.slice(0,4))for(const item of ranked.filter(x=>x.tags.includes(lane.tag)).slice(0,Math.min(lane.limit,20)))result.set(item.id,item);
-    return [...result.values()].sort((a,b)=>b.score-a.score||a.id.localeCompare(b.id)).map(({tags,...item})=>item);
+    for(const lane of categoryLanes.slice(0,12))for(const item of ranked.filter(x=>x.category===lane.category).slice(0,Math.min(lane.limit,20)))result.set(item.id,item);
+    return [...result.values()].sort((a,b)=>b.score-a.score||a.id.localeCompare(b.id)).map(({tags,category,...item})=>item);
   }
 }

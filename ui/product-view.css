@@ -9,7 +9,7 @@
 #shiyi-product-shell .sy-top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
 #shiyi-product-shell [data-scope],#shiyi-product-shell [data-model]{font-size:12px;opacity:.75;overflow-wrap:anywhere}
 #shiyi-product-shell .sy-status{padding:10px 12px;border-left:3px solid var(--sy-accent);background:color-mix(in srgb,var(--sy-accent) 9%,transparent);font-size:13px;overflow-wrap:anywhere}
-#shiyi-product-shell .sy-nav{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border-bottom:1px solid var(--sy-border);gap:3px;margin:16px 0}
+#shiyi-product-shell .sy-nav{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));border-bottom:1px solid var(--sy-border);gap:3px;margin:10px 0}
 #shiyi-product-shell button{font:inherit;color:inherit;background:transparent;border:1px solid var(--sy-border);border-radius:9px;min-height:44px;padding:8px 12px;cursor:pointer;white-space:normal;overflow-wrap:anywhere}
 #shiyi-product-shell button:hover{background:color-mix(in srgb,var(--sy-accent) 15%,transparent)}
 #shiyi-product-shell :is(button,input,textarea,select):focus-visible{outline:2px solid var(--sy-accent);outline-offset:2px}
@@ -17,7 +17,7 @@
 #shiyi-product-shell .sy-nav button{border:0;border-radius:8px 8px 0 0;padding:8px 3px;font-size:13px}
 #shiyi-product-shell .sy-nav .active{color:var(--sy-accent);box-shadow:inset 0 -2px var(--sy-accent);background:color-mix(in srgb,var(--sy-accent) 8%,transparent)}
 #shiyi-product-shell h3{font-size:17px;margin:16px 0 10px}#shiyi-product-shell h4{font-size:15px;margin:0 0 8px}
-#shiyi-product-shell .sy-card{border:1px solid var(--sy-border);border-radius:18px;padding:18px;margin:16px 0;background:color-mix(in srgb,currentColor 2%,transparent)}
+#shiyi-product-shell .sy-card{border:1px solid var(--sy-border);border-radius:10px;padding:12px;margin:10px 0;background:color-mix(in srgb,currentColor 2%,transparent)}
 #shiyi-product-shell .sy-api-card{max-width:640px;margin-inline:auto}
 #shiyi-product-shell .sy-api-card>.sy-top h4{font-size:18px;margin:0}
 #shiyi-product-shell .sy-field small{display:block;font-weight:400;margin-top:4px;line-height:1.6}
@@ -25,7 +25,7 @@
 #shiyi-product-shell .sy-api-card>.sy-actions>button{flex:1}
 #shiyi-product-shell .sy-advanced{margin-top:14px;border-top:1px solid var(--sy-border);padding-top:8px}
 #shiyi-product-shell .sy-module-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:20px 0}
-#shiyi-product-shell .sy-module-grid button{text-align:left;border-radius:16px;padding:18px 12px;min-height:110px}
+#shiyi-product-shell .sy-module-grid button{text-align:left;border-radius:10px;padding:10px 12px;min-height:68px}
 #shiyi-product-shell .sy-module-grid small{display:block;margin-top:8px;opacity:.7;font-size:12px}
 #shiyi-product-shell .sy-model-picker>.sy-top{font-size:13px}
 #shiyi-product-shell .sy-model-picker .sy-field{margin:10px 0}
@@ -73,7 +73,7 @@
 #shiyi-floating-window .sy-workbench-notice[data-level=running]{border-color:#e6c366}
 #shiyi-floating-window .sy-workbench-notice[data-level=warning]{border-color:#e6c366}
 #shiyi-floating-launcher[data-notice=error]::after{content:'!';position:absolute;right:0;top:0;border-radius:50%;background:#a62e36;color:white;width:19px;height:19px;line-height:19px}
-#shiyi-floating-window>.sy-nav{flex:0 0 auto;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px;margin:0;padding:4px 10px;border-bottom:1px solid color-mix(in srgb,currentColor 18%,transparent);background:var(--SmartThemeBlurTintColor,#20252e)}
+#shiyi-floating-window>.sy-nav{flex:0 0 auto;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px;margin:0;padding:4px 8px;border-bottom:1px solid color-mix(in srgb,currentColor 18%,transparent);background:var(--SmartThemeBlurTintColor,#20252e)}
 #shiyi-floating-window>.sy-nav button{font:inherit;font-size:13px;color:inherit;min-width:0;min-height:44px;margin:0;padding:8px 3px;border:0;border-radius:8px;background:transparent;cursor:pointer}
 #shiyi-floating-window>.sy-nav button.active{background:color-mix(in srgb,#86b3a5 15%,transparent);box-shadow:inset 0 -2px #86b3a5}
 #shiyi-floating-window #shiyi-product-shell .sy-brand{display:none}
@@ -101,9 +101,9 @@
 #shiyi-product-shell [data-view=memory] :is(summary,h4) {font:600 16px/1.5 system-ui,sans-serif;}
 #shiyi-product-shell [data-view=memory] .sy-card p:not(.sy-help) {font:400 16px/1.6 system-ui,sans-serif;}
 #shiyi-product-shell [data-view=memory] :is(.sy-help,.sy-field>span,.sy-tag) {font:400 13px/1.5 system-ui,sans-serif;letter-spacing:normal;}
-#shiyi-product-shell .sy-category-grid button {height:96px;justify-content:space-between;text-align:left;padding:12px 10px;}
-#shiyi-product-shell .sy-category-grid strong {font:600 14px/1.5 system-ui,sans-serif;display:block;min-height:42px;}
-#shiyi-product-shell .sy-category-grid small {font:400 13px/1.5 system-ui,sans-serif;opacity:.75;}
+#shiyi-product-shell .sy-category-grid button {height:48px;justify-content:space-between;text-align:left;padding:6px 8px;flex-direction:row;align-items:center;gap:4px;}
+#shiyi-product-shell .sy-category-grid strong {font:500 13px/1.3 system-ui,sans-serif;display:block;min-height:0;}
+#shiyi-product-shell .sy-category-grid small {font:400 13px/1.5 system-ui,sans-serif;opacity:.75;white-space:nowrap;flex-shrink:0;}
 #shiyi-product-shell .sy-batch-filters {display:grid;grid-template-columns:minmax(0,1fr) 82px;gap:8px;}
 #shiyi-product-shell .sy-batch-filters>.sy-field:first-child {grid-column:1/-1;}
 #shiyi-product-shell .sy-batch-row {padding:10px 12px;margin:8px 0;border-radius:12px;}
@@ -140,4 +140,34 @@
 #shiyi-product-shell [data-cards] h4 {font-size:16px;line-height:1.6;margin:12px 0 6px;font-weight:600;}
 #shiyi-product-shell .sy-dictionary-row {padding:12px 0;border-bottom:1px solid #8884;overflow-wrap:anywhere;}
 #shiyi-product-shell .sy-dictionary-row p {margin:8px 0;font-size:14px;}
+
+/* Compact mobile workbench: retain touch targets, remove oversized tiles. */
+#shiyi-floating-window {font:400 14px/1.5 system-ui,sans-serif;}
+#shiyi-floating-window [data-status],#shiyi-floating-window [data-open-logs],#shiyi-floating-window [data-progress] {display:none;}
+#shiyi-product-shell .sy-memory-row {position:relative;padding:10px 12px;}
+#shiyi-product-shell .sy-memory-row h4 {font-size:15px;line-height:1.45;margin:6px 0;}
+#shiyi-product-shell [data-view=memory] .sy-memory-row p.sy-memory-brief {font:400 14px/1.55 system-ui,sans-serif;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:6px 0;}
+#shiyi-product-shell .sy-memory-meta {display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.5;}
+#shiyi-product-shell .sy-memory-row>details>summary {font-size:13px;min-height:44px;font-weight:400;}
+#shiyi-product-shell .sy-record-actions {border-top:1px solid var(--sy-border);}
+#shiyi-product-shell .sy-record-actions>summary {text-align:right;}
+#shiyi-product-shell .sy-info-row {display:flex;align-items:baseline;gap:12px;padding:7px 0;border-bottom:1px solid var(--sy-border);font-size:13px;}
+#shiyi-product-shell .sy-info-row:last-child {border-bottom:0;}
+#shiyi-product-shell .sy-info-row>span {flex:0 0 7em;opacity:.72;}
+#shiyi-product-shell .sy-info-row>strong {font-weight:500;min-width:0;overflow-wrap:anywhere;text-align:right;flex:1;}
+#shiyi-product-shell .sy-subnav {display:flex;gap:4px;overflow-x:auto;overscroll-behavior-x:contain;margin:8px 0 12px;padding-bottom:4px;}
+#shiyi-product-shell .sy-subnav button {flex:0 0 auto;min-height:44px;min-width:44px;padding:8px;font-size:13px;border:0;}
+#shiyi-product-shell .sy-subnav button.active {background:color-mix(in srgb,var(--sy-accent) 15%,transparent);color:var(--sy-accent);}
+#shiyi-product-shell .sy-recall-links {display:grid;gap:4px;margin:10px 0;}
+#shiyi-product-shell .sy-recall-links button {display:flex;text-align:left;justify-content:space-between;align-items:center;padding:10px 12px;min-height:60px;}
+#shiyi-product-shell .sy-recall-links small {display:block;font-size:12px;opacity:.7;margin-top:2px;}
+#shiyi-product-shell [data-dictionary-match] {white-space:pre-wrap;padding:8px 0;}
+#shiyi-product-shell .sy-dictionary-row {padding:10px 0;border-bottom:1px solid var(--sy-border);}
+#shiyi-product-shell .sy-dictionary-row .sy-actions {gap:6px;}
+#shiyi-product-shell [data-view=memory] {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 8px;}
+#shiyi-product-shell [data-view=memory]> * {grid-column:1/-1;min-width:0;}
+#shiyi-product-shell [data-add-memory]:not([open]),#shiyi-product-shell [data-custom-modules]:not([open]) {grid-column:auto;}
+#shiyi-product-shell [data-view=memory]>.sy-help {display:none;}
+#shiyi-product-shell .sy-filters {margin:8px 0;}
+@media(max-width:430px){#shiyi-product-shell .sy-card {padding:10px;margin:8px 0;}#shiyi-product-shell .sy-category-grid {gap:6px;}#shiyi-floating-window>.sy-nav button {font-size:13px;white-space:nowrap;}}
 #shiyi-product-shell .sy-dictionary-row>.sy-tag {margin-left:8px;}
