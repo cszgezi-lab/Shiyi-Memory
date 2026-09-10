@@ -311,7 +311,7 @@ function recoveryOutputLimit(request, configured) {
 
 /** P1 one-request-per-segment orchestration with atomic bundle commits. */
 export class SummaryEngine {
-  constructor({ model, repository, maxInputUnits = 12000, maxSourceUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, now = () => Date.now() } = {}) {
+  constructor({ model, repository, maxInputUnits = 12000, maxSourceUnits = null, requestSafetyUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, now = () => Date.now() } = {}) {
     this.model = modelInvoker(model);
     if (!repository || typeof repository.commitBundle !== 'function') throw new ValidationError('SummaryEngine requires a MemoryRepository');
     this.repository = repository;
@@ -319,6 +319,13 @@ export class SummaryEngine {
     // that also needs small body chunks for continuation can opt into the
     // separate maxSourceUnits split quota without weakening that ceiling.
     this.maxInputUnits = maxInputUnits;
+    // A product may expose a generous user budget while a mobile provider or
+    // model has a much smaller practical attention envelope. This optional
+    // ceiling limits the complete serialized request without changing the
+    // visible source range or the user's saved setting.
+    this.requestSafetyUnits = Number.isFinite(requestSafetyUnits) && requestSafetyUnits > 0
+      ? Math.min(Number(requestSafetyUnits), Number(maxInputUnits) || Number(requestSafetyUnits))
+      : null;
     this.requireFloorSummaries=requireFloorSummaries;
     this.stageCrossBatchMerges=stageCrossBatchMerges;
     this.recoveryEnabled=recoveryEnabled;
@@ -416,7 +423,8 @@ export class SummaryEngine {
         Object.assign(baseDetails,{requestId:diagnosticRequestId(),purpose,requestNumber:state.requests});
         const providerPayload=typeof this.model.providerPayload==='function'?this.model.providerPayload(request):null;
         const units=estimateUnits(JSON.stringify(providerPayload??request));
-        if(units>this.maxInputUnits)throw new ShiyiError('补全请求超过输入预算','INPUT_BUDGET_EXCEEDED');
+        const requestLimit=this.requestSafetyUnits??this.maxInputUnits;
+        if(units>requestLimit)throw new ShiyiError('补全请求超过安全输入上限','INPUT_BUDGET_EXCEEDED',{requestLimit,providerPayloadUnits:units});
         emit('request',{...baseDetails,inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
         try{return await this.model(request,{signal,requestId:baseDetails.requestId,purpose});}
         catch(error){
@@ -427,7 +435,8 @@ export class SummaryEngine {
           // or holding a mobile task open indefinitely.
           if((error.details?.retryAfterMs??0)>5000)throw error;
           if(!compacted&&request.kind==='ShiyiSummaryRequest'){
-            const configuredLimit=Number(request.extractionContext?.budget?.limitUnits)||Number(this.maxInputUnits)||12000;
+            const declaredLimit=Number(request.extractionContext?.budget?.declaredLimitUnits)||Number(this.maxInputUnits)||12000;
+            const configuredLimit=Math.min(declaredLimit,this.requestSafetyUnits??declaredLimit);
             const targetUnits=Math.min(configuredLimit,48000);
             const shed=compactRecoveryContext(request,targetUnits,requestPayload=>typeof this.model.providerPayload==='function'?this.model.providerPayload(requestPayload):requestPayload);
             const configuredOutput=Number(providerPayload?.max_tokens)||Number(request.extractionContext?.budget?.outputBudgetUnits)||0;
@@ -477,7 +486,8 @@ export class SummaryEngine {
         // Output reserve is separately reported because it is not part of the
         // serialized input payload measured immediately before adapter I/O.
         const explicitInputBudget = Number.isFinite(child.budgets?.inputUnits) && child.budgets.inputUnits >= 0;
-        const configuredLimit = explicitInputBudget ? Number(child.budgets.inputUnits) : (Number(this.maxInputUnits) || 12000);
+        const declaredLimit = explicitInputBudget ? Number(child.budgets.inputUnits) : (Number(this.maxInputUnits) || 12000);
+        const configuredLimit = Math.min(declaredLimit, this.requestSafetyUnits ?? declaredLimit);
         const contentQuota = Math.max(0, configuredLimit - sourceUnits - bridgeUnits - focusRulesUnits - schemaUnits - 1500);
         const context = relevantRecords
           ? await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages: child.bridgeMessages, budgetUnits: contentQuota, relevantRecords })
@@ -485,6 +495,7 @@ export class SummaryEngine {
         const committedRevision = typeof this.repository.getCommittedRevision === 'function' ? await this.repository.getCommittedRevision(child.scope) : child.expectedRevision;
         const budget = {
           limitUnits: configuredLimit,
+          declaredLimitUnits: declaredLimit,
           measurement: 'conservative_estimate_of_serialized_sections',
           strategy: context.selection.omittedCount > 0 ? 'bounded_partial_context' : 'bounded_context',
           status: sourceUnits + bridgeUnits + focusRulesUnits > configuredLimit ? 'fixed_sections_exceed_content_quota' : 'within_content_quota',

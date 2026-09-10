@@ -38,7 +38,11 @@ export const PRODUCT_SETTINGS_KEY = 'current';
 // guard leaves room for the contract, rules, evidence bridge and output while
 // keeping normal 5–10 floor batches responsive. Oversized individual floors
 // are still split losslessly by splitSummaryBatch.
-export const SUMMARY_SOURCE_SAFETY_UNITS = 24000;
+// A 10-floor user batch remains one visible batch. This is only the maximum
+// source body in an individual model request; it prevents long replies from
+// turning a small range into a 60K+ provider prompt.
+export const SUMMARY_SOURCE_SAFETY_UNITS = 18000;
+export const SUMMARY_REQUEST_SAFETY_UNITS = 46000;
 
 export const PRODUCT_SHELL_STATUS = Object.freeze({
   IDLE: 'idle',
@@ -294,7 +298,9 @@ export function createProductShellController({
   function settingsKey() { return `${PRODUCT_SETTINGS_KEY}-${sha256(state.scope).slice(0, 24)}`; }
 
   function sourceSplitUnits(){
-    const planned=Math.floor((state.settings.inputBudgetUnits-estimateUnits(JSON.stringify(SUMMARY_OUTPUT_CONTRACT))-estimateUnits(state.settings.recordingRules)-2000)/2.5);
+    const declared=Math.max(256,Number(state.settings.inputBudgetUnits)||24000);
+    const safe=Math.min(declared,SUMMARY_REQUEST_SAFETY_UNITS);
+    const planned=Math.floor((safe-estimateUnits(JSON.stringify(SUMMARY_OUTPUT_CONTRACT))-estimateUnits(state.settings.recordingRules)-2000)/2.5);
     return Math.max(256,Math.min(SUMMARY_SOURCE_SAFETY_UNITS,planned));
   }
 
@@ -526,9 +532,22 @@ export function createProductShellController({
     state.draft={range:clone(state.range),focus:normalizedFocus,status:'running'};
     let frozen;
     let privateTaskCheckpoint = 'not-needed';
+    const safeSplitUnits=sourceSplitUnits();
     try{
     frozen=resume?await repository.readPrivateTask(state.scope,operationId):null;
     if(resume&&!frozen?.batch)throw Object.assign(new Error('没有可续跑的暂存任务，请重新生成'),{code:'RESUME_UNAVAILABLE'});
+    const storedSplitUnits=Number(frozen?.splitUnits);
+    if(frozen?.batch&&Number.isFinite(storedSplitUnits)&&storedSplitUnits>safeSplitUnits){
+      // A pre-safety recovery task can contain a 64K source split. Reusing it
+      // defeats the mobile cap and makes its old checkpoint incompatible with
+      // the new child plan. Re-run the same frozen range with the safe plan;
+      // committed memory is never removed by this reset.
+      await repository.clearPrivateTask?.(state.scope,operationId).catch(()=>{});
+      await repository.clearCheckpoint?.(operationId,state.scope).catch(()=>{});
+      frozen=null;
+      privateTaskCheckpoint='stale_split_reset';
+      try{onDiagnostic({phase:'checkpoint_warning',level:'warning',details:{storedSplitUnits,safeSplitUnits,reason:'oversized_recovery_task',storageArtifact:'checkpoint'}});}catch{/* diagnostics are advisory */}
+    }
     if(frozen?.batch){
       const old=frozen.batch;
       if(old.sourceRevision!==batch.sourceRevision||stableStringify(old.focusSpec)!==stableStringify(batch.focusSpec)||stableStringify(old.rules)!==stableStringify(batch.rules))throw Object.assign(new Error('本批原文或记录规则已变化，请重新生成；未复用过期结果'),{code:'SOURCE_INVALIDATED'});
@@ -540,7 +559,7 @@ export function createProductShellController({
       // mobile storage index).  The source batch remains frozen in memory for
       // this run; a later manual resume can simply start a fresh run.
       try {
-        await repository.savePrivateTask(state.scope,operationId,{batch,splitUnits:sourceSplitUnits()});
+        await repository.savePrivateTask(state.scope,operationId,{batch,splitUnits:safeSplitUnits});
         privateTaskCheckpoint='saved';
       } catch (error) {
         privateTaskCheckpoint='unavailable';
@@ -557,7 +576,7 @@ export function createProductShellController({
     }
     abortController = preflightAbort;
     activeTask = operationId;
-    state.job = { operationId, focusSpec: clone(focusSpec), startedAt: now(), sourceRevision: batch.sourceRevision, splitUnits:frozen?.splitUnits??sourceSplitUnits(), privateTaskCheckpoint };
+    state.job = { operationId, focusSpec: clone(focusSpec), startedAt: now(), sourceRevision: batch.sourceRevision, splitUnits:Math.min(Number(frozen?.splitUnits)||safeSplitUnits,safeSplitUnits), privateTaskCheckpoint };
     state.draft = { range: clone(state.range), focus: normalizedFocus, focusConfirmed: confirmedFocus === true, status: 'running' };
     mark(PRODUCT_SHELL_STATUS.RUNNING);
     state.capabilities.summary = 'running';
@@ -565,7 +584,7 @@ export function createProductShellController({
     const validateBundle=summaryBundleValidator();
     summaryRepository.commitBundle=async (...args)=>{validateBundle(args[0]);return repository.commitBundle(...args);};
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations})).records;
-    engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
+    engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requestSafetyUnits: SUMMARY_REQUEST_SAFETY_UNITS, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
     try {
       const result = await engine.process(batch, { signal: abortController.signal, onDiagnostic });
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };

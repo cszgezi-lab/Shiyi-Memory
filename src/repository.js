@@ -578,6 +578,19 @@ export class MemoryRepository {
     return clone(found.value);
   }
 
+  async clearCheckpoint(operationId, scope = null) {
+    if (!operationId) return;
+    const frozenScope = scope ? normalizeScope(scope) : null;
+    const exactKey = `${frozenScope ? scopeKey(frozenScope) : '*'}|${operationId}`;
+    this._checkpointCache.delete(exactKey);
+    if (!frozenScope) {
+      for (const key of [...this._checkpointCache.keys()]) {
+        if (key.endsWith(`|${operationId}`)) this._checkpointCache.delete(key);
+      }
+    }
+    if (this.store.deleteJson) await this.store.deleteJson({ namespace: this.namespace, key: this._checkpointKey(operationId, frozenScope) });
+  }
+
   async getOperationReceipt(operationId) {
     const found = await this._findReceipt(operationId);
     return found.found ? clone(found.value) : null;
