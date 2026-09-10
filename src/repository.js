@@ -540,7 +540,7 @@ export class MemoryRepository {
       return clone(receipt);
     } catch (error) {
       if (error instanceof PersistenceError || error instanceof RevisionConflictError || error instanceof ScopeConflictError) throw error;
-      throw new PersistenceError('memory commit failed before pointer verification', { cause: error.message, operationId });
+      throw new PersistenceError('memory commit failed before pointer verification', { causeError:error,storageArtifact:'memory',storageStage:'write',stage:'storage',operationId });
     }
   }
 

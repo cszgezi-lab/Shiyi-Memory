@@ -38,10 +38,10 @@ export function normalizeModelList(response) {
     .filter(id => typeof id === 'string' && id.trim() && id.length <= 240))].sort((a,b) => a.localeCompare(b));
 }
 
-export async function fetchProductModels(profile, { fetchImpl, signal, modelsUrl = '' } = {}) {
+export async function fetchProductModels(profile, { fetchImpl, signal, modelsUrl = '',modelRole } = {}) {
   const endpoint=modelListEndpoint(profile,modelsUrl);
   // A separate model-list address must not forward a saved provider key to another origin.
   const apiKey=new URL(endpoint).origin===new URL(profile.endpoint).origin?profile.apiKey:'';
-  const client = new ProviderClient({ ...profile, apiKey, endpoint, endpointMode: 'exact' }, { fetchImpl, recordRequests: false });
+  const client = new ProviderClient({ ...profile, apiKey, endpoint, endpointMode: 'exact' }, { fetchImpl, recordRequests: false,modelRole });
   return normalizeModelList(await client.models({}, { signal }));
 }

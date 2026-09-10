@@ -14,9 +14,9 @@ export function createWorkspace(bound) {
   const store=losslessStore(bound.store);
   const prefix = sha256(scope).slice(0, 24);
   const guard = () => { if (!isCurrent()) throw new Error('聊天已变化，请重新打开当前聊天'); };
-  const storageError = (name, storageStage) => new PersistenceError(
+  const storageError = (name, storageStage, causeError) => new PersistenceError(
     ({read:'当前聊天资料读取失败，请重试',write:'资料写入失败，尚未确认保存',readback:'资料写入后读取失败，尚未确认保存',compare:'保存读回不一致，尚未确认保存'})[storageStage]??'资料保存校验失败',
-    { storageStage, ...(vectorStorageArtifact(name) ? {storageArtifact:vectorStorageArtifact(name)} : {}) });
+    { storageStage,reason:({read:'storage_read',write:'storage_write',readback:'storage_readback',compare:'storage_mismatch',decode:'storage_decode'})[storageStage],causeError,storageArtifact:vectorStorageArtifact(name)??'workspace' });
   async function readRaw(name, fallback = null) {
     guard();
     const key = `${prefix}-${name}`;
@@ -24,7 +24,7 @@ export function createWorkspace(bound) {
     try { found = store.tryGetJson ? await store.tryGetJson({ namespace: NS, key }) : { found: true, value: await store.getJson({ namespace: NS, key }) }; }
     catch (error) {
       if (!store.tryGetJson && isMissingProductEntry(error)) found = { found:false };
-      else { guard(); throw storageError(name, 'read'); }
+      else { guard(); throw storageError(name, 'read',error); }
     }
     guard();
     return clone(found?.found && found.value !== undefined ? found.value : fallback);
@@ -37,7 +37,7 @@ export function createWorkspace(bound) {
     const frozen = encodeVectorDocument(name, clone(value));
     let actual;
     try { actual=await verifiedWrite(store,{namespace:NS,key:`${prefix}-${name}`},frozen); }
-    catch(error) { guard(); throw storageError(name,error?.details?.storageStage??'write'); }
+    catch(error) { guard(); throw storageError(name,error?.details?.storageStage??'write',error); }
     guard();
     if (stableStringify(actual) !== stableStringify(frozen)) throw storageError(name, 'compare');
     return decodeVectorDocument(name, actual);

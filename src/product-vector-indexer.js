@@ -4,6 +4,7 @@ import { vectorNorm, validVectorEntry } from './product-vector-cache.js';
 import { ShiyiError, PersistenceError } from './errors.js';
 import { providerEnvelopeFailure, productFailure } from './product-feedback.js';
 import { vectorStorageArtifact } from './product-vector-storage.js';
+import {diagnosticRequestId,errorDiagnostics} from './diagnostics.js';
 
 const fail = (code, details) => new ShiyiError('向量索引未完成', code, details);
 export const vectorJobKey = key => `${key}-jobs-v1`;
@@ -61,8 +62,8 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
     catch(error){
       check();
       const details={storageArtifact:vectorStorageArtifact(name),storageStage:error?.details?.storageStage??'unknown',indexedItems:validIds.size,pendingItems:cards.length-validIds.size};
-      diagnostic('vector_storage_failed',{...details,code:'PERSISTENCE_ERROR'},'error');
-      throw new PersistenceError('向量索引保存校验失败',details);
+      diagnostic('vector_storage_failed',{...errorDiagnostics(error),...details,code:'PERSISTENCE_ERROR'},'error');
+      throw new PersistenceError('向量索引保存校验失败',{...details,causeError:error});
     }
     check();
   };
@@ -114,10 +115,10 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
   let fatal=null,consecutiveInputFailures=0;
   async function send(batch){
     check();requests++;const started=Date.now(),details={requestNumber:requests,requestItems:batch.length,inputChars:batch.reduce((n,x)=>n+x.text.length,0),longestInputChars:Math.max(...batch.map(x=>x.text.length)),modelRole:'embedding'};
-    diagnostic('request',details);
+    details.requestId=diagnosticRequestId();details.purpose='embeddings';diagnostic('request',details);
     let vectors;
     try{
-      const response=await client.embeddings({model:client.profile.model,input:batch.map(x=>x.text),encoding_format:'float'},{signal});check();
+      const response=await client.embeddings({model:client.profile.model,input:batch.map(x=>x.text),encoding_format:'float'},{signal,requestId:details.requestId,purpose:'embeddings'});check();
       diagnostic('response',{...details,receivedVectors:Array.isArray(response?.data)?response.data.length:0,elapsedMs:Date.now()-started});
       vectors=embeddingVectors(response,batch.length);
       const dimension=vectors[0].length;
@@ -126,7 +127,7 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
       if(retained.some(c=>index[c.id].vector.length!==dimension)||staged.some(p=>p.vector.length!==dimension))throw fail('VECTOR_DIMENSION_MISMATCH',{vectorDimensions:dimension});
     }catch(error){
       check();const f=productFailure(error);
-      diagnostic('vector_failed',{...details,code:f.code,transport:error?.details?.transport,...(f.status?{status:f.status}:{}),elapsedMs:Date.now()-started},'warning');
+      diagnostic('vector_failed',{...details,...errorDiagnostics(error),code:f.code,...(f.status?{status:f.status}:{}),elapsedMs:Date.now()-started},'warning');
       // Input/batch incompatibility can be isolated without resubmitting a
       // successful item. Global service errors stop immediately, not N retries.
       if(batch.length>1&&splitRequests<32&&([400,413,422].includes(f.status)||['VECTOR_RESPONSE_COUNT','VECTOR_RESPONSE_INDEX'].includes(f.code))){

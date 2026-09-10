@@ -10,6 +10,7 @@ import { ScopeConflictError, ShiyiError, SummaryResponseError, ValidationError }
 import { abortError, clone, decodeUtf8Chunk, estimateUnits, sha256, stableStringify, throwIfAborted } from './utils.js';
 import { requireIndependentFloorSummaries } from './floor-summaries.js';
 import { safeLogDetails } from './product-runtime-log.js';
+import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType } from './diagnostics.js';
 import { resolveEventMerges } from './event-consolidation.js';
 import { tokenizeChinese } from './retrieval.js';
 import { normalizeSummaryEnums, normalizePersonaValidity, repairableEnumTargets, createEnumRepairRequest, applyEnumCorrections } from './summary-enum-repair.js';
@@ -21,7 +22,7 @@ function responseStatus(response) {
 
 async function readRawBody(response) {
   if (response?.aborted || response?.bodyAborted || response?.truncated || response?.complete === false) {
-    throw new SummaryResponseError('summary response body was interrupted or truncated', { httpStatus: responseStatus(response) });
+    throw new SummaryResponseError('summary response body was interrupted or truncated', { status:responseStatus(response),stage:'read_body',reason:'body_interrupted' });
   }
   if (typeof response === 'string') return response;
   if (response?.body && typeof response.body !== 'string' && response.body[Symbol.asyncIterator]) {
@@ -29,12 +30,12 @@ async function readRawBody(response) {
     try {
       for await (const chunk of response.body) chunks.push(decodeUtf8Chunk(chunk));
     } catch (error) {
-      throw new SummaryResponseError('summary response body stream was interrupted', { cause: error.message });
+      throw new SummaryResponseError('summary response body stream was interrupted', { causeError:error,stage:'read_body',reason:'body_interrupted' });
     }
     return chunks.join('');
   }
   if (typeof response?.text === 'function') {
-    try { return await response.text(); } catch (error) { throw new SummaryResponseError('summary response body could not be read', { cause: error.message }); }
+    try { return await response.text(); } catch (error) { throw new SummaryResponseError('summary response body could not be read', { causeError:error,stage:'read_body',reason:'body_interrupted' }); }
   }
   if (typeof response?.body === 'string') return response.body;
   if (response?.body !== undefined) return JSON.stringify(response.body);
@@ -51,12 +52,12 @@ async function parseModelResponse(raw, { onMetadata = () => {} } = {}) {
   const status = responseStatus(raw);
   if (status < 200 || status >= 300) {
     const body = await readRawBody(raw).catch(() => '');
-    throw new SummaryResponseError(`summary model returned HTTP ${status}`, { status, bodyPrefix: body.slice(0, 200) });
+    throw new SummaryResponseError(`summary model returned HTTP ${status}`, { status,bodyChars:body.length,stage:'request',reason:'http_error' });
   }
   let payload = raw;
   if (typeof raw === 'string' || raw?.text || raw?.body !== undefined || raw?.status !== undefined || raw?.statusCode !== undefined) {
     const text = stripJsonFence(await readRawBody(raw));
-    try { payload = JSON.parse(text); } catch (error) { throw new SummaryResponseError('summary model returned invalid JSON', { cause: error.message, bodyPrefix: text.slice(0, 200) }); }
+    try { payload = JSON.parse(text); } catch (error) { throw new SummaryResponseError('summary model returned invalid JSON', jsonFailure(error,text,{status,stage:'parse_envelope'})); }
   }
   // OpenAI-compatible chat response. A length stop is a truncated model
   // result even when the provider happened to return syntactically valid JSON.
@@ -65,15 +66,16 @@ async function parseModelResponse(raw, { onMetadata = () => {} } = {}) {
   const metadata=safeLogDetails({status,finishReason:finishReason??'unknown',truncated:['length','max_tokens','truncated','abort'].includes(String(finishReason).toLowerCase()),promptTokens:payload?.usage?.prompt_tokens,completionTokens:payload?.usage?.completion_tokens,totalTokens:payload?.usage?.total_tokens,reasoningTokens:payload?.usage?.completion_tokens_details?.reasoning_tokens,responseChars:typeof content==='string'?content.length:undefined});
   try{onMetadata(metadata);}catch{/* diagnostics are not part of model validation */}
   if (['length', 'max_tokens', 'truncated', 'abort'].includes(String(finishReason).toLowerCase())) {
-    const error=new SummaryResponseError('summary model output was truncated', metadata);error.code='MODEL_OUTPUT_TRUNCATED';throw error;
+    const error=new SummaryResponseError('summary model output was truncated', {...metadata,reason:'output_truncated',stage:'parse_content'});error.code='MODEL_OUTPUT_TRUNCATED';throw error;
   }
-  if(finishReason==='content_filter'){const error=new SummaryResponseError('summary model output was filtered',metadata);error.code='MODEL_OUTPUT_BLOCKED';throw error;}
+  if(finishReason==='content_filter'){const error=new SummaryResponseError('summary model output was filtered',{...metadata,reason:'output_blocked',stage:'parse_content'});error.code='MODEL_OUTPUT_BLOCKED';throw error;}
+  if(payload?.choices&&typeof content!=='string')throw new SummaryResponseError('summary response has no textual content',{...metadata,reason:'empty_model_content',stage:'parse_content',contentType:contentType(content),choicesCount:payload.choices.length});
   if (payload?.choices?.[0]?.message?.content !== undefined) payload = payload.choices[0].message.content;
   else if (payload?.output_text !== undefined) payload = payload.output_text;
   if (typeof payload === 'string') {
-    try { payload = JSON.parse(stripJsonFence(payload)); } catch (error) { throw new SummaryResponseError('summary model content is not valid JSON', { cause: error.message }); }
+    try { payload = JSON.parse(stripJsonFence(payload)); } catch (error) { throw new SummaryResponseError('summary model content is not valid JSON', jsonFailure(error,stripJsonFence(payload),metadata)); }
   }
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new SummaryResponseError('summary model response must be an object');
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new SummaryResponseError('summary model response must be an object',{...metadata,stage:'parse_content',reason:'invalid_model_root',contentType:contentType(payload)});
   if (payload.draftBundle && typeof payload.draftBundle === 'object') return payload.draftBundle;
   return payload;
 }
@@ -103,7 +105,7 @@ function modelInvoker(model) {
 
 function ensureAllCategories(raw) {
   const missing = DRAFT_CATEGORIES.filter((category) => !(category in (raw ?? {})));
-  if (missing.length) throw new SummaryResponseError('summary output is missing required categories', { missing });
+  if (missing.length) throw new SummaryResponseError('summary output is missing required categories', { reason:'missing_categories',stage:'validate',repairCategories:missing });
 }
 
 function focusFingerprint(focusSpec, focusVersion = null) {
@@ -344,8 +346,13 @@ export class SummaryEngine {
       if(units>this.maxInputUnits)throw new ShiyiError('补全请求超过输入预算','INPUT_BUDGET_EXCEEDED');
       for(;;){
         throwIfAborted(signal);state.requests++;
-        try{return await this.model(request,{signal});}
+        const purpose=({ShiyiCategoryRepair:'category_repair',ShiyiFloorRepair:'floor_repair',ShiyiSummaryEnumRepair:'enum_repair'})[request.kind]??'summary';
+        Object.assign(baseDetails,{requestId:diagnosticRequestId(),purpose,requestNumber:state.requests});
+        emit('request',{...baseDetails,inputUnits:units,maxTokens:this.model.providerPayload?.(request)?.max_tokens??0,recoveryCalls});
+        try{return await this.model(request,{signal,requestId:baseDetails.requestId,purpose});}
         catch(error){
+          error.details={...error.details,requestId:baseDetails.requestId,purpose};
+          emit('response',{...baseDetails,...errorDiagnostics(error)},'error');
           if(!this.recoveryEnabled||!transientSummaryError(error)||recoveryCalls>=2)throw error;
           // Long rate limits require user action later, not ignoring Retry-After
           // or holding a mobile task open indefinitely.
@@ -528,7 +535,7 @@ export class SummaryEngine {
           }
         }
         this.requestLog.push({ operationId: child.operationId, parentOperationId: batch.operationId, childIndex, sourceIds: child.sourceMessages.map((message) => message.id) });
-        emit('request',{...baseDetails,inputLimit:configuredLimit,inputUnits:wireUnits(),maxTokens:this.model.providerPayload?.(request)?.max_tokens??0});
+        baseDetails.inputLimit=configuredLimit;
         const resultBinding=sha256({sourceRevision:child.sourceRevision,scope:child.scope,rules:child.rules,focus:child.focusSpec,configVersion:child.configVersion});
         const prior=this.recoveryEnabled?await this.repository.readPrivateTask?.(child.scope,child.operationId):null;
         if(prior?.binding&&prior.binding!==resultBinding)throw new ScopeConflictError('saved response source or rules changed');
@@ -584,13 +591,13 @@ export class SummaryEngine {
           catch(error){
             if(!this.recoveryEnabled||error.details?.invalidRows||error.details?.duplicateCount||error.details?.emptyFloors?.length||!error.details?.missingFloors?.length)throw error;
             const missing=child.sourceMessages.filter(m=>error.details.missingFloors.includes(m.index));
-            emit('partial_repair',{...baseDetails,repairFields:missing.length},'warning');
+            emit('partial_repair',{...baseDetails,...safeLogDetails(error.details),purpose:'floor_repair',repairFields:missing.length},'warning');
             let fixed;
             const repairRaw=await invoke(missingFloorRequest(request,bundle,missing),baseDetails,{extra:true});
             try{fixed=await parseModelResponse(repairRaw,{onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});}
             catch(repairError){
               if(signal?.aborted)throw repairError;
-              emit('repair_failed',{...baseDetails,code:repairError.code},'error');
+              emit('repair_failed',{...baseDetails,...errorDiagnostics(repairError)},'error');
               error.details.repairAttempted=true;throw error;
             }
             if(!Array.isArray(fixed?.summaryView)||Object.keys(fixed).length!==1)throw error;
@@ -654,13 +661,23 @@ export class SummaryEngine {
         if(!validation.valid&&this.recoveryEnabled){
           const categories=repairCategories(validation);
           if(categories.length){
-            emit('partial_repair',{...baseDetails,repairFields:categories.length},'warning');
-            const fixed=await parseModelResponse(await invoke(categoryRepairRequest(request,bundle,categories),baseDetails,{extra:true}));
-            const repaired=applyCategoryRepair(bundle,categories,fixed);
-            if(repaired){
+            phase='repair_request';
+            const repairDetails={...safeLogDetails(validation),repairCategories:categories,repairCategoriesCount:categories.length,purpose:'category_repair'};
+            emit('partial_repair',{...baseDetails,...repairDetails},'warning');
+            try{
+              const repairRaw=await invoke(categoryRepairRequest(request,bundle,categories,validation),baseDetails,{extra:true});
+              phase='repair_response';
+              const fixed=await parseModelResponse(repairRaw,{onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});
+              const repaired=applyCategoryRepair(bundle,categories,fixed);
+              if(!repaired)throw new ValidationError('category repair changed shape or dropped records',{...validation,stage:'repair',reason:'invalid_repair_shape'});
               const normalized=bindOutput(normalizePersonaValidity(normalizeSummaryEnums(repaired).output).output);
               const checked=validateDraftBundle(normalized,validationOptions);
-              if(checked.valid){bundle=normalized;validation=checked;await keepResponse(bundle);emit('repair_complete',{...baseDetails,repairFields:categories.length},'success');}
+              if(!checked.valid)throw new ValidationError('category repair failed validation',{...checked,stage:'validate',repairAttempted:true});
+              bundle=normalized;validation=checked;await keepResponse(bundle);emit('repair_complete',{...baseDetails,...repairDetails},'success');
+              phase='validate';
+            }catch(error){
+              error.details={...repairDetails,...error.details,requestId:baseDetails.requestId,purpose:'category_repair',repairAttempted:true};
+              emit('repair_failed',{...baseDetails,...errorDiagnostics(error)},'error');throw error;
             }
           }
         }
@@ -691,21 +708,21 @@ export class SummaryEngine {
           failedChildIndexes: state.failedChildren,
           totalChildren: children.length,
           receipts: clone(state.receipts),
-        }).catch(error=>emit('checkpoint_warning',{...baseDetails,code:error.code},'warning'));
+        }).catch(error=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'checkpoint'},'warning'));
         if (typeof onProgress === 'function') await onProgress(clone(state));
       } catch (error) {
         if(this.recoveryEnabled&&!signal?.aborted&&phase==='response'&&['MODEL_OUTPUT_TRUNCATED','SUMMARY_RESPONSE_ERROR','SUMMARY_RESPONSE_INVALID','MODEL_OUTPUT_BLOCKED'].includes(error?.code)){
           // An incomplete/blocked response cannot be repaired as a complete JSON
           // draft. A manual retry may use a newly selected model/output budget.
-          await this.repository.savePrivateTask?.(child.scope,child.operationId,{retryModel:true}).catch(()=>{});
+          await this.repository.savePrivateTask?.(child.scope,child.operationId,{retryModel:true}).catch(error=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'checkpoint'},'warning'));
         }
-        emit(phase,{...baseDetails,...safeLogDetails(error?.details),code:signal?.aborted?'CANCELED':error?.code,elapsedMs:this.now()-started},signal?.aborted?'warning':'error');
+        emit(phase,{...baseDetails,...errorDiagnostics(error),code:signal?.aborted?'CANCELED':error?.code,elapsedMs:this.now()-started},signal?.aborted?'warning':'error');
         if (error?.name === 'AbortError' || error?.code === 'CANCELED' || signal?.aborted) {
           state.status = 'canceled';
           state.canceledChild = childIndex;
           if (typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
             status: 'canceled', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), completedChildIndexes: [...completed].sort((a, b) => a - b), failedChildIndexes: state.failedChildren, totalChildren: children.length, receipts: clone(state.receipts),
-          }).catch(e=>emit('checkpoint_warning',{code:e.code},'warning'));
+          }).catch(e=>emit('checkpoint_warning',{...errorDiagnostics(e),storageArtifact:'checkpoint'},'warning'));
           throw (error?.name === 'AbortError' ? error : abortError());
         }
         if (error?.code === 'COVERAGE_INCOMPLETE') {
@@ -714,14 +731,14 @@ export class SummaryEngine {
           state.unprocessedChildren = [...new Set([...(state.unprocessedChildren ?? []), childIndex])];
           if (typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
             status: 'partial', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), parentRange: clone(batch.parentRange), completedChildIndexes: [...completed].sort((a, b) => a - b), failedChildIndexes: state.failedChildren, partialChildIndexes: state.unprocessedChildren, totalChildren: children.length, receipts: clone(state.receipts), coverage: clone(error.details?.coverage ?? null),
-          }).catch(e=>emit('checkpoint_warning',{code:e.code},'warning'));
+          }).catch(e=>emit('checkpoint_warning',{...errorDiagnostics(e),storageArtifact:'checkpoint'},'warning'));
           throw error;
         }
         state.status = 'failed';
         state.failedChildren.push(childIndex);
         if (typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
           status: 'failed', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), completedChildIndexes: [...completed].sort((a, b) => a - b), failedChildIndexes: state.failedChildren, totalChildren: children.length, receipts: clone(state.receipts), error: { code: error.code, message: error.message },
-        }).catch(e=>emit('checkpoint_warning',{code:e.code},'warning'));
+          }).catch(e=>emit('checkpoint_warning',{...errorDiagnostics(e),storageArtifact:'checkpoint'},'warning'));
         throw error;
       }
     }
@@ -729,8 +746,8 @@ export class SummaryEngine {
     state.completedAt = this.now();
     if (typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
       status: 'done', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), parentRange: clone(batch.parentRange), completedChildIndexes: state.completedChildren, failedChildIndexes: [], totalChildren: children.length, receipts: clone(state.receipts),
-    }).catch(e=>emit('checkpoint_warning',{code:e.code},'warning'));
-    if(this.recoveryEnabled)for(const child of children)await this.repository.clearPrivateTask?.(batch.scope,child.operationId).catch(()=>{});
+          }).catch(e=>emit('checkpoint_warning',{...errorDiagnostics(e),storageArtifact:'checkpoint'},'warning'));
+    if(this.recoveryEnabled)for(const child of children)await this.repository.clearPrivateTask?.(batch.scope,child.operationId).catch(error=>emit('checkpoint_warning',{...errorDiagnostics(error),storageArtifact:'checkpoint'},'warning'));
     return state;
   }
 

@@ -29,7 +29,7 @@ function safeIdentityFailure(error) {
   // Host metadata exceptions may contain paths, account names, or provider
   // details.  Imported/unsaved chats commonly fail here because integrity is
   // not durable yet; all such failures have one user-facing explanation.
-  return productError('当前聊天身份尚未就绪，请先让宿主保存聊天后重试。', 'CHAT_IDENTITY_NOT_READY');
+  return productError('当前聊天身份尚未就绪，请先让宿主保存聊天后重试。', 'CHAT_IDENTITY_NOT_READY',{causeError:error,stage:'prepare'});
 }
 
 function requireAdapter(adapter) {
@@ -46,7 +46,7 @@ export async function captureProductHostSession(adapter, { accountId = null, bra
   let handle;
   try { handle = await adapter.openHandle(clone(ref)); } catch (error) {
     if (error?.code === 'CHAT_REF_UNAVAILABLE') throw error;
-    throw productError('当前聊天无法打开。', 'CHAT_HANDLE_UNAVAILABLE');
+    throw productError('当前聊天无法打开。', 'CHAT_HANDLE_UNAVAILABLE',{causeError:error,stage:'prepare'});
   }
   let rawIdentity;
   try {
@@ -128,7 +128,7 @@ export async function readProductHostRange(session, { count = 8, startIndex = nu
     limit = Math.min(max, count);
   }
   let page;
-  try { page = await history.tail({ limit }); } catch (error) { throw productError('当前聊天历史读取失败。', 'HISTORY_UNAVAILABLE'); }
+  try { page = await history.tail({ limit }); } catch (error) { throw productError('当前聊天历史读取失败。', 'HISTORY_UNAVAILABLE',{causeError:error,stage:'prepare'}); }
   if (!page || !Array.isArray(page.messages)) throw productError('宿主历史页格式不可用。', 'HOST_CONTRACT_INVALID');
   const pageStart = Number.isInteger(page.startIndex) && page.startIndex >= 0 ? page.startIndex : Math.max(0, (page.totalCount ?? page.messages.length) - page.messages.length);
   const totalCount = Number.isInteger(page.totalCount) && page.totalCount >= pageStart + page.messages.length ? page.totalCount : pageStart + page.messages.length;
@@ -144,7 +144,7 @@ export async function readProductHostRange(session, { count = 8, startIndex = nu
     while (cursor.startIndex > start && guard < 64) {
       guard += 1;
       let older;
-      try { older = await history.before(cursor, { limit: Math.min(max, Math.max(1, pageStart - start)) }); } catch (error) { throw productError('明确范围历史读取失败。', 'HISTORY_UNAVAILABLE'); }
+      try { older = await history.before(cursor, { limit: Math.min(max, Math.max(1, pageStart - start)) }); } catch (error) { throw productError('明确范围历史读取失败。', 'HISTORY_UNAVAILABLE',{causeError:error,stage:'prepare'}); }
       if (!older || !Array.isArray(older.messages) || !Number.isInteger(older.startIndex) || older.startIndex < 0 || older.startIndex >= cursor.startIndex) throw productError('宿主历史范围不连续。', 'HOST_CONTRACT_INVALID');
       if (older.startIndex + older.messages.length !== cursor.startIndex || (older.totalCount !== undefined && older.totalCount !== totalCount)) throw productError('宿主历史缺页或读取期间发生变化。', 'HOST_CONTRACT_INVALID');
       pages.push(older);
@@ -234,7 +234,7 @@ export function createProductTransport(profile = {}, { sessionApiKey = '', fetch
       // This value lives only in the returned session object.
       apiKey: typeof sessionApiKey === 'string' ? sessionApiKey : '',
       timeoutMs: profile.deadlineMs ?? profile.timeoutMs,
-    }, { fetchImpl, recordRequests: false });
+    }, { fetchImpl, recordRequests: false,modelRole:'summary' });
   } catch (error) {
     return { status: 'unavailable', errorCode: 'TRANSPORT_UNAVAILABLE', reason: 'provider_profile_invalid' };
   }

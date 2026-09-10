@@ -407,7 +407,7 @@ function validateRawBundleShape(source) {
       });
     }
   }
-  if (errors.length) throw new ValidationError('DraftBundle contains malformed category types', { errors, validationIssueCount:issues.length, validationIssues:issues.slice(0,24) });
+  if (errors.length) throw new ValidationError('DraftBundle contains malformed category types', { errors, validationIssueCount:issues.length, validationIssues:issues.slice(0,512) });
 }
 
 function sourceEvidenceKey(ref) {

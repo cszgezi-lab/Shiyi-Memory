@@ -1,7 +1,7 @@
 // Shared by the validator, local diagnostics and UI. Only schema vocabulary
 // and numeric row positions may cross this boundary, never model values.
 const categories = 'events|awarenessChanges|entityFactChanges|relationshipChanges|personaChanges|commitmentChanges|performanceHints|summaryView|conflicts';
-const fields = 'id|sourceRefs|sources|state|status|epistemicStatus|perspective|via|learnedAt|eventRef|eventRefs|eventId|eventIds|sourceEventId|evidenceKind|expression|response|mutualConfirmation|publicScope|object|context|scope|expiresAt|term|title|description|recallSummary|entities|tags|mergeInto';
+const fields = 'id|sourceRefs|sources|state|status|epistemicStatus|perspective|via|learnedAt|eventRef|eventRefs|eventId|eventIds|sourceEventId|evidenceKind|expression|response|mutualConfirmation|publicScope|object|context|scope|expiresAt|term|title|description|recallSummary|entities|tags|mergeInto|subject|actorId|person|personId|audience|entity|entityId|field|key|value|from|to|newValue|aspect|objectRef|content|text|action|time|location|participants|floorIndex|confidence|knowledge|fact|strength|reason';
 const index = '\\[(?:0|[1-9]\\d{0,6})\\]';
 const pathPattern = new RegExp(`^(?:bundle|scope|operationId|expectedRevision|(?:${categories})(?:${index}(?:\\.(?:${fields})(?:${index})?)?)?|coverage(?:\\.(?:sourceRefs|bridgeRefs|processed|excluded|unprocessed)(?:${index})?)?)$`);
 const types = new Set(['array','object','string','number','boolean','null','undefined']);
@@ -25,7 +25,7 @@ export const VALIDATION_ISSUE_LABELS = Object.freeze({
 export function valueType(value) { return value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value; }
 export function safeValidationIssues(value) {
   if (!Array.isArray(value)) return [];
-  return value.slice(0,24).flatMap(issue => {
+  return value.slice(0,512).flatMap(issue => {
     if (!issue || typeof issue.path !== 'string' || issue.path.length > 160 || !pathPattern.test(issue.path) || !Object.hasOwn(VALIDATION_ISSUE_LABELS,issue.reason)) return [];
     const safe = {path:issue.path,reason:issue.reason};
     for(const key of ['expectedType','actualType'])if(types.has(issue[key]))safe[key]=issue[key];

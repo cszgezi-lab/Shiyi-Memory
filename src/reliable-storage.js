@@ -38,9 +38,9 @@ export async function verifiedWrite(store,address,value){
   const expected=stableStringify(value);let writeError;
   try{await store.setJson({...address,value});}catch(error){writeError=error;}
   let actual;
-  try{actual=await readStored(store,address);}catch{
-    throw new PersistenceError('写入后的读回未完成',{storageStage:writeError?'write':'readback'});
+  try{actual=await readStored(store,address);}catch(error){
+    throw new PersistenceError('写入后的读回未完成',{storageStage:writeError?'write':'readback',reason:writeError?'storage_write':'storage_readback',causeError:writeError??error});
   }
   if(actual?.found&&stableStringify(actual.value)===expected)return clone(actual.value);
-  throw new PersistenceError('保存尚未通过读回确认',{storageStage:writeError?'write':'compare'});
+  throw new PersistenceError('保存尚未通过读回确认',{storageStage:writeError?'write':'compare',reason:writeError?'storage_write':'storage_mismatch',causeError:writeError});
 }

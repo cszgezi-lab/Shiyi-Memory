@@ -4,6 +4,7 @@ export class ShiyiError extends Error {
     this.name = 'ShiyiError';
     this.code = code;
     if (details !== undefined) this.details = details;
+    if (details?.causeError instanceof Error) this.cause = details.causeError;
   }
 }
 
@@ -48,4 +49,3 @@ export class ProbeWriteError extends ShiyiError {
     this.name = 'ProbeWriteError';
   }
 }
-

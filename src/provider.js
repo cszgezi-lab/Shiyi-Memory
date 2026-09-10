@@ -1,5 +1,10 @@
 import { ShiyiError, SummaryResponseError } from './errors.js';
 import { clone, decodeUtf8Chunk } from './utils.js';
+import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType,UPSTREAM_CODES } from './diagnostics.js';
+
+// Scoped to this plugin's transport function, never a global fetch hook.
+const observers=new WeakMap();
+export function observeProviderRequests(fetchImpl,observer){observers.set(fetchImpl,observer);return()=>observers.delete(fetchImpl);}
 
 export const PROVIDER_RESOURCES = Object.freeze({
   chat: '/chat/completions',
@@ -80,7 +85,7 @@ export function buildProviderHeaders(profile = {}, extra = {}) {
 }
 
 async function readBody(response) {
-  if (response?.aborted || response?.bodyAborted || response?.truncated) throw new SummaryResponseError('provider response body was interrupted', { aborted: true });
+  if (response?.aborted || response?.bodyAborted || response?.truncated) throw new SummaryResponseError('provider response body was interrupted', { aborted: true,stage:'read_body',reason:'body_interrupted' });
   try {
     if (typeof response === 'string') return response;
     if (response?.body && typeof response.body !== 'string' && response.body[Symbol.asyncIterator]) {
@@ -93,37 +98,52 @@ async function readBody(response) {
     if (response?.body !== undefined) return JSON.stringify(response.body);
     return JSON.stringify(response);
   } catch (error) {
-    throw new SummaryResponseError('provider response body could not be read', { cause: error.message, aborted: true });
+    throw new SummaryResponseError('provider response body could not be read', { causeError:error, aborted: true,stage:'read_body',reason:'body_interrupted' });
   }
 }
 
-export async function parseProviderJson(response, { requireStatus = true } = {}) {
+export async function parseProviderJson(response, { requireStatus = true, onMetadata=()=>{} } = {}) {
   const status = Number(response?.status ?? response?.statusCode ?? 200);
+  const mime=response?.headers?.get?.('content-type')??'';
+  const metadata={status,statusKnown:response?.status!==undefined||response?.statusCode!==undefined,responseType:/json/i.test(mime)?'json':/html/i.test(mime)?'html':/text/i.test(mime)?'text':mime?'other':'unknown'};
+  onMetadata(metadata);
   if (requireStatus && (status < 200 || status >= 300)) {
-    const body = await readBody(response).catch(() => '');
+    let bodyError;const body = await readBody(response).catch(error => {bodyError=error;return '';});
+    let upstreamCode;try{const data=JSON.parse(body);const code=data?.error?.code??data?.error?.type??data?.code;if(Object.hasOwn(UPSTREAM_CODES,code))upstreamCode=code;}catch{/* no raw body retained */}
     const header=response?.headers?.get?.('retry-after'),seconds=header&&Number(header);
     const retryAfterMs=header?(Number.isFinite(seconds)?Math.max(0,seconds*1000):Math.max(0,Date.parse(header)-Date.now())):0;
-    throw new ShiyiError(`provider returned HTTP ${status}`, 'PROVIDER_HTTP_ERROR', { status, body: body.slice(0, 1000),...(Number.isFinite(retryAfterMs)&&retryAfterMs>0?{retryAfterMs}: {}) });
+    throw new ShiyiError(`provider returned HTTP ${status}`, 'PROVIDER_HTTP_ERROR', { ...metadata,stage:'request',reason:'http_error',bodyChars:body.length,upstreamDetailsProvided:Boolean(body.trim()),upstreamCode,causeError:bodyError,...(Number.isFinite(retryAfterMs)&&retryAfterMs>0?{retryAfterMs}: {}) });
   }
   const text = await readBody(response);
   try { return JSON.parse(text); } catch (error) {
-    throw new SummaryResponseError('provider returned invalid JSON', { cause: error.message, bodyPrefix: text.slice(0, 200) });
+    throw new SummaryResponseError('provider returned invalid JSON', jsonFailure(error,text,{...metadata,stage:'parse_envelope'}));
   }
 }
 
 /** Shared transport for connection tests and real summary/vector/rerank work. */
 export class ProviderClient {
-  constructor(profile, { fetchImpl = globalThis.fetch, recordRequests = true } = {}) {
+  constructor(profile, { fetchImpl = globalThis.fetch, recordRequests = true,modelRole } = {}) {
     this.profile = normalizeProviderProfile(profile);
     if (typeof fetchImpl !== 'function') throw new ShiyiError('fetch implementation is required', 'PROVIDER_FETCH_UNAVAILABLE');
     this.fetch = fetchImpl;
     this.requestLog = [];
     this.recordRequests = recordRequests;
+    this.modelRole=modelRole;
   }
 
-  async request(resource, payload, { signal, timeoutMs, headers = {}, method = 'POST' } = {}) {
+  async request(resource, payload, { signal, timeoutMs, headers = {}, method = 'POST', requestId=diagnosticRequestId(), purpose, onDiagnostic } = {}) {
+    const started=Date.now(),observer=onDiagnostic??observers.get(this.fetch);let finished=false;
+    const emit=(phase,details={},level='info')=>{if(finished)return;try{observer?.({phase,level,details:{requestId,purpose:purpose??resource,modelRole:this.modelRole,elapsedMs:Date.now()-started,...details}});}catch{/* diagnostics never fail a request */}};
+    emit('request',{stage:'prepare',maxTokens:payload?.max_tokens??0});
+    try { return await this.performRequest(resource,payload,{signal,timeoutMs,headers,method,emit}); }
+    catch(thrown){const error=thrown instanceof Error?thrown:new ShiyiError('provider threw a non-Error value','PROVIDER_REQUEST_FAILED');error.details={stage:'prepare',...error.details,requestId,purpose:purpose??resource};emit(error.code==='CANCELED'?'canceled':'failed',errorDiagnostics(error),error.code==='CANCELED'?'warning':'error');throw error;}
+    finally{finished=true;}
+  }
+
+  async performRequest(resource, payload, { signal, timeoutMs, headers, method, emit }) {
     const url = resolveProviderEndpoint(this.profile, resource);
     const requestHeaders = buildProviderHeaders(this.profile, headers);
+    const body=method !== 'GET' && method !== 'HEAD'?JSON.stringify(payload??{}):undefined;
     const controller = new AbortController();
     const relayAbort = () => controller.abort(signal?.reason);
     if (signal?.aborted) relayAbort();
@@ -139,7 +159,7 @@ export class ProviderClient {
       headers: requestHeaders,
       signal: controller.signal,
     };
-    if (method !== 'GET' && method !== 'HEAD') init.body = JSON.stringify(payload ?? {});
+    if (body!==undefined) init.body = body;
     if (this.recordRequests) this.requestLog.push({ resource, url, payload: clone(payload), headers: clone(requestHeaders) });
     let onAbort;
     const canceled = new Promise((_, reject) => {
@@ -147,14 +167,17 @@ export class ProviderClient {
       if (controller.signal.aborted) onAbort(); else controller.signal.addEventListener('abort', onAbort, { once:true });
     });
     try {
-      return await Promise.race([(async () => { if(controller.signal.aborted)throw new ShiyiError('request canceled','CANCELED'); return parseProviderJson(await this.fetch(url, init)); })(), canceled]);
+      const result=await Promise.race([(async () => { if(controller.signal.aborted)throw new ShiyiError('request canceled','CANCELED'); return parseProviderJson(await this.fetch(url, init),{onMetadata:details=>emit('response',{...details,stage:'read_body'})}); })(), canceled]);
+      const message=result?.choices?.[0]?.message;
+      emit('complete',{stage:'parse_envelope',contentType:contentType(message?.content??result),responseChars:typeof message?.content==='string'?message.content.length:undefined,choicesCount:Array.isArray(result?.choices)?result.choices.length:undefined,toolCallsCount:message?.tool_calls?.length,finishReason:result?.choices?.[0]?.finish_reason,promptTokens:result?.usage?.prompt_tokens,completionTokens:result?.usage?.completion_tokens,totalTokens:result?.usage?.total_tokens},'success');
+      return result;
     } catch (error) {
       if (timedOut) {
-        const timeoutError = new ShiyiError(`${resource} request timed out`, 'TIMEOUT', { timeoutMs: effectiveTimeout });
+        const timeoutError = new ShiyiError(`${resource} request timed out`, 'TIMEOUT', { timeoutMs: effectiveTimeout,stage:'request',reason:'timeout',causeError:error });
         throw timeoutError;
       }
-      if(error?.code||error?.name==='AbortError')throw error;
-      throw new ShiyiError('provider network request failed', 'network.request_failed', error?.details);
+      if(error?.code||error?.name==='AbortError'){if(error?.code==='CANCELED'||error?.name==='AbortError')error.details={...error.details,stage:'request',reason:'canceled'};throw error;}
+      throw new ShiyiError('provider network request failed', 'network.request_failed', {...error?.details,stage:'request',reason:'network_unclassified',upstreamDetailsProvided:false,causeError:error});
     } finally {
       if (timer) clearTimeout(timer);
       controller.signal.removeEventListener('abort', onAbort);

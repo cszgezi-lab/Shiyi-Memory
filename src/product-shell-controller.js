@@ -530,7 +530,7 @@ export function createProductShellController({
       if(preflightAbort.signal.aborted||!tokenValid(token,session))return {status:PRODUCT_SHELL_STATUS.CANCELED,errorCode:'CANCELED',operationId};
       mark(PRODUCT_SHELL_STATUS.FAILED,errorCode(error,'PERSISTENCE_ERROR'),'任务暂存未完成，原文与侧重点保留。');
       state.draft={range:clone(state.range),focus:normalizedFocus,status:'retryable'};
-      return {status:PRODUCT_SHELL_STATUS.FAILED,errorCode:error.code??'PERSISTENCE_ERROR',failure:productFailure(error),errorDetails:safeLogDetails(error.details),operationId};
+      return {status:PRODUCT_SHELL_STATUS.FAILED,errorCode:error.code??'PERSISTENCE_ERROR',failure:productFailure(error),errorDetails:safeLogDetails(errorDiagnostics(error)),operationId};
     }
     abortController = preflightAbort;
     activeTask = operationId;
@@ -581,7 +581,7 @@ export function createProductShellController({
       state.draft.status = 'retryable';
       state.capabilities.summary = code === 'PERSISTENCE_UNAVAILABLE' ? 'persistence_failed' : 'failed';
       const safeFailure = productFailure(error);
-      return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: code, failure: safeFailure, errorDetails: { ...safeLogDetails(error.details), status: safeFailure.status }, operationId };
+      return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: code, failure: safeFailure, errorDetails: { ...safeLogDetails(errorDiagnostics(error)), status: safeFailure.status }, operationId };
     } finally {
       if (activeTask === operationId) activeTask = null;
       if (abortController?.signal.aborted || !activeTask) abortController = null;
@@ -824,3 +824,4 @@ export function createProductShellController({
 }
 
 export const PRODUCT_DEFAULT_SETTINGS = Object.freeze(defaultProductSettings());
+import { errorDiagnostics } from './diagnostics.js';
