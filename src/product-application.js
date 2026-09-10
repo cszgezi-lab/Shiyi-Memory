@@ -51,6 +51,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let recallRevision = 0;
   let dictionaryRevision=-1, dictionaryCache=null;
   let recallBusy = 0, moduleSourceBaseline=null;
+  let tracking=false,trackingStart=null,disposed=false,followPending=false,followTimer=null,following=null,followVersion=0;
+  const chatListeners=[],followWaiters=[];
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache();
   const operations = new Set(), apiOperations = new Set(), injectedPayloads = new WeakSet();
   const keys = { summary: '', assistant: '', embedding: '', rerank: '' };
@@ -77,7 +79,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       runtimeLog.record({run,task,phase:'complete',level:result?.level==='warning'?'warning':'success',details:{...details,elapsedMs:Date.now()-started,savedBatches:result?.batches}});
       return result;
     }catch(error){
-      const canceled=error?.code==='CANCELED'||error?.name==='AbortError';
+      const canceled=['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error?.code)||error?.name==='AbortError';
       runtimeLog.record({run,task,phase:canceled?'canceled':'failed',level:canceled?'warning':'error',details:{...details,...safeLogDetails(error?.details),code:error?.code??'OPERATION_FAILED',elapsedMs:Date.now()-started}});
       throw error;
     }finally{await runtimeLog.flush();}
@@ -88,14 +90,14 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     return dictionaryCache;
   }
   function publicState() { return { ...clone(state), dictionary:clone(activeDictionary()), runtimeLog:runtimeLog.state, enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
-  function assertCurrent(token = epoch) { if (!workspace || token !== epoch || !workspace.isCurrent()) throw new Error('聊天或来源已变化，请重新打开当前聊天'); }
+  function assertCurrent(token = epoch) { if (!workspace || token !== epoch || !workspace.isCurrent()) throw Object.assign(new Error('聊天或来源已变化，旧聊天操作已停止'),{code:'CHAT_CHANGED'}); }
   function begin(exclusive = true) {
     if (exclusive && active) throw new Error('已有任务正在运行');
     const controller = new AbortController(), token = epoch, version = cancelVersion, bound = workspace;
     operations.add(controller); if (exclusive) active = controller;
     return { signal: controller.signal, workspace: bound, token,
-      check() { if (controller.signal.aborted || version !== cancelVersion) throw new Error('已停止'); assertCurrent(token); },
-      finish() { operations.delete(controller); if (active === controller) active = null; notify(); } };
+      check() { if (controller.signal.aborted || version !== cancelVersion) throw Object.assign(new Error('已停止'),{code:'CANCELED'}); assertCurrent(token); },
+      finish() { operations.delete(controller); if (active === controller) active = null; notify(); wakeChatFollower(); } };
   }
   function abortAll() { cancelVersion++; for (const op of operations) op.abort(); }
   function beginApi() {
@@ -150,6 +152,68 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function clearPrompt() { try { await hostAdapter?.setExtensionPrompt?.(PROMPT_KEY, '', 1, 1, false, 0); } catch { /* capability reported at enable */ } }
   async function stopListeners() { for (const off of bindings.splice(0)) { try { await off(); } catch { /* tracked by host */ } } }
+  function emptyChatView(status='loading'){
+    workspace=null;boundScope=null;boundRefKey=null;moduleSourceBaseline=null;modules.clear();
+    Object.assign(state,{cards:[],records:{},batches:[],deletedRecords:[],hidden:[],savedThrough:-1,sourceStatus:null,progress:'',preview:null,actual:null,status,stale:status==='loading'});
+    recallChanged({clear:true});
+  }
+  function wakeChatFollower(){
+    if(!tracking||disposed||!followPending||followTimer!==null||following||active||opening)return;
+    // TT emits CHAT_CHANGED while completing its own UI work. Do not block
+    // that emitter or bind to an intermediate ref inside its callback.
+    followTimer=setTimeout(()=>{followTimer=null;void runChatFollower();},0);
+  }
+  function requestChatFollow(){
+    if(disposed)return;
+    followVersion++;followPending=true;wakeChatFollower();
+  }
+  async function runChatFollower(){
+    if(disposed||!tracking||active||opening||following)return;
+    const version=followVersion;followPending=false;
+    following=(async()=>{
+      try{
+        const target=await hostAdapter.currentRef();
+        if(disposed||version!==followVersion)return;
+        if(!target){await stopListeners();emptyChatView('no_chat');await clearPrompt();const text='打开一段聊天后，会自动加载对应记忆和总结批次';state.feedback={id:++feedbackSequence,kind:'chat',level:'info',text};setMessage(text);return;}
+        if(workspace?.isCurrent()&&!state.stale&&boundRefKey===stableStringify(target)&&core.state.status!=='invalidated')return;
+        await open({enable:enabled,expectedRef:target,passive:true});
+      }catch(error){
+        if(disposed||version!==followVersion)return;
+        if(error?.code==='CHAT_CHANGED'){requestChatFollow();return;}
+        if(error?.code!=='CANCELED'){
+          const text=`当前聊天记忆加载未完成：${failureText(error)}`;
+          state.feedback={id:++feedbackSequence,kind:'chat',level:'warning',text};setMessage(text);
+        }
+      }
+    })();
+    try{await following;}finally{
+      following=null;
+      if(followPending&&!disposed)wakeChatFollower();
+      else for(const resolve of followWaiters.splice(0))resolve(publicState());
+    }
+  }
+  async function startChatTracking(){
+    if(disposed)return;
+    if(trackingStart)return trackingStart;
+    trackingStart=(async()=>{
+      await loadApiSettings();hostAdapter??=new HostAdapter(host);await hostAdapter.ready?.();if(disposed)return;
+      tracking=true;
+      for(const name of ['CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_SWIPED','MESSAGE_DELETED','MESSAGE_SWIPE_DELETED','MESSAGE_RECEIVED']){
+        try{chatListeners.push(hostAdapter.subscribe(name,()=>{
+          if(disposed)return;
+          if(name==='MESSAGE_RECEIVED'){if(!workspace?.isCurrent()||state.stale)requestChatFollow();return;}
+          if(name==='MESSAGE_UPDATED'&&moduleMetadataOnly()){void syncModulesQuietly();return;}
+          invalidate(name);requestChatFollow();
+        }));}catch{/* Opening the panel still verifies the current ref. */}
+      }
+      requestChatFollow();
+    })();
+    try{await trackingStart;}catch(error){trackingStart=null;throw error;}
+  }
+  async function followCurrentChat(){
+    await startChatTracking();if(disposed)return publicState();
+    requestChatFollow();return new Promise(resolve=>{followWaiters.push(resolve);wakeChatFollower();});
+  }
   const moduleStamp=m=>({id:m.id??m.messageId??m.uuid,text:m.text??m.mes??m.content??'',swipe:m.swipe_id??m.swipeId,version:m.version,role:m.role??m.name,isUser:m.is_user,isSystem:m.is_system});
   function rememberModuleSources(){const chat=mvuContext(host)?.chat;moduleSourceBaseline=Array.isArray(chat)?chat.map(moduleStamp):null;}
   function moduleMetadataOnly(){
@@ -160,9 +224,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   function invalidate(reason) {
     epoch++; abortAll(); moduleSourceBaseline=null;modules.clear();state.cards=state.cards.filter(c=>!c.readonly);state.stale = true; state.preview = null; state.actual = null;
     recallChanged({ clear: true });
-    clearPrompt(); state.status = 'stale'; setMessage(reason === 'CHAT_CHANGED' ? '聊天已切换；开始总结时会自动读取当前聊天' : '正文已修改，旧记忆已暂停注入；重新整理相关范围后恢复');
+    if(tracking){emptyChatView();state.feedback={id:++feedbackSequence,level:'info',text:'正在加载当前聊天的记忆和总结批次…'};}
+    clearPrompt(); state.status = tracking?'loading':'stale'; setMessage(tracking?'正在加载当前聊天的记忆和总结批次…':reason === 'CHAT_CHANGED' ? '聊天已切换；开始总结时会自动读取当前聊天' : '正文已修改，旧记忆已暂停注入；重新整理相关范围后恢复');
   }
-  async function open({enable = true, expectedRef} = {}) {
+  async function open({enable = true, expectedRef, passive=false} = {}) {
     if (active || opening) throw new Error('请先停止当前任务');
     opening = true;
     const opener=new AbortController(), version=cancelVersion;
@@ -193,9 +258,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     await normalizeBatchRanges();
     checkOpen();
     for (const name of ['CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_SWIPED','MESSAGE_DELETED','MESSAGE_SWIPE_DELETED']) {
-      try { bindings.push(hostAdapter.subscribe(name, async () => {if(name==='MESSAGE_UPDATED'&&moduleMetadataOnly()){await syncModulesQuietly();return;}invalidate(name);})); } catch { /* no automatic activation without final hook */ }
+      try { bindings.push(hostAdapter.subscribe(name, async () => {if(tracking)return;if(name==='MESSAGE_UPDATED'&&moduleMetadataOnly()){await syncModulesQuietly();return;}invalidate(name);})); } catch { /* no automatic activation without final hook */ }
     }
-    state.status = 'ready';rememberModuleSources(); await refresh(); checkOpen();
+    state.status = 'ready';rememberModuleSources(); await refresh({boundOnly:true}); checkOpen();
     await loadKnowledge(); await checkTarget(); enabled = enable;
     try {
       bindings.push(hostAdapter.subscribe('CHAT_COMPLETION_SETTINGS_READY', payload => inject(payload)));
@@ -208,9 +273,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         else {try{bindings.push(hostAdapter.subscribe(name,callback));}catch{ /* explicit refresh still available */ }}
       }
     } catch { setMessage('已打开；宿主不支持自动任务，可手动整理和预览'); }
-    setMessage('已连接当前聊天；可以直接开始总结'); return publicState();
+    setMessage(`已加载当前聊天：${state.cards.length} 条记忆、${state.batches.filter(b=>b.status!=='deleted').length} 个总结批次`);
+    if(passive){state.feedback={id:++feedbackSequence,level:'info',text:state.message};notify();}
+    return publicState();
     } catch(error){workspace=null;boundScope=null;boundRefKey=null;state.cards=[];state.records={};state.batches=[];state.deletedRecords=[];state.progress='';modules.clear();state.status='unavailable';recallChanged({clear:true});await stopListeners();await clearPrompt();setMessage(`聊天读取未完成：${failureText(error)}`);throw error;
-    } finally { opening = false; operations.delete(opener);if(active===opener)active=null;notify(); }
+    } finally { opening = false; operations.delete(opener);if(active===opener)active=null;notify();wakeChatFollower(); }
   }
   async function saveUi() {
     await loadApiSettings();
@@ -239,7 +306,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     await globalWorkspace.write('legacy-imported',{at:Date.now()});
   }
-  async function refresh() {
+  async function refresh({boundOnly=false}={}) {
+    if(tracking&&!boundOnly&&(!workspace?.isCurrent()||state.stale)){await followCurrentChat();if(!workspace?.isCurrent())throw Object.assign(new Error('当前没有可读取的聊天'),{code:'CHAT_REF_UNAVAILABLE'});return;}
     recallBusy++; recallChanged();
     try {
     const token = epoch, bound = workspace; assertCurrent(token);
@@ -319,14 +387,16 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     await workspace.write('summary-batches',consolidated.rows);
   }
   async function readBatches(view){
-    let list=await workspace.read('summary-batches',[]);
+    const token=epoch,bound=workspace;assertCurrent(token);
+    let list=await bound.read('summary-batches',[]);assertCurrent(token);
     const known=new Set(list.flatMap(b=>[b.operationId,b.previousOperation,...(b.attempts??[])]));
     const parents=[...new Set((view.records?.history??[]).map(h=>h.operationId?.split('/child-')[0]).filter(id=>id?.startsWith('product-summary_')&&!known.has(id)))];
     const legacy=parents.map((operationId,i)=>{
       const records=batchRecords(view.records?.history,operationId),indices=Object.values(records).flatMap(rows=>rows.flatMap(r=>[r.floorIndex,...(r.sourceRefs??[]).map(ref=>{const match=/^message:(\d+):/.exec(ref.sourceId);return match?Number(match[1]):null;})])).filter(Number.isInteger);
       return {id:makeId('legacy-batch'),number:list.length+i+1,operationId,startIndex:indices.length?Math.min(...indices):null,endIndex:indices.length?Math.max(...indices):null,status:'saved',legacy:true,attempts:[],focus:''};
     });
-    if(legacy.length)list=await workspace.write('summary-batches',[...list,...legacy]);
+    if(legacy.length)list=await bound.write('summary-batches',[...list,...legacy]);
+    assertCurrent(token);
     state.batches=list.map(item=>{
       const mode=view.controls?.operations?.[item.operationId];
       const records=batchRecords(view.records?.history,item.operationId);
@@ -335,6 +405,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     });
   }
   async function prepareSummaryChat(){
+    if(following)await following;
     if(active||opening)throw new Error('已有任务正在运行，请等待完成或停止');
     const version=cancelVersion;hostAdapter??=new HostAdapter(host);
     let target;try{target=await hostAdapter.currentRef();}catch{throw Object.assign(new Error('无法读取 TT 当前聊天'),{code:'CHAT_REF_UNAVAILABLE'});}
@@ -348,7 +419,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null,diagnosticRun}={}){
     if(trigger==='manual'&&!replaceBatchId){
       const version=cancelVersion;
-      try{await prepareSummaryChat();if(version!==cancelVersion)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});}catch(error){summaryFeedback(error.code==='CANCELED'?'info':'error',`总结未完成：${failureText(error)}`,trigger);throw error;}
+      try{await prepareSummaryChat();if(version!==cancelVersion)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});}catch(error){summaryFeedback(['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error.code)?'info':'error',`总结未完成：${failureText(error)}`,trigger);throw error;}
     }
     if(!workspace)throw Object.assign(new Error('当前聊天尚未读取'),{code:'CHAT_REF_UNAVAILABLE'});
     batchSize??=core.settings.summaryBatchSize;
@@ -684,8 +755,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function hideRecord(id){assertCurrent();recallBusy++;recallChanged();try{state.hidden=await workspace.update('hidden',list=>[...new Set([...list,id])],[]);await refresh();}finally{recallBusy--;}}
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
   async function stop(){abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
-  async function disable(){enabled=false;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停自动整理和记忆注入');}
+  async function disable(){enabled=false;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停自动整理和记忆注入，仍会跟随聊天加载记忆');}
   return {core,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
+    startChatTracking,followCurrentChat,
     loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:()=>runtimeLog.export(),clearRuntimeLog:()=>runtimeLog.clear(),
     async saveDictionaryEntry(input){await loadApiSettings();await saveSettings({aliases:updateDictionaryOverride(core.settings.aliases,input)});setMessage('字典校正已保存，不会修改故事事实');},
     testConnection:(kind='summary',patch={})=>logged('connection',()=>testConnection(kind,patch),{modelRole:kind}),
@@ -702,6 +774,6 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     setKey(kind,value,endpoint){if(!Object.hasOwn(keys,kind))throw new Error('未知连接');keyEdited.add(kind);keyVersions[kind]=(keyVersions[kind]??0)+1;keys[kind]=String(value??'');keyOrigins[kind]=credentialOrigin(endpoint??core.settings[`${prefixFor(kind)}Endpoint`]);if(kind==='summary')core.setSessionCredential(effectiveKeys().summary);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true});},
     exportSettings(){return {kind:'shiyi-config',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings)};},
     async exportBackup(){assertCurrent();return {kind:'shiyi-backup',version:1,scope:boundScope,modules:clone(state.modules),moduleSnapshots:clone(state.moduleSnapshots),settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`)))}))),assistant:state.history};},
-    async dispose(){await disable();epoch++;await core.dispose();await runtimeLog.flush();},
+    async dispose(){disposed=true;tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of chatListeners.splice(0)){try{await off();}catch{}}await disable();epoch++;await core.dispose();for(const resolve of followWaiters.splice(0))resolve(publicState());await runtimeLog.flush();},
   };
 }

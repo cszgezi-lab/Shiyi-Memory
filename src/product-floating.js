@@ -22,7 +22,7 @@ export function floatingPosition(point, size, frame) {
 }
 
 /** One persistent non-modal window. Closing only hides UI, not the application. */
-export function mountFloatingProduct({ panel, documentRef, host, version, onClose = () => {}, onStop = () => {}, onLogs = () => {} }) {
+export function mountFloatingProduct({ panel, documentRef, host, version, onOpen = () => {}, onClose = () => {}, onStop = () => {}, onLogs = () => {} }) {
   const win = documentRef.defaultView ?? host;
   let preferences;
   try { preferences = floatingPreferences(JSON.parse(win.localStorage.getItem(STORAGE_KEY))); }
@@ -118,6 +118,7 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onClos
     if (disposed) return;
     windowEl.hidden = false; launcher.hidden = true; launcher.setAttribute('aria-expanded', 'true'); layout();
     grip.focus({ preventScroll: true });
+    onOpen();
   }
   function hide() {
     windowEl.hidden = true; launcher.hidden = !preferences.showLauncher; launcher.setAttribute('aria-expanded', 'false'); layout();

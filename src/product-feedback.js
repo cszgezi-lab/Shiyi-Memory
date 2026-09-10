@@ -14,7 +14,7 @@ const CODES = {
   CHAT_IDENTITY_NOT_READY:'TT 尚未提供当前聊天的持久标识，请等待聊天保存完成后重试。',
   CHAT_HANDLE_UNAVAILABLE:'TT 未能提供当前聊天读取接口，请重新进入这段对话后重试。',
   HISTORY_UNAVAILABLE:'当前聊天正文未读到，或所选范围为空。请等待正文加载完成并检查楼层范围。',
-  CHAT_CHANGED:'读取期间聊天已切换，本次已停止；请在目标聊天重新开始总结。',
+  CHAT_CHANGED:'聊天已切换，旧聊天操作已停止；当前聊天会自动加载。',
   SOURCE_INVALIDATED:'所选正文已修改，本次已停止；请按修改后的内容重新总结。',
   FLOOR_SUMMARY_MISSING:'逐楼摘要未完整对应所选楼层，本批未保存。这不等于回复上限不足；请查看运行日志中的缺失楼层和结束原因。',
   MODEL_OUTPUT_TRUNCATED:'服务明确报告输出被截断，本批未保存。请查看运行日志中的实际回复上限、结束原因和用量。',
