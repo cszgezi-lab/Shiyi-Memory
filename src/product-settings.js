@@ -12,6 +12,7 @@ export const PRODUCT_SETTINGS_VERSION = 1;
 
 const DEFINITIONS = [
   { key: 'messageCount', label: '最近消息数', defaultValue: 8, type: 'integer', min: 1, max: 200, consumers: ['ProductShellController.readRange'] },
+  { key: 'autoMergeEnabled', label: '总结后自动核对合并', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.processMergeQueue'] },
   { key: 'inputBudgetUnits', label: '总结输入预算', defaultValue: 24000, type: 'integer', min: 256, max: 1000000, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
   { key: 'outputBudgetUnits', label: '总结回复上限（Token）', defaultValue: 8192, type: 'integer', min: 0, max: 131072, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
   { key: 'deadlineMs', label: '请求截止时间', defaultValue: 120000, type: 'integer', min: 100, max: 600000, consumers: ['ProductShellController.transport', 'ProviderClient'] },

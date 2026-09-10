@@ -523,7 +523,7 @@ export function createProductShellController({
     const validateBundle=summaryBundleValidator();
     summaryRepository.commitBundle=async (...args)=>{validateBundle(args[0]);return repository.commitBundle(...args);};
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations})).records;
-    engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: sourceSplitUnits(), requireFloorSummaries, outputReserveUnits: 0, now });
+    engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: sourceSplitUnits(), requireFloorSummaries, stageCrossBatchMerges:true, outputReserveUnits: 0, now });
     try {
       const result = await engine.process(batch, { signal: abortController.signal, onDiagnostic });
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };

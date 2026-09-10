@@ -260,6 +260,7 @@ function remapReferences(record, idMap) {
   for (const key of ['eventRefs', 'eventIds', 'recordRefs', 'recordIds']) {
     if (Array.isArray(result[key])) result[key] = result[key].map((value) => has(value) ? resolve(value) : value);
   }
+  if(result.mergeReview?.targetId&&has(result.mergeReview.targetId))result.mergeReview.targetId=resolve(result.mergeReview.targetId);
   return result;
 }
 
@@ -279,7 +280,9 @@ function materializeBundle(bundle, scope, existingAliases = {}, previousRecords 
   for (const record of bundle.events ?? []) {
     if (!isTemporaryId(record?.id)) continue;
     const identity = eventIdentity(record);
-    const priorId = (identity ? priorByIdentity.get(identity) : null) ?? (previousRecords?.events??[]).find(e=>exactEventDuplicate(e,record))?.id;
+    // A staged contribution owns its new batch evidence. Reusing an older
+    // identical ID here would revive an old merge vote on regeneration.
+    const priorId = record.mergeReview?.status==='pending' ? null : (identity ? priorByIdentity.get(identity) : null) ?? (previousRecords?.events??[]).find(e=>exactEventDuplicate(e,record))?.id;
     const durableId = priorId ?? `memory_${sha256(`${scopeKey(scope)}|${bundle.operationId}|${record.id}|${identity ?? ''}|${bundle.sourceRevision ?? ''}|${stableStringify(record)}`).slice(0, 28)}`;
     idMap.set(record.id, durableId);
   }

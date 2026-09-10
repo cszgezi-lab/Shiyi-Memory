@@ -7,6 +7,7 @@ const pathPattern = new RegExp(`^(?:bundle|scope|operationId|expectedRevision|(?
 const types = new Set(['array','object','string','number','boolean','null','undefined']);
 const locatorFields = new Set(['version','swipeId','fragmentId','hash','contentHash']);
 export const VALIDATION_ISSUE_LABELS = Object.freeze({
+  event_merge_deferred:'合并建议已转交独立任务，不阻止总结保存',
   invalid_event_merge:'合并目标未提供或事件发生时间冲突，旧记忆未改变',
   event_merge_target_missing:'合并目标不在本次提供的事件中，旧记忆未改变',
   event_merge_time_conflict:'新旧记录的事件发生时间确实冲突，旧记忆未改变',

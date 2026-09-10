@@ -7,6 +7,7 @@ const names = { base:'自动补接口路径', exact:'完整地址（不补路径
 const copy = {
   messageCount:['默认总结楼数','手动总结的初始值；本次以范围选择中的输入为准。'],
   autoSummaryEnabled:['自动整理聊天','AI 回复后检查是否需要整理。'],
+  autoMergeEnabled:['总结后自动合并','使用总结模型单独核对候选事件；合并失败不影响已保存总结。每次最多处理 10 对，剩余可在事件合并中继续。'],
   autoSummaryEvery:['每新增多少楼自动整理','一条聊天消息算一楼。'],
   recordingRules:['长期记录偏好','告诉总结模型哪些内容值得记住。'],
   focusMode:['总结侧重点','手动总结时可以临时补充要求。'],
@@ -67,7 +68,7 @@ const advanced = (title, keys) => `<details class="sy-advanced"><summary>${title
 const card = (title, body) => `<div class="sy-card"><h4>${title}</h4>${body}</div>`;
 
 export const SETTING_GROUPS = Object.freeze({
-  recording: ['messageCount','autoSummaryEnabled','autoSummaryEvery','recordingRules','focusMode','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
+  recording: ['messageCount','autoSummaryEnabled','autoSummaryEvery','recordingRules','focusMode','autoMergeEnabled','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
   injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','injectionPosition','injectionRole','injectionLogEnabled'],
   vectors: ['vectorEnabled','vectorAutoUpdate'],
   retrieval: ['rerankEnabled','tagRecallEnabled','tagCandidateLimit','retrievalCandidateLimit','rerankMaxCandidates','bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant','distributedEnabled','distributedStrategy','distributedChannel','retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs'],
@@ -75,7 +76,7 @@ export const SETTING_GROUPS = Object.freeze({
 });
 export function settingsSection(kind) {
   const keys = SETTING_GROUPS[kind];
-  if (kind === 'recording') return card('记录偏好', fields(keys.slice(0,5)) + advanced('总结高级设置', keys.slice(5)));
+  if (kind === 'recording') return card('记录偏好', fields(keys.slice(0,6)) + advanced('总结高级设置', keys.slice(6)));
   if (kind === 'injection') return card('把记忆交给 AI', fields(keys.slice(0,6)) + advanced('注入位置', keys.slice(6)));
   if (kind === 'vectors') return card('向量索引',fields(keys));
   if (kind === 'retrieval') return card('召回策略', fields(['rerankEnabled','retrievalCandidateLimit','rerankMaxCandidates']) + advanced('标签辅助召回',['tagRecallEnabled','tagCandidateLimit']) + advanced('关键词与融合',['bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant']) + advanced('分类检索',['distributedEnabled','distributedStrategy','distributedChannel']) + advanced('超时保护',['retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs']));

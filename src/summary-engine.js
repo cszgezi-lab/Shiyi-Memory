@@ -241,7 +241,7 @@ function defineModelAlias(target, key, value) {
 
 /** P1 one-request-per-segment orchestration with atomic bundle commits. */
 export class SummaryEngine {
-  constructor({ model, repository, maxInputUnits = 12000, maxSourceUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, now = () => Date.now() } = {}) {
+  constructor({ model, repository, maxInputUnits = 12000, maxSourceUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, now = () => Date.now() } = {}) {
     this.model = modelInvoker(model);
     if (!repository || typeof repository.commitBundle !== 'function') throw new ValidationError('SummaryEngine requires a MemoryRepository');
     this.repository = repository;
@@ -250,6 +250,7 @@ export class SummaryEngine {
     // separate maxSourceUnits split quota without weakening that ceiling.
     this.maxInputUnits = maxInputUnits;
     this.requireFloorSummaries=requireFloorSummaries;
+    this.stageCrossBatchMerges=stageCrossBatchMerges;
     this.maxSourceUnits = Number.isFinite(maxSourceUnits) && maxSourceUnits > 0 ? maxSourceUnits : null;
     this.outputReserveUnits = Number.isFinite(outputReserveUnits) ? Math.max(0, outputReserveUnits) : null;
     this.maxRelevantRecords = Math.max(1, Number(maxRelevantRecords) || 64);
@@ -525,7 +526,7 @@ export class SummaryEngine {
           focusVersion: focusFingerprint(child.focusSpec, child.focusVersion),
           correctionAuthorizations,
         });
-        resolveEventMerges(bundle,request.relevantRecords,{deferUnresolved:true,onDeferred:({eventIndex,reason})=>emit('merge_deferred',{...baseDetails,validationIssueCount:1,validationIssues:[{path:`events[${eventIndex}].mergeInto`,reason}]},'warning')});
+        resolveEventMerges(bundle,request.relevantRecords,{deferUnresolved:true,stageCrossBatch:this.stageCrossBatchMerges,onDeferred:({eventIndex,reason})=>emit('merge_deferred',{...baseDetails,validationIssueCount:1,validationIssues:[{path:`events[${eventIndex}].mergeInto`,reason}]},'info')});
         if(this.requireFloorSummaries){
           phase='floors';
           const details=requireIndependentFloorSummaries(bundle,child.sourceMessages);

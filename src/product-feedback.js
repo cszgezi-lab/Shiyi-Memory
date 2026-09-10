@@ -10,6 +10,7 @@ const NETWORK = {
   'network.request_failed':'网络请求失败，请检查服务是否可访问。',
 };
 const CODES = {
+  MERGE_RESPONSE_INVALID:'合并接口返回的判断或依据不完整。总结已经保存，可以只重试合并。',
   CHAT_REF_UNAVAILABLE:'未能取得 TT 当前聊天。请确认已进入具体对话、正文加载完成后重试；不会读取其他聊天。',
   CHAT_IDENTITY_NOT_READY:'TT 尚未提供当前聊天的持久标识，请等待聊天保存完成后重试。',
   CHAT_HANDLE_UNAVAILABLE:'TT 未能提供当前聊天读取接口，请重新进入这段对话后重试。',

@@ -1,5 +1,5 @@
 import { LocalBM25Index, retrieveMemories, tokenizeChinese } from './retrieval.js';
-import { estimateUnits, clone } from './utils.js';
+import { estimateUnits, clone, stableStringify } from './utils.js';
 import { buildDictionary, dictionaryQuery } from './product-dictionary.js';
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, stateLabel, awarenessLabel, viaLabel } from './product-narrative.js';
 import { hasStoryTime } from './temporal.js';
@@ -86,6 +86,20 @@ function awarenessText(rows){
   return rows.map(a=>`${narrativeText(a.actorId??a.person??a.personId??a.audience)}：${narrativeText(a.knowledge??a.fact??a.content)}〔${awarenessLabel(a.status??a.knowledgeStatus)}；${viaLabel(a.via)}${hasStoryTime(a.learnedAt)?`；获知时间：${narrativeText(a.learnedAt)}`:''}〕`).join('；');
 }
 export function renderMemoryCard(card, settings = {}, { body=card.description, metadataOnly=false, detail=false, query=null }={}) {
+  if(card.mergedParts?.length){
+    const parts=card.mergedParts;
+    const guard=p=>stableStringify({temporal:p.temporal,location:p.location,state:p.state,epistemicStatus:p.epistemicStatus,perspective:p.perspective,awareness:(p.awareness??[]).map(({id,sourceRefs,eventRef,eventId,...a})=>a),followUps:p.followUps??[]});
+    if(parts.every(p=>guard(p)===guard(parts[0]))){
+      const {mergedParts,...single}=card;
+      return renderMemoryCard({...single,temporal:parts[0].temporal,awareness:parts[0].awareness,followUps:parts[0].followUps},settings,{body,metadataOnly,detail,query});
+    }
+    return ['[同一事件的分段记录；知情范围仅适用于各自片段，不自动扩散]',...parts.map(p=>{
+      const copy={...p};delete copy.mergeReview;
+      const brief=detail?p.description:p.recallSummary||p.description;
+      const excerpt=!detail&&query!==null?relevantPassage(p.description,p.recallSummary,query):'';
+      return `来源：${sourceFloors(p).map(n=>`第 ${n} 楼`).join('、')||'原记录'}\n${renderMemoryCard(copy,settings,{body:excerpt?`${brief}\n相关经过：${excerpt}`:brief,detail,query})}`;
+    })].join('\n\n');
+  }
   const lines = metadataOnly?[]:[`[${CATEGORY_LABELS[card.category] ?? '记忆'}] ${body}`];
   if (Array.isArray(card.participants)&&card.participants.length)lines.push(`参与人物：${narrativeText(card.participants)}`);
   if (card.location)lines.push(`地点：${narrativeText(card.location)}`);
@@ -99,7 +113,7 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
   if(dialogues.length)lines.push('原话仅作当时语境的证据，不要求复读；说过不等于仍持相同态度。');
   if (card.state) lines.push(`状态：${stateLabel(card.state)}`);
   if (card.mergeReview?.status==='pending') {
-    lines.push('合并待核对：与已有记录的发生时间尚未确认一致，暂存独立；不据此认定发生了两次。');
+    lines.push('合并待核对：尚未确认与已有记录为同一次事件，暂存独立；不据此认定发生了两次。');
     if(detail)lines.push(`旧记录发生时间：${narrativeText(card.mergeReview.previousTime)||'未提取'}；本次提取：${narrativeText(card.mergeReview.proposedTime)||'未提取'}`);
   }
   if (card.epistemicStatus && card.epistemicStatus !== 'observed') lines.push(`性质：${({ user_asserted: '用户确认', inferred: '推测而非事实', character_claim: '角色自述', unknown: '未确认' })[card.epistemicStatus] ?? card.epistemicStatus}`);

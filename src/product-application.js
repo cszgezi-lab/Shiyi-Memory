@@ -25,6 +25,7 @@ import { fullSearchText } from './product-narrative.js';
 import { sceneRecallQuery } from './product-recall-packing.js';
 import { createInjectionLog } from './product-injection-log.js';
 import { ASSISTANT_SKILLS, assistantSkillCatalog, readAssistantSkill, assistantSettings } from './product-assistant-skills.js';
+import { MERGE_STORE_KEY, MERGE_JUDGE_PROMPT, mergeJobs, mergeDecision, mergeJudgeInput, validateMergeVote, projectMergedCards, sameMergeSnapshot, eventFingerprint } from './product-event-merge.js';
 
 const PROMPT_KEY = 'shiyi-memory-continuity';
 function completion(response) {
@@ -57,7 +58,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let dictionaryRevision=-1, dictionaryCache=null;
   let recallBusy = 0, moduleSourceBaseline=null;
   let vectorTimer=null,vectorJob=null,vectorCheckVersion=0;
-  let injectionLog=null,vectorExcluded=[];
+  let injectionLog=null,vectorExcluded=[],mergeDecisions={};
   let tracking=false,trackingStart=null,disposed=false,followPending=false,followTimer=null,following=null,followVersion=0;
   const chatListeners=[],followWaiters=[];
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache();
@@ -96,7 +97,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(dictionaryRevision!==recallRevision||!dictionaryCache){dictionaryCache=buildDictionary([...(state.stale?[]:state.cards.filter(c=>c.category!=='conflicts')),...(core.settings.knowledgeEnabled?knowledgeCache.filter(c=>!state.hidden.includes(c.id)):[])],{aliases:core.settings.aliases,automatic:core.settings.dictionaryEnabled});dictionaryRevision=recallRevision;}
     return dictionaryCache;
   }
-  function publicState() { return { ...clone(state), injectionLog:workspace?.isCurrent()?injectionLog?.state:null, dictionary:clone(activeDictionary()), runtimeLog:runtimeLog.state, enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
+  function publicState() { return { ...clone(state), merges:workspace?.isCurrent()&&!state.stale?clone(state.merges??[]):[], injectionLog:workspace?.isCurrent()?injectionLog?.state:null, dictionary:clone(activeDictionary()), runtimeLog:runtimeLog.state, enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
   function assertCurrent(token = epoch) { if (!workspace || token !== epoch || !workspace.isCurrent()) throw Object.assign(new Error('聊天或来源已变化，旧聊天操作已停止'),{code:'CHAT_CHANGED'}); }
   function begin(exclusive = true) {
     if (exclusive && active) throw new Error('已有任务正在运行');
@@ -366,8 +367,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const all=Object.values(view.records?.history??{}).flatMap(h=>MEMORY_CATEGORIES.flatMap(k=>h.categories?.[k]??[]));
     state.deletedRecords=[...new Map(all.filter(r=>view.controls?.deletedRecords?.[r.id]).map(r=>[r.id,r])).values()];
     state.records=filtered;
+    mergeDecisions=await bound.read(MERGE_STORE_KEY,{});assertCurrent(token);
+    state.merges=mergeJobs(filtered,mergeDecisions);
     try{await modules.sync();}catch{assertCurrent(token);state.message='MVU 暂不可读，扩展区块没有使用旧值；可点击刷新重试';}
-    assertCurrent(token);state.cards = modules.cards(memoryCards(filtered, { hidden: state.hidden, includeAwareness:true })).filter(c=>!state.hidden.includes(c.id));
+    assertCurrent(token);state.cards = projectMergedCards(modules.cards(memoryCards(filtered, { hidden: state.hidden, includeAwareness:true })),filtered,mergeDecisions).filter(c=>!state.hidden.includes(c.id));
     await readBatches(view);
     recallChanged();
     state.sourceStatus = {invalid:validity.invalidKeys.length,unknown:validity.unknownKeys.length};
@@ -377,7 +380,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function syncModulesQuietly(){
     if(!workspace?.isCurrent()||state.stale||!state.modules.some(m=>m.mode==='mvu'&&m.enabled&&!m.archived))return;
-    try{const different=await modules.sync();assertCurrent();rememberModuleSources();if(!different)return;state.cards=modules.cards(memoryCards(state.records,{hidden:state.hidden,includeAwareness:true})).filter(c=>!state.hidden.includes(c.id));recallChanged();notify();}
+    try{const different=await modules.sync();assertCurrent();rememberModuleSources();if(!different)return;state.cards=projectMergedCards(modules.cards(memoryCards(state.records,{hidden:state.hidden,includeAwareness:true})),state.records,mergeDecisions).filter(c=>!state.hidden.includes(c.id));recallChanged();notify();}
     catch{state.cards=state.cards.filter(c=>!c.readonly);recallChanged();setMessage('MVU 读取未完成，旧变量未注入；请重新加载当前聊天或刷新变量');}
   }
   async function saveSettings(patch) {
@@ -512,8 +515,18 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         saved++;state.savedThrough=Math.max(state.savedThrough,item.endIndex);state.stale=false;
         await workspace.write('ui',{savedThrough:state.savedThrough});await refresh();currentBatch=null;
       }
-      summaryFeedback('success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${state.cards.some(c=>c.mergeReview?.status==='pending')?'存在合并待核对记录，可在冲突与疑点中查看。':''}`,trigger);
-      return {status:'saved',batches:saved};
+      // All source-valid summaries are already durable. Merge is a separate
+      // task and cannot mark any of these batches as failed or roll them back.
+      let mergeWarning=false;
+      if(core.settings.autoMergeEnabled&&(state.merges??[]).some(j=>j.status==='pending')){
+        summaryFeedback('running',`总结已保存 ${saved} 批，正在独立核对事件合并…`,trigger);
+        try{const report=await processMergeQueue(op,null,{automatic:true});mergeWarning=report.remaining>0;}
+        catch{mergeWarning=true;}
+      }
+      const awaiting=(state.merges??[]).filter(j=>['pending','failed','uncertain','missing'].includes(j.status)).length;
+      mergeWarning ||= (state.merges??[]).some(j=>['failed','uncertain','missing'].includes(j.status));
+      if(op.token===epoch)summaryFeedback(mergeWarning?'warning':'success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${awaiting||mergeWarning?'合并尚未全部完成，可在记录 → 事件合并中单独处理；无需重做总结。':''}`,trigger);
+      return {status:'saved',batches:saved,level:mergeWarning?'warning':'success'};
     }catch(error){
       if(currentBatch&&workspace?.isCurrent()&&op.token===epoch){
         const failed={...currentBatch,status:op.signal.aborted?'interrupted':'failed',error:failureText(error)};
@@ -522,6 +535,68 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       }
       if(op.token===epoch)summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批。${failureText(error)}`,trigger);
       throw error;
+    }finally{op.finish();}
+  }
+  async function processMergeQueue(op,ids=null,{automatic=false}={}){
+    await refresh();op.check();
+    const candidates=(state.merges??[]).filter(j=>ids?ids.includes(j.id):automatic?j.status==='pending':['pending','failed','uncertain'].includes(j.status)).slice(0,10);
+    let merged=0,failed=0;
+    for(const initial of candidates){
+      op.check();await refresh();op.check();
+      const job=state.merges.find(j=>j.id===initial.id);if(!job)continue;
+      const snapshot=clone(state.records),input=mergeJudgeInput(snapshot,job);
+      const stamp=mergeDecision(snapshot,job,{status:'pending'});
+      const run=await runtimeLog.start('merge',{modelRole:'summary'});op.check();
+      let decision;
+      try{
+        const messages=[{role:'system',content:MERGE_JUDGE_PROMPT},{role:'user',content:JSON.stringify(input)}];
+        const c=client('summary'),payload={model:c.profile.model,messages,stream:false,...(core.settings.outputBudgetUnits>0?{max_tokens:core.settings.outputBudgetUnits}:{})};
+        const inputUnits=estimateUnits(JSON.stringify(payload));
+        if(inputUnits>core.settings.inputBudgetUnits)throw Object.assign(new Error('这对事件超过总结输入预算，请核对后缩短记录或提高预算'),{code:'INPUT_BUDGET_EXCEEDED'});
+        runtimeLog.record({run,task:'merge',phase:'request',details:{inputUnits,inputLimit:core.settings.inputBudgetUnits,maxTokens:core.settings.outputBudgetUnits}});
+        const response=await c.chatCompletions(payload,{signal:op.signal,timeoutMs:core.settings.deadlineMs});op.check();
+        runtimeLog.record({run,task:'merge',phase:'response',details:{finishReason:response.choices?.[0]?.finish_reason??'unknown',promptTokens:response.usage?.prompt_tokens,completionTokens:response.usage?.completion_tokens}});
+        const vote=jsonContent(completion(response).content);
+        const result=validateMergeVote(snapshot,job,vote);
+        decision=mergeDecision(snapshot,job,result,job.attempts+1);
+        runtimeLog.record({run,task:'merge',phase:result.status==='merged'?'merge_accepted':'merge_separate',level:result.status==='uncertain'?'warning':'success'});
+      }catch(error){
+        const diagnostic={...safeLogDetails(error?.details),code:error?.code??'MERGE_RESPONSE_INVALID'};
+        if(op.signal.aborted||['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error?.code)){
+          runtimeLog.record({run,task:'merge',phase:'canceled',level:'warning',details:diagnostic});throw error;
+        }
+        decision=mergeDecision(snapshot,job,{status:'failed',reason:`${failureText({code:diagnostic.code,details:diagnostic})} 原总结与旧事件均保留，可只重试合并。`},job.attempts+1);
+        failed++;runtimeLog.record({run,task:'merge',phase:'failed',level:'error',details:diagnostic});
+      }
+      await refresh();op.check();
+      const current=mergeDecision(state.records,job,{status:'pending'});
+      if(!sameMergeSnapshot([stamp.fromHash,stamp.toHash],[current.fromHash,current.toHash]))throw Object.assign(new Error('事件内容已变化，本次合并结果未应用'),{code:'SOURCE_INVALIDATED'});
+      await op.workspace.update(MERGE_STORE_KEY,rows=>({...rows,[job.id]:decision}),{});op.check();
+      if(decision.status==='merged')merged++;
+      runtimeLog.record({run,task:'merge',phase:'complete',level:decision.status==='failed'||decision.status==='uncertain'?'warning':'success'});
+    }
+    await refresh();op.check();await runtimeLog.flush();
+    const remaining=(state.merges??[]).filter(j=>['pending','failed','uncertain','missing'].includes(j.status)).length;
+    return {merged,failed,processed:candidates.length,remaining};
+  }
+  async function retryMerges(ids=null){
+    await prepareSummaryChat();const op=begin();
+    try{const result=await processMergeQueue(op,ids);const text=`本次合并 ${result.merged} 对，${result.failed} 对失败，${result.remaining} 对待处理。已保存总结未重跑。`;setMessage(text);state.feedback={id:++feedbackSequence,level:result.failed?'warning':'success',text};notify();return result;}
+    finally{op.finish();}
+  }
+  async function keepMergeSeparate(id){
+    assertCurrent();const op=begin();
+    try{await refresh();op.check();const job=state.merges.find(j=>j.id===id);if(!job)throw new Error('合并记录已变化');
+      const from=state.records.events.find(e=>e.id===id),to=state.records.events.find(e=>e.id===job.targetId);
+      const decision=to?mergeDecision(state.records,job,{status:'separate',reason:'已由用户保持独立；可单独重试合并。'},job.attempts):{targetId:job.targetId,fromHash:eventFingerprint(from,state.records),status:'separate',reason:'已由用户保持独立',attempts:0};
+      await op.workspace.update(MERGE_STORE_KEY,rows=>({...rows,[id]:decision}),{});op.check();await refresh();setMessage('已保持独立，原始记录完整保留。');
+    }finally{op.finish();}
+  }
+  async function chooseMergeTarget(id,targetId){
+    assertCurrent();const op=begin();
+    try{await refresh();op.check();const job={id,targetId};
+      const decision=mergeDecision(state.records,job,{status:'pending',reason:'已改选目标，等待核对；尚未合并。'});
+      await op.workspace.update(MERGE_STORE_KEY,rows=>({...rows,[id]:decision}),{});op.check();await refresh();setMessage('合并目标已更新，点击“只重试合并”进行核对。');
     }finally{op.finish();}
   }
   async function regenerateBatch(id){
@@ -556,13 +631,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function deleteRecord(id){
     assertCurrent();if(active)throw new Error('请先停止总结');
     if(!state.cards.some(c=>c.id===id))throw new Error('记忆不存在');
-    await core.updateMemoryControls({deletedRecords:{[id]:true}});await refresh();setMessage('记忆已删除，可在回收站恢复；聊天原文未改变');
+    const ids=state.cards.find(c=>c.id===id).mergedIds??[id];
+    await core.updateMemoryControls({deletedRecords:Object.fromEntries(ids.map(key=>[key,true]))});await refresh();setMessage('记忆已删除，可在回收站恢复；聊天原文未改变');
   }
   async function restoreRecord(id){assertCurrent();await core.updateMemoryControls({deletedRecords:{[id]:false}});await refresh();}
   async function restoreBatch(id){return manageBatches([id],'restore');}
   async function editRecord(id,text,metadata={}){
     assertCurrent();if(active)throw new Error('请先停止总结');
     const record=state.cards.find(c=>c.id===id);if(!record)throw new Error('记忆不存在');
+    if(record.mergedIds?.length)throw new Error('这是合并视图，请先在记录 → 事件合并中撤销合并，再修改对应原记录。');
     const patch=editedMemoryFields(record.category,record,text);
     for(const name of ['title','recallSummary'])if(Object.hasOwn(metadata,name)){if(typeof metadata[name]!=='string'||metadata[name].length>(name==='title'?160:2000))throw new Error('标题或召回速览过长');patch[name]=metadata[name].trim()||null;}
     if(Object.hasOwn(metadata,'tags'))patch.tags=normalizeTags(metadata.tags);
@@ -834,11 +911,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function newConversation(){await loadApiSettings();if(assistantActive)throw new Error('请先停止助手');const id=makeId('conversation');state.conversationId=id;state.history=[];state.draft='';state.conversations=await globalWorkspace.update('conversations',list=>[...list,{id,title:`配置对话 ${list.length+1}`}],[{id:'main',title:'配置对话'}]);await saveUi();notify();}
   async function selectConversation(id){await loadApiSettings();if(assistantActive)throw new Error('请先停止助手');if(!state.conversations.some(c=>c.id===id))throw new Error('会话不存在');state.conversationId=id;state.history=await globalWorkspace.read(`assistant-${id}`,[]);await saveUi();notify();}
   async function deleteConversation(){await loadApiSettings();if(assistantActive)throw new Error('请先停止助手');await globalWorkspace.remove(`assistant-${state.conversationId}`);state.history=[];state.conversations=await globalWorkspace.update('conversations',list=>list.filter(c=>c.id!==state.conversationId),[]);await newConversation();setMessage('助手对话已删除，已应用设置和记忆未改变');}
-  async function hideRecord(id){assertCurrent();recallBusy++;recallChanged();try{state.hidden=await workspace.update('hidden',list=>[...new Set([...list,id])],[]);await refresh();}finally{recallBusy--;}}
+  async function hideRecord(id){assertCurrent();const ids=state.cards.find(c=>c.id===id)?.mergedIds??[id];recallBusy++;recallChanged();try{state.hidden=await workspace.update('hidden',list=>[...new Set([...list,...ids])],[]);await refresh();}finally{recallBusy--;}}
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
   async function stop(){clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停自动整理和记忆注入，仍会跟随聊天加载记忆');}
-  return {core,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
+  return {core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
     startChatTracking,followCurrentChat,
     loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:()=>runtimeLog.export(),clearRuntimeLog:()=>runtimeLog.clear(),
     async exportInjectionLog(options){assertCurrent();return injectionLog.export(options);},
@@ -861,7 +938,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     async setDraft(value,context=`global:${state.conversationId}`){await loadApiSettings();if(context!==`global:${state.conversationId}`)return;state.draft=value;await saveUi();},
     setKey(kind,value,endpoint){if(!Object.hasOwn(keys,kind))throw new Error('未知连接');keyEdited.add(kind);keyVersions[kind]=(keyVersions[kind]??0)+1;keys[kind]=String(value??'');keyOrigins[kind]=credentialOrigin(endpoint??core.settings[`${prefixFor(kind)}Endpoint`]);if(kind==='summary')core.setSessionCredential(effectiveKeys().summary);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true,scheduleVectors:false});},
     exportSettings(){return {kind:'shiyi-config',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings)};},
-    async exportBackup(){assertCurrent();return {kind:'shiyi-backup',version:1,scope:boundScope,modules:clone(state.modules),moduleSnapshots:clone(state.moduleSnapshots),settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`)))}))),assistant:state.history};},
+    async exportBackup(){assertCurrent();return {kind:'shiyi-backup',version:1,scope:boundScope,modules:clone(state.modules),moduleSnapshots:clone(state.moduleSnapshots),eventMergeDecisions:clone(mergeDecisions),settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`)))}))),assistant:state.history};},
     async dispose(){disposed=true;tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of chatListeners.splice(0)){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();for(const resolve of followWaiters.splice(0))resolve(publicState());await runtimeLog.flush();},
   };
 }
