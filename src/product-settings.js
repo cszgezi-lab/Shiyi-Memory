@@ -20,10 +20,10 @@ const DEFINITIONS = [
 
   { key: 'bm25K1', label: 'BM25 k1', defaultValue: 1.2, type: 'number', min: 0.01, max: 10, consumers: ['ProductShellController.previewRecall', 'LocalBM25Index'] },
   { key: 'bm25B', label: 'BM25 b', defaultValue: 0.75, type: 'number', min: 0, max: 1, consumers: ['ProductShellController.previewRecall', 'LocalBM25Index'] },
-  { key: 'retrievalLimit', label: '本地召回数量', defaultValue: 8, type: 'integer', min: 1, max: 100, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
+  { key: 'retrievalLimit', label: '历史记忆召回数量（不含全量人物档案）', defaultValue: 8, type: 'integer', min: 1, max: 100, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
   { key: 'retrievalCandidateLimit', label: '检索候选数量', defaultValue: 24, type: 'integer', min: 1, max: 200, consumers: ['ProductApplication.recall', 'retrieveMemories'] },
   { key: 'retrievalTimeoutMs', label: '在线总超时保护（毫秒，0 沿用各接口时限）', defaultValue: 0, type: 'integer', min: 0, max: 60000, consumers: ['ProductApplication.recall', 'retrieveMemories'] },
-  { key: 'retrievalBudgetUnits', label: '本地召回预算', defaultValue: 1800, type: 'integer', min: 0, max: 50000, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
+  { key: 'retrievalBudgetUnits', label: '历史记忆长度上限（不含全量人物档案）', defaultValue: 1800, type: 'integer', min: 0, max: 50000, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },
   { key: 'vectorEnabled', label: '向量召回', defaultValue: false, type: 'boolean', consumers: ['ProductShellController.previewRecall'] },
   { key: 'vectorAutoUpdate', label: '后台更新向量索引', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.scheduleVectorUpdate'] },
   { key: 'vectorWeight', label: '向量融合权重', defaultValue: 1, type: 'number', min: 0, max: 100, consumers: ['ProductShellController.previewRecall', 'retrieveAndPack'] },

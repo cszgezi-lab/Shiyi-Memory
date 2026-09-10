@@ -8,12 +8,14 @@ const sentences = value => String(value ?? '').match(/[^。！？\n]+[。！？]
 export function sceneRecallQuery(messages=[]) {
   const text=m=>typeof m?.content==='string'?m.content:Array.isArray(m?.content)?m.content.filter(p=>p?.type==='text').map(p=>p.text??'').join('\n'):'';
   const rows=messages.filter(m=>['user','assistant'].includes(m?.role)),latest=rows.filter(m=>m.role==='user').at(-1);
-  const intent=text(latest),prior=rows.slice(0,rows.lastIndexOf(latest)).filter(m=>m.role==='assistant').at(-1);
+  const intent=text(latest),prior=rows.filter(m=>m.role==='assistant').at(-1);
   const narrative=text(prior).replace(/<(think|thinking)\b[^>]*>[\s\S]*?<\/\1>/gi,'').trim();
   const context=narrative.length>1600?`${narrative.slice(0,400)}\n${narrative.slice(-1200)}`:narrative;
   // Previous assistant prose supplies search context for pronouns/"continue";
   // never read system prompts/worldbooks as if they were the current scene.
-  return {intent,context};
+  // Keep the full recent narrative for local roster matching. Only the search
+  // query sent to optional retrieval services uses the compact context above.
+  return {intent,context,characterContext:narrative};
 }
 
 // Only verified event links or identical evidence qualify. Similar wording,
@@ -32,16 +34,20 @@ function guardSignature(record) {
   // Ignoring display IDs here is safe, ignoring facts/knowledge/time is not.
   const rows = value => (value ?? []).map(({ id, sourceRefs, ...rest }) => rest);
   return stableStringify({ temporal: record.temporal??null, participants: record.participants??[], location: record.location??null,
-    awareness: rows(record.awareness), state: record.state??null, epistemicStatus: record.epistemicStatus??null,
+    awareness: rows(record.awareness), state: record.state??null, epistemicStatus: record.epistemicStatus??null,validFrom:record.validFrom??null,
     followUps: rows(record.followUps), context: record.context??null, validUntil: record.validUntil??null,
     expiresAt:record.expiresAt??null,term:record.term??null,duration:record.duration??null,
     subject:record.subject??record.person??record.entity??null,object:record.object??record.objectRef??null,aspect:record.aspect??record.field??record.key??null,
-    viewpoints: record.viewpoints??[], keyDialogues: record.keyDialogues??[], customModuleId: record.customModuleId??null,scope:record.scope??null });
+    viewpoints: record.viewpoints??[], keyDialogues: record.keyDialogues??[], customModuleId: record.customModuleId??null,fieldId:record.fieldId??null,scope:record.scope??null });
 }
 
 export function coveredRecallRecord(record, body, chosen) {
   for (const previous of chosen) {
-    if (!sameRecallEvent(record, previous.record)&&!sameFactForRecall(record,previous.record)) continue;
+    // Facts with a shared event/source can still have different validity or
+    // distinct DIY field IDs. They must pass the stronger fact comparison.
+    if(record.category==='entityFactChanges'||previous.record.category==='entityFactChanges'){
+      if(!sameFactForRecall(record,previous.record))continue;
+    }else if (!sameRecallEvent(record, previous.record)) continue;
     // For a floor, only compare when its projected event metadata is exactly
     // the same; a later disclosure must never replace an earlier perspective.
     let comparable = record;

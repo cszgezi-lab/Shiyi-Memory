@@ -1,4 +1,5 @@
 import { clone, sha256, stableStringify } from './utils.js';
+import { narrativeText } from './product-narrative.js';
 
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 const secret = /(?:api.?key|token|password|secret|authorization|密码|密钥)/i;
@@ -56,8 +57,8 @@ export function checkModuleBundle(bundle, definitions) {
     checkValue(r.to??r.value??r.newValue,field.type);
   }
 }
-export function checkValue(value,type) {
-  if (type === 'number' ? typeof value !== 'number'||!Number.isFinite(value) : type === 'boolean' ? typeof value !== 'boolean' : typeof value !== 'string'||value.length>12000) throw new Error('记录值与字段类型不匹配');
+export function checkValue(value,type,{maxTextLength=12000}={}) {
+  if (type === 'number' ? typeof value !== 'number'||!Number.isFinite(value) : type === 'boolean' ? typeof value !== 'boolean' : typeof value !== 'string'||value.length>maxTextLength) throw new Error('记录值与字段类型不匹配');
   return value;
 }
 export function customMemoryCards(cards, modules) {
@@ -66,8 +67,9 @@ export function customMemoryCards(cards, modules) {
     if (!tag) return String(card.field??card.key??'').startsWith('custom:')?[]:[card];
     const m = modules.find(m=>m.id===tag.moduleId && !m.archived), f = m?.fields.find(f=>f.id===tag.fieldId);
     if (!m || !f || m.mode === 'mvu') return [];
-    const description = `${m.name} · ${card.entity??m.subject} · ${f.label}：${String(card.to??card.value??card.newValue)}`;
-    return [{...card,customModuleId:m.id,fieldId:f.id,field:f.label,description,text:description,customInject:m.inject&&m.enabled}];
+    const value=Object.hasOwn(card,'to')?card.to:Object.hasOwn(card,'value')?card.value:card.newValue;
+    const description = `${m.name} · ${card.entity??m.subject} · ${f.label}：${value===null?'已清空 / 未赋值':narrativeText(value)}`;
+    return [{...card,customModuleId:m.id,fieldId:f.id,fieldKey:card.field??card.key,field:f.label,description,text:description,customInject:m.inject&&m.enabled}];
   });
 }
 export function messageFingerprint(message) {
@@ -99,7 +101,7 @@ export async function readMvu(host,check=()=>{}) {
   if (!api?.getMvuData) return {status:'unavailable',paths:[]};
   // MVU exposes getMvuData only after its initialization. Do not wait on a
   // missing global in the send hook: a later MVU event/refresh retries it.
-  for (let floor=messages.length-1;floor>=Math.max(0,messages.length-20);floor--) {
+  for (let floor=messages.length-1;floor>=0;floor--) {
     const fingerprint=messageFingerprint(messages[floor]);
     let timer;
     try {
@@ -114,7 +116,7 @@ export function mvuSnapshots(modules,read,previous) {
   if (read.status!=='ready') return [];
   return activeModules(modules).filter(m=>m.mode==='mvu').map(m=>{
     const values={},missing=[];
-    for (const f of m.fields) {const value=valueAt(read.data,f.path);try{checkValue(value,f.type);values[f.id]=value;}catch{missing.push(f.id);}}
+    for (const f of m.fields) {const value=valueAt(read.data,f.path);try{checkValue(value,f.type,{maxTextLength:Infinity});values[f.id]=value;}catch{missing.push(f.id);}}
     const row={moduleId:m.id,floor:read.floor,fingerprint:read.fingerprint,definition:moduleBinding(m),values,missing};
     const last=previous.filter(s=>s.moduleId===m.id&&s.definition===row.definition&&s.floor<row.floor).at(-1);
     row.changes=Object.fromEntries(Object.entries(values).filter(([k,v])=>last&&Object.hasOwn(last.values,k)&&stableStringify(v)!==stableStringify(last.values[k])).map(([k,v])=>[k,{from:last.values[k],to:v}]));
@@ -127,7 +129,7 @@ export function mvuCards(modules,rows) {
     if(!row)return [];
     return m.fields.filter(f=>Object.hasOwn(row.values,f.id)).map(f=>{
       const description=`${m.name} · ${m.subject||'当前角色'} · ${f.label}：${String(row.values[f.id])}（MVU #${row.floor} 只读快照）`;
-      return {id:`mvu-${m.id}-${f.id}`,customModuleId:m.id,customInject:m.inject,fieldId:f.id,category:'entityFactChanges',entity:m.subject,field:f.label,to:row.values[f.id],description,text:description,readonly:true,sourceRefs:[{sourceId:`MVU:${row.floor}`,hash:row.fingerprint}],context:'变量不自动赋予角色知情权；只读，不改写 MVU',awareness:[]};
+      return {id:`mvu-${m.id}-${f.id}`,customModuleId:m.id,customInject:m.inject,fieldId:f.id,fieldKey:moduleField(m.id,f.id),category:'entityFactChanges',entity:m.subject,field:f.label,to:row.values[f.id],description,text:description,readonly:true,sourceRefs:[{sourceId:`MVU:${row.floor}`,hash:row.fingerprint}],context:'变量不自动赋予角色知情权；只读，不改写 MVU',awareness:[]};
     });
   });
 }

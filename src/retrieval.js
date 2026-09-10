@@ -462,7 +462,7 @@ export async function retrieveMemories({
       if (typeof search !== 'function') throw new Error('vector adapter has no search function');
       const timeoutMs = stageTimeout(vectorTimeoutMs ?? vectorOptions.timeoutMs ?? vectorOptions.deadlineMs ?? vectorAdapter.timeoutMs, DEFAULT_VECTOR_TIMEOUT_MS);
       if (timeoutMs <= 0) throw new Error('shared deadline exceeded');
-      const vectorResults = await invokeWithDeadline(search.bind(vectorAdapter), { query, limit, candidates: [...byId.keys()], tagLanes:lanes,categoryLanes:categories }, {
+      const vectorResults = await invokeWithDeadline(search.bind(vectorAdapter), { query, limit, candidates: [...byId.keys()], tagLanes:lanes,categoryLanes:categories,filter }, {
         signal,
         timeoutMs,
         label: 'vector search',

@@ -205,13 +205,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   function setMessage(message) { state.message = message; notify(); }
   function summaryFeedback(level,text,trigger) { state.feedback={id:++feedbackSequence,kind:'summary',level,text,trigger};setMessage(text); }
-  function externalState() {
+  function externalState({full=false}={}) {
     const paths=String(core.settings.externalStatePaths??'').split('\n').map(p=>p.trim()).filter(Boolean);
     if(!paths.length)return '未配置';
     const context=host.SillyTavern?.getContext?.()??host.getContext?.();
     const root={chatMetadata:context?.chatMetadata, lastMessageExtra:context?.chat?.at(-1)?.extra};
     const values={};for(const path of paths){const keys=path.split('.');if(!['chatMetadata','lastMessageExtra'].includes(keys[0])||keys.some(k=>['__proto__','constructor','prototype'].includes(k)))continue;let value=root;for(const key of keys)value=value?.[key];if(value!==undefined)values[path]=value;}
-    const result=JSON.stringify(values);return result.length<=4000?result:'所选外部状态过长，请缩小字段路径';
+    const result=JSON.stringify(values);return full||result.length<=4000?result:'所选外部状态过长，请缩小字段路径';
   }
   function client(kind = 'summary', patch = {}) {
     const profile = productApiProfile(core.settings, kind, effectiveKeys(patch), patch);
@@ -798,7 +798,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     } finally { recallBusy--; }
   }
   async function knowledgeCards() { return core.settings.knowledgeEnabled ? knowledgeCache.filter(card => !state.hidden.includes(card.id)) : []; }
-  async function preview(query, { online = false, context='' } = {}) {
+  async function preview(query, { online = false, context='',characterContext=context } = {}) {
     assertCurrent(); if(state.stale) throw new Error('正文已修改，先重新整理');
     if (recallBusy) throw new Error('记忆正在更新，请稍后检索');
     const op=begin(false);
@@ -806,7 +806,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const revision = recallRevision;
     const cards = [...state.cards, ...await knowledgeCards(query)];
     const lookup=context?`${query}\n最近剧情参照：${context}\n当前询问：${query}`:query;
-    const result = await recallMemory(cards, lookup, core.settings, { ...(online ? await retrievalAdapters(selectRecallCards(cards, core.settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:activeDictionary(),focusQuery:query });
+    const result = await recallMemory(cards, lookup, core.settings, { ...(online ? await retrievalAdapters(selectRecallCards(cards, core.settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:activeDictionary(),focusQuery:query,characterQuery:[query,characterContext].filter(Boolean).join('\n') });
     op.check(); if (revision !== recallRevision) throw new Error('记忆或设置已更新，请重新检索');
     state.preview = result; notify(); return result;
     } finally { op.finish(); }
@@ -823,16 +823,17 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const token = epoch;
     const revision = recallRevision;
     const messages = payload.messages;
-    const {intent:query,context}=sceneRecallQuery(messages);
+    const {intent:query,context,characterContext}=sceneRecallQuery(messages);
     try {
-      const result = await preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context });
+      const result = await preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context,characterContext });
       assertCurrent(token); if (revision !== recallRevision || !enabled || !core.settings.injectionEnabled){audit('changed');return;}
-      if(!result.text){audit('empty',{query,result});return;}
       const role = ['system','user'].includes(core.settings.injectionRole) ? core.settings.injectionRole : 'system';
-      const external=externalState();
+      const external=externalState({full:true});
       let content=result.text;
-      const withState=`${content}\n外部权威状态（不覆盖、不重复管理数值）：${external}`;
-      if(external!=='未配置'&&estimateUnits(withState)<=core.settings.retrievalBudgetUnits)content=withState;
+      // Explicitly configured authoritative values are part of character
+      // context, not something to silently omit when an event budget is small.
+      if(external!=='未配置'&&external!=='{}')content+=`${content?'\n':''}外部权威状态（只读，不改写 MVU；变量不自动赋予角色知情权）：${external}`;
+      if(!content){audit('empty',{query,result});return;}
       const item = { role, content };
       // The host awaits this event before serializing this same messages array.
       if(core.settings.injectionPosition === 'start') messages.unshift(item); else messages.splice(Math.max(0,messages.length - 1), 0, item);
@@ -852,19 +853,20 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       try { c = client('embedding'); } catch (error) { failure = error; }
       const fingerprint = c ? sha256({endpoint:c.profile.url, model:c.profile.model}) : 'unconfigured';
       const bound = workspace;
-      options.vectorAdapter = { embeddingSpace:fingerprint, async search({query,limit,signal,tagLanes,categoryLanes}) {
+      options.vectorAdapter = { embeddingSpace:fingerprint, async search({query,limit,signal,tagLanes,categoryLanes,filter}) {
         if (failure) throw failure;
         const key=`vectors-${fingerprint.slice(0,20)}`;
         const index=await combinedVectorEntries(bound,key,{signal});
-        const indexed = allowedCards.filter(card => index.get(card.id)?.hash === vectorCache.hash(card)).length;
-        if (!allowedCards.length) return [];
+        const searchCards=typeof filter==='function'?allowedCards.filter(filter):allowedCards;
+        const indexed = searchCards.filter(card => index.get(card.id)?.hash === vectorCache.hash(card)).length;
+        if (!searchCards.length) return [];
         if (!indexed) throw new Error('向量索引尚未建立或已过期');
         const q = await vectorCache.query(query, async () => {
           const response = await c.embeddings({model:c.profile.model,input:[query],encoding_format:'float'}, {signal});
           return embeddingVectors(response,1)[0];
         }, signal);
-        const result = await vectorCache.search(index, allowedCards, q, {limit, fingerprint, signal,tagLanes,categoryLanes});
-        result.coverage = { indexed: allowedCards.filter(card => { const entry = index.get(card.id); return entry?.hash === vectorCache.hash(card) && entry.vector.length === q.vector.length; }).length, total: allowedCards.length };
+        const result = await vectorCache.search(index, searchCards, q, {limit, fingerprint, signal,tagLanes,categoryLanes});
+        result.coverage = { indexed: searchCards.filter(card => { const entry = index.get(card.id); return entry?.hash === vectorCache.hash(card) && entry.vector.length === q.vector.length; }).length, total: searchCards.length };
         return result;
       }};
     }

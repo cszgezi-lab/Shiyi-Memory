@@ -45,7 +45,7 @@ export function buildDictionary(cards=[],{aliases='',automatic=true}={}) {
   for(const term of words.values())if(!term.disabled)for(const name of [term.name,...term.aliases]){const set=owners.get(key(name))??new Set();set.add(key(term.name));owners.set(key(name),set);}
   return {entries:[...words.values()].map(term=>({...term,ambiguous:[term.name,...term.aliases].filter(a=>(owners.get(key(a))?.size??0)>1)})).sort((a,b)=>a.name.localeCompare(b.name,'zh-CN')),tags:[...tagSources].map(([name,ids])=>({name,count:ids.size})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name,'zh-CN'))};
 }
-export function dictionaryQuery(query,dictionary) {
+export function dictionaryQuery(query,dictionary,{entityLimit=12}={}) {
   const original=String(query??''),text=key(original),hits=[];
   for(const entry of dictionary.entries??[])if(!entry.disabled)for(const name of [entry.name,...entry.aliases]){
     if(entry.ambiguous?.some(a=>key(a)===key(name)))continue;
@@ -55,7 +55,7 @@ export function dictionaryQuery(query,dictionary) {
   // A shorter name embedded in another full name must not activate a different person.
   hits.sort((a,b)=>(b.end-b.start)-(a.end-a.start));const accepted=[];
   for(const hit of hits)if(!accepted.some(other=>hit.start>=other.start&&hit.end<=other.end&&key(hit.entry.name)!==key(other.entry.name)))accepted.push(hit);
-  const matched=[...new Map(accepted.map(h=>[key(h.entry.name),h.entry])).values()].slice(0,12);
+  const matched=[...new Map(accepted.map(h=>[key(h.entry.name),h.entry])).values()].slice(0,entityLimit);
   const related=(dictionary.entries??[]).filter(e=>!e.disabled&&(e.indexWords??[]).some(word=>text.includes(key(word)))).slice(0,8);
   // Topic->name expansion is search-only. It must not assert that this person
   // is present, nor enter the forced identity lane.
