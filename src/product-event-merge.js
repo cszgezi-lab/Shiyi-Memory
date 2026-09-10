@@ -1,5 +1,5 @@
 import { clone, sha256, stableStringify } from './utils.js';
-import { compareStoryTimes } from './temporal.js';
+import { compareStoryTimes,storyTimeRange,storyDateOf } from './temporal.js';
 import { mergeEventDetails } from './event-consolidation.js';
 
 // A derived, per-chat view. Original repository chunks and their operation
@@ -59,7 +59,9 @@ export function validateMergeVote(records,job,vote){
   if(vote.decision==='different_event')return {status:'different',reason:vote.reason};
   if(vote.decision==='uncertain')return {status:'uncertain',reason:vote.reason};
   if(![vote.quoteA,vote.quoteB].every(q=>typeof q==='string'&&q.trim().length>=4&&q.length<=2000)||!body(to).includes(vote.quoteA)||!body(from).includes(vote.quoteB))throw new Error('合并依据未能对应两条原记录，未执行合并；可只重试合并');
-  if(compareStoryTimes(time(from),time(to))==='conflict')return {status:'uncertain',reason:'模型认为相关，但两条记录明确的发生时间不重叠。未覆盖时间或强行合并，请核对是否为分日事件。'};
+  const left=storyTimeRange(time(from)),right=storyTimeRange(time(to));
+  const adjacent=left&&right&&left.precision==='range'&&right.precision==='range'&&storyDateOf(time(from))&&storyDateOf(time(from))===storyDateOf(time(to))&&Math.max(left.start,right.start)-Math.min(left.end,right.end)<=0;
+  if(compareStoryTimes(time(from),time(to))==='conflict'&&!adjacent)return {status:'uncertain',reason:'模型认为相关，但两条记录明确的发生时间不重叠。未覆盖时间或强行合并，请核对是否为分日事件。'};
   if((from.epistemicStatus??'observed')!==(to.epistemicStatus??'observed'))return {status:'uncertain',reason:'两条记录的事实性质不同（例如自述与观察），暂不合并，避免把自述变为事实。'};
   return {status:'merged',reason:vote.reason};
 }

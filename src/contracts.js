@@ -1,6 +1,6 @@
 import { ValidationError } from './errors.js';
 import { validationDetails, valueType } from './validation-diagnostics.js';
-import { normalizeTerms, normalizeTags } from './product-dictionary.js';
+import { normalizeTerms, normalizeTags,enrichRetrievalMetadata } from './product-dictionary.js';
 import { bindCharacterDetails } from './event-consolidation.js';
 import {
   asArray,
@@ -34,6 +34,7 @@ export const DRAFT_CATEGORIES = Object.freeze([
  * request self describing and gives the host one canonical contract to audit.
  */
 export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
+  crossModuleQualityRules:'提交前对照本批原文：事件中明确谁听见/看见什么，awarenessChanges 是否遗漏；人物明确的学校、家人、任意新属性不能只存在于别人的知情摘要而不进入其档案。同一人物复用稳定姓名和已有属性含义，补充可兼容的信息，不重复复述整份档案。新信息若与既有学校/住址/数值矛盾且原文未确认更正，保留冲突，禁止按最后一楼覆盖。关系变化区分角色自述、当场反应和双方明确确认；感谢、害羞或旁人起哄不自动等于恋爱关系，不把一次表现概括为永久人设。有原文依据的简称写入 entities.aliases，主题和字段检索词写入 entities.indexWords 与 tags，不以空数组代替检查。首遇时间、相处时长以明确故事时间和经历为准，不因片段密集而夸大亲密程度。',
   schemaVersion: 1,
   kind: 'DraftBundle',
   categories: DRAFT_CATEGORIES,
@@ -516,7 +517,7 @@ export function bindDraftBundle(modelOutput, {
     }
     next.entities=[...terms.values()];
     if(next.tags!==undefined)next.tags=normalizeTags(next.tags);
-    return bindCharacterDetails(next,evidence);
+    return bindCharacterDetails(enrichRetrievalMetadata(next,evidence),evidence);
   };
   const bindCategory = category => normalizedCategory(source[category],category).map((record,index)=>bindEvidence(record,category,index));
   const bundle = {

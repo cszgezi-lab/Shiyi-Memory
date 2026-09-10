@@ -11,6 +11,7 @@ import { clone, isPlainObject } from './utils.js';
 export const PRODUCT_SETTINGS_VERSION = 1;
 
 const DEFINITIONS = [
+  { key: 'autoQualityEnabled', label: '总结后校对缺项与矛盾', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.processQuality'] },
   { key: 'messageCount', label: '最近消息数', defaultValue: 8, type: 'integer', min: 1, max: 200, consumers: ['ProductShellController.readRange'] },
   { key: 'autoMergeEnabled', label: '总结后自动核对合并', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.processMergeQueue'] },
   { key: 'inputBudgetUnits', label: '总结输入预算', defaultValue: 24000, type: 'integer', min: 256, max: 1000000, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },

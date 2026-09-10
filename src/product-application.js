@@ -6,7 +6,7 @@ import { factSubject,factKey,factValue } from './product-person-profiles.js';
 import { sourceKey } from './product-sources.js';
 import { PRODUCT_SETTING_REGISTRY, persistedProductSettings, validateProductPatch, splitProductSettings } from './product-settings.js';
 import { ProviderClient, observeProviderRequests } from './provider.js';
-import { errorDiagnostics, jsonFailure,installDiagnosticBoundary } from './diagnostics.js';
+import { errorDiagnostics, jsonFailure,installDiagnosticBoundary,diagnosticRequestId } from './diagnostics.js';
 import { SummaryResponseError } from './errors.js';
 import { memoryCards, recallMemory, readable, recordDescription, selectRecallCards, prepareRecallIndex, relevantPassage } from './product-memory.js';
 import { RecallIndexCache } from './recall-cache.js';
@@ -28,6 +28,8 @@ import { createRuntimeLog, safeLogDetails } from './product-runtime-log.js';
 import { buildDictionary, normalizeTerms, KNOWLEDGE_ANALYSIS_PROMPT, parseKnowledgeAnalysis, updateDictionaryOverride, normalizeTags } from './product-dictionary.js';
 import { fullSearchText } from './product-narrative.js';
 import { sceneRecallQuery } from './product-recall-packing.js';
+import { sceneClockFromMessages } from './temporal.js';
+import { QUALITY_STORE_KEY,QUALITY_PROMPT,memoryQualityIssues,qualityGroups,qualityStatus,qualityEntryCurrent,qualityFingerprint,validateQualityReview,projectQualityRecords } from './product-memory-quality.js';
 import { createInjectionLog } from './product-injection-log.js';
 import { ASSISTANT_SKILLS, assistantSkillCatalog, readAssistantSkill, assistantSettings } from './product-assistant-skills.js';
 import { MERGE_STORE_KEY, MERGE_JUDGE_PROMPT, mergeJobs, mergeDecision, mergeJudgeInput, validateMergeVote, projectMergedCards, sameMergeSnapshot, eventFingerprint } from './product-event-merge.js';
@@ -64,7 +66,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let dictionaryRevision=-1, dictionaryCache=null;
   let recallBusy = 0, moduleSourceBaseline=null;
   let vectorTimer=null,vectorJob=null,vectorCheckVersion=0,vectorStorageFailure=null;
-  let injectionLog=null,vectorExcluded=[],mergeDecisions={};
+  let injectionLog=null,vectorExcluded=[],mergeDecisions={},qualitySaved={};
   let tracking=false,trackingStart=null,disposed=false,followPending=false,followTimer=null,following=null,followVersion=0;
   const chatListeners=[],followWaiters=[];
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache(),knowledgeVectorCache=new ProductVectorCache();
@@ -74,7 +76,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const keyOrigins={},keyVersions={},keyEdited=new Set();let credentialsLoaded=false;
   const prefixFor=k=>k==='summary'?'provider':k;
   function effectiveKeys(patch={}){const s={...core.settings,...patch};return Object.fromEntries(Object.entries(keys).map(([k,v])=>[k,keyOrigins[k]&&keyOrigins[k]!==credentialOrigin(s[`${prefixFor(k)}Endpoint`])?'':v]));}
-  const core = controller ?? createProductShellController({ host, adapterFactory: h => (hostAdapter ??= new HostAdapter(h)), adapter, fetchImpl, onChange: () => notify(), runtimeRules: () => `当前故事日期：${core.settings.storyDate || '未知'}。外部权威状态（只读）：${externalState()}\n${moduleRules(state.modules)}`, shouldInvalidate:reason=>!(reason==='MESSAGE_UPDATED'&&moduleMetadataOnly()), summaryBundleValidator:()=>{const definitions=clone(state.modules);return bundle=>checkModuleBundle(bundle,definitions);} });
+  const core = controller ?? createProductShellController({ host, adapterFactory: h => (hostAdapter ??= new HostAdapter(h)), adapter, fetchImpl, onChange: () => notify(), runtimeRules: () => `故事时间以对应楼层原文为准；回忆、约定日期与当前场景日期分别记录，不套用全局日期。外部权威状态（只读）：${externalState()}\n${moduleRules(state.modules)}`, shouldInvalidate:reason=>!(reason==='MESSAGE_UPDATED'&&moduleMetadataOnly()), summaryBundleValidator:()=>{const definitions=clone(state.modules);return bundle=>checkModuleBundle(bundle,definitions);} });
   let globalWorkspace,globalLoaded=false,globalLoading=null,assistantActive=false;
   const globalStore=async()=>{
     hostAdapter??=new HostAdapter(host);await hostAdapter.ready?.();
@@ -241,7 +243,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function stopListeners() { for (const off of bindings.splice(0)) { try { await off(); } catch { /* tracked by host */ } } }
   function emptyChatView(status='loading'){
     workspace=null;boundScope=null;boundRefKey=null;moduleSourceBaseline=null;modules.clear();
-    Object.assign(state,{cards:[],records:{},batches:[],deletedRecords:[],hidden:[],savedThrough:-1,autoStartFloor:1,autoLastIndex:null,sourceStatus:null,progress:'',preview:null,actual:null,status,stale:status==='loading'});
+    qualitySaved={};Object.assign(state,{rawRecords:{},memoryControls:{},quality:null,qualityProgress:'',cards:[],records:{},batches:[],deletedRecords:[],hidden:[],savedThrough:-1,autoStartFloor:1,autoLastIndex:null,sourceStatus:null,progress:'',preview:null,actual:null,status,stale:status==='loading'});
     recallChanged({clear:true});
   }
   function wakeChatFollower(){
@@ -409,11 +411,16 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const filtered = Object.fromEntries(Object.entries(view.records ?? {}).map(([key, records]) => [key, Array.isArray(records) ? records.filter(record => (record.sourceRefs ?? []).every(ref => valid.has(sourceKey(ref)))) : records]));
     const all=Object.values(view.records?.history??{}).flatMap(h=>MEMORY_CATEGORIES.flatMap(k=>h.categories?.[k]??[]));
     state.deletedRecords=[...new Map(all.filter(r=>view.controls?.deletedRecords?.[r.id]).map(r=>[r.id,r])).values()];
-    state.records=filtered;
+    state.rawRecords=filtered;state.memoryControls=view.controls??{};
+    qualitySaved=await bound.read(QUALITY_STORE_KEY,{});assertCurrent(token);
+    state.records=projectQualityRecords(filtered,qualitySaved,view.controls);
+    state.quality=qualityStatus(filtered,qualitySaved);
+    const qualityDeleted=Object.values(qualitySaved).filter(e=>qualityEntryCurrent(e,filtered)).flatMap(e=>(e.additions??[]).map(a=>a.record)).filter(r=>view.controls?.deletedRecords?.[r.id]);
+    state.deletedRecords.push(...qualityDeleted);
     mergeDecisions=await bound.read(MERGE_STORE_KEY,{});assertCurrent(token);
-    state.merges=mergeJobs(filtered,mergeDecisions);
+    state.merges=mergeJobs(state.records,mergeDecisions);
     try{await modules.sync();}catch(error){void reportError(error,{task:'background',stage:'background'});assertCurrent(token);state.message='MVU 暂不可读，扩展区块没有使用旧值；可点击刷新重试';}
-    assertCurrent(token);state.cards = projectMergedCards(modules.cards(memoryCards(filtered, { hidden: state.hidden, includeAwareness:true })),filtered,mergeDecisions).filter(c=>!state.hidden.includes(c.id));
+    assertCurrent(token);state.cards = projectMergedCards(modules.cards(memoryCards(state.records, { hidden: state.hidden, includeAwareness:true })),state.records,mergeDecisions).filter(c=>!state.hidden.includes(c.id));
     await readBatches(view);
     recallChanged();
     state.sourceStatus = {invalid:validity.invalidKeys.length,unknown:validity.unknownKeys.length};
@@ -527,7 +534,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     if(!workspace)throw Object.assign(new Error('当前聊天尚未读取'),{code:'CHAT_REF_UNAVAILABLE'});
     batchSize??=core.settings.summaryBatchSize;
-    const op=begin();let saved=0,currentBatch=null,bookkeepingWarning=false;
+    const op=begin();let saved=0,currentBatch=null,bookkeepingWarning=false,qualityWarning=false;
     summaryFeedback('running','正在读取总结范围…',trigger);
     try{
       // Read current source again only inside the same bound chat.
@@ -572,6 +579,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]).catch(error=>{bookkeepingWarning=true;runtimeLog.record({run:diagnosticRun,task:'summary',phase:'checkpoint_warning',level:'warning',details:{...errorDiagnostics(error),storageArtifact:'checkpoint'}});});
         saved++;state.savedThrough=Math.max(state.savedThrough,item.endIndex);state.stale=false;
         await workspace.write('ui',{savedThrough:state.savedThrough}).catch(error=>{bookkeepingWarning=true;void reportError(error,{task:'storage',stage:'storage'});});await refresh();currentBatch=null;
+        if(core.settings.autoQualityEnabled){
+          const batch=state.batches.find(b=>b.operationId===operationId),ids=MEMORY_CATEGORIES.flatMap(k=>batch?.records?.[k]??[]).map(r=>r.id);
+          if(ids.length)try{const report=await processQuality(op,{recordIds:ids,automatic:true});qualityWarning ||= report.failed>0||report.unresolved>0;}
+          catch(error){if(op.signal.aborted||['CHAT_CHANGED','SOURCE_INVALIDATED','CANCELED'].includes(error.code))throw error;qualityWarning=true;void reportError(error,{task:'quality',stage:'background'});}
+        }
       }
       // All source-valid summaries are already durable. Merge is a separate
       // task and cannot mark any of these batches as failed or roll them back.
@@ -583,8 +595,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       }
       const awaiting=(state.merges??[]).filter(j=>['pending','failed','uncertain','missing'].includes(j.status)).length;
       mergeWarning ||= (state.merges??[]).some(j=>['failed','uncertain','missing'].includes(j.status));
-      if(op.token===epoch)summaryFeedback(mergeWarning||bookkeepingWarning?'warning':'success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${bookkeepingWarning?'批次进度资料待恢复，记忆正文已确认保存，无需重新生成。':''}${awaiting||mergeWarning?'合并尚未全部完成，可在记录 → 事件合并中单独处理；无需重做总结。':''}`,trigger);
-      return {status:'saved',batches:saved,level:mergeWarning||bookkeepingWarning?'warning':'success'};
+      if(op.token===epoch)summaryFeedback(mergeWarning||bookkeepingWarning||qualityWarning?'warning':'success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${bookkeepingWarning?'批次进度资料待恢复，记忆正文已确认保存，无需重新生成。':''}${qualityWarning?'内容校对有待处理项，可在记忆 → 内容校对中查看或单独重试。':''}${awaiting||mergeWarning?'合并尚未全部完成，可在记录 → 事件合并中单独处理；无需重做总结。':''}`,trigger);
+      return {status:'saved',batches:saved,level:mergeWarning||bookkeepingWarning||qualityWarning?'warning':'success'};
     }catch(error){
       if(currentBatch&&workspace?.isCurrent()&&op.token===epoch){
         const failed={...currentBatch,status:op.signal.aborted?'interrupted':'failed',error:failureText(error)};
@@ -636,6 +648,63 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     await refresh();op.check();await runtimeLog.flush();
     const remaining=(state.merges??[]).filter(j=>['pending','failed','uncertain','missing'].includes(j.status)).length;
     return {merged,failed,processed:candidates.length,remaining};
+  }
+  async function processQuality(op,{recordIds=null,automatic=false}={}){
+    await refresh();op.check();
+    const rows=r=>MEMORY_CATEGORIES.flatMap(k=>(r[k]??[]).map(record=>({category:k,...record})));
+    const initial=clone(state.rawRecords),findings=memoryQualityIssues(initial);
+    const reviewed=new Set(Object.values(qualitySaved).filter(e=>e.status==='reviewed'&&qualityEntryCurrent(e,initial)).flatMap(e=>Object.keys(e.anchors)));
+    const groups=qualityGroups(initial).map(ids=>ids.filter(id=>!reviewed.has(id))).filter(ids=>ids.length&&(!recordIds||ids.some(id=>recordIds.includes(id)))&&(!automatic||findings.some(i=>i.recordIds.some(id=>ids.includes(id)))));
+    let corrected=0,failed=0,unresolved=0;
+    for(const ids of groups){
+      op.check();await refresh();op.check();
+      const raw=clone(state.rawRecords),all=rows(raw),targets=all.filter(r=>ids.includes(r.id));
+      if(targets.length!==ids.length)throw Object.assign(new Error('待校对记忆已变化'),{code:'SOURCE_INVALIDATED'});
+      const stamp=qualityFingerprint(raw),key=sha256([...ids].sort()),anchors=Object.fromEntries(ids.map(id=>[id,sha256(MEMORY_CATEGORIES.flatMap(k=>raw[k]??[]).find(r=>r.id===id))]));
+      const requestId=diagnosticRequestId(),run=await runtimeLog.start('quality',{expected:ids.length,requestId});op.check();
+      let entry;
+      try{
+        state.qualityProgress=`正在校对 ${corrected+failed+1}/${groups.length} 组`;notify();
+        const sources=await core.readQualitySources(targets);op.check();
+        const referenceRecords=rows(state.records).filter(r=>!ids.includes(r.id)&&!['summaryView','conflicts'].includes(r.category));
+        const input={sources:sources.map(({id,index,text})=>({id,index,text})),records:targets,referenceRecords,issues:findings.filter(i=>i.recordIds.some(id=>ids.includes(id)))};
+        const c=client('summary');
+        const makePayload=()=>({model:c.profile.model,messages:[{role:'system',content:QUALITY_PROMPT},{role:'user',content:JSON.stringify(input)}],stream:false,...(core.settings.outputBudgetUnits>0?{max_tokens:core.settings.outputBudgetUnits}:{})});
+        let payload=makePayload(),inputUnits=estimateUnits(JSON.stringify(payload));
+        // References are optional context. Original evidence and target records
+        // are never silently clipped to squeeze a review into the budget.
+        while(inputUnits>core.settings.inputBudgetUnits&&input.referenceRecords.length){input.referenceRecords.pop();payload=makePayload();inputUnits=estimateUnits(JSON.stringify(payload));}
+        if(inputUnits>core.settings.inputBudgetUnits)throw Object.assign(new Error('这组原文超过校对输入预算，原记忆保留'),{code:'INPUT_BUDGET_EXCEEDED'});
+        runtimeLog.record({run,task:'quality',phase:'request',details:{requestId,inputUnits,inputLimit:core.settings.inputBudgetUnits,maxTokens:core.settings.outputBudgetUnits,sourceCount:sources.length,expected:ids.length}});
+        const response=await c.chatCompletions(payload,{signal:op.signal,timeoutMs:core.settings.deadlineMs,requestId,onDiagnostic:e=>runtimeLog.record({run,task:'quality',...e})});op.check();
+        runtimeLog.record({run,task:'quality',phase:'response',details:{finishReason:response.choices?.[0]?.finish_reason??'unknown',promptTokens:response.usage?.prompt_tokens,completionTokens:response.usage?.completion_tokens}});
+        entry=validateQualityReview(raw,ids,sources,jsonContent(completion(response).content),state.memoryControls);
+        await core.readQualitySources(targets);op.check();
+        corrected++;unresolved+=entry.issues.length;
+        runtimeLog.record({run,task:'quality',phase:'validate',level:entry.issues.length?'warning':'success',details:{received:entry.updates.length+entry.additions.length,invalidRows:entry.issues.length}});
+      }catch(error){
+        if(op.signal.aborted||['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error.code)){runtimeLog.record({run,task:'quality',phase:'canceled',level:'warning',details:errorDiagnostics(error)});throw error;}
+        failed++;entry={status:'failed',anchors,at:Date.now(),error:failureText(error)};
+        runtimeLog.record({run,task:'quality',phase:'failed',level:'error',details:errorDiagnostics(error)});
+      }
+      await refresh();op.check();
+      if(qualityFingerprint(state.rawRecords)!==stamp)throw Object.assign(new Error('校对期间记忆已变化，结果未应用'),{code:'SOURCE_INVALIDATED'});
+      try{await op.workspace.update(QUALITY_STORE_KEY,value=>({...value,[key]:entry}),{});op.check();}
+      catch(error){runtimeLog.record({run,task:'quality',phase:'failed',level:'error',details:{...errorDiagnostics(error),requestId}});throw error;}
+      runtimeLog.record({run,task:'quality',phase:'commit',level:'success',details:{requestId}});
+      runtimeLog.record({run,task:'quality',phase:'complete',level:entry.status==='failed'||entry.issues?.length?'warning':'success'});
+    }
+    state.qualityProgress='';await refresh();op.check();await runtimeLog.flush();
+    return {corrected,failed,unresolved,level:failed||unresolved?'warning':'success'};
+  }
+  async function reviewMemory(){
+    await prepareSummaryChat();const op=begin();
+    try{const result=await processQuality(op);const text=`已校对 ${result.corrected} 组，${result.failed} 组未完成，${result.unresolved} 处需确认。原总结保留；再次点击只处理未完成或已变化的记录。`;state.feedback={id:++feedbackSequence,level:result.level,text};setMessage(text);return result;}
+    finally{state.qualityProgress='';op.finish();}
+  }
+  async function undoQuality(){
+    const op=begin();
+    try{op.check();await op.workspace.write(QUALITY_STORE_KEY,{});op.check();await refresh();setMessage('已撤销自动校对，原总结和人工修改保留。');}finally{op.finish();}
   }
   async function retryMerges(ids=null){
     await prepareSummaryChat();const op=begin();
@@ -818,7 +887,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     } finally { recallBusy--; }
   }
   async function knowledgeCards() { return core.settings.knowledgeEnabled ? knowledgeCache.filter(card => !state.hidden.includes(card.id)) : []; }
-  async function preview(query, { online = false, context='',characterContext=context } = {}) {
+  async function preview(query, { online = false, context='',characterContext=context,clock=null } = {}) {
     assertCurrent(); if(state.stale) throw new Error('正文已修改，先重新整理');
     if (recallBusy) throw new Error('记忆正在更新，请稍后检索');
     const op=begin(false);
@@ -826,7 +895,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const revision = recallRevision;
     const cards = [...state.cards, ...await knowledgeCards(query)];
     const lookup=context?`${query}\n最近剧情参照：${context}\n当前询问：${query}`:query;
-    const result = await recallMemory(cards, lookup, core.settings, { ...(online ? await retrievalAdapters(selectRecallCards(cards, core.settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:activeDictionary(),focusQuery:query,characterQuery:[query,characterContext].filter(Boolean).join('\n') });
+    if(!clock)try{clock=sceneClockFromMessages(await core.sceneMessages?.()??[]);}catch(error){op.check();void reportError(error,{task:'recall',stage:'prepare'});clock={date:null,status:'unavailable',source:'scene'};}
+    op.check();
+    const result = await recallMemory(cards, lookup, {...core.settings,storyDate:clock.date??''}, { ...(online ? await retrievalAdapters(selectRecallCards(cards, core.settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:activeDictionary(),focusQuery:query,characterQuery:[query,characterContext].filter(Boolean).join('\n') });
+    result.sceneClock=clock;
     op.check(); if (revision !== recallRevision) throw new Error('记忆或设置已更新，请重新检索');
     state.preview = result; notify(); return result;
     } finally { op.finish(); }
@@ -1093,7 +1165,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function stop(){clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;automaticPaused=true;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
   const application={editPersonProfile,inspectAutomaticProgress,setAutoStartFloor,setAutomatic,processAutomatic:()=>autoSummary({force:true}),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
-    startChatTracking,followCurrentChat,
+    startChatTracking,followCurrentChat,reviewMemory,undoQuality,
     reportError,loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.export();},clearRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.clear();},
     async exportInjectionLog(options){assertCurrent();return injectionLog.export(options);},
     async clearInjectionLog(){assertCurrent();await injectionLog.clear();},
@@ -1122,6 +1194,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     async exportBackup(){assertCurrent();return {kind:'shiyi-backup',version:1,scope:boundScope,modules:clone(state.modules),moduleSnapshots:clone(state.moduleSnapshots),eventMergeDecisions:clone(mergeDecisions),settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`)))}))),assistant:state.history};},
     async dispose(){disposed=true;tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of chatListeners.splice(0)){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();stopTransportDiagnostics();stopErrorBoundary();for(const resolve of followWaiters.splice(0))resolve(publicState());await flushDiagnostics();},
   };
+  const exportRawBackup=application.exportBackup;
+  application.exportBackup=async()=>{const token=epoch,backup=await exportRawBackup();assertCurrent(token);return {...backup,qualityReview:clone(qualitySaved),effectiveRecords:clone(state.records)};};
   // One failure boundary for all public actions, including manual edits, DIY,
   // import/export and settings; keep their sync/async return contracts intact.
   for(const [name,descriptor]of Object.entries(Object.getOwnPropertyDescriptors(application))){

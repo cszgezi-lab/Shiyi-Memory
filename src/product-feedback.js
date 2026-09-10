@@ -10,6 +10,7 @@ const NETWORK = {
   'network.request_failed':'网络请求失败，请检查服务是否可访问。',
 };
 const CODES = {
+  QUALITY_RESPONSE_INVALID:'校对结果的格式、对象或原文证据未通过验证；原总结保留，可在内容校对中单独重试。',
   RECOVERY_LIMIT:'本批自动恢复已达到 2 次，已返回的结果暂存保留。可继续未完成任务；不会无上限调用模型。',
   RESUME_UNAVAILABLE:'本批没有可续跑的暂存任务（旧版本或已过保留期），请点击重新生成；旧记忆不会提前删除。',
   VECTOR_RESPONSE_COUNT:'向量返回数量与输入不符；已保存的索引保留，请在向量页重试未完成项。',

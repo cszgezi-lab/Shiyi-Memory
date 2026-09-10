@@ -14,6 +14,29 @@ export function normalizeTerms(value) {
   });
 }
 export function normalizeTags(value) { return [...new Set((Array.isArray(value)?value:[]).filter(v=>typeof v==='string'&&v.trim().length>=2&&v.trim().length<=40).map(clean))].slice(0,12); }
+
+// Search-only shorthand. It never merges people or grants knowledge. Require
+// an independent occurrence, reject familial compounds and retain ambiguity.
+export function enrichRetrievalMetadata(record,evidence='',knownNames=[]){
+  const entities=normalizeTerms(record.entities),people=[...new Set([...knownNames,...entities.filter(t=>t.kind==='人物').map(t=>t.name)])];
+  let mentions=String(evidence);
+  for(const name of [...people].sort((a,b)=>b.length-a.length))mentions=mentions.split(name).join(' ');
+  const standalone=(word,title=false)=>{let i=mentions.indexOf(word);while(i>=0){const after=mentions.slice(i+word.length).trimStart();if(!/^(?:母亲|父亲|妈妈|爸爸|姐姐|妹妹|哥哥|弟弟|家族|一家|的母|的父)/.test(after)&&(title||/^(?:说|问|答|道|点头|摇头|挥手|听|看向|望|低头|抬头|走|回|接|递|笑|叹|解释|表示|介绍|就读|住在|同意|拒绝|向|对|将|把|让|被|和|与|却|仍|也|则|拿|松|感到|神情|脸|耳|轻|朝|的(?:家|学校|性格|态度|名字|住址)|[：:“「『])/.test(after)))return true;i=mentions.indexOf(word,i+word.length);}return false;};
+  for(const term of entities){
+    if(term.kind!=='人物')continue;
+    const inferred=[];
+    if(/^[\u3400-\u9fff]{3,8}$/.test(term.name)){
+      // A suffix must occur separately in this evidence, not just within the name.
+      for(let n=1;n<term.name.length;n++){const alias=term.name.slice(n);if(alias.length>=2&&standalone(alias))inferred.push(alias);}
+      for(let n=2;n<term.name.length;n++)for(const title of ['同学','先生','小姐','老师']){const alias=term.name.slice(0,n)+title;if(standalone(alias,true))inferred.push(alias);}
+    }
+    term.aliases=[...new Set([...term.aliases,...inferred])].slice(0,32);
+    term.indexWords=[...new Set([...term.indexWords,...normalizeTags([record.field,record.aspect,record.action])])].slice(0,16);
+  }
+  const tags=normalizeTags(record.tags);
+  if(!tags.length)tags.push(...normalizeTags([record.action,record.field,record.aspect,...String(record.title??'').split(/[·：:，,、]/)]).filter(t=>!people.includes(t)&&!/^(事件|人物|记忆|总结|纪要|关系|重要|普通|第\s*\d+\s*楼.*)$/.test(t)).slice(0,5));
+  return {...record,entities,tags};
+}
 export function manualDictionary(value='') {
   return String(value).split('\n').flatMap(line=>{
     const deleted=line.trim().startsWith('!!'),disabled=line.trim().startsWith('!'),[names,related='']=line.trim().replace(/^!+/, '').split('|'),parts=names.split(/[=,，]/).map(clean);
@@ -29,7 +52,9 @@ export function updateDictionaryOverride(value,{name,aliases='',indexWords='',di
 }
 export function buildDictionary(cards=[],{aliases='',automatic=true}={}) {
   const words=new Map(),tagSources=new Map();
-  for(const card of cards){
+  const names=[...new Set(cards.flatMap(c=>normalizeTerms(c.entities).filter(t=>t.kind==='人物').map(t=>t.name)))];
+  for(const raw of cards){
+    const card=enrichRetrievalMetadata(raw,[raw.description,raw.text,...(raw.keyDialogues??[]).flatMap(q=>[q.text,q.to,q.speaker])].filter(Boolean).join('\n'),names);
     if(automatic)for(const term of normalizeTerms(card.entities)){
       const id=key(term.name),previous=words.get(id)??{...term,aliases:[],sources:[],manual:false,disabled:false};
       previous.aliases=[...new Set([...previous.aliases,...term.aliases])].slice(0,32);

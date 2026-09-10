@@ -6,16 +6,22 @@ export function hasStoryTime(value) {
   if(value==null)return false;
   if(typeof value==='string')return Boolean(value.trim())&&!/^(?:unknown|null|未明确|原文未明确|未知|不详)$/i.test(value.trim());
   if(typeof value!=='object'||Array.isArray(value)||value.kind==='unknown')return false;
-  return ['date','time','period','raw','occurredAt','assertedAt','plannedFor','actualAt'].some(k=>hasStoryTime(value[k]));
+  return ['date','time','period','raw','occurredAt','assertedAt','plannedFor','actualAt','start','end'].some(k=>hasStoryTime(value[k]));
 }
 
 // Precision is an interval, not string equality. No real-world clock, locale
 // parsing or guessed year is used; unparseable periods remain unverified.
 export function storyTimeRange(value) {
   if(!hasStoryTime(value))return null;
-  if(typeof value==='object')value=value.date?`${value.date}${value.time?' '+value.time:value.period?' '+value.period:''}`:value.raw??value.period;
+  if(typeof value==='object'){
+    if(value.start!=null&&value.end!=null){const a=storyTimeRange(value.start),b=storyTimeRange(value.end);return joinTimeRange(a,b);}
+    value=value.date?`${value.date}${value.time?' '+value.time:value.period?' '+value.period:''}`:value.raw??value.period??value.occurredAt;
+  }
   if(typeof value!=='string')return null;
   const text=value.trim().replace(/年|月/g,'-').replace(/日|号/g,'').replace(/\//g,'-').replace(/：/g,':');
+  // Explicit end points only. Do not infer a next day for a reversed clock.
+  const interval=/^(\d{4}-\d{1,2}-\d{1,2})\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:[-–—~～至到])\s*((?:\d{4}-\d{1,2}-\d{1,2}\s+)?\d{1,2}:\d{2}(?::\d{2})?)$/.exec(text);
+  if(interval)return joinTimeRange(storyTimeRange(`${interval[1]} ${interval[2]}`),storyTimeRange(/^\d{4}-/.test(interval[3])?interval[3]:`${interval[1]} ${interval[3]}`));
   const m=/^(\d{4})(?:-(\d{1,2})(?:-(\d{1,2})(?:[T\s]+(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:?\d{2})?)?)?)?(?:\s*([\u3400-\u9fff]{1,12}))?$/.exec(text);
   if(!m)return null;
   const year=Number(m[1]),month=Number(m[2]??1),day=Number(m[3]??1),hour=Number(m[4]??0),minute=Number(m[5]??0),second=Number(m[6]??0),millisecond=Number((m[7]??'').padEnd(3,'0'));
@@ -32,6 +38,45 @@ export function storyTimeRange(value) {
     offset=z?(z[1]==='-'?-1:1)*(Number(z[2])*60+Number(z[3]))*60000:0;
   }
   return {start,end,offset,precision,qualifier:m[9]??null};
+}
+
+function joinTimeRange(a,b){
+  if(!a||!b||a.offset!==b.offset||b.start<a.start)return null;
+  return {start:a.start,end:b.end,offset:a.offset,precision:'range',qualifier:null};
+}
+
+export function storyDateOf(value){
+  const time=storyTimeRange(value);
+  if(!time||['year','month'].includes(time.precision))return null;
+  const start=new Date(time.start).toISOString().slice(0,10),end=new Date(time.end-1).toISOString().slice(0,10);
+  return start===end?start:null;
+}
+
+/** Only the live scene text supplies "now", never the maximum recalled date.
+ * Multiple dates (flashbacks/plans/quotes) stay ambiguous without an explicit
+ * scene marker. Callers keep this derived value inside their chat workspace. */
+export function sceneClock(text=''){
+  const clean=String(text).replace(/<(think|thinking)\b[^>]*>[\s\S]*?<\/\1>/gi,'');
+  const pattern=/\d{4}(?:年|[-/])\d{1,2}(?:月|[-/])\d{1,2}(?:日|号)?(?:[ T]+\d{1,2}[:：]\d{2}(?:\s*[-–—~～至到]\s*\d{1,2}[:：]\d{2})?)?/g;
+  const anchors=[];
+  for(const line of clean.split(/\n/))if(/(?:当前(?:剧情|故事|场景)?(?:时间|日期)|故事(?:时间|日期)|场景(?:时间|日期)|<time\b|\[时间\]|🕒|🕐|🕰)/i.test(line)&&!/(?:回忆|约定|计划|预计)/.test(line))anchors.push(...(line.match(pattern)??[]));
+  const values=anchors.length?anchors:clean.match(pattern)??[];
+  const dates=[...new Set(values.map(storyDateOf).filter(Boolean))];
+  if(dates.length!==1||!anchors.length&&/(?:回忆|倒叙|去年|约定|计划|明天|昨日|昨天)/.test(clean))return {date:null,status:dates.length?'ambiguous':'unknown',source:'scene'};
+  return {date:dates[0],raw:values.at(-1),status:'known',source:'scene'};
+}
+
+export function sceneClockFromMessages(messages=[]){
+  for(const message of [...messages].reverse()){
+    if(message.role==='system')continue;
+    const body=message.text??message.content??'';
+    if(typeof body!=='string')continue;
+    const clock=sceneClock(body);
+    if(clock.status!=='unknown')return clock;
+    // An explicit jump without a date invalidates an earlier scene anchor.
+    if(/(?:第二天|次日|翌日|数日后|几天后|一年后|一年[前后]|时间[跳倒]转)/.test(body))return {date:null,status:'ambiguous',source:'scene'};
+  }
+  return {date:null,status:'unknown',source:'scene'};
 }
 
 export function compareStoryTimes(a,b) {

@@ -1,6 +1,7 @@
 // Shared, content-free diagnostics. Never serialize Error.message, API bodies,
 // headers, URLs, user filenames or arbitrary server error objects into exports.
 export const DIAGNOSTIC_REASONS = Object.freeze({
+  quality_validation:'校对结果的结构、修改权限或原文证据未通过',
   empty_body:'接口返回空正文', invalid_envelope_json:'接口外层响应不是有效 JSON',
   empty_model_content:'模型回复正文为空', invalid_model_json:'模型正文不是有效 JSON',
   invalid_model_root:'模型结果不是要求的 JSON 对象', missing_categories:'模型结果缺少必需区块',
@@ -22,6 +23,7 @@ let sequence=0;
 export function diagnosticRequestId(){return `req-${Date.now().toString(36)}-${(++sequence).toString(36)}`;}
 export function safeDiagnosticFields(value={}){
   const result={};
+  if(['返回格式或条数不正确','缺少原文依据','依据不能对应原文','含不允许修改的字段','事实性质不正确','文字字段不正确','列表字段不正确','更新对象不在本批或重复','更新依据不属于原记录','新增区块或来源锚点不正确','新增记录不正确','新增依据不属于来源锚点','新增记录过长','新增记录含未知字段','知情字段缺失或事件不存在','人物属性缺失或越权确认','疑点没有关联原记录'].includes(value?.qualityReason))result.qualityReason=value.qualityReason;
   for(const [key,labels]of [['reason',DIAGNOSTIC_REASONS],['purpose',DIAGNOSTIC_PURPOSES],['stage',DIAGNOSTIC_STAGES]])if(Object.hasOwn(labels,value?.[key]))result[key]=value[key];
   if(typeof value?.requestId==='string'&&/^req-[a-z0-9]{1,16}-[a-z0-9]{1,10}$/.test(value.requestId))result.requestId=value.requestId;
   if(errorTypes.has(value?.errorType))result.errorType=value.errorType;

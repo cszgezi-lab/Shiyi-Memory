@@ -3,7 +3,7 @@ import { normalizeHostMessage } from './product-host-adapters.js';
 export const sourceKey = ref => JSON.stringify([ref?.sourceId, ref?.version ?? null, ref?.hash ?? null]);
 
 /** Verify raw bodies, including UUID messages. Unread evidence is unknown, never valid. */
-export async function verifyProductSources(history, records, check = () => {}) {
+export async function verifyProductSources(history, records, check = () => {}, {includeMessages=false}={}) {
   const refs = [...new Map(Object.values(records ?? {}).filter(Array.isArray).flatMap(list => list.flatMap(r => r?.sourceRefs ?? [])).map(r => [sourceKey(r), r])).values()];
   const current = new Map(), byIndex = new Map();
   const pending = refs.filter(r => !String(r.sourceId).startsWith('user-note_'));
@@ -32,5 +32,6 @@ export async function verifyProductSources(history, records, check = () => {}) {
     if (!ref.hash || ref.version == null) { unknownKeys.push(key); continue; }
     (value.id === ref.sourceId && value.hash === ref.hash && value.version === ref.version ? validKeys : invalidKeys).push(key);
   }
-  return { validKeys, invalidKeys, unknownKeys, invalidIds: refs.filter(r => invalidKeys.includes(sourceKey(r))).map(r => r.sourceId) };
+  const valid=new Set(validKeys);
+  return { validKeys, invalidKeys, unknownKeys, invalidIds: refs.filter(r => invalidKeys.includes(sourceKey(r))).map(r => r.sourceId),...(includeMessages?{messages:[...new Map(refs.filter(r=>valid.has(sourceKey(r))&&!r.sourceId.startsWith('user-note_')).map(r=>{const m=/^message:(\d+):/.exec(r.sourceId),message=m?byIndex.get(Number(m[1])):current.get(r.sourceId);return [r.sourceId,message];})).values()]}:{}) };
 }

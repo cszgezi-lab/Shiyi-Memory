@@ -15,6 +15,7 @@ function detailsHTML(entry){
   if(d.requestId)lines.push(['请求编号',d.requestId]);
   if(d.stage)lines.push(['具体阶段',DIAGNOSTIC_STAGES[d.stage]]);
   if(d.reason)lines.push(['具体原因',DIAGNOSTIC_REASONS[d.reason]]);
+  if(d.qualityReason)lines.push(['校对校验',d.qualityReason]);
   if(d.upstreamCode)lines.push(['服务错误分类',UPSTREAM_CODES[d.upstreamCode]]);
   if(d.modelRole)lines.push(['模型用途',({summary:'总结模型',assistant:'配置助手',embedding:'向量模型',rerank:'重排模型'})[d.modelRole]]);
   if(d.errorType)lines.push(['错误类型',d.errorType]);
@@ -29,12 +30,16 @@ function detailsHTML(entry){
   if(d.storageStage)lines.push(['本机存储阶段',({write:'写入存档',read:'读取存档',readback:'写入后的读回',compare:'读回内容比对',decode:'存档完整性校验',unknown:'旧存储接口未报告阶段'})[d.storageStage]??'未识别']);
   if(d.storageArtifact)lines.push(['存档类型',({vector_jobs:'向量续传检查点',vector_index:'已完成向量索引',vector_staging:'重建中的暂存索引',runtime_log:'运行日志',workspace:'插件资料',memory:'故事记忆',checkpoint:'任务进度',credentials:'密钥存储',settings:'设置'})[d.storageArtifact]??'未识别']);
   if(d.startIndex!==undefined)lines.push(['楼层范围',`#${d.startIndex}–${d.endIndex??d.startIndex}`]);
-  if(d.expected!==undefined)lines.push(['逐楼摘要',`完整对应 ${d.covered??0}/${d.expected} 楼；收到 ${d.received??0} 条`]);
+  if(entry.task==='quality'){
+    if(d.expected!==undefined)lines.push(['待校对记录',d.expected]);
+    if(d.received!==undefined)lines.push(['校正或补充',d.received]);
+    if(d.invalidRows!==undefined)lines.push(['待确认疑点',d.invalidRows]);
+  }else if(d.expected!==undefined)lines.push(['逐楼摘要',`完整对应 ${d.covered??0}/${d.expected} 楼；收到 ${d.received??0} 条`]);
   for(const [key,label] of [['missingFloors','缺失楼层'],['duplicateFloors','重复楼层'],['emptyFloors','正文为空的楼层']])if(d[key]?.length)lines.push([label,d[key].map(n=>'#'+n).join('、')]);
   if(d.maxTokens!==undefined)lines.push(['实际发送回复上限',d.maxTokens===0?'沿用服务端默认（未发送 max_tokens）':`${d.maxTokens} Token`]);
   if(d.finishReason!==undefined)lines.push(['服务结束原因',d.finishReason==='unknown'?'服务未提供 / 未识别':d.finishReason]);
   if(d.truncated!==undefined)lines.push(['截断标记',d.truncated?'服务明确报告截断':'未收到截断标记']);
-  for(const [key,label] of Object.entries(fields))if(d[key]!==undefined&&!['expected','received','covered','childIndex'].includes(key)&&!(d[key]===0&&['invalidRows','duplicateCount'].includes(key)))lines.push([label,d[key]]);
+  for(const [key,label] of Object.entries(fields))if(d[key]!==undefined&&!['expected','received','covered','childIndex'].includes(key)&&!(entry.task==='quality'&&key==='invalidRows')&&!(d[key]===0&&['invalidRows','duplicateCount'].includes(key)))lines.push([label,d[key]]);
   if(d.childIndex>0)lines.push(['拆分序号',d.childIndex+1]);
   if(d.normalizedFields!==undefined)lines.push(['本地兼容字段',d.normalizedFields]);
   if(d.defaultedValidityFields)lines.push(['未注明有效期的人设变化',`${d.defaultedValidityFields} 条；保留为期限未确认，不推定永久变化`]);

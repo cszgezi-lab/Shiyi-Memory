@@ -1,8 +1,8 @@
 import { LocalBM25Index, retrieveMemories, tokenizeChinese } from './retrieval.js';
 import { estimateUnits, clone, stableStringify } from './utils.js';
-import { buildDictionary, dictionaryQuery } from './product-dictionary.js';
+import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './product-dictionary.js';
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel } from './product-narrative.js';
-import { hasStoryTime } from './temporal.js';
+import { hasStoryTime, storyDateOf } from './temporal.js';
 import { coveredRecallRecord, recallSelectionReason } from './product-recall-packing.js';
 import { factValue, fullCharacterGroups, awarenessSubjectLabel } from './product-person-profiles.js';
 
@@ -57,7 +57,7 @@ export function memoryCards(records = {}, { hidden = [], knowledge = [], include
       const awareness = category==='awarenessChanges'?[record]:awarenessFor(refIds);
       const followUps = followUpsFor(refIds).filter(a => a.id !== record.id);
       const description = recordDescription({...record,category});
-      const card={ ...clone(record), id: record.id, category, description, awareness, followUps, temporal: record.temporal ?? record.storyTime ?? record.time ?? null };
+      const card={ ...enrichRetrievalMetadata(clone(record),[description,...(record.keyDialogues??[]).map(q=>q.text)].join('\n')), id: record.id, category, description, awareness, followUps, temporal: record.temporal ?? record.storyTime ?? record.time ?? null };
       if(category==='summaryView'||['relationshipChanges','personaChanges','commitmentChanges','performanceHints','conflicts'].includes(category)){
         const explicit=links(record);
         // Old summaries can reconnect by exact frozen source, never by names,
@@ -75,7 +75,7 @@ export function memoryCards(records = {}, { hidden = [], knowledge = [], include
   return [...cards, ...knowledge.filter(r => !ignored.has(r.id))];
 }
 function dateOnly(value) {
-  const s = typeof value === 'string' ? value.slice(0, 10) : value?.date;
+  const s = storyDateOf(value);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s ?? '')) return null;
   const n = Date.parse(`${s}T00:00:00Z`);
   return Number.isFinite(n) && new Date(n).toISOString().slice(0, 10) === s ? { text: s, n } : null;
@@ -114,6 +114,8 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
     })].join('\n\n');
   }
   const lines = metadataOnly?[]:[`[${CATEGORY_LABELS[card.category] ?? '记忆'}] ${body}`];
+  for(const warning of card.continuityWarnings??[])lines.push(`待确认：${warning}`);
+  if(detail&&!full)for(const e of card.qualityEvidence??[])lines.push(`校对依据${Number.isInteger(e.floor)?` · 第 ${e.floor} 楼`:''}：「${e.quote}」`);
   if (Array.isArray(card.participants)&&card.participants.length)lines.push(`参与人物：${narrativeText(card.participants)}`);
   if (card.location)lines.push(`地点：${narrativeText(card.location)}`);
   const names=[...(card.participants??[]),...(card.entities??[]).flatMap(e=>typeof e==='string'?[e]:[e.name,...(e.aliases??[])])].filter(n=>typeof n==='string');

@@ -756,6 +756,26 @@ export function createProductShellController({
   }
 
   const controller = {
+    async readQualitySources(records){
+      if(!state.session)throw Object.assign(new Error('请先打开聊天'),{code:'CHAT_REF_UNAVAILABLE'});
+      const session=state.session,token=currentToken();
+      const check=async()=>{if(!tokenValid(token,session)||stableStringify(await adapterInstance.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
+      await check();
+      const refs=[...new Map(records.flatMap(r=>r.sourceRefs??[]).filter(r=>!r.sourceId.startsWith('user-note_')).map(r=>[r.sourceId,r])).values()];
+      if(!refs.length)throw Object.assign(new Error('此组缺少可读取的原文楼层，未自动改写'),{code:'HISTORY_UNAVAILABLE'});
+      // Source identities are authoritative. A merged/repaired record's floor
+      // display metadata need not cover all its older source contributions.
+      const verified=await verifyProductSources(session.handle.history,{records},()=>{if(!tokenValid(token,session))throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});},{includeMessages:true});await check();
+      if(verified.invalidKeys.length||verified.unknownKeys.length)throw Object.assign(new Error('原文已修改或无法核实，未应用校对'),{code:'SOURCE_INVALIDATED',details:{stage:'validate',expected:refs.length,invalidRows:verified.invalidKeys.length+verified.unknownKeys.length}});
+      return cleanMessages(verified.messages.map(m=>({...m,sourceRef:{sourceId:m.id,version:m.version,hash:m.hash}})));
+    },
+    async sceneMessages(){
+      if(!state.session)return [];
+      const session=state.session,token=currentToken();
+      const range=await readProductHostRange(session,{count:4});
+      if(!tokenValid(token,session)||stableStringify(await adapterInstance.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});
+      return cleanMessages(range.messages);
+    },
     get state() { return cloneState(state); },
     get settings() { return clone(state.settings); },
     get legacyApiSettings() { return clone(legacyApiSettings); },

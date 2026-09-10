@@ -5,6 +5,7 @@ export const button = (action, label, primary = false) => `<button type="button"
 export const field = (label, input) => `<label class="sy-field"><span>${label}</span>${input}</label>`;
 const names = { base:'自动补接口路径', exact:'完整地址（不补路径）', none:'无需 Key', bearer:'标准 Key（默认）', 'api-key':'x-api-key（服务商要求时）', inherit:'沿用记录偏好', ask_manual:'手动总结时填写', ask_every:'每次总结前填写', disabled:'关闭', broadcast:'各类别均衡召回', leader_only:'仅指定通道', original:'原创', fanfiction:'同人', system:'系统', user:'用户', start:'请求开头', before_last:'最后一条消息前' };
 const copy = {
+  autoQualityEnabled:['总结后校对缺项与矛盾','发现候选问题时用总结模型核对原文。失败可单独重试，不影响已保存总结和聊天注入速度。'],
   messageCount:['默认总结楼数','手动总结的初始值；本次以范围选择中的输入为准。'],
   autoSummaryEnabled:['自动总结状态','启用和暂停只影响自动总结。'],
   autoKeepRecent:['保留最近多少楼不总结','给重生成和修改留出空间；只影响自动总结。'],
@@ -69,7 +70,7 @@ const advanced = (title, keys) => `<details class="sy-advanced"><summary>${title
 const card = (title, body) => `<div class="sy-card"><h4>${title}</h4>${body}</div>`;
 
 export const SETTING_GROUPS = Object.freeze({
-  recording: ['messageCount','recordingRules','focusMode','autoMergeEnabled','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
+  recording: ['messageCount','recordingRules','focusMode','autoMergeEnabled','autoQualityEnabled','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
   automatic: ['autoSummaryEnabled','autoSummaryEvery','autoKeepRecent'],
   injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','injectionPosition','injectionRole','injectionLogEnabled'],
   vectors: ['vectorEnabled','vectorAutoUpdate'],
@@ -78,7 +79,7 @@ export const SETTING_GROUPS = Object.freeze({
 });
 export function settingsSection(kind) {
   const keys = SETTING_GROUPS[kind];
-  if (kind === 'recording') return card('共同记录偏好', fields(['recordingRules','focusMode','autoMergeEnabled']) + advanced('总结高级设置',['messageCount','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize']));
+  if (kind === 'recording') return card('共同记录偏好', fields(['recordingRules','focusMode','autoMergeEnabled','autoQualityEnabled']) + advanced('总结高级设置',['messageCount','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize']));
   if (kind === 'automatic') return card('自动总结',setting('autoSummaryEnabled').replace('<input','<input disabled')+fields(['autoSummaryEvery','autoKeepRecent'])+field('当前聊天从哪楼起算','<input data-auto-start type="number" min="0" value="1">')+'<p class="sy-help">新聊天默认从 #1；需要包含开场白可填 #0。老聊天会接着已连续总结的楼层处理。改起点只改变后续处理范围，不伪造此前的总结。</p><div class="sy-packet" data-auto-progress role="status"></div><div class="sy-actions"><button type="button" data-action="auto-save">保存自动设置</button><button type="button" data-action="auto-inspect">检查进度</button></div><div class="sy-actions"><button type="button" data-action="auto-start">启用自动</button><button type="button" data-action="auto-pause">暂停自动</button><button type="button" data-action="auto-process">处理下一批</button></div>');
   if (kind === 'injection') return card('把记忆交给 AI', fields(keys.slice(0,6)) + advanced('注入位置', keys.slice(6)));
   if (kind === 'vectors') return card('向量索引',fields(keys));
