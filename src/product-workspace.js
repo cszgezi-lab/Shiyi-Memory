@@ -1,4 +1,5 @@
 import { clone, sha256, stableStringify, makeId } from './utils.js';
+import { knowledgeImportPlan } from './product-knowledge-import.js';
 import { isMissingProductEntry } from './product-host-adapters.js';
 import { PersistenceError } from './errors.js';
 import { encodeVectorDocument, decodeVectorDocument, vectorStorageArtifact } from './product-vector-storage.js';
@@ -70,7 +71,7 @@ export function splitDocument(text, { maxChars = 6000 } = {}) {
   return chunks;
 }
 
-export async function importTextDocument(workspace, { name, text, purpose = 'knowledge' }) {
+export async function importTextDocument(workspace, { name, text, purpose = 'knowledge', options }) {
   if (!['rules', 'knowledge'].includes(purpose)) throw new Error('请选择配置规则或世界资料');
   if (!/\.(md|txt|json)$/i.test(name)) throw new Error('支持 MD、TXT、JSON 文本');
   if (typeof text !== 'string' || !text.trim()) throw new Error('文件没有可读取的文字');
@@ -80,9 +81,10 @@ export async function importTextDocument(workspace, { name, text, purpose = 'kno
     catch { throw new Error('JSON 格式无效，请修正后重新导入；原有资料未改变'); }
   }
   const id = makeId('doc');
-  const chunks = splitDocument(text);
+  const plan=options?knowledgeImportPlan({name,text,purpose,options}):null;
+  const chunks = plan?.chunks??splitDocument(text);
   for (let i = 0; i < chunks.length; i++) await workspace.write(`${id}-${i}`, chunks[i]);
-  const doc = { id, name: String(name).slice(0, 240), purpose, chars: text.length, chunks: chunks.length, hash: sha256(text), createdAt: Date.now(), analyzed: 0 };
+  const doc = { id, name: String(name).slice(0, 240), purpose, chars: plan?.chars??text.length, chunks: chunks.length, hash: sha256(text), createdAt: Date.now(), analyzed: 0,...(plan?{importOptions:plan.options,format:plan.format}: {}) };
   await workspace.update('documents', list => [...list, doc], []);
   return doc;
 }

@@ -407,11 +407,12 @@ export class MemoryRepository {
     scope = bundle?.scope,
     expectedRevision = bundle?.expectedRevision,
     sourceRevision = bundle?.sourceRevision,
+    controlsPatch = null,
   } = {}) {
     const frozenScope = normalizeScope(scope);
     const binding = { scope: frozenScope, operationId: bundle?.operationId, expectedRevision };
     const operationId = bundle.operationId;
-    const bundleHash = sha256(bundle);
+    const bundleHash = sha256(controlsPatch?{bundle,controlsPatch}:bundle);
     const existingReceipt = await this._findReceipt(operationId);
     if (existingReceipt.found) {
       const receipt = existingReceipt.value;
@@ -486,7 +487,7 @@ export class MemoryRepository {
         scopeKey: scopeKey(frozenScope),
         committedRevision: revision,
         chunks: [...(previous.manifest?.chunks ?? []), { key: chunkKey, sha256: chunkHash }],
-        ...(previous.manifest?.controls?{controls:clone(previous.manifest.controls)}:{}),
+        ...((previous.manifest?.controls||controlsPatch)?{controls:Object.fromEntries(['operations','deletedRecords','edits'].map(key=>[key,{...clone(previous.manifest?.controls?.[key]??{}),...clone(controlsPatch?.[key]??{})}]))}:{}),
         operationId,
         sourceRevision,
         bundleHash,

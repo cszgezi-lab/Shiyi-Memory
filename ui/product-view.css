@@ -38,7 +38,11 @@
 #shiyi-product-shell .sy-field:has(textarea){grid-column:1/-1}
 #shiyi-product-shell input:not([type=checkbox]),#shiyi-product-shell textarea,#shiyi-product-shell select{font:inherit;font-size:16px;color:inherit;background:color-mix(in srgb,currentColor 4%,transparent);border:1px solid var(--sy-border);border-radius:8px;width:100%;padding:10px;min-height:44px}
 #shiyi-product-shell textarea{resize:vertical;line-height:1.55}#shiyi-product-shell select option{color:#20252e;background:#f5f7f6}
-#shiyi-product-shell .sy-toggle{flex-direction:row;align-items:center;justify-content:space-between;gap:8px;min-height:44px}#shiyi-product-shell input[type=checkbox]{width:22px;height:22px;accent-color:var(--sy-accent)}
+#shiyi-product-shell .sy-toggle{display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;min-height:44px}#shiyi-product-shell input[type=checkbox]{width:22px;height:22px;accent-color:var(--sy-accent)}
+/* TT's mobile geometry firewall disables transforms, including the host's
+   scale(0) checkbox tick. Use opacity so checked state remains visible. */
+#shiyi-product-shell input[type=checkbox]::before{opacity:0;transform:none;transition:opacity .12s}
+#shiyi-product-shell input[type=checkbox]:checked::before{opacity:1}
 #shiyi-product-shell .sy-actions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
 #shiyi-product-shell .sy-help{font-size:12px;opacity:.75;overflow-wrap:anywhere}
 #shiyi-product-shell .sy-filters{display:flex;gap:8px;margin:18px 0}#shiyi-product-shell .sy-filters select{flex:0 1 125px}
@@ -177,3 +181,20 @@
 #shiyi-product-shell [data-injection-row]>summary small {display:block;font-size:12px;opacity:.7;margin-top:4px;}
 #shiyi-product-shell [data-injection-row] .sy-packet {max-height:22em;overflow:auto;font-size:13px;}
 #shiyi-product-shell .sy-check {display:flex;align-items:center;gap:8px;font-size:13px;}
+#shiyi-product-shell .sy-profile-field {border-top:1px solid var(--sy-border);margin:0;min-width:0;}
+#shiyi-product-shell .sy-profile-field>summary {font:500 14px/1.5 system-ui,sans-serif;min-height:44px;padding:10px 0;overflow-wrap:anywhere;}
+#shiyi-product-shell .sy-profile-field>summary small {font-weight:400;opacity:.7;}
+#shiyi-product-shell .sy-profile-preview {display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font:400 13px/1.55 system-ui,sans-serif;opacity:.75;margin-top:4px;}
+#shiyi-product-shell .sy-profile-field[open] .sy-profile-preview {display:none;}
+#shiyi-product-shell .sy-profile-value {padding:8px 0;min-width:0;}
+#shiyi-product-shell .sy-profile-value+.sy-profile-value,#shiyi-product-shell .sy-profile-evidence {border-top:1px solid var(--sy-border);}
+#shiyi-product-shell .sy-profile-value .sy-actions button {padding:8px;min-height:44px;font-size:13px;}
+#shiyi-product-shell .sy-profile-value .sy-narrative {font:400 14px/1.65 system-ui,sans-serif;}
+#shiyi-product-shell .sy-profile-value .sy-help {font:400 12px/1.6 system-ui,sans-serif;margin:5px 0;}
+#shiyi-product-shell .sy-profile-value summary {min-height:44px;font:400 13px/1.5 system-ui,sans-serif;padding:10px 0;}
+/* Whole-person editing stays separate from the compact reading surface. */
+.sy-root .sy-profile-editor { border-top:1px solid var(--sy-border,#64746e); padding-top:12px; margin-top:12px; }
+.sy-root .sy-profile-edit-row { border-bottom:1px solid var(--sy-border,#64746e); padding:8px 0; }
+.sy-root .sy-word-editor { padding:10px 0; }
+.sy-root [data-auto-progress] { white-space:pre-line; }
+.sy-root [data-kb-preview-list],.sy-root [data-documents] { overflow-wrap:anywhere; }

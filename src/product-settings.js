@@ -58,7 +58,8 @@ const DEFINITIONS = [
   { key: 'assistantOutputTokens', label: '助手回复上限（Token）', defaultValue: 4096, type: 'integer', min: 0, max: 131072, consumers: ['ProductApplication.assistant'] },
   { key: 'summaryBatchSize', label: '每多少楼记录一次', defaultValue: 5, type: 'integer', min: 1, max: 200, consumers: ['ProductApplication.summarize'] },
   { key: 'autoSummaryEnabled', label: '回复后自动整理', defaultValue: false, type: 'boolean', consumers: ['ProductApplication.autoSummary'] },
-  { key: 'autoSummaryEvery', label: '每新增多少条消息整理', defaultValue: 12, type: 'integer', min: 1, max: 200, consumers: ['ProductApplication.autoSummary'] },
+  { key: 'autoSummaryEvery', label: '自动总结每批楼数', defaultValue: 10, type: 'integer', min: 1, max: 200, consumers: ['ProductApplication.autoSummary'] },
+  { key: 'autoKeepRecent', label: '自动总结保留最近楼数', defaultValue: 2, type: 'integer', min: 0, max: 1000, consumers: ['ProductApplication.autoSummary'] },
   { key: 'storyDate', label: '当前故事日期（可留空）', defaultValue: '', type: 'string', maxLength: 32, consumers: ['ProductApplication.pack'] },
   { key: 'timeProtection', label: '附带日期与时间参照', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.pack'] },
   { key: 'personaEnabled', label: '携带相关人物身份与变化', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.recall'] },
@@ -76,7 +77,7 @@ const DEFINITIONS = [
   { key: 'vectorTimeoutMs', label: '在线向量等待上限（毫秒）', defaultValue: 4000, type: 'integer', min: 100, max: 60000, consumers: ['ProductApplication.vector'] },
   { key: 'rerankEndpointMode', label: '重排地址模式', defaultValue: 'base', type: 'enum', values: ['base', 'exact'], consumers: ['ProductApplication.rerank'] },
   { key: 'rerankAuthMode', label: '重排认证方式', defaultValue: 'bearer', type: 'enum', values: ['none', 'bearer', 'api-key'], consumers: ['ProductApplication.rerank'] },
-  { key: 'rerankMaxCandidates', label: '重排候选上限', defaultValue: 20, type: 'integer', min: 1, max: 100, consumers: ['ProductApplication.rerank'] },
+  { key: 'rerankMaxCandidates', label: '重排候选上限', defaultValue: 24, type: 'integer', min: 1, max: 100, consumers: ['ProductApplication.rerank'] },
   // This key is deliberately not part of persisted settings.  It documents
   // the shared field and keeps the session-only boundary visible to callers.
   { key: 'providerApiKey', label: '会话密钥', defaultValue: '', type: 'session-secret', consumers: ['ProductShellController.transport'], persisted: false },

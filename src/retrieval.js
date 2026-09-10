@@ -422,11 +422,12 @@ export async function retrieveMemories({
   if (!index || typeof index.search !== 'function') throw new ShiyiError('a local BM25 index is required', 'RETRIEVAL_INDEX_REQUIRED');
   throwIfAborted(signal);
   const startedAt = monotonicNow();
-  const local = index.search(query, { limit: Math.max(limit, rerankOptions.maxCandidates ?? limit), entityIds, filter });
+  const keywordFilter=r=>r.keywordEnabled!==false&&(!filter||filter(r));
+  const local = index.search(query, { limit: Math.max(limit, rerankOptions.maxCandidates ?? limit), entityIds, filter:keywordFilter });
   const lanes=tagLanes.slice(0,4).filter(l=>typeof l.tag==='string'&&l.tag.length>=2&&Number.isSafeInteger(l.limit)&&l.limit>0).map(l=>({...l,limit:Math.min(l.limit,20)}));
-  const tagged=lanes.map(lane=>({...lane,candidates:index.search(query,{limit:lane.limit,entityIds,filter:r=>(!filter||filter(r))&&Array.isArray(r.tags)&&r.tags.includes(lane.tag)})}));
+  const tagged=lanes.map(lane=>({...lane,candidates:index.search(query,{limit:lane.limit,entityIds,filter:r=>keywordFilter(r)&&Array.isArray(r.tags)&&r.tags.includes(lane.tag)})}));
   const categories=categoryLanes.slice(0,12).filter(l=>typeof l.category==='string'&&Number.isSafeInteger(l.limit)&&l.limit>0).map(l=>({...l,limit:Math.min(l.limit,20)}));
-  const classified=categories.map(lane=>({...lane,candidates:index.search(query,{limit:lane.limit,entityIds,filter:r=>(!filter||filter(r))&&r.category===lane.category})}));
+  const classified=categories.map(lane=>({...lane,candidates:index.search(query,{limit:lane.limit,entityIds,filter:r=>keywordFilter(r)&&r.category===lane.category})}));
   const onlineStartedAt = monotonicNow();
   const finiteTimeout = (value, fallback) => Number.isFinite(value) && value > 0 ? value : fallback;
   const vectorDeadline = finiteTimeout(vectorTimeoutMs ?? vectorOptions.timeoutMs ?? vectorOptions.deadlineMs ?? vectorAdapter?.timeoutMs, DEFAULT_VECTOR_TIMEOUT_MS);

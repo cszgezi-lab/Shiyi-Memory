@@ -683,7 +683,7 @@ export function createProductShellController({
     return { status: 'session_only', configured: Boolean(state.sessionApiKey) };
   }
 
-  async function remember(textValue, { people = '', category='events',subject='',target='',field='补充信息',eventRef='',context='当前聊天',term='直至用户修改',typedValue } = {}) {
+  async function remember(textValue, { people = '', category='events',subject='',target='',field='补充信息',eventRef='',context='当前聊天',term='直至用户修改',typedValue,profileFacts=null,controlsPatch=null } = {}) {
     const content = text(textValue);
     if (!content || content.length > 12000) throw new Error('记事需要 1–12000 字');
     if (!repository || !state.session || state.status === 'invalidated' || activeTask) throw new Error('请先打开当前聊天，等待当前整理结束');
@@ -710,10 +710,14 @@ export function createProductShellController({
       if(category==='awarenessChanges'&&!eventRef)throw new Error('请选择关联事件；不会凭空推断知情来源');
       output[category]=[{...base,...(fields[category]??{})}];
     }
+    if(profileFacts){
+      if(category!=='entityFactChanges'||!Array.isArray(profileFacts)||!profileFacts.length||profileFacts.length>200)throw new Error('人物属性列表无效');
+      output.entityFactChanges=profileFacts.map(f=>({id:makeId('note'),entity:subject,field:f.field,to:f.value,sourceRefs,epistemicStatus:'user_asserted'}));
+    }
     const bundle = bindDraftBundle(output, { scope: session.scope, operationId, expectedRevision, sourceRefs, sourceRevision });
     manualOperation = { id: operationId, sourceRevision, token };
     try {
-      const receipt = await repository.commitBundle(bundle);
+      const receipt = await repository.commitBundle(bundle,{controlsPatch});
       if (!tokenValid(token, session)) throw new Error('聊天已变化');
       return { status: 'saved', committedRevision: receipt.committedRevision, eventId, source: 'user_asserted' };
     } finally { manualOperation = null; }

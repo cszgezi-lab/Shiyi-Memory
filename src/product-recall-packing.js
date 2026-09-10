@@ -1,4 +1,5 @@
 import { stableStringify } from './utils.js';
+import { sameFactForRecall } from './product-person-profiles.js';
 
 const normalized = value => String(value ?? '').toLocaleLowerCase().replace(/\s+/gu, '').replace(/[。！？]+$/u,'');
 const refs = record => [...new Set([record.eventRef, record.eventId, ...(record.eventRefs ?? []), ...(record.relatedEvents ?? []).map(e => e.id)].filter(Boolean))];
@@ -40,7 +41,7 @@ function guardSignature(record) {
 
 export function coveredRecallRecord(record, body, chosen) {
   for (const previous of chosen) {
-    if (!sameRecallEvent(record, previous.record)) continue;
+    if (!sameRecallEvent(record, previous.record)&&!sameFactForRecall(record,previous.record)) continue;
     // For a floor, only compare when its projected event metadata is exactly
     // the same; a later disclosure must never replace an earlier perspective.
     let comparable = record;
