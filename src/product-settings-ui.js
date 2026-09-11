@@ -5,11 +5,13 @@ export const button = (action, label, primary = false) => `<button type="button"
 export const field = (label, input) => `<label class="sy-field"><span>${label}</span>${input}</label>`;
 const names = { base:'自动补接口路径', exact:'完整地址（不补路径）', none:'无需 Key', bearer:'标准 Key（默认）', 'api-key':'x-api-key（服务商要求时）', inherit:'沿用记录偏好', ask_manual:'手动总结时填写', ask_every:'每次总结前填写', disabled:'关闭', broadcast:'各类别均衡召回', leader_only:'仅指定通道', original:'原创', fanfiction:'同人', system:'系统', user:'用户', start:'请求开头', before_last:'最后一条消息前' };
 const copy = {
-  autoQualityEnabled:['总结后校对缺项与矛盾','发现候选问题时用总结模型核对原文。失败可单独重试，不影响已保存总结和聊天注入速度。'],
+  summaryStaged:['分工总结','先整理事件与逐楼摘要，再整理人物、知情和关系。已完成阶段会暂存，失败可续跑。'],
+  supplementFollowSummary:['沿用总结连接','共用地址和 Key；下方仍可单独选择辅助模型，留空时也沿用总结模型。'],
+  autoQualityEnabled:['总结后校对缺项与矛盾','发现候选问题时用辅助整理模型核对原文。失败可单独重试，新总结优先运行。'],
   messageCount:['默认总结楼数','手动总结的初始值；本次以范围选择中的输入为准。'],
   autoSummaryEnabled:['自动总结状态','启用和暂停只影响自动总结。'],
   autoKeepRecent:['保留最近多少楼不总结','给重生成和修改留出空间；只影响自动总结。'],
-  autoMergeEnabled:['总结后自动合并','使用总结模型单独核对候选事件；合并失败不影响已保存总结。每次最多处理 10 对，剩余可在事件合并中继续。'],
+  autoMergeEnabled:['总结后自动合并','使用辅助整理模型核对候选事件；合并失败不影响已保存总结。每次最多处理 10 对，剩余可在事件合并中继续。'],
   autoSummaryEvery:['自动总结每批楼数','从连续已完成位置的下一楼开始。'],
   recordingRules:['长期记录偏好','告诉总结模型哪些内容值得记住。'],
   focusMode:['总结侧重点','手动总结时可以临时补充要求。'],
@@ -70,7 +72,7 @@ const advanced = (title, keys) => `<details class="sy-advanced"><summary>${title
 const card = (title, body) => `<div class="sy-card"><h4>${title}</h4>${body}</div>`;
 
 export const SETTING_GROUPS = Object.freeze({
-  recording: ['messageCount','recordingRules','focusMode','autoMergeEnabled','autoQualityEnabled','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
+  recording: ['messageCount','summaryStaged','recordingRules','focusMode','autoMergeEnabled','autoQualityEnabled','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
   automatic: ['autoSummaryEnabled','autoSummaryEvery','autoKeepRecent'],
   injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','injectionPosition','injectionRole','injectionLogEnabled'],
   vectors: ['vectorEnabled','vectorAutoUpdate'],
@@ -79,7 +81,7 @@ export const SETTING_GROUPS = Object.freeze({
 });
 export function settingsSection(kind) {
   const keys = SETTING_GROUPS[kind];
-  if (kind === 'recording') return card('共同记录偏好', fields(['recordingRules','focusMode','autoMergeEnabled','autoQualityEnabled']) + advanced('总结高级设置',['messageCount','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize']));
+  if (kind === 'recording') return card('共同记录偏好', fields(['recordingRules','focusMode','summaryStaged','autoMergeEnabled','autoQualityEnabled']) + advanced('总结高级设置',['messageCount','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize']));
   if (kind === 'automatic') return card('自动总结',setting('autoSummaryEnabled').replace('<input','<input disabled')+fields(['autoSummaryEvery','autoKeepRecent'])+field('当前聊天从哪楼起算','<input data-auto-start type="number" min="0" value="1">')+'<p class="sy-help">新聊天默认从 #1；需要包含开场白可填 #0。老聊天会接着已连续总结的楼层处理。改起点只改变后续处理范围，不伪造此前的总结。</p><div class="sy-packet" data-auto-progress role="status"></div><div class="sy-actions"><button type="button" data-action="auto-save">保存自动设置</button><button type="button" data-action="auto-inspect">检查进度</button></div><div class="sy-actions"><button type="button" data-action="auto-start">启用自动</button><button type="button" data-action="auto-pause">暂停自动</button><button type="button" data-action="auto-process">处理下一批</button></div>');
   if (kind === 'injection') return card('把记忆交给 AI', fields(keys.slice(0,6)) + advanced('注入位置', keys.slice(6)));
   if (kind === 'vectors') return card('向量索引',fields(keys));
@@ -89,20 +91,23 @@ export function settingsSection(kind) {
 
 export const API_INFO = Object.freeze({
   summary: { prefix:'provider', title:'总结模型', help:'整理你选择的聊天楼层，提取事件、人物、关系与知情者。不会替代主聊天模型。', resource:'/chat/completions' },
+  supplement: { prefix:'supplement', title:'辅助整理模型', help:'分工总结的第二阶段：人物属性、知情、关系与演绎；同时负责合并核对、缺项校对和引用纠错。可选择服务商提供的 Flash 等快速模型。', resource:'/chat/completions' },
   assistant: { prefix:'assistant', title:'配置助手', help:'理解你的要求和配置文件，生成可确认、可应用的设置方案。', resource:'/chat/completions' },
   embedding: { prefix:'embedding', title:'向量模型', help:'按意思寻找相关记忆。已预填硅基流动推荐配置，可更换服务商。', resource:'/embeddings' },
   rerank: { prefix:'rerank', title:'重排模型', help:'从候选记忆里挑出更相关的内容，让注入更精简。', resource:'/rerank' },
 });
 export function apiSettingsHTML() {
   return Object.entries(API_INFO).map(([kind, {prefix, title, help, resource}]) => `<section class="sy-card sy-api-card" data-api-card="${kind}"><div class="sy-top"><h4>${title}</h4>${['embedding','rerank'].includes(kind) ? button(`recommend-${kind}`, '补齐推荐值') : ''}</div><p class="sy-help">${help}</p>
-    ${kind === 'assistant' ? setting('assistantFollowSummary') + '<p class="sy-inherited sy-help" data-inherited></p>' : ''}
+    ${['assistant','supplement'].includes(kind) ? setting(`${kind}FollowSummary`) + `<p class="sy-inherited sy-help" data-inherited="${kind}"></p>` : ''}
     <div data-api-fields="${kind}">
+    <div data-api-connection="${kind}">
     ${setting(`${prefix}Endpoint`, 'API 地址', `基础地址只补 ${resource}，不自动添加 /v1。`, '填写你的服务商地址')}
     ${field('API Key', `<input type="password" autocomplete="new-password" data-key="${kind}" placeholder="无需认证的服务可以留空"><small class="sy-help">随 API 保存到本机 TT 数据，重启自动恢复；不加入助手消息或拾忆导出。${['embedding','rerank'].includes(kind) ? '硅基流动需要填写 Key。' : ''}</small>`)}
     <p class="sy-help" data-key-status="${kind}" role="status"></p>${button(`forget-key-${kind}`,'清除已保存 Key')}
+    </div>
     <div class="sy-model-picker"><div class="sy-top"><span>选择模型</span>${button(`models-${kind}`, '拉取模型列表')}</div>
     <label class="sy-field"><span class="sy-sr-only">${title}模型列表</span><select data-model-list="${kind}" disabled><option value="">先拉取模型列表，也可以在下方直接输入</option></select></label>
-    ${setting(`${prefix}Model`, '模型名称', '', '选择列表中的模型，或手动填写')}
+    ${setting(`${prefix}Model`, '模型名称', '', kind==='supplement'?'留空沿用总结模型；也可选择快速模型':'选择列表中的模型，或手动填写')}
     <p class="sy-help" role="status" data-model-status="${kind}"></p></div>
     <details class="sy-advanced"><summary>高级连接选项（通常不用改）</summary>${setting(`${prefix}EndpointMode`, '地址如何使用', `默认只补 ${resource}，绝不补 /v1。填完整接口地址时可选“不补路径”。`)}${setting(`${prefix}AuthMode`, 'Key 发送方式', '一般保持“标准 Key”；不需要 Key 可留空或选“无需 Key”。只有服务商明确要求时才改用 x-api-key。')}${field('模型列表地址（可选）', `<input data-models-url="${kind}" placeholder="留空时按 API 地址推导 /models" autocomplete="off">`)}</details>
     </div><div class="sy-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></section>`).join('') + card('请求设置', setting('deadlineMs') + setting('assistantBudgetUnits') + setting('assistantOutputTokens'));

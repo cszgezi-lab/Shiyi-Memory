@@ -15,6 +15,9 @@ import { resolveEventMerges } from './event-consolidation.js';
 import { tokenizeChinese } from './retrieval.js';
 import { normalizeSummaryEnums, normalizePersonaValidity, repairableEnumTargets, createEnumRepairRequest, applyEnumCorrections } from './summary-enum-repair.js';
 import {transientSummaryError,recoveryAttemptLimit,recoveryDelay,repairCategories,categoryRepairRequest,applyCategoryRepair,missingFloorRequest} from './summary-recovery.js';
+import { selectSummaryContext, summarySources } from './summary-context.js';
+import { runSummaryStages, isolateDraftIds } from './summary-stages.js';
+import { referenceRepairRequest, applyReferenceRepair } from './summary-reference-repair.js';
 
 function responseStatus(response) {
   return Number(response?.status ?? response?.statusCode ?? 200);
@@ -99,7 +102,7 @@ function modelInvoker(model) {
         : model.profile?.maxTokens > 0 ? { max_tokens: model.profile.maxTokens } : {}),
       messages: [
         { role: 'system', content: request.instructions },
-        { role: 'user', content: JSON.stringify(request) },
+        { role: 'user', content: JSON.stringify(Object.fromEntries(Object.entries(request).filter(([key])=>key!=='instructions'))) },
       ],
       response_format: { type: 'json_object' },
     });
@@ -311,8 +314,10 @@ function recoveryOutputLimit(request, configured) {
 
 /** P1 one-request-per-segment orchestration with atomic bundle commits. */
 export class SummaryEngine {
-  constructor({ model, repository, maxInputUnits = 12000, maxSourceUnits = null, requestSafetyUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, now = () => Date.now() } = {}) {
+  constructor({ model, supplementModel=null, staged=false, repository, maxInputUnits = 12000, maxSourceUnits = null, requestSafetyUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, now = () => Date.now() } = {}) {
     this.model = modelInvoker(model);
+    this.supplementModel = supplementModel ? modelInvoker(supplementModel) : this.model;
+    this.staged = staged;
     if (!repository || typeof repository.commitBundle !== 'function') throw new ValidationError('SummaryEngine requires a MemoryRepository');
     this.repository = repository;
     // maxInputUnits is the complete serialized-request ceiling. A caller
@@ -340,7 +345,7 @@ export class SummaryEngine {
     if (typeof this.repository.listRecords !== 'function') return { records: {}, authoritativeRecords: {}, ids: new Set(), selection: { usedUnits: 0, candidateCount: 0, omittedCount: 0 } };
     const authoritativeRecords = await this.repository.listRecords(scope);
     const ids = contextIds(authoritativeRecords);
-    const selection = selectRelevantRecords(relevantRecords ?? authoritativeRecords, sourceMessages, bridgeMessages, budgetUnits, this.maxRelevantRecords);
+    const selection = selectSummaryContext(relevantRecords ?? authoritativeRecords, [...sourceMessages,...bridgeMessages], {budgetUnits:Math.min(budgetUnits,6000),maxRecords:this.maxRelevantRecords});
     return { records: selection.records, authoritativeRecords, ids, selection };
   }
 
@@ -413,20 +418,26 @@ export class SummaryEngine {
       startedAt: this.now(),
     };
     if (completed.size === children.length) return state;
-    let recoveryCalls=0;
+    let recoveryCalls=0, verifyBeforeRequest=null;
     const invoke=async(request,baseDetails,{extra=false}={})=>{
       if(extra&&++recoveryCalls>2)throw new ShiyiError('本次自动恢复预算已用完，已返回结果保留','RECOVERY_LIMIT');
       let compacted=false;
       for(;;){
+        if(verifyBeforeRequest)await verifyBeforeRequest();
         throwIfAborted(signal);state.requests++;
-        const purpose=({ShiyiCategoryRepair:'category_repair',ShiyiFloorRepair:'floor_repair',ShiyiSummaryEnumRepair:'enum_repair'})[request.kind]??'summary';
+        const purpose=({ShiyiCategoryRepair:'category_repair',ShiyiFloorRepair:'floor_repair',ShiyiSummaryEnumRepair:'enum_repair',ShiyiReferenceRepair:'reference_repair'})[request.kind]??(request.summaryStage==='narrative'?'summary_narrative':request.summaryStage==='details'?'summary_details':'summary');
+        const model=request.summaryRole==='supplement'?this.supplementModel:this.model;
         Object.assign(baseDetails,{requestId:diagnosticRequestId(),purpose,requestNumber:state.requests});
-        const providerPayload=typeof this.model.providerPayload==='function'?this.model.providerPayload(request):null;
-        const units=estimateUnits(JSON.stringify(providerPayload??request));
+        let providerPayload=typeof model.providerPayload==='function'?model.providerPayload(request):null;
+        let units=estimateUnits(JSON.stringify(providerPayload??request));
         const requestLimit=this.requestSafetyUnits??this.maxInputUnits;
+        if(units>requestLimit&&request.summaryStage){
+          compactRecoveryContext(request,requestLimit,model.providerPayload);
+          providerPayload=model.providerPayload?.(request)??null;units=estimateUnits(JSON.stringify(providerPayload??request));
+        }
         if(units>requestLimit)throw new ShiyiError('补全请求超过安全输入上限','INPUT_BUDGET_EXCEEDED',{requestLimit,providerPayloadUnits:units});
-        emit('request',{...baseDetails,inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
-        try{return await this.model(request,{signal,requestId:baseDetails.requestId,purpose});}
+        emit('request',{...baseDetails,summaryStage:request.summaryStage,modelRole:request.summaryRole??'summary',sourceInputUnits:estimateUnits(JSON.stringify(request.sourceMessages??[])),historyInputUnits:estimateUnits(JSON.stringify(request.relevantRecords??{})),schemaInputUnits:estimateUnits(JSON.stringify(request.extractionContext?.outputContract??request.outputContract??{})),bridgeInputUnits:estimateUnits(JSON.stringify(request.bridgeMessages??[])),inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
+        try{return await model(request,{signal,requestId:baseDetails.requestId,purpose});}
         catch(error){
           error.details={...error.details,requestId:baseDetails.requestId,purpose};
           emit('response',{...baseDetails,...errorDiagnostics(error)},'error');
@@ -434,14 +445,15 @@ export class SummaryEngine {
           // Long rate limits require user action later, not ignoring Retry-After
           // or holding a mobile task open indefinitely.
           if((error.details?.retryAfterMs??0)>5000)throw error;
-          if(!compacted&&request.kind==='ShiyiSummaryRequest'){
+          if(!compacted&&['ShiyiSummaryRequest','ShiyiSummaryStage'].includes(request.kind)){
             const declaredLimit=Number(request.extractionContext?.budget?.declaredLimitUnits)||Number(this.maxInputUnits)||12000;
             const configuredLimit=Math.min(declaredLimit,this.requestSafetyUnits??declaredLimit);
-            const targetUnits=Math.min(configuredLimit,48000);
-            const shed=compactRecoveryContext(request,targetUnits,requestPayload=>typeof this.model.providerPayload==='function'?this.model.providerPayload(requestPayload):requestPayload);
+            const targetUnits=Math.min(configuredLimit,Math.floor(units*0.85));
+            const shed=compactRecoveryContext(request,targetUnits,requestPayload=>typeof model.providerPayload==='function'?model.providerPayload(requestPayload):requestPayload);
             const configuredOutput=Number(providerPayload?.max_tokens)||Number(request.extractionContext?.budget?.outputBudgetUnits)||0;
-            const reducedOutput=recoveryOutputLimit(request,configuredOutput);
-            if(reducedOutput>0&&reducedOutput<configuredOutput)defineModelAlias(request,'effectiveMaxTokens',reducedOutput);
+            // A timeout does not prove the output ceiling caused the failure.
+            // Keep the user's configured ceiling, including on retries.
+            const reducedOutput=configuredOutput;
             compacted=true;
             emit('recovery_compact',{...baseDetails,beforeInputUnits:shed.beforeUnits,afterInputUnits:shed.afterUnits,removedRelevantRecords:shed.removed,recoveryInputTarget:targetUnits,requestedMaxTokens:configuredOutput,effectiveMaxTokens:reducedOutput||configuredOutput},'warning');
           }
@@ -454,6 +466,10 @@ export class SummaryEngine {
     for (const child of children) {
       const childIndex = child.childRange.childIndex;
       if (completed.has(childIndex)) continue;
+      verifyBeforeRequest=this.staged&&typeof this.repository.verifySourceRevision==='function'?async()=>{
+        const actual=await this.repository.verifySourceRevision({scope:clone(child.scope),bundle:child});
+        if(actual!==child.sourceRevision)throw new ShiyiError('聊天或正文已变化，后续阶段未调用','SOURCE_INVALIDATED');
+      }:null;
       // Recovery budget is per source child. A failed early batch must not
       // consume the retry/repair allowance of every later batch in a 1–300
       // run.
@@ -551,8 +567,8 @@ export class SummaryEngine {
           expectedRevision: child.expectedRevision,
           parentRange: clone(child.parentRange),
           childRange: clone(child.childRange),
-          sourceMessages: clone(child.sourceMessages),
-          bridgeMessages: clone(child.bridgeMessages ?? []),
+          sourceMessages: this.staged ? summarySources(child.sourceMessages) : clone(child.sourceMessages),
+          bridgeMessages: this.staged ? summarySources(child.bridgeMessages ?? []) : clone(child.bridgeMessages ?? []),
           relevantRecords: clone(context.records),
           extractionContext,
         };
@@ -656,7 +672,20 @@ export class SummaryEngine {
         let raw;
         if(prior?.raw!==undefined&&!prior.retryModel){raw=prior.raw;emit('resume_response',baseDetails,'success');}
         else{
-          raw=await invoke(request,baseDetails);
+          if(this.staged){
+            const checkCoverage=output=>{
+              const bound=bindDraftBundle(output,{scope:child.scope,operationId:child.operationId,expectedRevision:child.expectedRevision,sourceRefs:evidenceRefsFor(child)});
+              const coverage=coverageState(bound.coverage,sourceRefsFor(child));
+              if(!coverage.complete){const error=new ValidationError('阶段未完整处理所选楼层',{coverage});error.code='COVERAGE_INCOMPLETE';throw error;}
+            };
+            raw=await runSummaryStages({request,cached:prior?.stages,invoke:(r,options)=>{phase='request';if(!options?.extra)recoveryCalls=0;return invoke(r,baseDetails,options);},parse:(r,stage)=>{phase='response';return parseModelResponse(r,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,summaryStage:stage})});},validateNarrative:checkCoverage,validateDetails:checkCoverage,
+              save:async stages=>{
+                const patch={binding:resultBinding,stages,retryModel:true};
+                this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
+                try{await this.repository.savePrivateTask?.(child.scope,child.operationId,patch);}
+                catch(error){emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'response-cache'},'warning');}
+              },emit:(phase,details,level)=>emit(phase,{...baseDetails,...details},level)});
+          }else raw=await invoke(request,baseDetails);
           if(this.recoveryEnabled){
             if(typeof raw?.text==='function'||raw?.body!==undefined)raw={status:responseStatus(raw),body:await readRawBody(raw)};
             await keepResponse(raw);
@@ -671,7 +700,7 @@ export class SummaryEngine {
         ensureAllCategories(output);
         phase='validate';
         const sourceRefs = sourceRefsFor(child);
-        const bindOutput = value => bindDraftBundle(value, {
+        const bindOutput = value => bindDraftBundle(this.staged ? isolateDraftIds(value,child.scope,child.operationId,request.relevantRecords.events) : value, {
           scope: child.scope,
           operationId: child.operationId,
           expectedRevision: child.expectedRevision,
@@ -733,11 +762,21 @@ export class SummaryEngine {
           newSourceIds: child.sourceMessages.map((message) => message.id),
         };
         let validation = validateDraftBundle(bundle,validationOptions);
+        if(!validation.valid&&this.recoveryEnabled){
+          const repairRequest=referenceRepairRequest(request,bundle,validation);
+          if(repairRequest){
+            emit('partial_repair',{...baseDetails,purpose:'reference_repair',...safeLogDetails(validation)},'warning');
+            const fixed=await parseModelResponse(await invoke(repairRequest,baseDetails,{extra:true}),{onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata})});
+            const repaired=applyReferenceRepair(bundle,repairRequest,fixed);
+            if(repaired){const checked=validateDraftBundle(repaired,validationOptions);if(checked.valid){bundle=repaired;validation=checked;await keepResponse(bundle);emit('repair_complete',{...baseDetails,purpose:'reference_repair'},'success');}}
+          }
+        }
         const repairTargets=repairableEnumTargets(bundle,validation);
         if(!validation.valid&&repairTargets.length){
           // A single bounded field-only correction. Normal summaries retain one
           // model call. Source, scope, chronology and coverage rules stay intact.
           const repairRequest=createEnumRepairRequest(bundle,repairTargets,request);
+          if(this.staged)repairRequest.summaryRole='supplement';
           const repairUnits=estimateUnits(JSON.stringify(this.model.providerPayload?.(repairRequest)??repairRequest));
           if(repairUnits<=configuredLimit){
             phase='repair_request';
@@ -825,7 +864,7 @@ export class SummaryEngine {
           // draft. A manual retry may use a newly selected model/output budget.
           await this.repository.savePrivateTask?.(child.scope,child.operationId,{retryModel:true}).catch(error=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'checkpoint'},'warning'));
         }
-        emit(phase,{...baseDetails,...errorDiagnostics(error),code:signal?.aborted?'CANCELED':error?.code,elapsedMs:this.now()-started},signal?.aborted?'warning':'error');
+        emit(error.details?.stage==='validate'?'validate':phase,{...baseDetails,...errorDiagnostics(error),code:signal?.aborted?'CANCELED':error?.code,elapsedMs:this.now()-started},signal?.aborted?'warning':'error');
         if (error?.name === 'AbortError' || error?.code === 'CANCELED' || signal?.aborted) {
           state.status = 'canceled';
           state.canceledChild = childIndex;

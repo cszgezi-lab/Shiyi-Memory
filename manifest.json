@@ -3,7 +3,7 @@
   "display_name": "拾忆记忆",
   "author": "Shiyi Memory",
   "description": "TT 原生记忆整理、知情与时间参考、自然语言配置助手。",
-  "version": "0.12.3",
+  "version": "0.13.0",
   "homePage": "https://github.com/cszgezi-lab/Shiyi-Memory",
   "auto_update": true,
   "loading_order": 100,

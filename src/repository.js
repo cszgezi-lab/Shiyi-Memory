@@ -638,7 +638,8 @@ export class MemoryRepository {
       const index=rows.findIndex(r=>r.operationId!==operationId&&r.operationId!==parent);
       if(index<0)break;
       const [old]=rows.splice(index,1);total-=old.bytes;
-      if(this.store.deleteJson)await this.store.deleteJson({namespace:this.namespace,key:safeKey('task',`${scopeKey(scope)}|${old.operationId}`)});
+      const address={namespace:this.namespace,key:safeKey('task',`${scopeKey(scope)}|${old.operationId}`)};
+      if(this.store.deleteJson&&(await optionalGet(this.store,address)).found)await this.store.deleteJson(address);
     }
     await verifiedWrite(this.store,catalogAddress,rows);
     return clone(next);
@@ -653,7 +654,11 @@ export class MemoryRepository {
 
   async clearPrivateTask(scope,operationId){
     this._responseCache.delete(`${scopeKey(scope)}|${operationId}`);
-    if(this.store.deleteJson)await this.store.deleteJson({namespace:this.namespace,key:safeKey('task',`${scopeKey(scope)}|${operationId}`)});
+    const address={namespace:this.namespace,key:safeKey('task',`${scopeKey(scope)}|${operationId}`)};
+    if(this.store.deleteJson&&(await optionalGet(this.store,address)).found)await this.store.deleteJson(address);
+    const catalogAddress={namespace:this.namespace,key:safeKey('task-catalog',scopeKey(scope))};
+    const catalog=await optionalGet(this.store,catalogAddress);
+    if(Array.isArray(catalog.value)&&catalog.value.some(r=>r.operationId===operationId))await verifiedWrite(this.store,catalogAddress,catalog.value.filter(r=>r.operationId!==operationId));
   }
 
   async listRecords(scope) { return (await this.readScope(scope)).records; }

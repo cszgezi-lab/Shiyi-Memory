@@ -15,6 +15,7 @@ import { buildVectorIndex, embeddingVectors, normalizeVectorJobs, vectorJobKey, 
 import { clone, sha256, makeId, estimateUnits, stableStringify } from './utils.js';
 import { createProductFetch } from './product-network.js';
 import { productApiProfile, fetchProductModels } from './product-model-list.js';
+import { selectSummaryContext, summaryRecord } from './summary-context.js';
 import { failureText } from './product-feedback.js';
 import { createGlobalSettings } from './product-global-settings.js';
 import { planSummaryRanges, batchRecords, MEMORY_CATEGORIES, editedMemoryFields, batchOperationIds, sameBatchRange, consolidateSummaryBatches, savedBatchOperation } from './product-batches.js';
@@ -68,16 +69,16 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let vectorTimer=null,vectorJob=null,vectorCheckVersion=0,vectorStorageFailure=null;
   let injectionLog=null,vectorExcluded=[],mergeDecisions={},qualitySaved={};
   let tracking=false,trackingStart=null,disposed=false,followPending=false,followTimer=null,following=null,followVersion=0;
-  let qualityJob=null,automaticQualityQueue=[];
+  let qualityJob=null,automaticQualityQueue=[],qualityOperation=null;
   const chatListeners=[],followWaiters=[];
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache(),knowledgeVectorCache=new ProductVectorCache();
   let knowledgeJob=false,automaticPaused=false,autoInvalidSources=new Set();
   const operations = new Set(), apiOperations = new Set(), injectedPayloads = new WeakSet();
-  const keys = { summary: '', assistant: '', embedding: '', rerank: '' };
+  const keys = { summary: '', supplement:'', assistant: '', embedding: '', rerank: '' };
   const keyOrigins={},keyVersions={},keyEdited=new Set();let credentialsLoaded=false;
   const prefixFor=k=>k==='summary'?'provider':k;
   function effectiveKeys(patch={}){const s={...core.settings,...patch};return Object.fromEntries(Object.entries(keys).map(([k,v])=>[k,keyOrigins[k]&&keyOrigins[k]!==credentialOrigin(s[`${prefixFor(k)}Endpoint`])?'':v]));}
-  const core = controller ?? createProductShellController({ host, adapterFactory: h => (hostAdapter ??= new HostAdapter(h)), adapter, fetchImpl, onChange: () => notify(), runtimeRules: () => `故事时间以对应楼层原文为准；回忆、约定日期与当前场景日期分别记录，不套用全局日期。外部权威状态（只读）：${externalState()}\n${moduleRules(state.modules)}`, shouldInvalidate:reason=>!(reason==='MESSAGE_UPDATED'&&moduleMetadataOnly()), summaryBundleValidator:()=>{const definitions=clone(state.modules);return bundle=>checkModuleBundle(bundle,definitions);} });
+  const core = controller ?? createProductShellController({ host, adapterFactory: h => (hostAdapter ??= new HostAdapter(h)), adapter, fetchImpl, supplementModelFactory:()=>{if(core.settings.supplementFollowSummary&&!core.settings.supplementModel)return null;const c=client('supplement');return {profile:{model:c.profile.model,maxTokens:core.settings.outputBudgetUnits},chatCompletions:(p,o)=>c.chatCompletions(p,o)};}, onChange: () => notify(), runtimeRules: () => `故事时间以对应楼层原文为准；回忆、约定日期与当前场景日期分别记录，不套用全局日期。外部权威状态（只读）：${externalState()}\n${moduleRules(state.modules)}`, shouldInvalidate:reason=>!(reason==='MESSAGE_UPDATED'&&moduleMetadataOnly()), summaryBundleValidator:()=>{const definitions=clone(state.modules);return bundle=>checkModuleBundle(bundle,definitions);} });
   let globalWorkspace,globalLoaded=false,globalLoading=null,assistantActive=false;
   const globalStore=async()=>{
     hostAdapter??=new HostAdapter(host);await hostAdapter.ready?.();
@@ -127,10 +128,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   function publicState() { return { ...clone(state),automatic:automaticPlan(),autoRunning, merges:workspace?.isCurrent()&&!state.stale?clone(state.merges??[]):[], injectionLog:workspace?.isCurrent()?injectionLog?.state:null, dictionary:clone(activeDictionary()), runtimeLog:runtimeLog.state, enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
   function assertCurrent(token = epoch) { if (!workspace || token !== epoch || !workspace.isCurrent()) throw Object.assign(new Error('聊天或来源已变化，旧聊天操作已停止'),{code:'CHAT_CHANGED'}); }
   function begin(exclusive = true) {
+    if(exclusive&&qualityOperation){qualityOperation.preempted=true;qualityOperation.abort();}
     if (exclusive && active) throw new Error('已有任务正在运行');
     const controller = new AbortController(), token = epoch, version = cancelVersion, bound = workspace;
     operations.add(controller); if (exclusive) active = controller;
-    return { signal: controller.signal, workspace: bound, token,
+    return { signal: controller.signal, workspace: bound, token, abort:()=>controller.abort(),
       check() { if (controller.signal.aborted || version !== cancelVersion) throw Object.assign(new Error('已停止'),{code:'CANCELED'}); assertCurrent(token); },
       finish() { operations.delete(controller); if (active === controller) active = null; notify(); wakeChatFollower(); } };
   }
@@ -238,6 +240,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         while(active&&!disposed)await new Promise(resolve=>setTimeout(resolve,25));
         if(disposed)break;
         const pending=automaticQualityQueue.splice(0),op=begin(false);
+        qualityOperation=op;
         try{
           const result=await processQuality(op,{recordIds:pending,automatic:true});
           if(op.token===epoch&&(result.failed||result.unresolved))setMessage(`总结已保存；后台内容校对有 ${result.failed} 组未完成、${result.unresolved} 处待核对，可稍后单独重试。`);
@@ -246,7 +249,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
             void reportError(error,{task:'quality',stage:'background'});
             if(op.token===epoch)setMessage(`总结已保存；后台内容校对未完成：${failureText(error)}，可稍后单独重试。`);
           }
-        }finally{op.finish();}
+        }finally{if(op.preempted&&op.token===epoch&&!disposed)automaticQualityQueue=[...new Set([...pending,...automaticQualityQueue])];if(qualityOperation===op)qualityOperation=null;op.finish();}
       }
     }).finally(()=>{qualityJob=null;if(automaticQualityQueue.length&&!disposed)queueAutomaticQuality([]);});
   }
@@ -641,11 +644,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const job=state.merges.find(j=>j.id===initial.id);if(!job)continue;
       const snapshot=clone(state.records),input=mergeJudgeInput(snapshot,job);
       const stamp=mergeDecision(snapshot,job,{status:'pending'});
-      const run=await runtimeLog.start('merge',{modelRole:'summary'});op.check();
+      const run=await runtimeLog.start('merge',{modelRole:'supplement'});op.check();
       let decision;
       try{
         const messages=[{role:'system',content:MERGE_JUDGE_PROMPT},{role:'user',content:JSON.stringify(input)}];
-        const c=client('summary'),payload={model:c.profile.model,messages,stream:false,...(core.settings.outputBudgetUnits>0?{max_tokens:core.settings.outputBudgetUnits}:{})};
+        const c=client('supplement'),payload={model:c.profile.model,messages,stream:false,...(core.settings.outputBudgetUnits>0?{max_tokens:core.settings.outputBudgetUnits}:{})};
         const inputUnits=estimateUnits(JSON.stringify(payload));
         if(inputUnits>core.settings.inputBudgetUnits)throw Object.assign(new Error('这对事件超过总结输入预算，请核对后缩短记录或提高预算'),{code:'INPUT_BUDGET_EXCEEDED'});
         runtimeLog.record({run,task:'merge',phase:'request',details:{inputUnits,inputLimit:core.settings.inputBudgetUnits,maxTokens:core.settings.outputBudgetUnits}});
@@ -691,16 +694,23 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       try{
         state.qualityProgress=`正在校对 ${corrected+failed+1}/${groups.length} 组`;notify();
         const sources=await core.readQualitySources(targets);op.check();
-        const referenceRecords=rows(state.records).filter(r=>!ids.includes(r.id)&&!['summaryView','conflicts'].includes(r.category));
-        const input={sources:sources.map(({id,index,text})=>({id,index,text})),records:targets,referenceRecords,issues:findings.filter(i=>i.recordIds.some(id=>ids.includes(id)))};
-        const c=client('summary');
+        const related=selectSummaryContext(state.records,sources,{budgetUnits:4000,maxRecords:24});
+        const referenceRecords=rows(related.records).filter(r=>!ids.includes(r.id));
+        const input={sources:sources.map(({id,index,text})=>({id,index,text})),records:targets.map(summaryRecord),referenceRecords,issues:findings.filter(i=>i.recordIds.some(id=>ids.includes(id)))};
+        const c=client('supplement');
         const makePayload=()=>({model:c.profile.model,messages:[{role:'system',content:QUALITY_PROMPT},{role:'user',content:JSON.stringify(input)}],stream:false,...(core.settings.outputBudgetUnits>0?{max_tokens:core.settings.outputBudgetUnits}:{})});
         let payload=makePayload(),inputUnits=estimateUnits(JSON.stringify(payload));
         // References are optional context. Original evidence and target records
         // are never silently clipped to squeeze a review into the budget.
-        while(inputUnits>core.settings.inputBudgetUnits&&input.referenceRecords.length){input.referenceRecords.pop();payload=makePayload();inputUnits=estimateUnits(JSON.stringify(payload));}
-        if(inputUnits>core.settings.inputBudgetUnits)throw Object.assign(new Error('这组原文超过校对输入预算，原记忆保留'),{code:'INPUT_BUDGET_EXCEEDED'});
-        runtimeLog.record({run,task:'quality',phase:'request',details:{requestId,inputUnits,inputLimit:core.settings.inputBudgetUnits,maxTokens:core.settings.outputBudgetUnits,sourceCount:sources.length,expected:ids.length}});
+        const qualityLimit=Math.min(core.settings.inputBudgetUnits,30000);
+        while(inputUnits>qualityLimit&&input.referenceRecords.length){input.referenceRecords.pop();payload=makePayload();inputUnits=estimateUnits(JSON.stringify(payload));}
+        if(inputUnits>qualityLimit&&ids.length>1){
+          const mid=Math.ceil(ids.length/2);groups.push(ids.slice(0,mid),ids.slice(mid));
+          runtimeLog.record({run,task:'quality',phase:'quality_split',details:{expected:ids.length,inputUnits,inputLimit:qualityLimit}});
+          runtimeLog.record({run,task:'quality',phase:'complete',level:'info'});continue;
+        }
+        if(inputUnits>qualityLimit)throw Object.assign(new Error('这条记忆的完整原文超过单次校对预算，原记忆保留；可在来源批次中重新整理'),{code:'INPUT_BUDGET_EXCEEDED'});
+        runtimeLog.record({run,task:'quality',phase:'request',details:{requestId,modelRole:'supplement',inputUnits,inputLimit:qualityLimit,sourceInputUnits:estimateUnits(JSON.stringify(input.sources)),historyInputUnits:estimateUnits(JSON.stringify(input.referenceRecords)),maxTokens:core.settings.outputBudgetUnits,sourceCount:sources.length,expected:ids.length}});
         const response=await c.chatCompletions(payload,{signal:op.signal,timeoutMs:core.settings.deadlineMs,requestId,onDiagnostic:e=>runtimeLog.record({run,task:'quality',...e})});op.check();
         runtimeLog.record({run,task:'quality',phase:'response',details:{finishReason:response.choices?.[0]?.finish_reason??'unknown',promptTokens:response.usage?.prompt_tokens,completionTokens:response.usage?.completion_tokens}});
         const modelOutput=jsonContent(completion(response).content);

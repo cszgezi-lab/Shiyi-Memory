@@ -27,7 +27,7 @@ export function memoryQualityIssues(records={}){
     if(time&&!storyTimeRange(time))add('time_unparsed',[e.id],`“${e.title??'事件'}”的时间尚不能规范解析，需保留原表述并核对。`);
   }
   for(const {record:r} of rows){
-    if(/(?:心理防线|瞬间破防|命运交织|彻底穿透|芳心暗许)/.test(text(r))&&['relationshipChanges','personaChanges'].some(k=>(records[k]??[]).includes(r)))add('interpretation',[r.id],'核对本次反应、角色自述和长期性格的区别；调侃不等于双方关系确认。');
+    if(/(?:心理防线|瞬间破防|命运交织|彻底穿透|芳心暗许|完全依附|全(?:部|面)依赖|彻底击(?:碎|穿)|永久改变)/.test(text(r))&&['relationshipChanges','personaChanges'].some(k=>(records[k]??[]).includes(r)))add('interpretation',[r.id],'核对本次反应、角色自述和长期性格的区别；调侃不等于双方关系确认，一次感谢或羞涩不能推导完全依附。');
   }
   for(const f of records.entityFactChanges??[]){
     if(!/住所|住址|居所|address|residence/.test(f.field??f.key??''))continue;

@@ -11,6 +11,12 @@ import { clone, isPlainObject } from './utils.js';
 export const PRODUCT_SETTINGS_VERSION = 1;
 
 const DEFINITIONS = [
+  { key:'summaryStaged', label:'分工总结', defaultValue:true, type:'boolean', consumers:['SummaryEngine'] },
+  { key:'supplementFollowSummary', label:'辅助整理沿用总结模型', defaultValue:true, type:'boolean', consumers:['ProductApplication.supplement'] },
+  { key:'supplementEndpoint', label:'辅助整理 API 地址', defaultValue:'', type:'string', maxLength:2048, consumers:['ProductApplication.supplement'] },
+  { key:'supplementModel', label:'辅助整理模型', defaultValue:'', type:'string', maxLength:240, consumers:['ProductApplication.supplement'] },
+  { key:'supplementEndpointMode', label:'辅助整理地址模式', defaultValue:'base', type:'enum', values:['base','exact'], consumers:['ProductApplication.supplement'] },
+  { key:'supplementAuthMode', label:'辅助整理认证方式', defaultValue:'bearer', type:'enum', values:['none','bearer','api-key'], consumers:['ProductApplication.supplement'] },
   { key: 'autoQualityEnabled', label: '总结后校对缺项与矛盾', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.processQuality'] },
   { key: 'messageCount', label: '最近消息数', defaultValue: 8, type: 'integer', min: 1, max: 200, consumers: ['ProductShellController.readRange'] },
   { key: 'autoMergeEnabled', label: '总结后自动核对合并', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.processMergeQueue'] },
@@ -181,8 +187,8 @@ export const PRODUCT_PERSISTED_SETTING_KEYS = PERSISTED_KEYS;
 // Connection settings belong to this TT installation, not a story or chat.
 // Credentials remain runtime-only and are deliberately absent from this list.
 export const PRODUCT_API_SETTING_KEYS = Object.freeze([
-  ...['provider','assistant','embedding','rerank'].flatMap(prefix => ['Endpoint','EndpointMode','Model','AuthMode'].map(suffix => prefix + suffix)),
-  'assistantFollowSummary','deadlineMs','assistantBudgetUnits','assistantOutputTokens',
+  ...['provider','assistant','supplement','embedding','rerank'].flatMap(prefix => ['Endpoint','EndpointMode','Model','AuthMode'].map(suffix => prefix + suffix)),
+  'assistantFollowSummary','supplementFollowSummary','deadlineMs','assistantBudgetUnits','assistantOutputTokens',
 ]);
 export function splitProductSettings(patch) {
   const api = {}, chat = {};

@@ -14,10 +14,12 @@ function detailsHTML(entry){
   if(d.purpose)lines.push(['请求用途',DIAGNOSTIC_PURPOSES[d.purpose]]);
   if(d.requestId)lines.push(['请求编号',d.requestId]);
   if(d.stage)lines.push(['具体阶段',DIAGNOSTIC_STAGES[d.stage]]);
+  if(d.summaryStage)lines.push(['分工阶段',d.summaryStage==='narrative'?'事件与逐楼摘要':'人物、知情与关系']);
+  for(const [key,label]of [['sourceInputUnits','正文输入估算'],['historyInputUnits','相关旧记忆估算'],['schemaInputUnits','结构约束估算'],['bridgeInputUnits','衔接上下文估算']])if(d[key]!==undefined)lines.push([label,d[key]]);
   if(d.reason)lines.push(['具体原因',DIAGNOSTIC_REASONS[d.reason]]);
   if(d.qualityReason)lines.push(['校对校验',d.qualityReason]);
   if(d.upstreamCode)lines.push(['服务错误分类',UPSTREAM_CODES[d.upstreamCode]]);
-  if(d.modelRole)lines.push(['模型用途',({summary:'总结模型',assistant:'配置助手',embedding:'向量模型',rerank:'重排模型'})[d.modelRole]]);
+  if(d.modelRole)lines.push(['模型用途',({summary:'总结模型',supplement:'辅助整理模型',assistant:'配置助手',embedding:'向量模型',rerank:'重排模型'})[d.modelRole]]);
   if(d.errorType)lines.push(['错误类型',d.errorType]);
   for(const [key,label]of [['bodyChars','接口正文字符数'],['jsonPosition','JSON 出错字符位置'],['jsonLine','JSON 出错行'],['jsonColumn','JSON 出错列'],['choicesCount','回复候选数量'],['toolCallsCount','工具调用数量'],['timeoutMs','请求等待上限（毫秒）']])if(d[key]!==undefined)lines.push([label,d[key]]);
   if(d.contentType)lines.push(['返回结构',({object:'对象',array:'数组',string:'文字',null:'空值',undefined:'缺失',number:'数值',boolean:'是/否'})[d.contentType]]);

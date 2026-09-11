@@ -155,6 +155,7 @@ export function createProductShellController({
   adapterFactory = (value) => new HostAdapter(value),
   model = null,
   modelFactory = null,
+  supplementModelFactory = null,
   transportFactory = createProductTransport,
   fetchImpl = globalThis.fetch,
   settings = {},
@@ -536,18 +537,8 @@ export function createProductShellController({
     try{
     frozen=resume?await repository.readPrivateTask(state.scope,operationId):null;
     if(resume&&!frozen?.batch)throw Object.assign(new Error('没有可续跑的暂存任务，请重新生成'),{code:'RESUME_UNAVAILABLE'});
-    const storedSplitUnits=Number(frozen?.splitUnits);
-    if(frozen?.batch&&Number.isFinite(storedSplitUnits)&&storedSplitUnits>safeSplitUnits){
-      // A pre-safety recovery task can contain a 64K source split. Reusing it
-      // defeats the mobile cap and makes its old checkpoint incompatible with
-      // the new child plan. Re-run the same frozen range with the safe plan;
-      // committed memory is never removed by this reset.
-      await repository.clearPrivateTask?.(state.scope,operationId).catch(()=>{});
-      await repository.clearCheckpoint?.(operationId,state.scope).catch(()=>{});
-      frozen=null;
-      privateTaskCheckpoint='stale_split_reset';
-      try{onDiagnostic({phase:'checkpoint_warning',level:'warning',details:{storedSplitUnits,safeSplitUnits,reason:'oversized_recovery_task',storageArtifact:'checkpoint'}});}catch{/* diagnostics are advisory */}
-    }
+    // Resume the frozen split plan. Changing child boundaries under the same
+    // operation ID would invalidate receipts and can reuse the wrong result.
     if(frozen?.batch){
       const old=frozen.batch;
       if(old.sourceRevision!==batch.sourceRevision||stableStringify(old.focusSpec)!==stableStringify(batch.focusSpec)||stableStringify(old.rules)!==stableStringify(batch.rules))throw Object.assign(new Error('本批原文或记录规则已变化，请重新生成；未复用过期结果'),{code:'SOURCE_INVALIDATED'});
@@ -576,7 +567,7 @@ export function createProductShellController({
     }
     abortController = preflightAbort;
     activeTask = operationId;
-    state.job = { operationId, focusSpec: clone(focusSpec), startedAt: now(), sourceRevision: batch.sourceRevision, splitUnits:Math.min(Number(frozen?.splitUnits)||safeSplitUnits,safeSplitUnits), privateTaskCheckpoint };
+    state.job = { operationId, focusSpec: clone(focusSpec), startedAt: now(), sourceRevision: batch.sourceRevision, splitUnits:Number(frozen?.splitUnits)||safeSplitUnits, privateTaskCheckpoint };
     state.draft = { range: clone(state.range), focus: normalizedFocus, focusConfirmed: confirmedFocus === true, status: 'running' };
     mark(PRODUCT_SHELL_STATUS.RUNNING);
     state.capabilities.summary = 'running';
@@ -584,8 +575,8 @@ export function createProductShellController({
     const validateBundle=summaryBundleValidator();
     summaryRepository.commitBundle=async (...args)=>{validateBundle(args[0]);return repository.commitBundle(...args);};
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations})).records;
-    engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requestSafetyUnits: SUMMARY_REQUEST_SAFETY_UNITS, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
     try {
+      engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requestSafetyUnits: SUMMARY_REQUEST_SAFETY_UNITS, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
       const result = await engine.process(batch, { signal: abortController.signal, onDiagnostic });
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
       const snapshot = await repository.readScope(session.scope);
