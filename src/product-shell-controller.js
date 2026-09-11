@@ -41,7 +41,6 @@ export const PRODUCT_SETTINGS_KEY = 'current';
 // source body in an individual model request; it prevents long replies from
 // turning a small range into a 60K+ provider prompt.
 export const SUMMARY_SOURCE_SAFETY_UNITS = 18000;
-export const SUMMARY_REQUEST_SAFETY_UNITS = 46000;
 
 export const PRODUCT_SHELL_STATUS = Object.freeze({
   IDLE: 'idle',
@@ -304,7 +303,7 @@ export function createProductShellController({
     // Legacy-safe planning seeds, not paid request boundaries. New jobs pack
     // these using the complete wire payload; old frozen jobs retain this quota.
     const declared=Math.max(256,Number(state.settings.inputBudgetUnits)||24000);
-    const safe=Math.min(declared,SUMMARY_REQUEST_SAFETY_UNITS);
+    const safe=declared;
     const planned=Math.floor((safe-estimateUnits(JSON.stringify(SUMMARY_OUTPUT_CONTRACT))-estimateUnits(state.settings.recordingRules)-2000)/2.5);
     return Math.max(256,Math.min(SUMMARY_SOURCE_SAFETY_UNITS,planned));
   }
@@ -464,7 +463,7 @@ export function createProductShellController({
       state.draft.focus = state.focus;
       state.draft.focusConfirmed = state.focusConfirmed;
       mark(PRODUCT_SHELL_STATUS.READY);
-      return { status: 'ready', count: range.messages.length, range: clone(state.range), sourceRevision: batch.sourceRevision };
+      return { status: 'ready', count: range.messages.length, range: clone(state.range), sourceRevision: batch.sourceRevision, readStats:range.readStats };
     } catch (error) {
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
       const code = errorCode(error, 'HISTORY_UNAVAILABLE');
@@ -587,7 +586,7 @@ export function createProductShellController({
     summaryRepository.commitBundle=async (...args)=>{validateBundle(args[0]);return repository.commitBundle(...args);};
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations})).records;
     try {
-      engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requestSafetyUnits: SUMMARY_REQUEST_SAFETY_UNITS, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
+      engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
       const result = await engine.process(batch, { signal: abortController.signal, onDiagnostic, onSourcePlan:plan=>{
         if(!tokenValid(token,session)||abortController?.signal.aborted||activeTask!==operationId)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
         if(plan.operationId!==operationId||plan.sourceRevision!==batch.sourceRevision||stableStringify(plan.scope)!==stableStringify(session.scope))throw Object.assign(new Error('总结来源计划不一致'),{code:'SOURCE_INVALIDATED'});
@@ -834,7 +833,16 @@ export function createProductShellController({
       if(!state.session)throw new Error('请先打开聊天');
       const session=state.session,token=currentToken();
       const check=async()=>{const ref=await adapterInstance.currentRef();if(!tokenValid(token,session)||stableStringify(ref)!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
-      await check();const range=await readProductHostRange(session,{count:1});await check();return range.endIndex;
+      await check();let page;
+      try{page=await session.handle.history.tail({limit:1});}
+      catch(error){await check();throw Object.assign(new Error('当前聊天历史读取失败。'),{code:'HISTORY_UNAVAILABLE',details:{causeError:error,stage:'prepare'}});}
+      await check();
+      // Only the last index is needed for range bounds, not a normalized body.
+      // A new streamed reply must not prevent summarizing an older range.
+      if(!Array.isArray(page?.messages)||!Number.isInteger(page.startIndex)||page.startIndex<0||page.messages.length!==1)throw Object.assign(new Error('当前聊天楼层信息不可用'),{code:'HISTORY_UNAVAILABLE'});
+      const end=page.startIndex+page.messages.length-1;
+      if(page.totalCount!==undefined&&page.totalCount!==end+1)throw Object.assign(new Error('当前聊天末页不完整'),{code:'HOST_CONTRACT_INVALID'});
+      return end;
     },
     useGlobalApiSettings(patch) {
       const {api,chat}=splitProductSettings(validateProductPatch(patch));

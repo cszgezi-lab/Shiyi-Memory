@@ -87,6 +87,20 @@ async function parseModelResponse(raw, { onMetadata = () => {}, allowArray = fal
   return payload;
 }
 
+function modelEnvelope(request) {
+  const value = Object.fromEntries(Object.entries(request).filter(([key])=>key!=='instructions'));
+  if (request.extractionContext?.coverage) {
+    const coverage = {...request.extractionContext.coverage};
+    // Hashes/revisions prove sources locally, but models only copy locators.
+    // Keep the full request untouched for validators, recovery and function adapters.
+    for (const key of ['sourceRefs','bridgeRefs']) if (Array.isArray(coverage[key])) {
+      coverage[key] = coverage[key].map(({sourceId,fragmentId})=>({sourceId,...(fragmentId?{fragmentId}:{})}));
+    }
+    value.extractionContext = {...request.extractionContext, coverage};
+  }
+  return value;
+}
+
 function modelInvoker(model) {
   if (typeof model === 'function') return model;
   if (typeof model?.summarize === 'function') return model.summarize.bind(model);
@@ -103,7 +117,7 @@ function modelInvoker(model) {
         : model.profile?.maxTokens > 0 ? { max_tokens: model.profile.maxTokens } : {}),
       messages: [
         { role: 'system', content: request.instructions },
-        { role: 'user', content: JSON.stringify(Object.fromEntries(Object.entries(request).filter(([key])=>key!=='instructions'))) },
+        { role: 'user', content: JSON.stringify(modelEnvelope(request)) },
       ],
       response_format: { type: 'json_object' },
     });
@@ -318,10 +332,8 @@ export class SummaryEngine {
     // that also needs small body chunks for continuation can opt into the
     // separate maxSourceUnits split quota without weakening that ceiling.
     this.maxInputUnits = maxInputUnits;
-    // A product may expose a generous user budget while a mobile provider or
-    // model has a much smaller practical attention envelope. This optional
-    // ceiling limits the complete serialized request without changing the
-    // visible source range or the user's saved setting.
+    // Optional explicit adapter limit for compatibility. The product uses the
+    // user's input budget directly; it no longer supplies a hidden lower cap.
     this.requestSafetyUnits = Number.isFinite(requestSafetyUnits) && requestSafetyUnits > 0
       ? Math.min(Number(requestSafetyUnits), Number(maxInputUnits) || Number(requestSafetyUnits))
       : null;
@@ -612,7 +624,11 @@ export class SummaryEngine {
         }
         if(units>requestLimit)throw new ShiyiError('补全请求超过安全输入上限','INPUT_BUDGET_EXCEEDED',{requestLimit,providerPayloadUnits:units});
         emit('request',{...baseDetails,summaryStage:request.summaryStage,modelRole:request.summaryRole??'summary',sourceInputUnits:estimateUnits(JSON.stringify(request.sourceMessages??[])),historyInputUnits:estimateUnits(JSON.stringify(request.relevantRecords??{})),schemaInputUnits:estimateUnits(JSON.stringify(request.extractionContext?.outputContract??request.outputContract??{})),bridgeInputUnits:estimateUnits(JSON.stringify(request.bridgeMessages??[])),inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
-        try{return await model(request,{signal,requestId:baseDetails.requestId,purpose});}
+        try{
+          const started=this.now();
+          try{return await model(request,{signal,requestId:baseDetails.requestId,purpose});}
+          finally{emit('wait_complete',{...baseDetails,modelMs:Math.max(0,Math.round(this.now()-started))});}
+        }
         catch(error){
           error.details={...error.details,requestId:baseDetails.requestId,purpose};
           emit('response',{...baseDetails,...errorDiagnostics(error)},'error');

@@ -9,13 +9,13 @@ const locator = value => JSON.stringify([value.sourceId ?? value.id, value.fragm
  * Persisted source locators keep restarts on precisely the same commit boundaries.
  */
 export async function planSummaryRequests(batch, {maxSourceUnits, prepare, frozen, checkpointPlan, signal} = {}) {
-  const seeds = splitSummaryBatch(batch, {maxInputUnits:maxSourceUnits});
   const make = groups => splitSummaryBatch(batch, {groups});
   const saved = frozen?.splitPlan ?? checkpointPlan;
   if (frozen && (frozen.version !== 1 || frozen.sourceRevision !== batch.sourceRevision)) {
     throw new ScopeConflictError('saved request plan differs from frozen source');
   }
   if (saved) {
+    const seeds = splitSummaryBatch(batch, {maxInputUnits:maxSourceUnits});
     if(!Array.isArray(saved)||saved.some(part=>!Array.isArray(part?.sourceRefs)||part.sourceRefs.some(ref=>!ref||typeof ref.sourceId!=='string'))){
       throw new ScopeConflictError('saved request plan contains invalid source locators');
     }
@@ -46,6 +46,7 @@ export async function planSummaryRequests(batch, {maxSourceUnits, prepare, froze
   };
   const whole = make([batch.sourceMessages]);
   if(await fits(whole[0]))return whole;
+  const seeds = splitSummaryBatch(batch, {maxInputUnits:maxSourceUnits});
   const groups=[];
   for(let start=0;start<seeds.length;) {
     let chosen=seeds[start].sourceMessages,next=start+1;

@@ -87,7 +87,8 @@ export function normalizeHostMessage(message, index) {
   const explicit = nonEmptyString(message.id ?? message.messageId ?? message.uuid ?? message.sourceId);
   // v2.2.0 does not promise a per-message UUID.  An absolute index plus the
   // frozen body digest remains stable within this captured source revision.
-  const id = explicit || `message:${index}:${sha256(text).slice(0, 16)}`;
+  const digest = sha256(text);
+  const id = explicit || `message:${index}:${digest.slice(0, 16)}`;
   if (message.complete === false || message.streaming === true || message.isStreaming === true) {
     throw productError('当前消息仍在生成，暂不能整理。', 'HISTORY_UNAVAILABLE');
   }
@@ -100,7 +101,7 @@ export function normalizeHostMessage(message, index) {
     role: message.role ?? message.name ?? (message.is_system ? 'system' : message.is_user ? 'user' : 'assistant'),
     text,
     version,
-    hash: sha256(text),
+    hash: digest,
     complete: true,
     index,
   };
@@ -133,13 +134,12 @@ export async function readProductHostRange(session, { count = 8, startIndex = nu
   const pageStart = Number.isInteger(page.startIndex) && page.startIndex >= 0 ? page.startIndex : Math.max(0, (page.totalCount ?? page.messages.length) - page.messages.length);
   const totalCount = Number.isInteger(page.totalCount) && page.totalCount >= pageStart + page.messages.length ? page.totalCount : pageStart + page.messages.length;
   if (end !== null && end >= totalCount) throw productError('结束楼层超出当前聊天。', 'HOST_CONTRACT_INVALID');
-  let normalized = page.messages.map((message, offset) => normalizeHostMessage(message, pageStart + offset));
+  const pages = [{ startIndex: pageStart, messages: page.messages }];
 
   // An explicit range can require one or more older pages.  Only the captured
   // handle is used, so a live chat switch cannot redirect the read.
   if (start !== null && pageStart > start && typeof history.before === 'function') {
-    let cursor = page;
-    const pages = [{ startIndex: pageStart, messages: page.messages }];
+    let cursor = Number.isInteger(page.startIndex) ? page : { ...page, startIndex: pageStart };
     let guard = 0;
     while (cursor.startIndex > start && guard < 64) {
       guard += 1;
@@ -151,11 +151,17 @@ export async function readProductHostRange(session, { count = 8, startIndex = nu
       cursor = older;
       if (older.messages.length === 0) break;
     }
-    normalized = pages.reverse().flatMap((candidate) => candidate.messages.map((message, offset) => normalizeHostMessage(message, candidate.startIndex + offset)));
   }
   const lower = start ?? Math.max(0, totalCount - limit);
   const upper = end ?? totalCount - 1;
-  const selected = normalized.filter((message) => message.index >= lower && message.index <= upper);
+  // Validate page continuity above, but only touch/hash bodies in the selected
+  // range. Unrelated recent messages may even still be streaming.
+  const selected = pages.reverse().flatMap(candidate => {
+    const from = Math.max(lower, candidate.startIndex);
+    const to = Math.min(upper + 1, candidate.startIndex + candidate.messages.length);
+    return from >= to ? [] : candidate.messages.slice(from-candidate.startIndex, to-candidate.startIndex)
+      .map((message, offset) => normalizeHostMessage(message, from + offset));
+  });
   if (selected.length === 0) throw productError('所选聊天范围为空。', 'HISTORY_UNAVAILABLE');
   if (selected.length !== upper - lower + 1 || selected.some((m, i) => m.index !== lower + i)) throw productError('所选历史范围不完整，未进行总结。', 'HOST_CONTRACT_INVALID');
   return {
@@ -164,6 +170,7 @@ export async function readProductHostRange(session, { count = 8, startIndex = nu
     endIndex: selected.at(-1).index,
     totalCount,
     requestedRange: { startIndex: lower, endIndex: upper },
+    readStats: { historyPages: pages.length, fetchedMessages: pages.reduce((n,p)=>n+p.messages.length,0), normalizedMessages: selected.length },
     sourceRevision: sha256({ scope: session.scope, messages: selected.map(({ id, role, text, version, hash, index }) => ({ id, role, text, version, hash, index })) }),
   };
 }

@@ -7,6 +7,8 @@ export async function verifyProductSources(history, records, check = () => {}, {
   const refs = [...new Map(Object.values(records ?? {}).filter(Array.isArray).flatMap(list => list.flatMap(r => r?.sourceRefs ?? [])).map(r => [sourceKey(r), r])).values()];
   const current = new Map(), byIndex = new Map();
   const pending = refs.filter(r => !String(r.sourceId).startsWith('user-note_'));
+  const wantedIds=new Set(pending.map(r=>r.sourceId));
+  const wantedIndices=new Set(pending.flatMap(r=>{const m=/^message:(\d+):/.exec(r.sourceId);return m?[Number(m[1])]:[];}));
   let complete = false, total = null;
   if (pending.length) {
     let page = await history.tail({ limit: 500 }); check();
@@ -14,7 +16,11 @@ export async function verifyProductSources(history, records, check = () => {}, {
       if (!page || !Array.isArray(page.messages) || !Number.isInteger(page.startIndex) || page.startIndex < 0) break;
       if (total === null) total = page.totalCount ?? page.startIndex + page.messages.length;
       if (page.totalCount !== undefined && page.totalCount !== total) throw new Error('历史在来源核对期间变化');
-      page.messages.forEach((m, i) => { const value = normalizeHostMessage(m, page.startIndex + i); current.set(value.id, value); byIndex.set(value.index, value); });
+      page.messages.forEach((m, i) => {
+        const index=page.startIndex+i,explicit=m?.id??m?.messageId??m?.uuid??m?.sourceId;
+        if(!wantedIndices.has(index)&&!wantedIds.has(typeof explicit==='string'?explicit.trim():explicit))return;
+        const value = normalizeHostMessage(m, index); current.set(value.id, value); byIndex.set(value.index, value);
+      });
       if (page.startIndex === 0) { complete = true; break; }
       const unresolved = pending.some(r => { const match = /^message:(\d+):/.exec(r.sourceId); return match ? Number(match[1]) < total && !byIndex.has(Number(match[1])) : !current.has(r.sourceId); });
       if (!unresolved || typeof history.before !== 'function') break;

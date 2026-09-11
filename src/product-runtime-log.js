@@ -15,6 +15,7 @@ CODES.add('QUALITY_RESPONSE_INVALID');
 const NUMBERS = ['plannedRequests','totalChildren','completedChildren','actualWaitMs','timerLagMs','sourceInputUnits','historyInputUnits','schemaInputUnits','bridgeInputUnits','retryDelayMs','recoveryCalls','batchNumber','childIndex','startIndex','endIndex','sourceCount','inputLimit','inputUnits','maxTokens','elapsedMs','status','expected','received','covered','invalidRows','duplicateCount','promptTokens','completionTokens','totalTokens','reasoningTokens','responseChars','savedBatches','normalizedFields','defaultedValidityFields','repairFields','requestNumber','requestItems','receivedVectors','inputChars','longestInputChars','vectorDimensions','indexedItems','pendingItems','failedItems','beforeInputUnits','afterInputUnits','removedRelevantRecords','recoveryInputTarget','requestedMaxTokens','effectiveMaxTokens','relevantCandidateCount'];
 export function safeLogDetails(value = {}) {
   const result = safeDiagnosticFields(value);
+  for(const key of ['historyPages','fetchedMessages','normalizedMessages','prepareMs','modelMs','publishMs'])if(Number.isSafeInteger(value?.[key])&&value[key]>=0)result[key]=value[key];
   if(['narrative','details'].includes(value?.summaryStage))result.summaryStage=value.summaryStage;
   const issues=safeValidationIssues(value?.validationIssues);
   if(issues.length)result.validationIssues=issues;
@@ -42,11 +43,14 @@ function safeEntry(value) {
 export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now()} = {}) {
   let entries=[],store,loaded=false,loading,queue=Promise.resolve(),nextRun=0,nextId=0,persistence='not_loaded';
   let pending=false,writing=false,droppedEntries=0,partialRuns=[],storageFailure=null,legacyRetentionUnknown=false;
+  let timer=null,entryBytes=2;
+  const byteSize=e=>new TextEncoder().encode(JSON.stringify(e)).length;
   const notify=()=>{try{onChange();}catch{/* diagnostics must not break a task */}};
   function trim(){
     const removed=[];
     if(entries.length>RUNTIME_LOG_LIMIT)removed.push(...entries.splice(0,entries.length-RUNTIME_LOG_LIMIT));
-    while(entries.length&&new TextEncoder().encode(JSON.stringify(entries)).length>RUNTIME_LOG_BYTES)removed.push(...entries.splice(0,Math.max(1,Math.ceil(entries.length/10))));
+    entryBytes-=removed.reduce((n,e)=>n+byteSize(e)+1,0);
+    while(entries.length&&entryBytes>RUNTIME_LOG_BYTES){const chunk=entries.splice(0,Math.max(1,Math.ceil(entries.length/10)));removed.push(...chunk);entryBytes-=chunk.reduce((n,e)=>n+byteSize(e)+1,0);}
     droppedEntries+=removed.length;
     const retained=new Set(entries.map(e=>e.run));partialRuns=[...new Set([...partialRuns,...removed.map(e=>e.run)])].filter(r=>retained.has(r));
   }
@@ -59,7 +63,7 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now()} =
         const found=await store.tryGetJson(RUNTIME_LOG_ADDRESS);
         if(found.found){
           if(found.value?.version!==1||!Array.isArray(found.value.entries))throw Object.assign(new Error('invalid log document'),{details:{reason:'log_document_invalid'}});
-          entries=found.value.entries.map(safeEntry).filter(Boolean);
+          entries=found.value.entries.map(safeEntry).filter(Boolean);entryBytes=2+entries.reduce((n,e)=>n+byteSize(e)+1,0);
           droppedEntries=Number.isSafeInteger(found.value.droppedEntries)?Math.max(0,found.value.droppedEntries):0;
           droppedEntries+=found.value.entries.length-entries.length;
           legacyRetentionUnknown=found.value.diagnosticVersion!==2||found.value.legacyRetentionUnknown===true;
@@ -72,6 +76,7 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now()} =
     })().finally(()=>{loading=null;});return loading;
   }
   function persist() {
+    clearTimeout(timer);timer=null;
     pending=true;
     if(writing)return queue;
     writing=true;
@@ -95,13 +100,17 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now()} =
   function record({run,task,phase,level='info',details={}}) {
     const entry=safeEntry({id:++nextId,run:Number.isSafeInteger(run)?run:++nextRun,task:Object.hasOwn(LOG_TASKS,task)?task:'operation',phase:Object.hasOwn(LOG_PHASES,phase)?phase:'failed',level,details,at:now(),pluginVersion:PRODUCT_VERSION});
     if(!entry)return;
-    entries.push(entry);trim();notify();void persist();
+    entries.push(entry);entryBytes+=byteSize(entry)+1;trim();notify();
+    // Keep every entry in memory; coalesce disk writes, not diagnostics.
+    // Terminal states/export/flush force a verified write immediately.
+    if(['complete','failed','canceled'].includes(phase))void persist();
+    else if(timer===null){timer=setTimeout(()=>{timer=null;void persist();},100);timer?.unref?.();}
   }
   return {
     load,record,async start(task,details={}){await load();const run=++nextRun;record({run,task,phase:'start',details});return run;},
     get state(){return {entries:clone(entries),persistence,limit:RUNTIME_LOG_LIMIT,byteLimit:RUNTIME_LOG_BYTES,droppedEntries,partialRuns:clone(partialRuns),legacyRetentionUnknown,storageFailure:clone(storageFailure)};},
-    async flush(){await queue;},
-    async clear(){await load();entries=[];droppedEntries=0;partialRuns=[];legacyRetentionUnknown=false;notify();await persist();if(!store||persistence!=='saved')throw new Error('日志清空未通过保存确认，请重试');},
-    async export(){await load();await queue;const terminal=new Set(entries.filter(e=>['complete','failed','canceled'].includes(e.phase)).map(e=>e.run));return {kind:'shiyi-runtime-log',version:1,diagnosticVersion:2,pluginVersion:PRODUCT_VERSION,exportedAt:now(),persistence,retention:{limit:RUNTIME_LOG_LIMIT,byteLimit:RUNTIME_LOG_BYTES,droppedEntries,partialRuns:clone(partialRuns),legacyRetentionUnknown,firstId:entries[0]?.id??null,lastId:entries.at(-1)?.id??null},unfinishedRuns:[...new Set(entries.filter(e=>e.phase==='start'&&!terminal.has(e.run)).map(e=>e.run))],storageFailure:clone(storageFailure),limitations:['不含密钥、请求正文、模型原文或私人文件路径。','宿主或服务未提供的错误原因无法还原。','未结束任务可能仍在运行或曾被强制退出；不能据此断定崩溃。','旧版本丢失的日志不能补录。'],entries:clone(entries)};},
+    async flush(){if(timer!==null)await persist();else await queue;},
+    async clear(){await load();entries=[];entryBytes=2;droppedEntries=0;partialRuns=[];legacyRetentionUnknown=false;notify();await persist();if(!store||persistence!=='saved')throw new Error('日志清空未通过保存确认，请重试');},
+    async export(){await load();if(timer!==null)await persist();else await queue;const terminal=new Set(entries.filter(e=>['complete','failed','canceled'].includes(e.phase)).map(e=>e.run));return {kind:'shiyi-runtime-log',version:1,diagnosticVersion:2,pluginVersion:PRODUCT_VERSION,exportedAt:now(),persistence,retention:{limit:RUNTIME_LOG_LIMIT,byteLimit:RUNTIME_LOG_BYTES,droppedEntries,partialRuns:clone(partialRuns),legacyRetentionUnknown,firstId:entries[0]?.id??null,lastId:entries.at(-1)?.id??null},unfinishedRuns:[...new Set(entries.filter(e=>e.phase==='start'&&!terminal.has(e.run)).map(e=>e.run))],storageFailure:clone(storageFailure),limitations:['不含密钥、请求正文、模型原文或私人文件路径。','宿主或服务未提供的错误原因无法还原。','未结束任务可能仍在运行或曾被强制退出；不能据此断定崩溃。','旧版本丢失的日志不能补录。','运行中日志最多合并 100ms 后写盘；强制退出可能丢失尚未写入的最后几条。'],entries:clone(entries)};},
   };
 }
