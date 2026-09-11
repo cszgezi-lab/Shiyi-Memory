@@ -1,6 +1,5 @@
 import {
   createSummaryBatch,
-  splitSummaryBatch,
   bindDraftBundle,
   SUMMARY_OUTPUT_CONTRACT,
 } from './contracts.js';
@@ -183,6 +182,8 @@ export function createProductShellController({
   let transport = null;
   let abortController = null;
   let manualOperation = null;
+  // Private proof registry: no source bodies/IDs are copied into public UI state.
+  let summarySourceGuard = null;
 
   const state = {
     schemaVersion: 1,
@@ -245,6 +246,7 @@ export function createProductShellController({
     if (abortController && !abortController.signal.aborted) abortController.abort(reason);
     abortController = null;
     activeTask = null;
+    summarySourceGuard = null;
     state.job = null;
     state.lastSaved = null;
     state.lastPreview = null;
@@ -314,28 +316,35 @@ export function createProductShellController({
       now,
       verifySourceRevision: async ({ bundle }) => {
         if (manualOperation && bundle.operationId === manualOperation.id && tokenValid(manualOperation.token, session)) return manualOperation.sourceRevision;
-        const selected = state.range;
-        if (!selected || state.session !== session || destroyed || !activeTask || abortController?.signal.aborted) return null;
+        const guard=summarySourceGuard,started=now();
+        const valid=()=>guard&&summarySourceGuard===guard&&activeTask===guard.operationId&&tokenValid(guard.token,session)&&!abortController?.signal.aborted;
+        const fail=(reason,error)=>{
+          try{guard?.report({phase:'source_check',level:'error',details:{...(error?safeLogDetails(errorDiagnostics(error)):{}),reason,code:reason==='source_read_failed'?'HISTORY_UNAVAILABLE':'SOURCE_INVALIDATED',stage:'prepare',elapsedMs:Math.max(0,Math.round(now()-started)),startIndex:guard?.range.startIndex,endIndex:guard?.range.endIndex}});}catch{/* logging never changes source verification */}
+          return null;
+        };
+        if(!valid())return fail('source_task_inactive');
+        const child=guard.children.get(bundle.operationId);
+        if(!child||child.sourceRevision!==bundle.sourceRevision||child.expectedRevision!==bundle.expectedRevision||stableStringify(bundle.scope)!==guard.scopeKey)return fail('source_plan_mismatch');
         try {
-          if(stableStringify(await adapterInstance.currentRef())!==session.refKey)return null;
-          const current = await readProductHostRange(session, { ...selected, maxMessages });
-          if(stableStringify(await adapterInstance.currentRef())!==session.refKey)return null;
+          if(stableStringify(await adapterInstance.currentRef())!==session.refKey)return fail('source_chat_changed');
+          if(!valid())return fail('source_task_inactive');
+          const current = await readProductHostRange(session, { ...guard.range, maxMessages });
+          if(stableStringify(await adapterInstance.currentRef())!==session.refKey)return fail('source_chat_changed');
+          if(!valid())return fail('source_task_inactive');
           const batch = createSummaryBatch({
             scope: session.scope,
-            operationId: state.job?.operationId ?? bundle.operationId,
+            operationId: guard.operationId,
             expectedRevision: bundle.expectedRevision,
             messages: cleanMessages(current.messages),
             requestedRange: current.requestedRange,
-            focusSpec: state.job?.focusSpec ?? null,
-            inputBudget: state.settings.inputBudgetUnits,
-            outputBudget: state.settings.outputBudgetUnits,
-            outputReserveUnits: 0,
-            recordingRules: state.settings.recordingRules,
           });
-          const children = splitSummaryBatch(batch, { maxInputUnits: state.job?.splitUnits??sourceSplitUnits() });
-          return children.find((child) => child.operationId === bundle.operationId)?.sourceRevision ?? batch.sourceRevision;
-        } catch {
-          return null;
+          // First prove the entire frozen parent is unchanged. Then return only
+          // the registered child's proof, never a revision supplied by a model.
+          if(batch.sourceRevision!==guard.sourceRevision)return fail('source_content_changed');
+          return valid()?child.sourceRevision:fail('source_task_inactive');
+        } catch(error) {
+          fail('source_read_failed',error);
+          throw Object.assign(new Error('校验前读取聊天原文失败，未认定正文已变化'),{code:'HISTORY_UNAVAILABLE',details:{reason:'source_read_failed',stage:'prepare',causeError:error}});
         }
       },
     });
@@ -579,7 +588,11 @@ export function createProductShellController({
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations})).records;
     try {
       engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requestSafetyUnits: SUMMARY_REQUEST_SAFETY_UNITS, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
-      const result = await engine.process(batch, { signal: abortController.signal, onDiagnostic });
+      const result = await engine.process(batch, { signal: abortController.signal, onDiagnostic, onSourcePlan:plan=>{
+        if(!tokenValid(token,session)||abortController?.signal.aborted||activeTask!==operationId)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
+        if(plan.operationId!==operationId||plan.sourceRevision!==batch.sourceRevision||stableStringify(plan.scope)!==stableStringify(session.scope))throw Object.assign(new Error('总结来源计划不一致'),{code:'SOURCE_INVALIDATED'});
+        summarySourceGuard={operationId,token,sourceRevision:plan.sourceRevision,scopeKey:stableStringify(plan.scope),range:clone(plan.range),children:new Map(plan.children.map(child=>[child.operationId,Object.freeze({...child})])),report:onDiagnostic};
+      }});
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
       const snapshot = await repository.readScope(session.scope);
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
@@ -618,6 +631,7 @@ export function createProductShellController({
       const safeFailure = productFailure(error);
       return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: code, failure: safeFailure, errorDetails: { ...safeLogDetails(errorDiagnostics(error)), status: safeFailure.status }, operationId };
     } finally {
+      if(summarySourceGuard?.operationId===operationId&&summarySourceGuard.token===token)summarySourceGuard=null;
       if (activeTask === operationId) activeTask = null;
       if (abortController?.signal.aborted || !activeTask) abortController = null;
       state.job = state.job && state.job.operationId === operationId ? { ...state.job, active: false } : state.job;

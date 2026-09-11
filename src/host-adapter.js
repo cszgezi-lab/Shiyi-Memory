@@ -237,7 +237,18 @@ export class HostAdapter {
   async currentRef() {
     await this.ready();
     const fn = this._chatApi()?.current?.ref;
-    if (typeof fn === 'function') return fn();
+    if (typeof fn === 'function') {
+      try { return await fn(); }
+      catch(error) {
+        // TT 2.2 throws these exact errors on its home/empty-chat screen.
+        // Confirm the empty context as well: a real identity failure in an
+        // opened chat must remain an error, not silently turn into "no chat".
+        const context=this._context(),id=context?.chatId;
+        const empty=context&&Array.isArray(context.chat)&&(id==null||(typeof id==='string'&&!id.trim()));
+        if(empty&&['Failed to resolve active character id','SillyTavern context chatId is empty for character chat','SillyTavern context chatId is empty for group chat'].includes(error?.message))return null;
+        throw new ShiyiError('无法读取 TT 当前聊天标识','CHAT_REF_UNAVAILABLE',{reason:'chat_ref_unavailable',stage:'prepare',causeError:error});
+      }
+    }
     const context = this._context();
     const chatId = typeof context?.getCurrentChatId === 'function' ? context.getCurrentChatId() : context?.chatId ?? context?.chat_id;
     return chatId ? { kind: 'legacy', chatId: String(chatId) } : null;

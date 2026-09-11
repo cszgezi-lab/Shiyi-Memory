@@ -786,7 +786,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id});
   }
   async function retryBatch(id){
+    // A stale retry button can be clicked again before the busy UI paints.
+    // Keep the current operation (and its progress) intact; never start a twin.
+    if(active||opening)return {status:'running',requests:0,level:'warning'};
     assertCurrent();await refresh();const row=state.batches.find(b=>b.id===id);
+    if(active||opening)return {status:'running',requests:0,level:'warning'};
     if(!row)throw new Error('批次不存在');
     if(row.status==='saved')return {status:'saved',requests:0};
     if(!['failed','interrupted','queued'].includes(row.status))throw new Error('此批次当前不能续跑');

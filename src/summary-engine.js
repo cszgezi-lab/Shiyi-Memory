@@ -507,7 +507,7 @@ export class SummaryEngine {
     return { request, context, configuredLimit };
   }
 
-  async process(batch, { signal, relevantRecords = null, onProgress = null, onDiagnostic = () => {}, correctionAuthorizations = [] } = {}) {
+  async process(batch, { signal, relevantRecords = null, onProgress = null, onSourcePlan = null, onDiagnostic = () => {}, correctionAuthorizations = [] } = {}) {
     const emit=(phase,details={},level='info')=>{try{onDiagnostic({phase,level,details:safeLogDetails(details)});}catch{/* log failure must not affect a commit */}};
     const focus = focusGate(batch?.focusSpec);
     if (!focus.confirmed) {
@@ -587,6 +587,10 @@ export class SummaryEngine {
       receipts: clone(checkpoint?.receipts ?? []),
       startedAt: this.now(),
     };
+    // The host validates these exact immutable boundaries before API I/O and
+    // again before commit. It must not independently rerun a different splitter.
+    throwIfAborted(signal);
+    if(onSourcePlan)await onSourcePlan({operationId:batch.operationId,sourceRevision:batch.sourceRevision,scope:clone(batch.scope),range:clone(batch.parentRange),children:children.map(child=>({operationId:child.operationId,sourceRevision:child.sourceRevision,expectedRevision:child.expectedRevision}))});
     emit('plan',{plannedRequests:(children.length-completed.size)*(this.staged?2:1),totalChildren:children.length,completedChildren:completed.size,sourceCount:batch.sourceMessages.length});
     if (completed.size === children.length) return state;
     let recoveryCalls=0, verifyBeforeRequest=null;

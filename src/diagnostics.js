@@ -1,6 +1,12 @@
 // Shared, content-free diagnostics. Never serialize Error.message, API bodies,
 // headers, URLs, user filenames or arbitrary server error objects into exports.
 export const DIAGNOSTIC_REASONS = Object.freeze({
+  chat_ref_unavailable:'宿主未能返回当前聊天标识',
+  source_task_inactive:'原文校验所属任务已停止或被切换',
+  source_plan_mismatch:'待校验请求与本次冻结的请求计划不一致',
+  source_chat_changed:'原文校验期间当前聊天已切换',
+  source_content_changed:'本批聊天正文或来源标识确实发生变化',
+  source_read_failed:'读取原文失败，尚不能判断正文是否变化',
   quality_validation:'校对结果的结构、修改权限或原文证据未通过',
   empty_body:'接口返回空正文', invalid_envelope_json:'接口外层响应不是有效 JSON',
   empty_model_content:'模型回复正文为空', invalid_model_json:'模型正文不是有效 JSON',
