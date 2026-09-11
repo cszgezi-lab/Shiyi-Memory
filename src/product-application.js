@@ -595,13 +595,19 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,resume:continuing,excludeOperations:currentBatch.attempts,requireFloorSummaries:true,onDiagnostic:event=>{
           runtimeLog.record({run:diagnosticRun,task:'summary',...event,details:{...event.details,batchNumber:displayNumber}});
           if(op.token!==epoch||op.signal.aborted)return;
+          if(event.phase==='plan')summaryFeedback('running',`第 ${i+1}/${planned.length} 批 · ${event.details.plannedRequests===0?'已复用完成进度，无需模型请求':event.details.plannedRequests===1?'本批一次总结请求':`本批预计 ${event.details.plannedRequests} 次请求（${core.settings.summaryStaged?'已开启分工':'正文超过单次安全容量'}）`}`,trigger);
+          if(event.phase==='request'&&event.level==='info'){
+            const repairing=['enum_repair','reference_repair','floor_repair','category_repair'].includes(event.details.purpose);
+            const action=repairing?(event.details.purpose==='enum_repair'?'正在自动纠正字段':'正在补全缺失内容'):'正在总结';
+            summaryFeedback('running',`${action} · 第 ${i+1}/${planned.length} 批 · #${event.details.startIndex}–${event.details.endIndex} · 本批第 ${event.details.requestNumber} 次请求${event.details.recoveryCalls?'（恢复重试）':''}${repairing?'，无需重做整批总结':''}`,trigger);
+          }
           if(event.phase==='repair_request')summaryFeedback('running',`正在自动纠正 ${event.details.repairFields} 个字段 · #${item.startIndex}–${item.endIndex}，无需重做整批总结`,trigger);
           if(event.phase==='repair_complete')summaryFeedback('running',`字段纠错通过，正在保存 #${item.startIndex}–${item.endIndex}`,trigger);
           if(event.phase==='partial_repair')summaryFeedback('running',`正在补齐缺失内容 · #${item.startIndex}–${item.endIndex}，不重做整批总结`,trigger);
           if(event.phase==='resume_response')summaryFeedback('running',`已读取上次模型结果 · #${item.startIndex}–${item.endIndex}，继续校验和保存`,trigger);
           if(event.phase==='resume_commit')summaryFeedback('running',`已确认上次提交成功，跳过这部分模型请求`,trigger);
           if(event.phase==='recovery_compact')summaryFeedback('running',`接口响应异常，正在压缩无关历史后重试 · #${item.startIndex}–${item.endIndex}`,trigger);
-          if(event.phase==='retry_wait')summaryFeedback('running',`模型服务暂时异常，稍后自动重试（本批额外恢复 ${event.details.recoveryCalls}/2 次）`,trigger);
+          if(event.phase==='retry_wait')summaryFeedback('running',`接口暂时异常，${Math.max(1,Math.ceil(event.details.retryDelayMs/1000))} 秒后重试当前片段；已保存内容不重做`,trigger);
         }});
         op.check();if(result.status!=='saved')throw Object.assign(new Error(core.state.errorMessage??'总结未保存'),{code:result.failure?.code??result.errorCode??'SUMMARY_RESPONSE_ERROR',details:result.errorDetails});
         await core.updateMemoryControls({operations:{...Object.fromEntries(currentBatch.attempts.map(id=>[id,'deleted'])),[operationId]:'active'}});op.check();

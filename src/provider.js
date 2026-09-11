@@ -1,6 +1,7 @@
 import { ShiyiError, SummaryResponseError } from './errors.js';
 import { clone, decodeUtf8Chunk } from './utils.js';
 import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType,UPSTREAM_CODES } from './diagnostics.js';
+import {scheduleDeadline} from './request-deadline.js';
 
 // Scoped to this plugin's transport function, never a global fetch hook.
 const observers=new WeakMap();
@@ -134,7 +135,7 @@ export class ProviderClient {
   async request(resource, payload, { signal, timeoutMs, headers = {}, method = 'POST', requestId=diagnosticRequestId(), purpose, onDiagnostic } = {}) {
     const started=Date.now(),observer=onDiagnostic??observers.get(this.fetch);let finished=false;
     const emit=(phase,details={},level='info')=>{if(finished)return;try{observer?.({phase,level,details:{requestId,purpose:purpose??resource,modelRole:this.modelRole,elapsedMs:Date.now()-started,...details}});}catch{/* diagnostics never fail a request */}};
-    emit('request',{stage:'prepare',maxTokens:payload?.max_tokens??0});
+    emit('request',{stage:'prepare',maxTokens:payload?.max_tokens??0,timeoutMs:timeoutMs??this.profile.timeoutMs});
     try { return await this.performRequest(resource,payload,{signal,timeoutMs,headers,method,emit}); }
     catch(thrown){const error=thrown instanceof Error?thrown:new ShiyiError('provider threw a non-Error value','PROVIDER_REQUEST_FAILED');error.details={stage:'prepare',...error.details,requestId,purpose:purpose??resource};emit(error.code==='CANCELED'?'canceled':'failed',errorDiagnostics(error),error.code==='CANCELED'?'warning':'error');throw error;}
     finally{finished=true;}
@@ -151,8 +152,9 @@ export class ProviderClient {
     const effectiveTimeout = timeoutMs ?? this.profile.timeoutMs;
     let timer = null;
     let timedOut = false;
+    let timerLagMs = 0;
     if (Number.isFinite(effectiveTimeout) && effectiveTimeout > 0) {
-      timer = setTimeout(() => { timedOut = true; controller.abort('provider request timeout'); }, effectiveTimeout);
+      timer = scheduleDeadline(effectiveTimeout, timing => { timedOut = true; timerLagMs=Math.round(timing.timerLagMs); controller.abort('provider request timeout'); });
     }
     const init = {
       method,
@@ -173,13 +175,13 @@ export class ProviderClient {
       return result;
     } catch (error) {
       if (timedOut) {
-        const timeoutError = new ShiyiError(`${resource} request timed out`, 'TIMEOUT', { timeoutMs: effectiveTimeout,stage:'request',reason:'timeout',causeError:error });
+        const timeoutError = new ShiyiError(`${resource} request timed out`, 'TIMEOUT', { timeoutMs: effectiveTimeout,timerLagMs,stage:'request',reason:'timeout',causeError:error });
         throw timeoutError;
       }
       if(error?.code||error?.name==='AbortError'){if(error?.code==='CANCELED'||error?.name==='AbortError')error.details={...error.details,stage:'request',reason:'canceled'};throw error;}
       throw new ShiyiError('provider network request failed', 'network.request_failed', {...error?.details,stage:'request',reason:'network_unclassified',upstreamDetailsProvided:false,causeError:error});
     } finally {
-      if (timer) clearTimeout(timer);
+      timer?.();
       controller.signal.removeEventListener('abort', onAbort);
       signal?.removeEventListener('abort', relayAbort);
     }

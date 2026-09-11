@@ -1032,7 +1032,7 @@ export function validateSummaryBatch(batch) {
   return { valid: errors.length === 0, errors };
 }
 
-export function splitSummaryBatch(batch, { maxInputUnits = 12000 } = {}) {
+export function splitSummaryBatch(batch, { maxInputUnits = 12000, groups = null } = {}) {
   const check = validateSummaryBatch(batch);
   if (!check.valid) throw new ValidationError('invalid SummaryBatch', check.errors);
   const messages = batch.sourceMessages;
@@ -1062,7 +1062,9 @@ export function splitSummaryBatch(batch, { maxInputUnits = 12000 } = {}) {
     current = [];
     currentUnits = 0;
   };
-  for (const message of messages) {
+  if (groups) {
+    for (const group of groups) { current = group; flush(); }
+  } else for (const message of messages) {
     const units = estimateUnits(message.text);
     if (current.length && currentUnits + units > limit) flush();
     if (units <= limit) {

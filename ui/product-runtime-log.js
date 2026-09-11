@@ -15,6 +15,7 @@ function detailsHTML(entry){
   if(d.requestId)lines.push(['请求编号',d.requestId]);
   if(d.stage)lines.push(['具体阶段',DIAGNOSTIC_STAGES[d.stage]]);
   if(d.summaryStage)lines.push(['分工阶段',d.summaryStage==='narrative'?'事件与逐楼摘要':'人物、知情与关系']);
+  for(const [key,label]of [['plannedRequests','本批预计总结请求（不含重试）'],['totalChildren','本批处理片段数'],['completedChildren','已保存片段数'],['actualWaitMs','实际等待（毫秒）'],['timerLagMs','计时器延迟（毫秒）']])if(d[key]!==undefined)lines.push([label,d[key]]);
   for(const [key,label]of [['sourceInputUnits','正文输入估算'],['historyInputUnits','相关旧记忆估算'],['schemaInputUnits','结构约束估算'],['bridgeInputUnits','衔接上下文估算']])if(d[key]!==undefined)lines.push([label,d[key]]);
   if(d.reason)lines.push(['具体原因',DIAGNOSTIC_REASONS[d.reason]]);
   if(d.qualityReason)lines.push(['校对校验',d.qualityReason]);
@@ -46,7 +47,7 @@ function detailsHTML(entry){
   if(d.normalizedFields!==undefined)lines.push(['本地兼容字段',d.normalizedFields]);
   if(d.defaultedValidityFields)lines.push(['未注明有效期的人设变化',`${d.defaultedValidityFields} 条；保留为期限未确认，不推定永久变化`]);
   if(d.repairFields!==undefined)lines.push([d.purpose==='enum_repair'?'自动纠错字段':'待补全或纠错项',d.repairFields]);
-  if(d.recoveryCalls!==undefined)lines.push(['本批额外恢复调用',`${d.recoveryCalls} / 2`]);
+  if(d.recoveryCalls!==undefined)lines.push(['当前片段额外恢复调用',`${d.recoveryCalls} / 2`]);
   if(d.retryDelayMs!==undefined)lines.push(['重试前等待',`${d.retryDelayMs} 毫秒`]);
   if(d.repairAttempted)lines.push(['自动纠错','已尝试一次，未通过校验；没有强行保存']);
   const issues=safeValidationIssues(d.validationIssues);

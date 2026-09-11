@@ -299,6 +299,8 @@ export function createProductShellController({
   function settingsKey() { return `${PRODUCT_SETTINGS_KEY}-${sha256(state.scope).slice(0, 24)}`; }
 
   function sourceSplitUnits(){
+    // Legacy-safe planning seeds, not paid request boundaries. New jobs pack
+    // these using the complete wire payload; old frozen jobs retain this quota.
     const declared=Math.max(256,Number(state.settings.inputBudgetUnits)||24000);
     const safe=Math.min(declared,SUMMARY_REQUEST_SAFETY_UNITS);
     const planned=Math.floor((safe-estimateUnits(JSON.stringify(SUMMARY_OUTPUT_CONTRACT))-estimateUnits(state.settings.recordingRules)-2000)/2.5);
@@ -550,7 +552,7 @@ export function createProductShellController({
       // mobile storage index).  The source batch remains frozen in memory for
       // this run; a later manual resume can simply start a fresh run.
       try {
-        await repository.savePrivateTask(state.scope,operationId,{batch,splitUnits:safeSplitUnits});
+        await repository.savePrivateTask(state.scope,operationId,{batch,splitUnits:safeSplitUnits,requestPlanning:'wire-v1'});
         privateTaskCheckpoint='saved';
       } catch (error) {
         privateTaskCheckpoint='unavailable';
@@ -567,7 +569,7 @@ export function createProductShellController({
     }
     abortController = preflightAbort;
     activeTask = operationId;
-    state.job = { operationId, focusSpec: clone(focusSpec), startedAt: now(), sourceRevision: batch.sourceRevision, splitUnits:Number(frozen?.splitUnits)||safeSplitUnits, privateTaskCheckpoint };
+    state.job = { operationId, focusSpec: clone(focusSpec), startedAt: now(), sourceRevision: batch.sourceRevision, splitUnits:Number(frozen?.splitUnits)||safeSplitUnits, requestPlanning:frozen?.batch ? frozen.requestPlanning : 'wire-v1', privateTaskCheckpoint };
     state.draft = { range: clone(state.range), focus: normalizedFocus, focusConfirmed: confirmedFocus === true, status: 'running' };
     mark(PRODUCT_SHELL_STATUS.RUNNING);
     state.capabilities.summary = 'running';
@@ -576,7 +578,7 @@ export function createProductShellController({
     summaryRepository.commitBundle=async (...args)=>{validateBundle(args[0]);return repository.commitBundle(...args);};
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations})).records;
     try {
-      engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, isolateIds:true, maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requestSafetyUnits: SUMMARY_REQUEST_SAFETY_UNITS, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
+      engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requestSafetyUnits: SUMMARY_REQUEST_SAFETY_UNITS, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
       const result = await engine.process(batch, { signal: abortController.signal, onDiagnostic });
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
       const snapshot = await repository.readScope(session.scope);

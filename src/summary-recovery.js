@@ -2,11 +2,12 @@ import {clone,throwIfAborted,abortError} from './utils.js';
 import {safeValidationIssues} from './validation-diagnostics.js';
 import {stageContract} from './summary-stages.js';
 import {summaryRecord,summarySources} from './summary-context.js';
+import {scheduleDeadline} from './request-deadline.js';
 
 export const transientSummaryError=e=>['TIMEOUT','network.timeout','network.connect_failed','network.body_interrupted'].includes(e?.code)||[408,429,500,502,503,504].includes(e?.details?.status)||e?.code==='SUMMARY_RESPONSE_ERROR'&&e?.details?.aborted===true;
-// A timeout usually means the payload exceeded the provider's effective
-// context/latency window.  Replaying it three times only turns one bad batch
-// into a several-minute mobile hang.  Keep two retries for quick, transient
+// A timeout alone does not establish a context overflow or a model failure.
+// Replaying it three times can turn one failed request into a long mobile wait.
+// Keep two retries for quick, transient
 // service errors, but allow only one recovery retry for timeout/connectivity
 // failures; the next manual retry can use a smaller range or another model.
 export function recoveryAttemptLimit(error){
@@ -15,9 +16,9 @@ export function recoveryAttemptLimit(error){
 export function recoveryDelay(ms,signal){
   throwIfAborted(signal);
   return new Promise((resolve,reject)=>{
-    const done=()=>{signal?.removeEventListener('abort',cancel);resolve();};
-    const timer=setTimeout(done,ms);
-    const cancel=()=>{clearTimeout(timer);signal?.removeEventListener('abort',cancel);reject(abortError());};
+    const done=timing=>{signal?.removeEventListener('abort',cancel);resolve(timing);};
+    const stopTimer=scheduleDeadline(ms,done);
+    const cancel=()=>{stopTimer();signal?.removeEventListener('abort',cancel);reject(abortError());};
     signal?.addEventListener('abort',cancel,{once:true});
   });
 }

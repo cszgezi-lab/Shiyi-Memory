@@ -18,6 +18,7 @@ import {transientSummaryError,recoveryAttemptLimit,recoveryDelay,repairCategorie
 import { selectSummaryContext, summarySources } from './summary-context.js';
 import { runSummaryStages, isolateDraftIds } from './summary-stages.js';
 import { referenceRepairRequest, applyReferenceRepair } from './summary-reference-repair.js';
+import { planSummaryRequests } from './summary-planner.js';
 
 function responseStatus(response) {
   return Number(response?.status ?? response?.statusCode ?? 200);
@@ -303,21 +304,13 @@ function compactRecoveryContext(request, targetUnits, providerPayload) {
   return { changed: true, beforeUnits, afterUnits, removed };
 }
 
-function recoveryOutputLimit(request, configured) {
-  if (!Number.isSafeInteger(configured) || configured <= 0) return 0;
-  const sourceUnits = Number(request?.extractionContext?.budget?.sections?.source) || 0;
-  // This is only used after a transient failure. It remains a ceiling chosen
-  // by the user, but avoids asking a mobile gateway to reserve 40K output
-  // tokens for a normal 5–10 floor JSON bundle.
-  return Math.min(configured, Math.max(4096, Math.ceil(sourceUnits / 2.5)));
-}
-
 /** P1 one-request-per-segment orchestration with atomic bundle commits. */
 export class SummaryEngine {
-  constructor({ model, supplementModel=null, staged=false, isolateIds=false, repository, maxInputUnits = 12000, maxSourceUnits = null, requestSafetyUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, now = () => Date.now() } = {}) {
+  constructor({ model, supplementModel=null, staged=false, isolateIds=false, packRequests=false, repository, maxInputUnits = 12000, maxSourceUnits = null, requestSafetyUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, now = () => Date.now() } = {}) {
     this.model = modelInvoker(model);
     this.supplementModel = supplementModel ? modelInvoker(supplementModel) : this.model;
     this.staged = staged;
+    this.packRequests = packRequests;
     this.isolateIds = isolateIds || staged;
     if (!repository || typeof repository.commitBundle !== 'function') throw new ValidationError('SummaryEngine requires a MemoryRepository');
     this.repository = repository;
@@ -342,12 +335,176 @@ export class SummaryEngine {
     this.requestLog = [];
   }
 
-  async _existingContext(scope, { sourceMessages = [], bridgeMessages = [], budgetUnits = Infinity, relevantRecords = null } = {}) {
+  async _existingContext(scope, { sourceMessages = [], bridgeMessages = [], budgetUnits = Infinity, relevantRecords = null, authoritativeRecords = null } = {}) {
     if (typeof this.repository.listRecords !== 'function') return { records: {}, authoritativeRecords: {}, ids: new Set(), selection: { usedUnits: 0, candidateCount: 0, omittedCount: 0 } };
-    const authoritativeRecords = await this.repository.listRecords(scope);
+    authoritativeRecords ??= await this.repository.listRecords(scope);
     const ids = contextIds(authoritativeRecords);
     const selection = selectSummaryContext(relevantRecords ?? authoritativeRecords, [...sourceMessages,...bridgeMessages], {budgetUnits:Math.min(budgetUnits,6000),maxRecords:this.maxRelevantRecords});
     return { records: selection.records, authoritativeRecords, ids, selection };
+  }
+
+  async _prepareRequest(child, batch, { relevantRecords = null, authoritativeRecords = null } = {}) {
+    const focusForChild = focusGate(child.focusSpec);
+    const wireFocusSpec = serializableFocusSpec(child.focusSpec);
+    const effectiveRules = child.rules ?? child.focusSpec?.rules ?? child.focusSpec?.focusRules ?? null;
+    const outputContract = clone(SUMMARY_OUTPUT_CONTRACT);
+    const sourceUnits = estimateUnits(JSON.stringify(summarySources(child.sourceMessages)));
+    const bridgeUnits = estimateUnits(JSON.stringify(summarySources(child.bridgeMessages ?? [])));
+    const focusRules = { focusSpec: wireFocusSpec, focus: focusForChild.focus, rules: effectiveRules, configVersion: child.configVersion, rulesVersion: child.rulesVersion };
+    const focusRulesUnits = estimateUnits(JSON.stringify(focusRules));
+    const schemaUnits = estimateUnits(JSON.stringify(outputContract));
+    const outputReserveUnits = Number.isFinite(child.budgets?.outputReserveUnits)
+      ? Math.max(0, child.budgets.outputReserveUnits)
+      : this.outputReserveUnits ?? Math.max(1, Math.ceil((Number(this.maxInputUnits) || 12000) * 0.2));
+    // maxInputUnits is the complete serialized input-request ceiling.
+    // Output reserve is separately reported because it is not part of the
+    // serialized input payload measured immediately before adapter I/O.
+    const explicitInputBudget = Number.isFinite(child.budgets?.inputUnits) && child.budgets.inputUnits >= 0;
+    const declaredLimit = explicitInputBudget ? Number(child.budgets.inputUnits) : (Number(this.maxInputUnits) || 12000);
+    const configuredLimit = Math.min(declaredLimit, this.requestSafetyUnits ?? declaredLimit);
+    const contentQuota = Math.max(0, configuredLimit - sourceUnits - bridgeUnits - focusRulesUnits - schemaUnits - 1500);
+    const context = relevantRecords
+      ? await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages: child.bridgeMessages, budgetUnits: contentQuota, relevantRecords, authoritativeRecords })
+      : await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages: child.bridgeMessages, budgetUnits: contentQuota, authoritativeRecords });
+    const committedRevision = typeof this.repository.getCommittedRevision === 'function' ? await this.repository.getCommittedRevision(child.scope) : child.expectedRevision;
+    const budget = {
+      limitUnits: configuredLimit,
+      declaredLimitUnits: declaredLimit,
+      measurement: 'conservative_estimate_of_serialized_sections',
+      strategy: context.selection.omittedCount > 0 ? 'bounded_partial_context' : 'bounded_context',
+      status: sourceUnits + bridgeUnits + focusRulesUnits > configuredLimit ? 'fixed_sections_exceed_content_quota' : 'within_content_quota',
+      overflowUnits: Math.max(0, sourceUnits + bridgeUnits + focusRulesUnits - configuredLimit),
+      outputReserveUnits,
+      sections: {
+        source: sourceUnits,
+        bridge: bridgeUnits,
+        focusRules: focusRulesUnits,
+        relevantRecords: context.selection.usedUnits,
+        outputSchema: schemaUnits,
+        outputReserve: outputReserveUnits,
+      },
+      usedInputUnits: sourceUnits + bridgeUnits + focusRulesUnits + context.selection.usedUnits,
+      totalReservedUnits: sourceUnits + bridgeUnits + focusRulesUnits + context.selection.usedUnits + schemaUnits + outputReserveUnits,
+        relevantRecordCount: Object.values(context.records).reduce((sum, values) => sum + (Array.isArray(values) ? values.length : 0), 0),
+      relevantCandidateCount: context.selection.candidateCount,
+      omittedRelevantRecords: context.selection.omittedCount,
+      contextTruncated: context.selection.omittedCount > 0,
+      outputBudgetUnits: Number.isFinite(child.budgets?.outputUnits) ? Math.max(0, child.budgets.outputUnits) : 0,
+    };
+    const extractionContext = {
+      kind: 'ExtractionContext',
+      schemaVersion: 1,
+      scope: clone(child.scope),
+      committedRevision,
+      sourceRevision: child.sourceRevision,
+      configVersion: String(child.configVersion),
+      rulesVersion: String(child.rulesVersion),
+      focusVersion: focusFingerprint(child.focusSpec, child.focusVersion),
+      focusSpec: clone(wireFocusSpec),
+      focus: clone(focusForChild),
+      rules: clone(effectiveRules),
+      // Source bodies and selected records live once at request level.
+      // Non-enumerable compatibility aliases are attached below for
+      // function adapters without duplicating provider JSON.
+      coverage: {
+        sourceRefs: sourceRefsFor(child),
+        bridgeRefs: evidenceRefsFor(child),
+        relevantRecordIds: Object.values(context.records).flatMap((values) => (Array.isArray(values) ? values.map((record) => record?.id).filter(Boolean) : [])),
+        relevantRecordCount: context.selection.candidateCount,
+        omittedRelevantRecords: context.selection.omittedCount,
+      },
+      outputContract,
+      budget,
+    };
+    const request = {
+      kind: 'ShiyiSummaryRequest',
+      instructions: makeInstructions(focusForChild, effectiveRules),
+      scope: clone(child.scope),
+      operationId: child.operationId,
+      parentOperationId: batch.operationId,
+      expectedRevision: child.expectedRevision,
+      parentRange: clone(child.parentRange),
+      childRange: clone(child.childRange),
+      sourceMessages: this.staged || this.packRequests ? summarySources(child.sourceMessages) : clone(child.sourceMessages),
+      bridgeMessages: this.staged || this.packRequests ? summarySources(child.bridgeMessages ?? []) : clone(child.bridgeMessages ?? []),
+      relevantRecords: clone(context.records),
+      extractionContext,
+    };
+    // These aliases keep the existing local adapter contract ergonomic;
+    // they are deliberately non-enumerable and therefore absent from the
+    // serialized provider payload.  Each body/schema/context section is
+    // transmitted exactly once.
+    defineModelAlias(request, 'outputContract', extractionContext.outputContract);
+    defineModelAlias(request, 'outputCategories', [...DRAFT_CATEGORIES]);
+    defineModelAlias(request, 'focusSpec', extractionContext.focusSpec);
+    defineModelAlias(request, 'focus', extractionContext.focus);
+    defineModelAlias(request, 'rules', extractionContext.rules);
+    defineModelAlias(request, 'budget', extractionContext.budget);
+    defineModelAlias(extractionContext, 'sourceMessages', request.sourceMessages);
+    defineModelAlias(extractionContext, 'bridgeMessages', request.bridgeMessages);
+    defineModelAlias(extractionContext, 'relevantRecords', request.relevantRecords);
+    // For a provider adapter this is the exact payload that will be sent,
+    // including system/user messages and response format.  Measure that
+    // serialized envelope at the last responsible moment and reject a
+    // declared budget overflow before any adapter call.  The local
+    // estimate is explicitly a bounded planning unit, not provider token
+    // accounting or a claim about tokenizer behavior.
+    // Optional previous memories must fit after the complete wire envelope,
+    // not consume the room reserved for schema and source evidence.
+    const wireUnits=()=>estimateUnits(JSON.stringify(typeof this.model.providerPayload==='function'?this.model.providerPayload(request):request));
+    while(wireUnits()>configuredLimit){
+      const entries=Object.entries(request.relevantRecords).filter(([,rows])=>Array.isArray(rows)&&rows.length);
+      if(!entries.length)break;
+      // Keep source-overlapping evidence ahead of merely optional history.
+      const ids=new Set(child.sourceMessages.map(m=>m.id));
+      const candidates=entries.flatMap(([category,rows])=>rows.map((record,index)=>({category,record,index,score:sourceOverlap(record,ids)?1:0})));
+      candidates.sort((a,b)=>a.score-b.score||b.index-a.index);
+      const removed=candidates[0];request.relevantRecords[removed.category].splice(removed.index,1);
+      if(removed.category==='events')request.relevantRecords.awarenessChanges=(request.relevantRecords.awarenessChanges??[]).filter(a=>a.eventRef!==removed.record.id&&!(a.eventRefs??[]).includes(removed.record.id));
+      const remaining=Object.values(request.relevantRecords).flatMap(rows=>Array.isArray(rows)?rows:[]);
+      extractionContext.coverage.relevantRecordIds=remaining.map(r=>r.id);
+      budget.relevantRecordCount=remaining.length;budget.omittedRelevantRecords=context.selection.candidateCount-remaining.length;
+      extractionContext.coverage.omittedRelevantRecords=budget.omittedRelevantRecords;
+      budget.contextTruncated=true;budget.strategy='bounded_partial_context';
+      budget.sections.relevantRecords=estimateUnits(JSON.stringify(request.relevantRecords));
+      budget.usedInputUnits=sourceUnits+bridgeUnits+focusRulesUnits+budget.sections.relevantRecords;
+      budget.totalReservedUnits=budget.usedInputUnits+schemaUnits+outputReserveUnits;
+    }
+    if (typeof this.model.providerPayload === 'function') {
+      budget.measurement = 'serialized_provider_payload_estimate_units';
+      const providerPayload = this.model.providerPayload(request);
+      const providerPayloadUnits = estimateUnits(JSON.stringify(providerPayload));
+      // Keep the diagnostic local-only. It must not become an enumerable
+      // field in the measured/final provider payload.
+      defineModelAlias(budget, 'providerPayloadUnits', providerPayloadUnits);
+      if (providerPayloadUnits > configuredLimit) {
+        const error = new ValidationError('serialized provider request exceeds input budget', {
+          code: 'INPUT_BUDGET_EXCEEDED',
+          limitUnits: configuredLimit,
+          providerPayloadUnits,
+          outputReserveUnits,
+          sections: budget.sections,
+        });
+        error.code = 'INPUT_BUDGET_EXCEEDED';
+        throw error;
+      }
+    } else {
+      budget.measurement = 'serialized_model_request_estimate_units';
+      const serializedRequestUnits = estimateUnits(JSON.stringify(request));
+      defineModelAlias(budget, 'serializedRequestUnits', serializedRequestUnits);
+      if (serializedRequestUnits > configuredLimit) {
+        const error = new ValidationError('serialized model request exceeds input budget', {
+          code: 'INPUT_BUDGET_EXCEEDED',
+          limitUnits: configuredLimit,
+          serializedRequestUnits,
+          outputReserveUnits,
+          sections: budget.sections,
+        });
+        error.code = 'INPUT_BUDGET_EXCEEDED';
+        throw error;
+      }
+    }
+    return { request, context, configuredLimit };
   }
 
   async process(batch, { signal, relevantRecords = null, onProgress = null, onDiagnostic = () => {}, correctionAuthorizations = [] } = {}) {
@@ -365,7 +522,16 @@ export class SummaryEngine {
         startedAt: this.now(),
       };
     }
-    const children = splitSummaryBatch(batch, { maxInputUnits: this.maxSourceUnits ?? this.maxInputUnits });
+    const checkpoint = typeof this.repository.getCheckpoint === 'function' ? await this.repository.getCheckpoint(batch.operationId, batch.scope) : null;
+    const frozenPlan = this.packRequests ? await this.repository.readPrivateTask?.(batch.scope, batch.operationId) : null;
+    const authoritativeRecords = this.packRequests && this.repository.listRecords ? await this.repository.listRecords(batch.scope) : null;
+    const children = this.packRequests ? await planSummaryRequests(batch, {
+      maxSourceUnits: this.maxSourceUnits ?? this.maxInputUnits,
+      frozen: frozenPlan?.requestPlan,
+      checkpointPlan: checkpoint?.splitPlan,
+      signal,
+      prepare: child => this._prepareRequest(child, batch, { relevantRecords, authoritativeRecords }),
+    }) : splitSummaryBatch(batch, { maxInputUnits: this.maxSourceUnits ?? this.maxInputUnits });
     const splitPlan = children.map((child) => ({
       childIndex: child.childRange.childIndex,
       operationId: child.operationId,
@@ -374,7 +540,6 @@ export class SummaryEngine {
       childRange: child.childRange,
     }));
     const splitPlanFingerprint = sha256(splitPlan);
-    const checkpoint = typeof this.repository.getCheckpoint === 'function' ? await this.repository.getCheckpoint(batch.operationId, batch.scope) : null;
     const checkpointBinding = {
       scopeKey: stableStringify(batch.scope),
       sourceRevision: batch.sourceRevision,
@@ -389,6 +554,10 @@ export class SummaryEngine {
     if (checkpoint) {
       const mismatches = Object.entries(checkpointBinding).filter(([key, expected]) => checkpoint[key] !== undefined && checkpoint[key] !== expected).map(([key, expected]) => ({ key, expected, actual: checkpoint[key] }));
       if (mismatches.length) throw new ScopeConflictError('summary checkpoint binding does not match frozen batch', { mismatches });
+    }
+    if (this.packRequests && !frozenPlan?.requestPlan) {
+      try { await this.repository.savePrivateTask?.(batch.scope, batch.operationId, {requestPlan:{version:1,sourceRevision:batch.sourceRevision,splitPlan}}); }
+      catch (error) { emit('checkpoint_warning',{...errorDiagnostics(error),storageArtifact:'batch-recovery'},'warning'); }
     }
     const completed = new Set(checkpoint?.completedChildIndexes ?? []);
     if ([...completed].some((index) => !Number.isInteger(index) || index < 0 || index >= children.length)) {
@@ -418,6 +587,7 @@ export class SummaryEngine {
       receipts: clone(checkpoint?.receipts ?? []),
       startedAt: this.now(),
     };
+    emit('plan',{plannedRequests:(children.length-completed.size)*(this.staged?2:1),totalChildren:children.length,completedChildren:completed.size,sourceCount:batch.sourceMessages.length});
     if (completed.size === children.length) return state;
     let recoveryCalls=0, verifyBeforeRequest=null;
     const invoke=async(request,baseDetails,{extra=false}={})=>{
@@ -460,7 +630,8 @@ export class SummaryEngine {
           }
           recoveryCalls++;const retryDelayMs=Math.max(recoveryCalls*400,error.details?.retryAfterMs??0);
           emit('retry_wait',{...baseDetails,retryDelayMs,recoveryCalls,code:error.code,status:error.details?.status},'warning');
-          await recoveryDelay(retryDelayMs,signal);
+          const timing=await recoveryDelay(retryDelayMs,signal);
+          emit('wait_complete',{...baseDetails,retryDelayMs,actualWaitMs:Math.round(timing.elapsedMs),timerLagMs:Math.round(timing.timerLagMs)});
         }
       }
     };
@@ -487,166 +658,7 @@ export class SummaryEngine {
             state.receipts.push(receipt);completed.add(childIndex);state.completedChildren=[...completed];emit('resume_commit',baseDetails,'success');continue;
           }
         }
-        const focusForChild = focusGate(child.focusSpec);
-        const wireFocusSpec = serializableFocusSpec(child.focusSpec);
-        const effectiveRules = child.rules ?? child.focusSpec?.rules ?? child.focusSpec?.focusRules ?? null;
-        const outputContract = clone(SUMMARY_OUTPUT_CONTRACT);
-        const sourceUnits = estimateUnits(JSON.stringify(child.sourceMessages));
-        const bridgeUnits = estimateUnits(JSON.stringify(child.bridgeMessages ?? []));
-        const focusRules = { focusSpec: wireFocusSpec, focus: focusForChild.focus, rules: effectiveRules, configVersion: child.configVersion, rulesVersion: child.rulesVersion };
-        const focusRulesUnits = estimateUnits(JSON.stringify(focusRules));
-        const schemaUnits = estimateUnits(JSON.stringify(outputContract));
-        const outputReserveUnits = Number.isFinite(child.budgets?.outputReserveUnits)
-          ? Math.max(0, child.budgets.outputReserveUnits)
-          : this.outputReserveUnits ?? Math.max(1, Math.ceil((Number(this.maxInputUnits) || 12000) * 0.2));
-        // maxInputUnits is the complete serialized input-request ceiling.
-        // Output reserve is separately reported because it is not part of the
-        // serialized input payload measured immediately before adapter I/O.
-        const explicitInputBudget = Number.isFinite(child.budgets?.inputUnits) && child.budgets.inputUnits >= 0;
-        const declaredLimit = explicitInputBudget ? Number(child.budgets.inputUnits) : (Number(this.maxInputUnits) || 12000);
-        const configuredLimit = Math.min(declaredLimit, this.requestSafetyUnits ?? declaredLimit);
-        const contentQuota = Math.max(0, configuredLimit - sourceUnits - bridgeUnits - focusRulesUnits - schemaUnits - 1500);
-        const context = relevantRecords
-          ? await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages: child.bridgeMessages, budgetUnits: contentQuota, relevantRecords })
-          : await this._existingContext(child.scope, { sourceMessages: child.sourceMessages, bridgeMessages: child.bridgeMessages, budgetUnits: contentQuota });
-        const committedRevision = typeof this.repository.getCommittedRevision === 'function' ? await this.repository.getCommittedRevision(child.scope) : child.expectedRevision;
-        const budget = {
-          limitUnits: configuredLimit,
-          declaredLimitUnits: declaredLimit,
-          measurement: 'conservative_estimate_of_serialized_sections',
-          strategy: context.selection.omittedCount > 0 ? 'bounded_partial_context' : 'bounded_context',
-          status: sourceUnits + bridgeUnits + focusRulesUnits > configuredLimit ? 'fixed_sections_exceed_content_quota' : 'within_content_quota',
-          overflowUnits: Math.max(0, sourceUnits + bridgeUnits + focusRulesUnits - configuredLimit),
-          outputReserveUnits,
-          sections: {
-            source: sourceUnits,
-            bridge: bridgeUnits,
-            focusRules: focusRulesUnits,
-            relevantRecords: context.selection.usedUnits,
-            outputSchema: schemaUnits,
-            outputReserve: outputReserveUnits,
-          },
-          usedInputUnits: sourceUnits + bridgeUnits + focusRulesUnits + context.selection.usedUnits,
-          totalReservedUnits: sourceUnits + bridgeUnits + focusRulesUnits + context.selection.usedUnits + schemaUnits + outputReserveUnits,
-            relevantRecordCount: Object.values(context.records).reduce((sum, values) => sum + (Array.isArray(values) ? values.length : 0), 0),
-          relevantCandidateCount: context.selection.candidateCount,
-          omittedRelevantRecords: context.selection.omittedCount,
-          contextTruncated: context.selection.omittedCount > 0,
-          outputBudgetUnits: Number.isFinite(child.budgets?.outputUnits) ? Math.max(0, child.budgets.outputUnits) : 0,
-        };
-        const extractionContext = {
-          kind: 'ExtractionContext',
-          schemaVersion: 1,
-          scope: clone(child.scope),
-          committedRevision,
-          sourceRevision: child.sourceRevision,
-          configVersion: String(child.configVersion),
-          rulesVersion: String(child.rulesVersion),
-          focusVersion: focusFingerprint(child.focusSpec, child.focusVersion),
-          focusSpec: clone(wireFocusSpec),
-          focus: clone(focusForChild),
-          rules: clone(effectiveRules),
-          // Source bodies and selected records live once at request level.
-          // Non-enumerable compatibility aliases are attached below for
-          // function adapters without duplicating provider JSON.
-          coverage: {
-            sourceRefs: sourceRefsFor(child),
-            bridgeRefs: evidenceRefsFor(child),
-            relevantRecordIds: Object.values(context.records).flatMap((values) => (Array.isArray(values) ? values.map((record) => record?.id).filter(Boolean) : [])),
-            relevantRecordCount: context.selection.candidateCount,
-            omittedRelevantRecords: context.selection.omittedCount,
-          },
-          outputContract,
-          budget,
-        };
-        const request = {
-          kind: 'ShiyiSummaryRequest',
-          instructions: makeInstructions(focusForChild, effectiveRules),
-          scope: clone(child.scope),
-          operationId: child.operationId,
-          parentOperationId: batch.operationId,
-          expectedRevision: child.expectedRevision,
-          parentRange: clone(child.parentRange),
-          childRange: clone(child.childRange),
-          sourceMessages: this.staged ? summarySources(child.sourceMessages) : clone(child.sourceMessages),
-          bridgeMessages: this.staged ? summarySources(child.bridgeMessages ?? []) : clone(child.bridgeMessages ?? []),
-          relevantRecords: clone(context.records),
-          extractionContext,
-        };
-        // These aliases keep the existing local adapter contract ergonomic;
-        // they are deliberately non-enumerable and therefore absent from the
-        // serialized provider payload.  Each body/schema/context section is
-        // transmitted exactly once.
-        defineModelAlias(request, 'outputContract', extractionContext.outputContract);
-        defineModelAlias(request, 'outputCategories', [...DRAFT_CATEGORIES]);
-        defineModelAlias(request, 'focusSpec', extractionContext.focusSpec);
-        defineModelAlias(request, 'focus', extractionContext.focus);
-        defineModelAlias(request, 'rules', extractionContext.rules);
-        defineModelAlias(request, 'budget', extractionContext.budget);
-        defineModelAlias(extractionContext, 'sourceMessages', request.sourceMessages);
-        defineModelAlias(extractionContext, 'bridgeMessages', request.bridgeMessages);
-        defineModelAlias(extractionContext, 'relevantRecords', request.relevantRecords);
-        // For a provider adapter this is the exact payload that will be sent,
-        // including system/user messages and response format.  Measure that
-        // serialized envelope at the last responsible moment and reject a
-        // declared budget overflow before any adapter call.  The local
-        // estimate is explicitly a bounded planning unit, not provider token
-        // accounting or a claim about tokenizer behavior.
-        // Optional previous memories must fit after the complete wire envelope,
-        // not consume the room reserved for schema and source evidence.
-        const wireUnits=()=>estimateUnits(JSON.stringify(typeof this.model.providerPayload==='function'?this.model.providerPayload(request):request));
-        while(wireUnits()>configuredLimit){
-          const entries=Object.entries(request.relevantRecords).filter(([,rows])=>Array.isArray(rows)&&rows.length);
-          if(!entries.length)break;
-          // Keep source-overlapping evidence ahead of merely optional history.
-          const ids=new Set(child.sourceMessages.map(m=>m.id));
-          const candidates=entries.flatMap(([category,rows])=>rows.map((record,index)=>({category,record,index,score:sourceOverlap(record,ids)?1:0})));
-          candidates.sort((a,b)=>a.score-b.score||b.index-a.index);
-          const removed=candidates[0];request.relevantRecords[removed.category].splice(removed.index,1);
-          if(removed.category==='events')request.relevantRecords.awarenessChanges=(request.relevantRecords.awarenessChanges??[]).filter(a=>a.eventRef!==removed.record.id&&!(a.eventRefs??[]).includes(removed.record.id));
-          const remaining=Object.values(request.relevantRecords).flatMap(rows=>Array.isArray(rows)?rows:[]);
-          extractionContext.coverage.relevantRecordIds=remaining.map(r=>r.id);
-          budget.relevantRecordCount=remaining.length;budget.omittedRelevantRecords=context.selection.candidateCount-remaining.length;
-          extractionContext.coverage.omittedRelevantRecords=budget.omittedRelevantRecords;
-          budget.contextTruncated=true;budget.strategy='bounded_partial_context';
-          budget.sections.relevantRecords=estimateUnits(JSON.stringify(request.relevantRecords));
-          budget.usedInputUnits=sourceUnits+bridgeUnits+focusRulesUnits+budget.sections.relevantRecords;
-          budget.totalReservedUnits=budget.usedInputUnits+schemaUnits+outputReserveUnits;
-        }
-        if (typeof this.model.providerPayload === 'function') {
-          budget.measurement = 'serialized_provider_payload_estimate_units';
-          const providerPayload = this.model.providerPayload(request);
-          const providerPayloadUnits = estimateUnits(JSON.stringify(providerPayload));
-          // Keep the diagnostic local-only. It must not become an enumerable
-          // field in the measured/final provider payload.
-          defineModelAlias(budget, 'providerPayloadUnits', providerPayloadUnits);
-          if (providerPayloadUnits > configuredLimit) {
-            const error = new ValidationError('serialized provider request exceeds input budget', {
-              code: 'INPUT_BUDGET_EXCEEDED',
-              limitUnits: configuredLimit,
-              providerPayloadUnits,
-              outputReserveUnits,
-              sections: budget.sections,
-            });
-            error.code = 'INPUT_BUDGET_EXCEEDED';
-            throw error;
-          }
-        } else {
-          budget.measurement = 'serialized_model_request_estimate_units';
-          const serializedRequestUnits = estimateUnits(JSON.stringify(request));
-          defineModelAlias(budget, 'serializedRequestUnits', serializedRequestUnits);
-          if (serializedRequestUnits > configuredLimit) {
-            const error = new ValidationError('serialized model request exceeds input budget', {
-              code: 'INPUT_BUDGET_EXCEEDED',
-              limitUnits: configuredLimit,
-              serializedRequestUnits,
-              outputReserveUnits,
-              sections: budget.sections,
-            });
-            error.code = 'INPUT_BUDGET_EXCEEDED';
-            throw error;
-          }
-        }
+        const { request, context, configuredLimit } = await this._prepareRequest(child, batch, { relevantRecords });
         this.requestLog.push({ operationId: child.operationId, parentOperationId: batch.operationId, childIndex, sourceIds: child.sourceMessages.map((message) => message.id) });
         baseDetails.inputLimit=configuredLimit;
         const resultBinding=sha256({sourceRevision:child.sourceRevision,scope:child.scope,rules:child.rules,focus:child.focusSpec,configVersion:child.configVersion});
