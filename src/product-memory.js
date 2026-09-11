@@ -3,8 +3,9 @@ import { estimateUnits, clone, stableStringify } from './utils.js';
 import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './product-dictionary.js';
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel } from './product-narrative.js';
 import { hasStoryTime, storyDateOf } from './temporal.js';
-import { coveredRecallRecord, recallSelectionReason } from './product-recall-packing.js';
+import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates } from './product-recall-packing.js';
 import { factValue, fullCharacterGroups, awarenessSubjectLabel } from './product-person-profiles.js';
+import { compileEventPacket } from './product-event-packet.js';
 
 export const CATEGORY_LABELS = Object.freeze({ events: '事件', awarenessChanges: '知情', entityFactChanges: '人物与事实', relationshipChanges: '关系', personaChanges: '人设变化', commitmentChanges: '约定', performanceHints: '演绎参考', summaryView: '楼层摘要', conflicts: '冲突与疑点', knowledge: '资料' });
 export const readable = value => typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value);
@@ -232,7 +233,8 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const ambiguity=ambiguities.map(a=>`称呼“${a.name}”尚未区分：${a.owners.join('、')}；不得合并这些对象的经历。`).join('\n');
   const packetHeader=[header,ambiguity].filter(Boolean).join('\n');
   let content = packetHeader;
-  const packed = [], omitted = [], portions=[], chosen=[],decisions=[];
+  const packetEntries=[];
+  const packed = [], omitted = [], chosen=[],decisions=[];
   const characterParts=[],characterChosen=[];
   for(const group of characters.groups){
     const parts=[];
@@ -254,6 +256,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   let memoryCount=0;
   let excerpts=0;
   const budget = settings.retrievalBudgetUnits;
+  const nameOnly=nameOnlyRecallCandidates(candidates,focusQuery,lexicon,result.trace.rerank.status==='passed'?(result.trace.rerank.scores??[]).map(s=>s.id):[]);
   for (const item of candidates) {
     const brief=typeof item.record.recallSummary==='string'&&item.record.recallSummary.trim()?item.record.recallSummary:item.record.description;
     // Detail is driven by the original request, not by available space or
@@ -262,22 +265,27 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     const body=excerpt?`${brief}\n相关经过：${excerpt}`:brief;
     const coveredBy=coveredRecallRecord(item.record,body,chosen);
     const decision={id:item.id,title:recordTitle(item.record),category:item.record.category,reason:recallSelectionReason(item),scores:{keyword:item.localScore??null,vector:item.vectorScore??null,fusion:item.fusionScore??null,final:item.score??null}};
+    if(nameOnly.has(item.id)){omitted.push(item.id);decisions.push({...decision,status:'name_only'});continue;}
     if(coveredBy){decisions.push({...decision,status:'duplicate',coveredBy});omitted.push(item.id);continue;}
     let part = renderMemoryCard(item.record, settings,{body,query:focusQuery});
+    const candidatePacket=()=>compileEventPacket([...packetEntries,{record:item.record,text:part}]);
+    let trial=candidatePacket();
     let usedBody=body,usedExcerpt=Boolean(excerpt);
-    if(estimateUnits(`${content}\n\n${part}`)>budget&&excerpt){part=renderMemoryCard(item.record,settings,{body:brief,query:focusQuery});usedBody=brief;usedExcerpt=false;}
-    if (memoryCount >= settings.retrievalLimit || estimateUnits(`${content}\n\n${part}`) > budget) { omitted.push(item.id);decisions.push({...decision,status:memoryCount>=settings.retrievalLimit?'limit':'budget'});continue; }
-    packed.push(item.record);portions.push(part);chosen.push({record:item.record,body:usedBody});content += `\n\n${part}`;
+    if(estimateUnits(`${packetHeader}\n\n${trial.text}`)>budget&&excerpt){part=renderMemoryCard(item.record,settings,{body:brief,query:focusQuery});usedBody=brief;usedExcerpt=false;trial=candidatePacket();}
+    if (memoryCount >= settings.retrievalLimit || estimateUnits(`${packetHeader}\n\n${trial.text}`) > budget) { omitted.push(item.id);decisions.push({...decision,status:memoryCount>=settings.retrievalLimit?'limit':'budget'});continue; }
+    packed.push(item.record);packetEntries.push({record:item.record,text:part});chosen.push({record:item.record,body:usedBody});content = `${packetHeader}\n\n${trial.text}`;
     memoryCount++;
     if(usedExcerpt)excerpts++;
     decisions.push({...decision,status:'selected',detail:usedExcerpt?'excerpt':'brief',detailOmitted:Boolean(excerpt)&&!usedExcerpt});
   }
   const memoryUnits=memoryCount?estimateUnits(content):0;
-  content=packed.length?[packetHeader,characterText,...portions].filter(Boolean).join('\n\n'):'';
+  const eventPacket=compileEventPacket(packetEntries);
+  content=packed.length?[packetHeader,characterText,eventPacket.text].filter(Boolean).join('\n\n'):'';
   result.trace.index = prepared?.stats ?? { status: 'uncached', size: selected.length };
   result.trace.dictionary={matched:matched.terms,ambiguous:lexicon.entries.filter(e=>e.ambiguous.length).length};
   result.trace.characters={mode:'full',people:characters.people,records:characterChosen.length,units:estimateUnits(characterText),truncated:false};
   result.trace.packing={selected:packed.length,memorySelected:memoryCount,memoryUnits,expanded:0,excerpts,brief:memoryCount-excerpts,omitted:omitted.length,duplicates:decisions.filter(d=>d.status==='duplicate').length,decisions};
+  result.trace.packing.eventPacket={groups:eventPacket.groups,groupedRecords:eventPacket.groupedRecords,sharedLines:eventPacket.sharedLines,beforeChars:eventPacket.beforeChars,afterChars:eventPacket.afterChars,savedChars:eventPacket.savedChars};
   result.trace.timings.recallMs = (globalThis.performance?.now?.() ?? Date.now()) - startedAt;
   return { status: 'preview', previewOnly: true, sent: false, degraded: result.trace.degraded, text: content, cards: packed, usedUnits: content ? estimateUnits(content) : 0, omitted, trace: result.trace };
 }

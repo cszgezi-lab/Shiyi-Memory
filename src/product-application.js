@@ -18,7 +18,7 @@ import { productApiProfile, fetchProductModels } from './product-model-list.js';
 import { selectSummaryContext, summaryRecord } from './summary-context.js';
 import { failureText } from './product-feedback.js';
 import { createGlobalSettings } from './product-global-settings.js';
-import { planSummaryRanges, batchRecords, MEMORY_CATEGORIES, editedMemoryFields, batchOperationIds, sameBatchRange, consolidateSummaryBatches, savedBatchOperation } from './product-batches.js';
+import { numberedSummaryBatches, planSummaryRanges, batchRecords, MEMORY_CATEGORIES, editedMemoryFields, batchOperationIds, sameBatchRange, consolidateSummaryBatches, savedBatchOperation } from './product-batches.js';
 import { chatConnectionPayload, inspectChatConnection } from './product-connection-probe.js';
 
 import { createModuleController } from './product-module-controller.js';
@@ -587,11 +587,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         if(!continuing)await core.updateMemoryControls({operations:{[operationId]:'pending'}});op.check();
         const range=await core.readRange({startIndex:item.startIndex,endIndex:item.endIndex});
         op.check();if(range.status!=='ready')throw Object.assign(new Error(core.state.errorMessage??'范围读取失败'),{code:range.errorCode??'HISTORY_UNAVAILABLE'});
+        await readBatches(await core.readMemoryView());
+        const displayNumber=numberedSummaryBatches(state.batches).find(b=>b.id===item.id)?.displayNumber??i+1;
         state.progress=`第 ${i+1}/${planned.length} 批 · 已读取 #${item.startIndex}–${item.endIndex}，共 ${range.count} 楼`;
-        runtimeLog.record({run:diagnosticRun,task:'summary',phase:'range',details:{batchNumber:item.number,startIndex:item.startIndex,endIndex:item.endIndex,sourceCount:range.count}});
-        await readBatches(await core.readMemoryView());summaryFeedback('running',`正在总结 ${state.progress}`,trigger);
+        runtimeLog.record({run:diagnosticRun,task:'summary',phase:'range',details:{batchNumber:displayNumber,startIndex:item.startIndex,endIndex:item.endIndex,sourceCount:range.count}});
+        summaryFeedback('running',`正在总结 ${state.progress}`,trigger);
         const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,resume:continuing,excludeOperations:currentBatch.attempts,requireFloorSummaries:true,onDiagnostic:event=>{
-          runtimeLog.record({run:diagnosticRun,task:'summary',...event,details:{...event.details,batchNumber:item.number}});
+          runtimeLog.record({run:diagnosticRun,task:'summary',...event,details:{...event.details,batchNumber:displayNumber}});
           if(op.token!==epoch||op.signal.aborted)return;
           if(event.phase==='repair_request')summaryFeedback('running',`正在自动纠正 ${event.details.repairFields} 个字段 · #${item.startIndex}–${item.endIndex}，无需重做整批总结`,trigger);
           if(event.phase==='repair_complete')summaryFeedback('running',`字段纠错通过，正在保存 #${item.startIndex}–${item.endIndex}`,trigger);

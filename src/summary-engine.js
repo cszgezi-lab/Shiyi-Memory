@@ -314,10 +314,11 @@ function recoveryOutputLimit(request, configured) {
 
 /** P1 one-request-per-segment orchestration with atomic bundle commits. */
 export class SummaryEngine {
-  constructor({ model, supplementModel=null, staged=false, repository, maxInputUnits = 12000, maxSourceUnits = null, requestSafetyUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, now = () => Date.now() } = {}) {
+  constructor({ model, supplementModel=null, staged=false, isolateIds=false, repository, maxInputUnits = 12000, maxSourceUnits = null, requestSafetyUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, now = () => Date.now() } = {}) {
     this.model = modelInvoker(model);
     this.supplementModel = supplementModel ? modelInvoker(supplementModel) : this.model;
     this.staged = staged;
+    this.isolateIds = isolateIds || staged;
     if (!repository || typeof repository.commitBundle !== 'function') throw new ValidationError('SummaryEngine requires a MemoryRepository');
     this.repository = repository;
     // maxInputUnits is the complete serialized-request ceiling. A caller
@@ -466,7 +467,7 @@ export class SummaryEngine {
     for (const child of children) {
       const childIndex = child.childRange.childIndex;
       if (completed.has(childIndex)) continue;
-      verifyBeforeRequest=this.staged&&typeof this.repository.verifySourceRevision==='function'?async()=>{
+      verifyBeforeRequest=this.isolateIds&&typeof this.repository.verifySourceRevision==='function'?async()=>{
         const actual=await this.repository.verifySourceRevision({scope:clone(child.scope),bundle:child});
         if(actual!==child.sourceRevision)throw new ShiyiError('聊天或正文已变化，后续阶段未调用','SOURCE_INVALIDATED');
       }:null;
@@ -700,7 +701,7 @@ export class SummaryEngine {
         ensureAllCategories(output);
         phase='validate';
         const sourceRefs = sourceRefsFor(child);
-        const bindOutput = value => bindDraftBundle(this.staged ? isolateDraftIds(value,child.scope,child.operationId,request.relevantRecords.events) : value, {
+        const bindOutput = value => bindDraftBundle(this.isolateIds ? isolateDraftIds(value,child.scope,child.operationId,request.relevantRecords.events) : value, {
           scope: child.scope,
           operationId: child.operationId,
           expectedRevision: child.expectedRevision,

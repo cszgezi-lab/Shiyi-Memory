@@ -7,6 +7,9 @@ export const NARRATIVE_CATEGORIES=['events','summaryView','coverage'];
 export const DETAIL_CATEGORIES=DRAFT_CATEGORIES.filter(k=>!['events','summaryView'].includes(k));
 
 export function isolateDraftIds(output, scope, operationId, existingEvents=[]){
+  // Preserve malformed shapes for the authoritative validator and its exact
+  // field diagnostics; ID binding must not turn them into a generic TypeError.
+  if(!output||typeof output!=='object'||Array.isArray(output))return clone(output);
   const result=clone(output),map=new Map(),eventMap=new Map(),priorIds=new Set(existingEvents.map(e=>e.id)),prefix=`tmp-${sha256([scope,operationId]).slice(0,16)}-`;
   for(const category of DRAFT_CATEGORIES){
     if(category==='coverage'||!Array.isArray(result[category]))continue;
@@ -21,6 +24,7 @@ export function isolateDraftIds(output, scope, operationId, existingEvents=[]){
   for(const category of DRAFT_CATEGORIES){
     if(!Array.isArray(result[category]))continue;
     for(const row of result[category]){
+      if(!row||typeof row!=='object'||Array.isArray(row))continue;
       for(const key of ['eventRef','eventId','sourceEventId'])if(eventMap.has(row[key]))row[key]=eventMap.get(row[key]);
       for(const key of ['recordRef','recordId'])if(map.has(row[key]))row[key]=map.get(row[key]);
       if(!priorIds.has(row.mergeInto)&&eventMap.has(row.mergeInto))row.mergeInto=eventMap.get(row.mergeInto);

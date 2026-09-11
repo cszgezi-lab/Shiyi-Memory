@@ -5,13 +5,13 @@ export const button = (action, label, primary = false) => `<button type="button"
 export const field = (label, input) => `<label class="sy-field"><span>${label}</span>${input}</label>`;
 const names = { base:'自动补接口路径', exact:'完整地址（不补路径）', none:'无需 Key', bearer:'标准 Key（默认）', 'api-key':'x-api-key（服务商要求时）', inherit:'沿用记录偏好', ask_manual:'手动总结时填写', ask_every:'每次总结前填写', disabled:'关闭', broadcast:'各类别均衡召回', leader_only:'仅指定通道', original:'原创', fanfiction:'同人', system:'系统', user:'用户', start:'请求开头', before_last:'最后一条消息前' };
 const copy = {
-  summaryStaged:['分工总结','先整理事件与逐楼摘要，再整理人物、知情和关系。已完成阶段会暂存，失败可续跑。'],
+  summaryStaged:['两阶段分工（可选）','关闭时一次请求整理全部模块；开启后每个内部片段通常两次请求，可分配不同模型。失败按已有结果续跑。'],
   supplementFollowSummary:['沿用总结连接','共用地址和 Key；下方仍可单独选择辅助模型，留空时也沿用总结模型。'],
-  autoQualityEnabled:['总结后校对缺项与矛盾','发现候选问题时用辅助整理模型核对原文。失败可单独重试，新总结优先运行。'],
+  autoQualityEnabled:['自动追加内容校对','每组疑点会额外调用一次模型。关闭时保留疑点，可手动校对。'],
   messageCount:['默认总结楼数','手动总结的初始值；本次以范围选择中的输入为准。'],
   autoSummaryEnabled:['自动总结状态','启用和暂停只影响自动总结。'],
   autoKeepRecent:['保留最近多少楼不总结','给重生成和修改留出空间；只影响自动总结。'],
-  autoMergeEnabled:['总结后自动合并','使用辅助整理模型核对候选事件；合并失败不影响已保存总结。每次最多处理 10 对，剩余可在事件合并中继续。'],
+  autoMergeEnabled:['自动追加合并核对','每对候选额外调用一次模型，单次最多 10 对。关闭时仍保留候选和批内合并，可手动处理。'],
   autoSummaryEvery:['自动总结每批楼数','从连续已完成位置的下一楼开始。'],
   recordingRules:['长期记录偏好','告诉总结模型哪些内容值得记住。'],
   focusMode:['总结侧重点','手动总结时可以临时补充要求。'],
@@ -81,7 +81,7 @@ export const SETTING_GROUPS = Object.freeze({
 });
 export function settingsSection(kind) {
   const keys = SETTING_GROUPS[kind];
-  if (kind === 'recording') return card('共同记录偏好', fields(['recordingRules','focusMode','summaryStaged','autoMergeEnabled','autoQualityEnabled']) + advanced('总结高级设置',['messageCount','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize']));
+  if (kind === 'recording') return card('共同记录偏好', button('per-call-mode','按次计费：减少额外调用')+'<p class="sy-help">一次主总结处理全部模块；长正文拆段、失败补救另计。下方可选额外分工与校对。</p>'+fields(['recordingRules','focusMode','summaryStaged','autoMergeEnabled','autoQualityEnabled']) + advanced('总结高级设置',['messageCount','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize']));
   if (kind === 'automatic') return card('自动总结',setting('autoSummaryEnabled').replace('<input','<input disabled')+fields(['autoSummaryEvery','autoKeepRecent'])+field('当前聊天从哪楼起算','<input data-auto-start type="number" min="0" value="1">')+'<p class="sy-help">新聊天默认从 #1；需要包含开场白可填 #0。老聊天会接着已连续总结的楼层处理。改起点只改变后续处理范围，不伪造此前的总结。</p><div class="sy-packet" data-auto-progress role="status"></div><div class="sy-actions"><button type="button" data-action="auto-save">保存自动设置</button><button type="button" data-action="auto-inspect">检查进度</button></div><div class="sy-actions"><button type="button" data-action="auto-start">启用自动</button><button type="button" data-action="auto-pause">暂停自动</button><button type="button" data-action="auto-process">处理下一批</button></div>');
   if (kind === 'injection') return card('把记忆交给 AI', fields(keys.slice(0,6)) + advanced('注入位置', keys.slice(6)));
   if (kind === 'vectors') return card('向量索引',fields(keys));

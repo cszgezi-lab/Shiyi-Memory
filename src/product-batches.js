@@ -5,6 +5,16 @@ export const batchOperationIds=b=>[...new Set([b.operationId,b.previousOperation
 export const savedBatchOperation=b=>b.savedOperationId??(b.status==='saved'||b.status==='deleted'&&!b.error?b.operationId:b.previousOperation)??null;
 export const sameBatchRange=(a,b)=>Number.isInteger(a.startIndex)&&Number.isInteger(a.endIndex)&&a.startIndex===b.startIndex&&a.endIndex===b.endIndex;
 
+// Display order is not a persistence/attempt ID. Deleting or retrying a batch
+// must not consume a visible ordinal or change its durable identity.
+export function numberedSummaryBatches(batches){
+  const ordered=batches.map((b,index)=>({...b,_order:index})).sort((a,b)=>
+    (Number.isInteger(a.startIndex)?a.startIndex:Infinity)-(Number.isInteger(b.startIndex)?b.startIndex:Infinity)||
+    (a.endIndex??Infinity)-(b.endIndex??Infinity)||a._order-b._order);
+  let current=0,recycled=0;
+  return ordered.map(({_order,...b})=>({...b,displayNumber:b.status==='deleted'?++recycled:++current}));
+}
+
 // A range is one logical batch. Immutable generations stay in the repository;
 // only the effective generation changes. Never prefer an unfinished attempt.
 export function consolidateSummaryBatches(rows,controls={}){
@@ -26,16 +36,16 @@ export function consolidateSummaryBatches(rows,controls={}){
 export function pageSummaryBatches(batches,{query='',status='active',page=1,pageSize=10}={}) {
   const size=[10,20,50].includes(Number(pageSize))?Number(pageSize):10;
   const term=String(query).trim(),range=/^#?(\d+)\s*[-–~至]\s*#?(\d+)$/.exec(term),floor=/^#(\d+)$/.exec(term),number=/^第?\s*(\d+)\s*批$/.exec(term);
-  const selected=[...batches].reverse().filter(b=>{
+  const selected=numberedSummaryBatches(batches).reverse().filter(b=>{
     if(status==='active'&&b.status==='deleted')return false;
     if(status==='failed'&&!['failed','interrupted'].includes(b.status))return false;
     if(status==='pending'&&!['running','queued'].includes(b.status))return false;
     if(['saved','deleted'].includes(status)&&b.status!==status)return false;
     if(!term)return true;
-    if(number)return b.number===Number(number[1]);
+    if(number)return b.displayNumber===Number(number[1]);
     if(floor)return Number.isInteger(b.startIndex)&&b.startIndex<=Number(floor[1])&&b.endIndex>=Number(floor[1]);
     if(range)return Number.isInteger(b.startIndex)&&b.startIndex<=Number(range[2])&&b.endIndex>=Number(range[1]);
-    return `${b.number} ${b.focus??''} ${b.error??''}`.toLowerCase().includes(term.toLowerCase());
+    return `${b.displayNumber} ${b.focus??''} ${b.error??''}`.toLowerCase().includes(term.toLowerCase());
   });
   const pages=Math.max(1,Math.ceil(selected.length/size)),current=Math.min(pages,Math.max(1,Number.isInteger(Number(page))?Number(page):1));
   const deletedTotal=batches.filter(b=>b.status==='deleted').length;
