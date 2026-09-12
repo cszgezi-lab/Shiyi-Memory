@@ -5,6 +5,24 @@ const key = v => clean(v).toLocaleLowerCase();
 const generic = /^(我|你|他|她|它|的|地|得|了|是|有|在|和|与|及|我们|你们|他们|她们|对方|主角|角色|某人|同学|老师|朋友|i|you|he|she|they)$/i;
 export const termKinds = Object.freeze(['人物','地点','组织','物品','术语']);
 export const validTerm = v => clean(v).length >= 1 && clean(v).length <= 80 && /\p{L}/u.test(clean(v)) && !generic.test(clean(v));
+const regexEscape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export function explicitAliases(name, evidence) {
+  const n = regexEscape(name), out = [];
+  const quoted = `[“「『"']([^”」』"'\\n]{1,24})[”」』"']`;
+  const patterns = [
+    new RegExp(`(?:叫|喊|称呼)${n}\\s*${quoted}`, 'gu'),
+    new RegExp(`${n}(?:又名|别名(?:是|为)?|昵称(?:是|为)?|被称为|也叫|又叫|人称)\\s*${quoted}`, 'gu'),
+    new RegExp(`这是${n}[，,](?:我们|大家)(?:都)?叫[他她]([^，。！？；”」』"\\n]{1,24})`, 'gu'),
+    new RegExp(`${n}(?:又名|别名(?:是|为)?|昵称(?:是|为)?|被称为|也叫|又叫|人称)([^，。！？；“”「」『』"\\n]{1,24})`, 'gu'),
+  ];
+  for (const pattern of patterns) for (const match of String(evidence).matchAll(pattern)) {
+    const prefix = evidence.slice(Math.max(0, match.index - 8), match.index);
+    const alias = clean(match[1]);
+    if (/(?:不要|不能|不再|别|没有|并非|不是)[^，。！？；]{0,4}$/.test(prefix)) continue;
+    if (validTerm(alias) && alias !== name && !/[，。？！：:]|不是|不等于|另一个/.test(alias)) out.push(alias);
+  }
+  return [...new Set(out)];
+}
 export function normalizeTerms(value) {
   if (!Array.isArray(value)) return [];
   return value.slice(0,80).flatMap(raw => {
@@ -15,16 +33,52 @@ export function normalizeTerms(value) {
 }
 export function normalizeTags(value) { return [...new Set((Array.isArray(value)?value:[]).filter(v=>typeof v==='string'&&v.trim().length>=2&&v.trim().length<=40).map(clean))].slice(0,12); }
 
+// A stored, sourced nickname fact is already an explicit owner -> alias
+// assertion. Reuse it for search instead of requiring the model to duplicate
+// it in entities[].aliases. This is a read projection, never an identity merge.
+function profileAliases(record,evidence) {
+  if(!/^(?:昵称|别称|别名|称呼|外号|绰号|alias|aliases|nickname)$/i.test(record.field??record.key??''))return [];
+  // Missing evidence classification is retained as unknown by the summary
+  // adapter. It must not erase an explicit sourced nickname field from the
+  // search dictionary. This is a retrieval hint, not identity/knowledge
+  // authority; the original qualifier, ambiguity and user overrides remain.
+  if(record.epistemicStatus==='inferred'||['retracted','superseded'].includes(record.lifecycleState))return [];
+  if(!(record.sourceRefs??[]).length||!validTerm(record.entity??record.entityId))return [];
+  const value=Object.hasOwn(record,'to')?record.to:Object.hasOwn(record,'value')?record.value:record.newValue;
+  return (Array.isArray(value)?value:[value]).flatMap(value=>{
+    if(typeof value!=='string'||/误称|误认|误传|错误|不是|不叫|不再|不要|不能|仅猜测|疑似|并非|没人|从不|否认|传闻|据说|可能|或许/.test(value))return [];
+    // Parentheses qualify the usage, e.g. “绯雀（朋友使用）”; retain the
+    // original full fact for people to read. Never split a prose sentence.
+    const qualified=clean(value.replace(/[（(][^（）()]*[）)]\s*$/u,''));
+    // The owner is explicit in this sourced nickname field. Accept one simple
+    // reported naming clause ("朋友叫她小夏"), not an arbitrary sentence or a
+    // claim about another named person. This never applies to event narration.
+    const owner=regexEscape(record.entity??record.entityId);
+    const reported=new RegExp(`^(?:[\\p{L}]{1,16}?)?(?:喊|叫|称呼)(?:${owner}|[他她它])(?:为|作)?\\s*(.+)$`,'u').exec(qualified)
+      ?? /^(?:昵称|外号|绰号|别称|别名)(?:是|为)\s*(.+)$/u.exec(qualified);
+    if(!reported&&/(?:喊|叫|称呼|昵称是|外号是|绰号是)/u.test(qualified))return [];
+    const alias=clean((reported?.[1]??qualified).replace(/^[“「『"']|[”」』"']$/gu,''));
+    if(!validTerm(alias)||!String(evidence).includes(alias)||/[，。！？；：\n]/.test(alias))return [];
+    return [alias];
+  });
+}
+
 // Search-only shorthand. It never merges people or grants knowledge. Require
 // an independent occurrence, reject familial compounds and retain ambiguity.
 export function enrichRetrievalMetadata(record,evidence='',knownNames=[]){
-  const entities=normalizeTerms(record.entities),people=[...new Set([...knownNames,...entities.filter(t=>t.kind==='人物').map(t=>t.name)])];
+  const entities=normalizeTerms(record.entities),aliases=profileAliases(record,evidence);
+  if(aliases.length){
+    const name=record.entity??record.entityId;let term=entities.find(t=>t.name===name);
+    if(!term){term={name,kind:'人物',aliases:[],indexWords:[]};entities.push(term);}
+    term.aliases=[...new Set([...term.aliases,...aliases])];
+  }
+  const people=[...new Set([...knownNames,...entities.filter(t=>t.kind==='人物').map(t=>t.name)])];
   let mentions=String(evidence);
   for(const name of [...people].sort((a,b)=>b.length-a.length))mentions=mentions.split(name).join(' ');
   const standalone=(word,title=false)=>{let i=mentions.indexOf(word);while(i>=0){const after=mentions.slice(i+word.length).trimStart();if(!/^(?:母亲|父亲|妈妈|爸爸|姐姐|妹妹|哥哥|弟弟|家族|一家|的母|的父)/.test(after)&&(title||/^(?:说|问|答|道|点头|摇头|挥手|听|看向|望|低头|抬头|走|回|接|递|笑|叹|解释|表示|介绍|就读|住在|同意|拒绝|向|对|将|把|让|被|和|与|却|仍|也|则|拿|松|感到|神情|脸|耳|轻|朝|的(?:家|学校|性格|态度|名字|住址)|[：:“「『])/.test(after)))return true;i=mentions.indexOf(word,i+word.length);}return false;};
   for(const term of entities){
     if(term.kind!=='人物')continue;
-    const inferred=[];
+    const inferred=explicitAliases(term.name, String(evidence));
     if(/^[\u3400-\u9fff]{3,8}$/.test(term.name)){
       // A suffix must occur separately in this evidence, not just within the name.
       for(let n=1;n<term.name.length;n++){const alias=term.name.slice(n);if(alias.length>=2&&standalone(alias))inferred.push(alias);}
@@ -70,7 +124,7 @@ export function buildDictionary(cards=[],{aliases='',automatic=true}={}) {
   for(const term of words.values())if(!term.disabled)for(const name of [term.name,...term.aliases]){const set=owners.get(key(name))??new Set();set.add(key(term.name));owners.set(key(name),set);}
   return {entries:[...words.values()].map(term=>({...term,ambiguous:[term.name,...term.aliases].filter(a=>(owners.get(key(a))?.size??0)>1)})).sort((a,b)=>a.name.localeCompare(b.name,'zh-CN')),tags:[...tagSources].map(([name,ids])=>({name,count:ids.size})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name,'zh-CN'))};
 }
-export function dictionaryQuery(query,dictionary,{entityLimit=12}={}) {
+export function dictionaryQuery(query,dictionary,{entityLimit=12,expandTopics=true}={}) {
   const original=String(query??''),text=key(original),hits=[];
   for(const entry of dictionary.entries??[])if(!entry.disabled)for(const name of [entry.name,...entry.aliases]){
     if(entry.ambiguous?.some(a=>key(a)===key(name)))continue;
@@ -84,7 +138,7 @@ export function dictionaryQuery(query,dictionary,{entityLimit=12}={}) {
   const related=(dictionary.entries??[]).filter(e=>!e.disabled&&(e.indexWords??[]).some(word=>text.includes(key(word)))).slice(0,8);
   // Topic->name expansion is search-only. It must not assert that this person
   // is present, nor enter the forced identity lane.
-  const expansion=[...new Set([...matched,...related].flatMap(e=>[e.name,...e.aliases.filter(a=>!e.ambiguous.includes(a)),...(e.indexWords??[])]))].slice(0,32);
+  const expansion=[...new Set([...matched,...related].flatMap(e=>[e.name,...e.aliases.filter(a=>!e.ambiguous.includes(a)),...(e.indexWords??[]).filter(w=>expandTopics||text.includes(key(w)))]))].slice(0,32);
   const expanded=[original,...expansion].join(' ');
   const ambiguousNames=[...new Set((dictionary.entries??[]).filter(e=>!e.disabled).flatMap(e=>e.ambiguous??[]))].filter(n=>text.includes(key(n)));
   const ambiguities=ambiguousNames.map(name=>({name,owners:(dictionary.entries??[]).filter(e=>!e.disabled&&[e.name,...e.aliases].some(n=>key(n)===key(name))).map(e=>e.name)}));

@@ -12,6 +12,7 @@ export const PRODUCT_SETTINGS_VERSION = 1;
 
 const DEFINITIONS = [
   { key:'summaryStaged', label:'分工总结', defaultValue:false, type:'boolean', consumers:['SummaryEngine'] },
+  { key:'summaryReviewEnabled', label:'主总结＋原文复核（两次）', defaultValue:false, type:'boolean', consumers:['SummaryEngine'] },
   { key:'supplementFollowSummary', label:'辅助整理沿用总结模型', defaultValue:true, type:'boolean', consumers:['ProductApplication.supplement'] },
   { key:'supplementEndpoint', label:'辅助整理 API 地址', defaultValue:'', type:'string', maxLength:2048, consumers:['ProductApplication.supplement'] },
   { key:'supplementModel', label:'辅助整理模型', defaultValue:'', type:'string', maxLength:240, consumers:['ProductApplication.supplement'] },
@@ -21,8 +22,10 @@ const DEFINITIONS = [
   { key: 'messageCount', label: '最近消息数', defaultValue: 8, type: 'integer', min: 1, max: 200, consumers: ['ProductShellController.readRange'] },
   { key: 'autoMergeEnabled', label: '总结后自动核对合并', defaultValue: false, type: 'boolean', consumers: ['ProductApplication.processMergeQueue'] },
   { key: 'inputBudgetUnits', label: '总结输入预算', defaultValue: 24000, type: 'integer', min: 256, max: 1000000, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
-  { key: 'outputBudgetUnits', label: '总结回复上限（Token）', defaultValue: 8192, type: 'integer', min: 0, max: 131072, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
+  { key: 'outputBudgetUnits', label: '总结回复上限（Token）', defaultValue: 24576, type: 'integer', min: 0, max: 131072, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },
   { key: 'deadlineMs', label: '请求截止时间', defaultValue: 120000, type: 'integer', min: 100, max: 600000, consumers: ['ProductShellController.transport', 'ProviderClient'] },
+  { key: 'summaryDeadlineMs', label: '后台总结与复核超时', defaultValue: 300000, type: 'integer', min: 1000, max: 600000, consumers: ['ProductShellController.transport', 'ProductApplication.summary', 'ProductApplication.supplement'] },
+  { key:'summaryStreaming', label:'总结流式接收', defaultValue:false, type:'boolean', consumers:['SummaryEngine','ProviderClient'] },
   { key: 'focusMode', label: '侧重点确认方式', defaultValue: 'ask_manual', type: 'enum', values: ['inherit', 'ask_manual', 'ask_every'], consumers: ['ProductShellController.startSummary', 'SummaryEngine'] },
 
   { key: 'bm25K1', label: 'BM25 k1', defaultValue: 1.2, type: 'number', min: 0.01, max: 10, consumers: ['ProductShellController.previewRecall', 'LocalBM25Index'] },
@@ -188,7 +191,7 @@ export const PRODUCT_PERSISTED_SETTING_KEYS = PERSISTED_KEYS;
 // Credentials remain runtime-only and are deliberately absent from this list.
 export const PRODUCT_API_SETTING_KEYS = Object.freeze([
   ...['provider','assistant','supplement','embedding','rerank'].flatMap(prefix => ['Endpoint','EndpointMode','Model','AuthMode'].map(suffix => prefix + suffix)),
-  'assistantFollowSummary','supplementFollowSummary','deadlineMs','assistantBudgetUnits','assistantOutputTokens',
+  'assistantFollowSummary','supplementFollowSummary','deadlineMs','summaryDeadlineMs','summaryStreaming','assistantBudgetUnits','assistantOutputTokens',
 ]);
 export function splitProductSettings(patch) {
   const api = {}, chat = {};

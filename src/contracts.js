@@ -1,7 +1,9 @@
 import { ValidationError } from './errors.js';
+import { bindOriginalSource } from './source-recall-evidence.js';
 import { validationDetails, valueType } from './validation-diagnostics.js';
 import { normalizeTerms, normalizeTags,enrichRetrievalMetadata } from './product-dictionary.js';
 import { bindCharacterDetails } from './event-consolidation.js';
+import { normalizeFactValidity } from './memory-evidence.js';
 import {
   asArray,
   asString,
@@ -52,7 +54,7 @@ export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
   requiredFields: Object.freeze(['scope(host-bound)', 'operationId(host-bound)', 'expectedRevision(host-bound)', 'schemaVersion', 'events', 'awarenessChanges', 'entityFactChanges', 'relationshipChanges', 'personaChanges', 'commitmentChanges', 'performanceHints', 'summaryView', 'conflicts', 'coverage']),
   fields: Object.freeze({
     events: Object.freeze(['id', 'title', 'description', 'recallSummary', 'participants', 'location', 'temporal', 'sourceRefs', 'subject', 'action', 'object', 'state', 'epistemicStatus', 'perspective', 'mergeInto(optional)', 'keyDialogues(optional)', 'viewpoints(optional)']),
-    awarenessChanges: Object.freeze(['id', 'eventRef|eventRefs', 'actorId|person|audience', 'knowledge|fact|content', 'status', 'via', 'learnedAt', 'sourceRefs']),
+    awarenessChanges: Object.freeze(['id', 'eventRef|eventRefs', 'actorId|person|audience', 'knowledge|fact|content', 'description(optional)', 'status', 'via', 'learnedAt', 'sourceRefs']),
     entityFactChanges: Object.freeze(['id', 'entity|entityId', 'field|key', 'to|value|newValue', 'fieldLabel(optional)', 'temporal(optional)', 'validFrom(optional)', 'validUntil(optional)', 'epistemicStatus', 'sourceRefs']),
     relationshipChanges: Object.freeze(['id', 'from|subject', 'to|object', 'description', 'evidenceKind', 'eventRefs(optional)', 'temporal(optional)', 'epistemicStatus', 'sourceRefs']),
     personaChanges: Object.freeze(['id', 'subject|person|entity', 'description', 'aspect|field|key', 'object|objectRef', 'context', 'scope', 'expiresAt|validUntil|term|duration', 'epistemicStatus', 'sourceRefs']),
@@ -89,8 +91,8 @@ export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
     eventState: Object.freeze(['proposed', 'attempted', 'accepted', 'completed', 'declined', 'canceled']),
     epistemicStatus: Object.freeze(['observed', 'user_asserted', 'character_claim', 'inferred', 'unknown']),
     awarenessStatus: Object.freeze(['known', 'heard', 'suspected', 'mistaken', 'explicitly_unaware']),
-    awarenessVia: Object.freeze(['witnessed', 'heard_in_scene', 'read', 'told', 'background', 'user_confirmed', 'special_ability']),
-    relationEvidenceKind: Object.freeze(['expression', 'response', 'mutual_confirmation', 'boundary', 'shared_experience', 'habit']),
+    awarenessVia: Object.freeze(['witnessed', 'heard_in_scene', 'read', 'told', 'background', 'user_confirmed', 'special_ability', 'unknown']),
+    relationEvidenceKind: Object.freeze(['expression', 'response', 'mutual_confirmation', 'boundary', 'shared_experience', 'habit', 'background']),
     perspective: Object.freeze(['first_person', 'second_person', 'third_person', 'omniscient', 'unknown']),
   }),
 });
@@ -125,6 +127,7 @@ export const AWARENESS_STATUSES = Object.freeze([
 ]);
 
 export const AWARENESS_VIA = Object.freeze([
+  'unknown',
   'witnessed',
   'heard_in_scene',
   'read',
@@ -149,6 +152,7 @@ export const RELATION_EVIDENCE_KINDS = Object.freeze([
   'boundary',
   'shared_experience',
   'habit',
+  'background',
 ]);
 
 export const LIFECYCLE_STATES = Object.freeze([
@@ -493,7 +497,7 @@ export function bindDraftBundle(modelOutput, {
     evidenceBySource.set(ref.sourceId, list);
   }
   const bindEvidence = (record, category, recordIndex) => {
-    const next = clone(record);
+    const next = category === 'entityFactChanges' ? normalizeFactValidity(clone(record)) : clone(record);
     const raw = normalizeSourceRefs(record?.sourceRefs ?? record?.sources ?? []);
     next.sourceRefs = raw.map((ref, index) => {
       const candidates = evidenceBySource.get(ref.sourceId) ?? [];
@@ -517,7 +521,7 @@ export function bindDraftBundle(modelOutput, {
     }
     next.entities=[...terms.values()];
     if(next.tags!==undefined)next.tags=normalizeTags(next.tags);
-    return bindCharacterDetails(enrichRetrievalMetadata(next,evidence),evidence);
+    return bindOriginalSource(bindCharacterDetails(enrichRetrievalMetadata(next,evidence),evidence),category,sourceTexts);
   };
   const bindCategory = category => normalizedCategory(source[category],category).map((record,index)=>bindEvidence(record,category,index));
   const bundle = {
@@ -631,7 +635,7 @@ function checkEventRef(record, field, eventIds, knownRecordIds, invalidEventIds,
   return refs;
 }
 
-function validateAwareness(records, eventIds, knownRecordIds, invalidEventIds, allowedSourceIds, errors) {
+function validateAwareness(records, eventIds, knownRecordIds, invalidEventIds, allowedSourceIds, errors, factIds = new Set()) {
   const ids = new Set();
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
@@ -639,6 +643,7 @@ function validateAwareness(records, eventIds, knownRecordIds, invalidEventIds, a
     const id = recordId(record);
     if (!id) errors.push(`${field}.id must be a non-empty string`); else if (ids.has(id)) errors.push(`${field}.id is duplicated`); else ids.add(id);
     checkEventRef(record, field, eventIds, knownRecordIds, invalidEventIds, errors);
+    if (record.recordRef !== undefined && (typeof record.recordRef !== 'string' || !factIds.has(record.recordRef) && !knownRecordIds.has(record.recordRef))) errors.push(`${field}.recordRef references unknown fact`);
     validateSourceRefs(record, field, allowedSourceIds, errors);
     if (!record.actorId && !record.person && !record.personId && !record.audience) errors.push(`${field} needs an actor/person/audience`);
     if (!record.knowledge && !record.fact && !record.content) errors.push(`${field} needs a knowledge payload`);
@@ -992,7 +997,7 @@ export function validateDraftBundle(bundle, {
   const knownSet = knownRecordIds instanceof Set ? knownRecordIds : new Set(knownRecordIds ?? []);
   const invalidEventIds = new Set();
   const eventIds = validateEvents(value.events ?? [], sourceSet, errors, invalidEventIds, newSourceIds ? new Set(newSourceIds) : null);
-  validateAwareness(value.awarenessChanges ?? [], eventIds, knownSet, invalidEventIds, sourceSet, errors);
+  validateAwareness(value.awarenessChanges ?? [], eventIds, knownSet, invalidEventIds, sourceSet, errors, new Set((value.entityFactChanges ?? []).map(r => r.id)));
   const trustedCorrections = trustedCorrectionIds instanceof Set ? trustedCorrectionIds : new Set(trustedCorrectionIds ?? []);
   validateEntityFacts(value.entityFactChanges ?? [], eventIds, knownSet, invalidEventIds, sourceSet, errors, existingFacts, { enforceCorrectionAuthority, trustedCorrectionIds: trustedCorrections });
   validateRelationships(value.relationshipChanges ?? [], eventIds, knownSet, invalidEventIds, sourceSet, errors);

@@ -1,6 +1,7 @@
 import { clone, stableStringify, sha256 } from './utils.js';
 import { ValidationError } from './errors.js';
 import { compareStoryTimes, preciseStoryTime } from './temporal.js';
+import { hasQuotedEvidence } from './memory-evidence.js';
 
 const unique=values=>[...new Map(values.map(v=>[stableStringify(v),clone(v)])).values()];
 export function mergeEventDetails(previous,next){
@@ -96,7 +97,7 @@ export function resolveEventMerges(bundle,relevantRecords={}, {deferUnresolved=f
 
 export function bindCharacterDetails(record,evidence){
   const result={...record};
-  if(record.keyDialogues!==undefined)result.keyDialogues=(Array.isArray(record.keyDialogues)?record.keyDialogues:[]).filter(q=>q&&typeof q.text==='string'&&q.text.length>0&&q.text.length<=2000&&typeof q.speaker==='string'&&q.speaker.length<=80&&evidence.includes(q.text)&&evidence.includes(q.speaker)).slice(0,8).map(q=>({speaker:q.speaker,text:q.text,...Object.fromEntries(['to','context','meaning'].filter(k=>typeof q[k]==='string'&&q[k].length<=2000).map(k=>[k,q[k]]))}));
+  if(record.keyDialogues!==undefined)result.keyDialogues=(Array.isArray(record.keyDialogues)?record.keyDialogues:[]).filter(q=>q&&typeof q.text==='string'&&q.text.length>0&&q.text.length<=2000&&typeof q.speaker==='string'&&q.speaker.length<=80&&hasQuotedEvidence(evidence,q.text)&&evidence.includes(q.speaker)).slice(0,8).map(q=>({speaker:q.speaker,text:q.text,...Object.fromEntries(['to','context','meaning'].filter(k=>typeof q[k]==='string'&&q[k].length<=2000).map(k=>[k,q[k]]))}));
   if(record.viewpoints!==undefined)result.viewpoints=(Array.isArray(record.viewpoints)?record.viewpoints:[]).filter(v=>v&&typeof v.holder==='string'&&evidence.includes(v.holder)&&typeof v.content==='string'&&v.content.length<=2000).slice(0,8).map(v=>({holder:v.holder,content:v.content,...Object.fromEntries(['target','context','basis'].filter(k=>typeof v[k]==='string'&&v[k].length<=2000).map(k=>[k,v[k]]))}));
   return result;
 }

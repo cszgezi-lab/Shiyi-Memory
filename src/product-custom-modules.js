@@ -1,5 +1,7 @@
 import { clone, sha256, stableStringify } from './utils.js';
 import { narrativeText } from './product-narrative.js';
+import { ValidationError } from './errors.js';
+import { valueType } from './validation-diagnostics.js';
 
 const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
 const secret = /(?:api.?key|token|password|secret|authorization|密码|密钥)/i;
@@ -43,19 +45,27 @@ export function validateModules(list) {
 }
 export const moduleBinding = m => sha256({id:m.id,mode:m.mode,fields:m.fields.map(({id,type,path})=>({id,type,path}))});
 export const activeModules = list => list.filter(m => m.enabled && !m.archived);
+// This wording is part of persisted batch.rules. Keep the generated policy
+// stable so a wording-only upgrade cannot invalidate an already-paid draft.
+// Presentation guidance belongs to the transport contract, not this binding.
 export function moduleRules(list) {
   const definitions = activeModules(list).filter(m => m.mode === 'summary').map(m => ({id:m.id,name:m.name,subject:m.subject,rule:m.description,fields:m.fields.map(f=>({field:moduleField(m.id,f.id),label:f.label,type:f.type}))}));
   return `自定义扩展区块：${JSON.stringify(definitions)}。在同一次总结中，有正文依据时将这些字段写入 entityFactChanges，field 必须使用上述完整标识，entity 使用正文人物，保留 sourceRefs；没有新信息不必生成。所有未列出的 custom: 字段（尤其 MVU/手动字段）禁止生成。不得猜测变量或把记录偏好当成已发生事实。`;
 }
 export function checkModuleBundle(bundle, definitions) {
   const allowed = new Map(activeModules(definitions).filter(m=>m.mode==='summary').flatMap(m=>m.fields.map(f=>[moduleField(m.id,f.id),f])));
-  for (const r of bundle.entityFactChanges??[]) {
+  const issues=[];
+  for (const [index,r] of (bundle.entityFactChanges??[]).entries()) {
     const key = r.field??r.key;
     if (!String(key).startsWith('custom:')) continue;
     const field = allowed.get(key);
-    if (!field) throw new Error('总结试图写入未授权扩展字段或 MVU 只读字段');
-    checkValue(r.to??r.value??r.newValue,field.type);
+    if (!field) {issues.push({path:`entityFactChanges[${index}].field`,reason:'unauthorized_module_field'});continue;}
+    const value=Object.hasOwn(r,'to')?r.to:Object.hasOwn(r,'value')?r.value:r.newValue;
+    try{checkValue(value,field.type);}catch{issues.push({path:`entityFactChanges[${index}].to`,reason:'type_mismatch',expectedType:field.type==='text'?'string':field.type,actualType:valueType(value)});}
   }
+  // All row positions, never the untrusted names/values. Keep the entire draft
+  // uncommitted: silently dropping a protected field would hide a failed task.
+  if(issues.length)throw new ValidationError('扩展字段校验未通过，草稿保留，原记忆未改变',{validationIssueCount:issues.length,validationIssues:issues});
 }
 export function checkValue(value,type,{maxTextLength=12000}={}) {
   if (type === 'number' ? typeof value !== 'number'||!Number.isFinite(value) : type === 'boolean' ? typeof value !== 'boolean' : typeof value !== 'string'||value.length>maxTextLength) throw new Error('记录值与字段类型不匹配');

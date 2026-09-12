@@ -1,4 +1,5 @@
 import { ShiyiError } from './errors.js';
+import { sourceRecallExcerpt, sourceQuote, sourceEvidenceQuery } from './source-recall-evidence.js';
 import { abortError, clone, estimateUnits, normalizeText, stableStringify, throwIfAborted } from './utils.js';
 
 const CJK_RE = /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/u;
@@ -34,6 +35,8 @@ function textOf(record) {
   return values.filter((value) => value !== undefined && value !== null).join(' ');
 }
 
+const localTextOf = record => typeof record?.localSearchText === 'string' ? record.localSearchText : textOf(record);
+
 function entitiesOf(record) {
   const entities = record?.entities ?? record?.event?.entities ?? record?.entityRefs ?? [];
   return Array.isArray(entities) ? entities.map((entity) => typeof entity === 'string' ? entity : entity?.name ?? entity?.id).filter(Boolean).map((value) => normalizeText(value).toLocaleLowerCase()) : [];
@@ -60,7 +63,7 @@ export class LocalBM25Index {
   add(record) {
     const id = candidateId(record, this._nextIndex++);
     if (this.documents.has(id)) this.remove(id);
-    const tokens = tokenizeChinese(textOf(record));
+    const tokens = tokenizeChinese(localTextOf(record));
     const frequencies = new Map();
     for (const token of tokens) frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
     for (const token of frequencies.keys()) {
@@ -105,7 +108,7 @@ export class LocalBM25Index {
   upsert(record) {
     const id = candidateId(record, this._nextIndex);
     const previous = this.documents.get(id);
-    if (!previous || textOf(previous.record) !== textOf(record)) {
+    if (!previous || localTextOf(previous.record) !== localTextOf(record)) {
       this.add(record);
       return previous ? 'reindexed' : 'added';
     }
@@ -191,9 +194,8 @@ async function invokeWithDeadline(fn, args, {
   if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
     timer = setTimeout(() => {
       timedOut = true;
-      controller.abort(`${label} deadline exceeded`);
-      const error = new Error(`${label} timed out`);
-      error.code = 'TIMEOUT';
+      const error = new ShiyiError(`${label} timed out`, 'TIMEOUT', {reason:'timeout',stage:'request',timeoutMs});
+      controller.abort(error);
       rejectTimeout(error);
     }, timeoutMs);
   }
@@ -211,8 +213,7 @@ async function invokeWithDeadline(fn, args, {
   } catch (error) {
     if (signal?.aborted) throw abortError(signal.reason ? String(signal.reason) : undefined);
     if (timedOut || error?.code === 'TIMEOUT') {
-      const timeoutError = new Error(`${label} timed out`);
-      timeoutError.code = 'TIMEOUT';
+      const timeoutError = new ShiyiError(`${label} timed out`, 'TIMEOUT', {reason:'timeout',stage:'request',timeoutMs});
       throw timeoutError;
     }
     throw error;
@@ -261,7 +262,12 @@ async function invokeReranker(reranker, query, candidates, options, signal) {
   const fn = typeof reranker === 'function' ? reranker : reranker.rerank;
   if (typeof fn !== 'function') return { candidates, status: 'disabled', attempted: false, reason: 'no_rerank_function' };
   const maxCandidates = Math.max(1, Math.min(options.maxCandidates ?? candidates.length, candidates.length));
-  const selected = candidates.slice(0, maxCandidates).map((candidate) => ({ id: candidate.id, score: candidate.score, text: textOf(candidate.record) }));
+  const selected = candidates.slice(0, maxCandidates).map(candidate => {
+    const people = [...(options.sourcePersonNames ?? []), ...(candidate.record.participants ?? []), ...(candidate.record.entities ?? []).filter(e => e.kind === '人物').flatMap(e => [e.name, ...(e.aliases ?? [])])];
+    const queryTokens = tokenizeChinese(sourceEvidenceQuery(query, people));
+    const excerpt = sourceRecallExcerpt(candidate.record, queryTokens);
+    return { id: candidate.id, score: candidate.score, text: [textOf(candidate.record), excerpt ? sourceQuote(candidate.record, excerpt) : ''].filter(Boolean).join('\n') };
+  });
   try {
     const raw = await invokeWithDeadline(fn, { query, candidates: selected }, {
       signal,

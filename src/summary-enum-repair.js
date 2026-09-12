@@ -2,7 +2,8 @@ import { SUMMARY_OUTPUT_CONTRACT } from './contracts.js';
 import { clone } from './utils.js';
 
 // Semantic authority stays with the frozen evidence and the full validator.
-// This module can change only enumerated scalar fields, never records or refs.
+// This module changes enumerated scalars and absent metadata, never claims,
+// knowledge status, timestamps already supplied, or source references.
 const enums = SUMMARY_OUTPUT_CONTRACT.enums;
 const common = { epistemicStatus:'epistemicStatus', perspective:'perspective' };
 const fields = {
@@ -26,11 +27,33 @@ const meanings = {
 };
 
 export function normalizeSummaryEnums(output) {
-  const value=clone(output); let normalizedFields=0;
+  const value=clone(output); let normalizedFields=0,unknownEvidenceTypes=0,unknownKnowledgeMetadata=0,unknownEventPerspectives=0,misplacedEvidenceKinds=0;
   for(const [category,mapping] of Object.entries(fields)) {
     if(!Array.isArray(value?.[category]))continue;
     for(const row of value[category]) {
       if(!row||typeof row!=='object'||Array.isArray(row))continue;
+      if(category==='events'&&!Object.hasOwn(row,'perspective')){row.perspective='unknown';unknownEventPerspectives++;}
+      // Missing evidence classification is unknown, never observed or user
+      // confirmed. Keep the sourced statement with that visible qualification;
+      // state, knowledge status, sources and malformed explicit values
+      // still need validation. This does not repair omitted story content.
+      if(['events','entityFactChanges','relationshipChanges','personaChanges','commitmentChanges'].includes(category)&&!Object.hasOwn(row,'epistemicStatus')){
+        row.epistemicStatus='unknown';unknownEvidenceTypes++;
+      }
+      // A relation-evidence label describes the interaction, not whether a
+      // claim is observed/inferred. Do not promote it to observed. Preserve
+      // the sourced content with explicitly unknown truth classification.
+      if(typeof row.epistemicStatus==='string'&&enums.relationEvidenceKind.includes(row.epistemicStatus)&&!enums.epistemicStatus.includes(row.epistemicStatus)){
+        row.epistemicStatus='unknown';misplacedEvidenceKinds++;
+      }
+      // Absence is not an acquisition event. In particular an explicitly
+      // unaware person may have no acquisition channel at all. Retain the
+      // original claim/status and expose missing metadata without inventing
+      // an event time, witness, or person. Explicit invalid values still fail.
+      if(category==='awarenessChanges'){
+        if(!Object.hasOwn(row,'via')){row.via='unknown';unknownKnowledgeMetadata++;}
+        if(!Object.hasOwn(row,'learnedAt')){row.learnedAt=null;unknownKnowledgeMetadata++;}
+      }
       for(const [field,type] of Object.entries(mapping)) {
         // The validator supports knowledgeStatus as a status alias too.
         const key=field==='status'&&row.status==null&&row.knowledgeStatus!=null?'knowledgeStatus':field;
@@ -41,20 +64,38 @@ export function normalizeSummaryEnums(output) {
       }
     }
   }
-  return {output:value,normalizedFields};
+  return {output:value,normalizedFields,unknownEvidenceTypes,unknownKnowledgeMetadata,unknownEventPerspectives,misplacedEvidenceKinds};
 }
 
-/** Missing duration means unknown, not permanent. The full validator still
- * requires a subject, target, context, scope and evidence before any commit. */
+/** Missing duration/context means unspecified, not permanent or universal.
+ * Missing scope is closed to the cited scene, never inferred as a lasting trait.
+ * The full validator still requires a subject, target and valid evidence. */
 export function normalizePersonaValidity(output) {
-  const value=clone(output);let defaultedValidityFields=0;
+  const value=clone(output);let defaultedValidityFields=0,liftedPersonaContexts=0,unknownPersonaContexts=0,restrictedPersonaScopes=0;
   if(Array.isArray(value?.personaChanges))for(const row of value.personaChanges){
     if(!row||typeof row!=='object'||Array.isArray(row))continue;
     if(!['expiresAt','validUntil','term','duration'].some(key=>Object.hasOwn(row,key))){
       row.expiresAt=null;defaultedValidityFields++;
     }
+    // Some providers put the already explicit context on the quoted dialogue.
+    // Lift only one unanimous, fully attributed context for these same people;
+    // never infer it from a description, a different speaker, or a broad scope.
+    const dialogues=row.keyDialogues,subject=row.subject??row.person??row.entity;
+    if(!Object.hasOwn(row,'context')&&typeof subject==='string'&&typeof row.object==='string'&&Array.isArray(dialogues)&&dialogues.length&&dialogues.every(d=>d&&d.speaker===subject&&d.to===row.object&&typeof d.context==='string'&&d.context.trim())){
+      const contexts=new Set(dialogues.map(d=>d.context));
+      if(contexts.size===1){row.context=dialogues[0].context;liftedPersonaContexts++;}
+    }
+    if(!Object.hasOwn(row,'context')){row.context='情境未注明；仅限所列对象与范围，不推定普遍或永久变化';unknownPersonaContexts++;}
+    // This is an application restriction, not a claim about the story. Keep
+    // the original observation and its evidence; do not invent duration,
+    // people or transfer the observation into a permanent character fact.
+    // An explicit empty/invalid value is NOT silently rewritten.
+    if(!Object.hasOwn(row,'scope')){
+      row.scope='适用范围未注明；仅作所列来源场景中针对所列对象的观察，不外推到其他场景或长期人设';
+      restrictedPersonaScopes++;
+    }
   }
-  return {output:value,defaultedValidityFields};
+  return {output:value,defaultedValidityFields,liftedPersonaContexts,unknownPersonaContexts,restrictedPersonaScopes};
 }
 
 function targetFor(bundle,path) {

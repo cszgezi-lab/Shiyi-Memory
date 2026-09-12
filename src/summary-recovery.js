@@ -4,13 +4,24 @@ import {stageContract} from './summary-stages.js';
 import {summaryRecord,summarySources} from './summary-context.js';
 import {scheduleDeadline} from './request-deadline.js';
 
-export const transientSummaryError=e=>['TIMEOUT','network.timeout','network.connect_failed','network.body_interrupted'].includes(e?.code)||[408,429,500,502,503,504].includes(e?.details?.status)||e?.code==='SUMMARY_RESPONSE_ERROR'&&e?.details?.aborted===true;
+export function transientSummaryError(e){
+  if(['insufficient_quota','invalid_api_key','api_key_missing','context_length_exceeded','model_not_found','invalid_request_error','outbound_host_denied'].includes(e?.details?.upstreamCode))return false;
+  // A fully exhausted caller deadline is not a brief service hiccup. Do not
+  // turn a two-minute timeout into another paid two-minute batch automatically.
+  if(e?.code==='TIMEOUT'&&e?.details?.reason==='timeout'&&e.details.timeoutMs>0)return false;
+  if(e?.details?.elapsedMs>=10000)return false;
+  // 429 can mean a daily quota, not a short-lived busy server. Without an
+  // explicit brief Retry-After, repeated paid attempts do not fix it.
+  if(e?.details?.status===429)return e.details.retryAfterMs>0&&e.details.retryAfterMs<=5000;
+  return ['TIMEOUT','network.timeout','network.connect_failed','network.body_interrupted'].includes(e?.code)||[408,500,502,503,504].includes(e?.details?.status)||e?.code==='SUMMARY_RESPONSE_ERROR'&&e?.details?.aborted===true;
+}
 // A timeout alone does not establish a context overflow or a model failure.
 // Replaying it three times can turn one failed request into a long mobile wait.
 // Keep two retries for quick, transient
 // service errors, but allow only one recovery retry for timeout/connectivity
 // failures; the next manual retry can use a smaller range or another model.
 export function recoveryAttemptLimit(error){
+  if(error?.details?.status===429)return 1;
   return ['TIMEOUT','network.timeout','network.connect_failed','network.body_interrupted'].includes(error?.code)||[408,504].includes(error?.details?.status) ? 1 : 2;
 }
 export function recoveryDelay(ms,signal){

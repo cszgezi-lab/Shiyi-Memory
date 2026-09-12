@@ -21,7 +21,7 @@ export function createProductFetch(host, fetchImpl = globalThis.fetch) {
       // This is local native transport, not a separate remote proxy service.
       return fetchImpl.call(host, '/api/backends/chat-completions/generate', {
         method: 'POST', signal: init.signal, headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...payload, stream: false, type: 'quiet', chat_completion_source: 'custom', custom_api_format: 'openai_compat', custom_url: '', reverse_proxy: base, proxy_password: '', custom_include_headers: JSON.stringify(init.headers ?? {}), custom_include_body: JSON.stringify(payload) }),
+        body: JSON.stringify({ ...payload, stream: payload.stream===true, type: 'quiet', chat_completion_source: 'custom', custom_api_format: 'openai_compat', custom_url: '', reverse_proxy: base, proxy_password: '', custom_include_headers: JSON.stringify(init.headers ?? {}), custom_include_body: JSON.stringify(payload) }),
       });
     }
     return fetchImpl.call(host, url, init);

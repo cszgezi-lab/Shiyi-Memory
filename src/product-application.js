@@ -32,7 +32,7 @@ import { sceneRecallQuery } from './product-recall-packing.js';
 import { sceneClockFromMessages } from './temporal.js';
 import { QUALITY_STORE_KEY,QUALITY_PROMPT,memoryQualityIssues,qualityGroups,qualityStatus,qualityEntryCurrent,qualityFingerprint,validateQualityReview,validateQualityReviewPartial,projectQualityRecords } from './product-memory-quality.js';
 import { createInjectionLog } from './product-injection-log.js';
-import { ASSISTANT_SKILLS, assistantSkillCatalog, readAssistantSkill, assistantSettings } from './product-assistant-skills.js';
+import { ASSISTANT_SKILLS, assistantSkillCatalog, readAssistantSkill, assistantSettings,assistantBootstrap } from './product-assistant-skills.js';
 import { MERGE_STORE_KEY, MERGE_JUDGE_PROMPT, mergeJobs, mergeDecision, mergeJudgeInput, validateMergeVote, projectMergedCards, sameMergeSnapshot, eventFingerprint } from './product-event-merge.js';
 
 const PROMPT_KEY = 'shiyi-memory-continuity';
@@ -61,7 +61,11 @@ const ASSISTANT_TOOLS = [
 export function createProductApplication({ host = globalThis, adapter = null, controller = null, fetchImpl = globalThis.fetch, onChange = () => {} } = {}) {
   fetchImpl = createProductFetch(host, fetchImpl);
   let hostAdapter = adapter;
-  let workspace = null, boundScope = null, boundRefKey = null, epoch = 0, active = null, bindings = [], enabled = false;
+  // Session pause is separate from the persisted feature opt-ins. A fresh
+  // session must honor injectionEnabled after passive chat loading, without
+  // requiring an extra panel "open" action. New installs still opt out of
+  // injection and automatic summary; disable() keeps this session paused.
+  let workspace = null, boundScope = null, boundRefKey = null, epoch = 0, active = null, bindings = [], enabled = true;
   let cancelVersion = 0, knowledgeCache = [], opening = false, feedbackSequence = 0;
   let recallRevision = 0;
   let recallSafetyRevision = 0, committedRecall = null;
@@ -80,7 +84,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const keyOrigins={},keyVersions={},keyEdited=new Set();let credentialsLoaded=false;
   const prefixFor=k=>k==='summary'?'provider':k;
   function effectiveKeys(patch={}){const s={...core.settings,...patch};return Object.fromEntries(Object.entries(keys).map(([k,v])=>[k,keyOrigins[k]&&keyOrigins[k]!==credentialOrigin(s[`${prefixFor(k)}Endpoint`])?'':v]));}
-  const core = controller ?? createProductShellController({ host, adapterFactory: h => (hostAdapter ??= new HostAdapter(h)), adapter, fetchImpl, supplementModelFactory:()=>{if(core.settings.supplementFollowSummary&&!core.settings.supplementModel)return null;const c=client('supplement');return {profile:{model:c.profile.model,maxTokens:core.settings.outputBudgetUnits},chatCompletions:(p,o)=>c.chatCompletions(p,o)};}, onChange: () => notify(), runtimeRules: () => `故事时间以对应楼层原文为准；回忆、约定日期与当前场景日期分别记录，不套用全局日期。外部权威状态（只读）：${externalState()}\n${moduleRules(state.modules)}`, shouldInvalidate:reason=>!(reason==='MESSAGE_UPDATED'&&moduleMetadataOnly()), summaryBundleValidator:()=>{const definitions=clone(state.modules);return bundle=>checkModuleBundle(bundle,definitions);} });
+  const core = controller ?? createProductShellController({ host, adapterFactory: h => (hostAdapter ??= new HostAdapter(h)), adapter, fetchImpl, supplementModelFactory:()=>{if(core.settings.supplementFollowSummary&&!core.settings.supplementModel)return null;const c=client('supplement');return {profile:{model:c.profile.model,maxTokens:core.settings.outputBudgetUnits,summaryStreaming:core.settings.summaryStreaming},chatCompletions:(p,o)=>c.chatCompletions(p,o)};}, onChange: () => notify(), runtimeRules: () => `故事时间以对应楼层原文为准；回忆、约定日期与当前场景日期分别记录，不套用全局日期。外部权威状态（只读）：${externalState()}\n${moduleRules(state.modules)}`, shouldInvalidate:reason=>!(reason==='MESSAGE_UPDATED'&&moduleMetadataOnly()), summaryBundleValidator:()=>{const definitions=clone(state.modules);return bundle=>checkModuleBundle(bundle,definitions);} });
   let globalWorkspace,globalLoaded=false,globalLoading=null,assistantActive=false;
   const globalStore=async()=>{
     hostAdapter??=new HostAdapter(host);await hostAdapter.ready?.();
@@ -113,7 +117,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try{
       if(version!==cancelVersion)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
       const result=await fn(run);
-      runtimeLog.record({run,task,phase:'complete',level:result?.level==='warning'?'warning':'success',details:{...details,...(task==='summary'?result?.timings:{}),...(task==='vectors'?{indexedItems:result?.indexed,pendingItems:result?.pending,failedItems:result?.failed,requestNumber:result?.requests}:{}),elapsedMs:Date.now()-started,savedBatches:result?.batches}});
+      runtimeLog.record({run,task,phase:'complete',level:result?.level==='warning'||result?.degraded?'warning':'success',details:{...details,...(task==='summary'?result?.timings:{}),...(task==='recall'?{degraded:result?.degraded,vectorStatus:result?.trace?.vector?.status,rerankStatus:result?.trace?.rerank?.status}:{}),...(task==='vectors'?{indexedItems:result?.indexed,pendingItems:result?.pending,failedItems:result?.failed,requestNumber:result?.requests}:{}),elapsedMs:Date.now()-started,savedBatches:result?.batches}});
       return result;
     }catch(error){
       const canceled=['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error?.code)||error?.name==='AbortError';
@@ -515,7 +519,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try { await loadApiSettings();op.check();const c = client(kind, patch); let result,report={ok:true,connected:true,completionReady:true,level:'success',message:'连接测试成功。'};
       if (kind === 'embedding') { result = await c.embeddings({ model: c.profile.model, input: ['connection check'], encoding_format:'float' },op); embeddingVectors(result,1); }
       else if (kind === 'rerank') { result = await c.rerank({ model: c.profile.model, query: '连接', documents: ['连接测试'], top_n: 1 },op); if (!Array.isArray(result?.results)) throw new Error('服务没有返回重排结果'); }
-      else report=inspectChatConnection(await c.chatCompletions(chatConnectionPayload(c.profile.model),op));
+      else report=inspectChatConnection(await c.chatCompletions(chatConnectionPayload(c.profile.model),{...op,timeoutMs:patch.deadlineMs??core.settings.deadlineMs}));
       op.check(); setMessage(report.message); return { ...report,kind };
     } finally { op.finish(); }
   }
@@ -577,7 +581,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     if(!workspace)throw Object.assign(new Error('当前聊天尚未读取'),{code:'CHAT_REF_UNAVAILABLE'});
     batchSize??=core.settings.summaryBatchSize;
-    const op=begin();let saved=0,currentBatch=null,bookkeepingWarning=false,automaticQualityIds=[];
+    const op=begin();let saved=0,currentBatch=null,bookkeepingWarning=false,automaticQualityIds=[],usedVerification=core.settings.summaryReviewEnabled;
     summaryFeedback('running','正在读取总结范围…',trigger);
     try{
       // Read current source again only inside the same bound chat.
@@ -609,19 +613,22 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         runtimeLog.record({run:diagnosticRun,task:'summary',phase:'range',details:{batchNumber:displayNumber,startIndex:item.startIndex,endIndex:item.endIndex,sourceCount:range.count,...range.readStats}});
         summaryFeedback('running',`正在总结 ${state.progress}`,trigger);
         const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,resume:continuing,excludeOperations:currentBatch.attempts,requireFloorSummaries:true,onDiagnostic:event=>{
+          // A settings edit during the request applies to future work. It must
+          // not append another paid review/merge after a two-pass generation.
+          usedVerification ||= event.details.purpose==='summary_verification';
           if(event.phase==='request'&&event.level==='info')firstRequestAt??=Date.now();
           if(event.phase==='wait_complete')modelMs+=event.details.modelMs??0;
           runtimeLog.record({run:diagnosticRun,task:'summary',...event,details:{...event.details,batchNumber:displayNumber}});
           if(op.token!==epoch||op.signal.aborted)return;
-          if(event.phase==='plan')summaryFeedback('running',`第 ${i+1}/${planned.length} 批 · ${event.details.plannedRequests===0?'已复用完成进度，无需模型请求':event.details.plannedRequests===1?'本批一次总结请求':`本批预计 ${event.details.plannedRequests} 次请求（${core.settings.summaryStaged?'已开启分工':'输入预算或续跑计划'}）`} · 后台处理，可继续聊天`,trigger);
+          if(event.phase==='plan')summaryFeedback('running',`第 ${i+1}/${planned.length} 批 · ${event.details.plannedRequests===0?'已复用完成进度，无需模型请求':event.details.plannedRequests===1?'本批一次总结请求':`本批预计 ${event.details.plannedRequests} 次请求（${core.settings.summaryReviewEnabled?'主总结＋原文复核':core.settings.summaryStaged?'已开启分工':'输入预算或续跑计划'}）`} · 后台处理，可继续聊天`,trigger);
           if(event.phase==='request'&&event.level==='info'){
             const repairing=['enum_repair','reference_repair','floor_repair','category_repair'].includes(event.details.purpose);
-            const action=repairing?(event.details.purpose==='enum_repair'?'正在自动纠正字段':'正在补全缺失内容'):'正在总结';
+            const action=event.details.purpose==='summary_verification'?'正在对照原文补漏纠错':repairing?(event.details.purpose==='enum_repair'?'正在自动纠正字段':'正在补全缺失内容'):'正在总结';
             summaryFeedback('running',`${action} · 第 ${i+1}/${planned.length} 批 · #${event.details.startIndex}–${event.details.endIndex} · 本批第 ${event.details.requestNumber} 次请求${event.details.recoveryCalls?'（恢复重试）':''}${repairing?'，无需重做整批总结':''}`,trigger);
           }
           if(event.phase==='repair_request')summaryFeedback('running',`正在自动纠正 ${event.details.repairFields} 个字段 · #${item.startIndex}–${item.endIndex}，无需重做整批总结`,trigger);
           if(event.phase==='repair_complete')summaryFeedback('running',`字段纠错通过，正在保存 #${item.startIndex}–${item.endIndex}`,trigger);
-          if(event.phase==='partial_repair')summaryFeedback('running',`正在补齐缺失内容 · #${item.startIndex}–${item.endIndex}，不重做整批总结`,trigger);
+          if(event.phase==='partial_repair')summaryFeedback(event.details.purpose==='summary_verification'?'warning':'running',event.details.purpose==='summary_verification'?`已缓存 ${event.details.accepted??0} 项复核改动，${event.details.rejected??0} 项待修复；本批尚未发布到记忆`:`正在补齐缺失内容 · #${item.startIndex}–${item.endIndex}，不重做整批总结`,trigger);
           if(event.phase==='resume_response')summaryFeedback('running',`已读取上次模型结果 · #${item.startIndex}–${item.endIndex}，继续校验和保存`,trigger);
           if(event.phase==='resume_commit')summaryFeedback('running',`已确认上次提交成功，跳过这部分模型请求`,trigger);
           if(event.phase==='recovery_compact')summaryFeedback('running',`接口响应异常，正在压缩无关历史后重试 · #${item.startIndex}–${item.endIndex}`,trigger);
@@ -635,7 +642,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         saved++;state.savedThrough=Math.max(state.savedThrough,item.endIndex);state.stale=false;
         await workspace.write('ui',{savedThrough:state.savedThrough}).catch(error=>{bookkeepingWarning=true;void reportError(error,{task:'storage',stage:'storage'});});await refresh({summaryCommit:true});currentBatch=null;
         publishMs+=Date.now()-publishingAt;
-        if(core.settings.autoQualityEnabled){
+        if(core.settings.autoQualityEnabled&&!usedVerification&&!core.settings.summaryReviewEnabled){
           const batch=state.batches.find(b=>b.operationId===operationId),ids=MEMORY_CATEGORIES.flatMap(k=>batch?.records?.[k]??[]).map(r=>r.id);
           automaticQualityIds.push(...ids);
         }
@@ -643,7 +650,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       // All source-valid summaries are already durable. Merge is a separate
       // task and cannot mark any of these batches as failed or roll them back.
       let mergeWarning=false;
-      if(core.settings.autoMergeEnabled&&(state.merges??[]).some(j=>j.status==='pending')){
+      if(core.settings.autoMergeEnabled&&!usedVerification&&!core.settings.summaryReviewEnabled&&(state.merges??[]).some(j=>j.status==='pending')){
         summaryFeedback('running',`总结已保存 ${saved} 批，正在独立核对事件合并…`,trigger);
         try{const report=await processMergeQueue(op,null,{automatic:true});mergeWarning=report.remaining>0;}
         catch(error){mergeWarning=true;void reportError(error,{task:'merge',stage:'background'});}
@@ -750,7 +757,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           // eligible for the next retry.
           if(error?.code!=='QUALITY_RESPONSE_INVALID')throw error;
           entry=validateQualityReviewPartial(raw,ids,sources,modelOutput,state.memoryControls);
-          runtimeLog.record({run,task:'quality',phase:'partial_repair',level:'warning',details:{requestId,accepted:entry.updates.length+entry.additions.length,rejected:entry.rejected?.length??0}});
+          runtimeLog.record({run,task:'quality',phase:'partial_repair',level:'warning',details:{requestId,accepted:entry.updates.length+entry.additions.length,rejected:entry.rejected?.length??0,qualityRejections:entry.rejected}});
         }
         await core.readQualitySources(targets);op.check();
         corrected++;unresolved+=entry.issues.length+(entry.rejected?.length??0);
@@ -765,7 +772,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       try{await op.workspace.update(QUALITY_STORE_KEY,value=>({...value,[key]:entry}),{});op.check();}
       catch(error){runtimeLog.record({run,task:'quality',phase:'failed',level:'error',details:{...errorDiagnostics(error),requestId}});throw error;}
       runtimeLog.record({run,task:'quality',phase:'commit',level:'success',details:{requestId}});
-      runtimeLog.record({run,task:'quality',phase:'complete',level:entry.status==='failed'||entry.issues?.length?'warning':'success'});
+      runtimeLog.record({run,task:'quality',phase:'complete',level:entry.status==='failed'||entry.issues?.length||entry.rejected?.length?'warning':'success'});
     }
     state.qualityProgress='';await refresh();op.check();await runtimeLog.flush();
     return {corrected,failed,unresolved,level:failed||unresolved?'warning':'success'};
@@ -1208,6 +1215,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         overview=JSON.stringify(next);state.progress=`已归并资料索引 ${reductions} 轮`;notify();
       }
       const messages=[{role:'system',content:system+'\n内置配置规则：'+JSON.stringify(assistantSkillCatalog())+'\n'+readAssistantSkill('start').text+'\n针对用户的问题先用 read_skill 读取对应规则。缺少工具时仅准备方案，不声称执行。'},{role:'system',content:JSON.stringify({documents:manifest,analysisOverview:overview,detailAccess:'read_document；概览不是原文的全部细节'})}];
+      const bootstrap=assistantBootstrap(input,{modules:state.modules,budgetUnits:core.settings.assistantBudgetUnits});
+      if(bootstrap)messages.push({role:'system',content:JSON.stringify(bootstrap)});
       const history=state.history.slice(-24).map(({role,content})=>({role,content}));
       const budget=core.settings.assistantBudgetUnits;
       while(history.length>1&&estimateUnits(JSON.stringify([...messages,...history]))>budget-2500) history.shift();
@@ -1232,6 +1241,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         if(response.content){state.history.push({id:makeId('message'),role:'assistant',content:response.content,at:Date.now()});await historyWrite();op.check();notify();}
         if(!response.tool_calls?.length){setMessage('助手回复已保存');return;}
         messages.push(response);
+        let proposalReady=false;
         for(const call of response.tool_calls){op.check();let result;try{const args=JSON.parse(call.function.arguments??'{}');
           if(call.function.name==='settings')result=assistantSettings(core.settings);
           else if(call.function.name==='read_skill')result=readAssistantSkill(args.id);
@@ -1243,7 +1253,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           else if(call.function.name==='search_memory')result=(workspace?.isCurrent()&&!state.stale?state.cards.filter(card=>recordDescription(card).includes(String(args.query))).slice(0,10):{status:'no_current_chat'});
           else if(call.function.name==='read_document'){const doc=state.documents.find(d=>d.id===args.id);if(!doc||!Number.isInteger(args.chunk)||args.chunk<0||args.chunk>=doc.chunks)throw new Error('资料或段号无效');result={purpose:doc.purpose,...await globalWorkspace.read(`${doc.id}-${args.chunk}`)};}
           else throw new Error('不支持的工具');
+          if(['propose_module','propose_settings'].includes(call.function.name)&&result?.status==='proposal_ready')proposalReady=true;
         }catch(error){void reportError(error,{task:'assistant',stage:'validate'});result={error:error.message};}op.check();messages.push({role:'tool',tool_call_id:call.id,content:JSON.stringify(result)});}
+        // A validated, durably stored proposal already has a complete local
+        // diff/Apply UI. Paying for another model acknowledgement can fail
+        // under RPM limits even though the user's requested result is ready.
+        if(proposalReady){
+          const content=state.proposal?.kind==='module'?'区块方案已准备，请核对后点击应用；尚未修改已保存的区块。':'设置方案已准备，请核对后点击应用；尚未修改已保存的设置。';
+          state.history.push({id:makeId('message'),role:'assistant',content,at:Date.now()});await historyWrite();op.check();setMessage(content);return;
+        }
       }
       setMessage('本次已完成12步，记录已保存；可继续补充要求');
     }catch(error){setMessage(signal.aborted?'助手任务已停止，已有记录保留':`助手未完成：${error?.code??error.message}`);throw error;}

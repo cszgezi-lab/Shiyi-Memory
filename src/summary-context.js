@@ -5,7 +5,7 @@ import { tokenizeChinese } from './retrieval.js';
 // meaningful fields and source locators, not repeated hashes and old revisions.
 export function summaryRecord(record) {
   const result = clone(record);
-  for (const key of ['history','qualityEvidence','sourceFloors','hash','contentHash','bundleHash','operationId','scopeKey','committedRevision','expectedRevision','createdAt','updatedAt']) delete result[key];
+  for (const key of ['history','qualityEvidence','originalSource','localSearchText','sourceFloors','hash','contentHash','bundleHash','operationId','scopeKey','committedRevision','expectedRevision','createdAt','updatedAt']) delete result[key];
   if (Array.isArray(result.sourceRefs)) result.sourceRefs = result.sourceRefs.map(ref => typeof ref === 'string' ? {sourceId:ref} : {sourceId:ref.sourceId, ...(ref.fragmentId ? {fragmentId:ref.fragmentId} : {})});
   return result;
 }

@@ -10,7 +10,7 @@ export function productApiProfile(settings, kind, keys = {}, patch = {}) {
   const prefix = effectiveKind === 'summary' ? 'provider' : effectiveKind;
   return { endpoint: s[`${prefix}Endpoint`], model: kind==='supplement'&&s.supplementFollowSummary?(s.supplementModel||s.providerModel):s[`${prefix}Model`],
     endpointMode: s[`${prefix}EndpointMode`], authMode: s[`${prefix}AuthMode`],
-    apiKey: keys[effectiveKind] ?? '', timeoutMs: s.deadlineMs };
+    apiKey: keys[effectiveKind] ?? '', timeoutMs: ['summary','supplement'].includes(kind)?(s.summaryDeadlineMs??s.deadlineMs):s.deadlineMs };
 }
 
 // Model discovery is a separate GET, never a change to the saved inference URL.

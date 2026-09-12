@@ -16,10 +16,31 @@ function detailsHTML(entry){
   if(d.requestId)lines.push(['请求编号',d.requestId]);
   if(d.stage)lines.push(['具体阶段',DIAGNOSTIC_STAGES[d.stage]]);
   if(d.summaryStage)lines.push(['分工阶段',d.summaryStage==='narrative'?'事件与逐楼摘要':'人物、知情与关系']);
+  if(d.compactFloors!==undefined)lines.push(['一次响应归档',`${d.compactFloors} 楼、${d.compactChanges??0} 项模块记录（本地整理，未新增模型调用）`]);
+  if(d.linkedEventSources)lines.push(['来源补齐',`${d.linkedEventSources} 条事件使用摘要中明确的事件关联（未猜测来源）`]);
+  if(d.unknownEventPerspectives)lines.push(['叙述视角',`${d.unknownEventPerspectives} 条未提供，保留为未知`]);
+  if(d.inferredModuleFormats)lines.push(['格式识别','响应未写格式标记；已按完整九模块结构识别，来源与内容校验不变，未新增模型调用']);
+  if(d.unwrappedSummaryRoots)lines.push(['格式兼容','已展开包住单份完整总结的外层数组；原内容未改，来源校验不变，未新增模型调用']);
+  if(d.unknownKnowledgeMetadata)lines.push(['知情辅助信息未填写',`${d.unknownKnowledgeMetadata} 处获知渠道或时间保留为未注明；知情状态与来源未改，未新增模型调用`]);
+  if(d.liftedPersonaContexts)lines.push(['人物情境兼容',`${d.liftedPersonaContexts} 条采用该记录中已明确的同人同对象台词情境，未推测新内容，未新增模型调用`]);
+  if(d.unknownPersonaContexts)lines.push(['人物情境未填写',`${d.unknownPersonaContexts} 条保留为未注明；只适用于记录中的对象和范围，不扩大为永久人设，未新增模型调用`]);
+  if(d.restrictedPersonaScopes)lines.push(['人设适用范围未填写',`${d.restrictedPersonaScopes} 条仅保留为来源场景中的观察，不外推为长期人设；未新增模型调用`]);
+  if(d.resolvedSourceTextHints)lines.push(['原文片段标注兼容',`${d.resolvedSourceTextHints} 处短语已在指定原楼层内唯一匹配，仍引用该完整楼层；未换楼、未新增模型调用`]);
+  if(d.wholeFloorEventAnnotations)lines.push(['事件来源备注兼容',`${d.wholeFloorEventAnnotations} 处非真实片段的文字备注已改用同一楼层的完整依据；逐楼摘要另行校验，未换楼、未新增模型调用`]);
+  if(d.duplicateEmptyModules)lines.push(['重复空区块兼容',`${d.duplicateEmptyModules} 个重复空区块未覆盖原有内容；保留唯一非空结果，未拼接不同回答、未新增模型调用`]);
+  if(d.misplacedEvidenceKinds)lines.push(['依据分类兼容',`${d.misplacedEvidenceKinds} 处互动类型误填为事实性质；原记录保留，性质标为未确认，不提升为已证实`]);
+  if(d.unwrappedSourceGroups)lines.push(['来源数组兼容',`${d.unwrappedSourceGroups} 处多套一层的来源数组已展开；每条来源仍逐项校验，未丢弃无效引用`]);
+  if(d.unknownEvidenceTypes)lines.push(['证据类型未填写',`${d.unknownEvidenceTypes} 条已保留为未确认，未推定为事实或用户确认；未新增模型调用`]);
   for(const [key,label]of [['plannedRequests','本批预计总结请求（不含重试）'],['totalChildren','本批处理片段数'],['completedChildren','已保存片段数'],['actualWaitMs','实际等待（毫秒）'],['timerLagMs','计时器延迟（毫秒）']])if(d[key]!==undefined)lines.push([label,d[key]]);
   for(const [key,label]of [['sourceInputUnits','正文输入估算'],['historyInputUnits','相关旧记忆估算'],['schemaInputUnits','结构约束估算'],['bridgeInputUnits','衔接上下文估算']])if(d[key]!==undefined)lines.push([label,d[key]]);
   if(d.reason)lines.push(['具体原因',DIAGNOSTIC_REASONS[d.reason]]);
+  if(d.streaming!==undefined)lines.push(['流式接收',d.streaming?'是':'否']);
+  if(d.streamChunks!==undefined)lines.push(['流式片段数',d.streamChunks]);
+  if(d.degraded!==undefined)lines.push(['召回结果',d.degraded?'已使用回退结果；在线召回未全部成功':'未使用故障回退']);
+  for(const [key,label]of [['vectorStatus','向量召回'],['rerankStatus','重排']])if(d[key])lines.push([label,({passed:'成功',disabled:'未启用',fallback:'未完成，使用回退结果',skipped:'未调用'})[d[key]]??'状态未知']);
   if(d.qualityReason)lines.push(['校对校验',d.qualityReason]);
+  for(const [key,label]of [['accepted','通过校验的修改/新增'],['rejected','未通过的校对项'],['rejectedRows','未通过的校对项']])if(d[key]!==undefined)lines.push([label,d[key]]);
+  for(const r of d.qualityRejections??[])lines.push([`${({update:'修改',addition:'新增',issue:'疑点'})[r.kind]}第 ${r.index+1} 项`,r.reason]);
   if(d.upstreamCode)lines.push(['服务错误分类',UPSTREAM_CODES[d.upstreamCode]]);
   if(d.modelRole)lines.push(['模型用途',({summary:'总结模型',supplement:'辅助整理模型',assistant:'配置助手',embedding:'向量模型',rerank:'重排模型'})[d.modelRole]]);
   if(d.errorType)lines.push(['错误类型',d.errorType]);
@@ -34,7 +55,12 @@ function detailsHTML(entry){
   if(d.storageStage)lines.push(['本机存储阶段',({write:'写入存档',read:'读取存档',readback:'写入后的读回',compare:'读回内容比对',decode:'存档完整性校验',unknown:'旧存储接口未报告阶段'})[d.storageStage]??'未识别']);
   if(d.storageArtifact)lines.push(['存档类型',({vector_jobs:'向量续传检查点',vector_index:'已完成向量索引',vector_staging:'重建中的暂存索引',runtime_log:'运行日志',workspace:'插件资料',memory:'故事记忆',checkpoint:'任务进度',credentials:'密钥存储',settings:'设置'})[d.storageArtifact]??'未识别']);
   if(d.startIndex!==undefined)lines.push(['楼层范围',`#${d.startIndex}–${d.endIndex??d.startIndex}`]);
-  if(entry.task==='quality'){
+  if(entry.phase==='review_notes'){
+    if(d.expectedChecks!==undefined)lines.push(['原文检查说明',`${d.reviewedChecks??0}/${d.expectedChecks} 项已返回；这是模型说明数量，不是事实准确率`]);
+    if(d.invalidCheckNotes)lines.push(['重复或无效的说明编号',d.invalidCheckNotes]);
+    lines.push(['复核说明',`${d.received??0}/${d.expected??0} 楼；不代表内容已通过质量验收`]);
+    if(d.expectedPassages!==undefined)lines.push(['分段说明',`${d.reviewedPassages??0}/${d.expectedPassages} 段`]);
+  }else if(entry.task==='quality'){
     if(d.expected!==undefined)lines.push(['待校对记录',d.expected]);
     if(d.received!==undefined)lines.push(['校正或补充',d.received]);
     if(d.invalidRows!==undefined)lines.push(['待确认疑点',d.invalidRows]);

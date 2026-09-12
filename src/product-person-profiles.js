@@ -40,10 +40,20 @@ export function characterRecordSubjects(card) {
  * Aliases select records but never merge the identities of their owners.
  */
 export function fullCharacterGroups(cards,query,dictionary) {
-  const rows=cards.map(card=>({card,subjects:characterRecordSubjects(card)})).filter(r=>r.subjects.length);
+  // Only an explicit non-person classification can remove a fact owner from
+  // full-person injection. Untyped old/DIY owners keep the existing fallback;
+  // a real person classification or person-specific record wins a conflict.
+  // Objects remain ordinary retrievable facts, not discarded memories.
+  const lower=s=>s.toLocaleLowerCase(),nonPeople=new Set(),people=new Set();
+  for(const term of [...cards.flatMap(c=>c.entities??[]),...(dictionary.entries??[])]){
+    if(typeof term?.name!=='string')continue;
+    if(['地点','组织','物品'].includes(term.kind))nonPeople.add(lower(term.name));
+    if(term.kind==='人物')people.add(lower(term.name));
+  }
+  for(const card of cards)if(card.category!=='entityFactChanges')for(const name of characterRecordSubjects(card))people.add(lower(name));
+  const rows=cards.map(card=>({card,subjects:characterRecordSubjects(card).filter(name=>!nonPeople.has(lower(name))||people.has(lower(name)))})).filter(r=>r.subjects.length);
   const names=[...new Set(rows.flatMap(r=>r.subjects))];
   const entries=[...(dictionary.entries??[])];
-  const lower=s=>s.toLocaleLowerCase();
   for(const name of names)if(!entries.some(e=>[e.name,...e.aliases].some(n=>lower(n)===lower(name))))entries.push({name,aliases:[],indexWords:[],kind:'人物',ambiguous:[]});
   // The retrieval query's expansion cap must not truncate a scene's roster.
   const matched=dictionaryQuery(query,{...dictionary,entries},{entityLimit:Infinity});

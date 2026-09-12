@@ -3,6 +3,7 @@ import { CATEGORY_LABELS,recordDescription,readable,renderMemoryCard } from '../
 import { characterProfiles,factValue,factSubject,factKey } from '../src/product-person-profiles.js';
 import { recordTitle,sourceLabel,narrativeText } from '../src/product-narrative.js';
 import { MEMORY_CATEGORIES } from '../src/product-batches.js';
+import { originalSourceText } from '../src/source-recall-evidence.js';
 
 
 import { mountBatchList,batchRecordDescription } from './product-batch-list.js';
@@ -12,7 +13,7 @@ export const memoryDetailLabel=category=>({events:'完整事件 · 起因、经�
 const actions=c=>`<div class="sy-actions"><button type="button" data-edit="${esc(c.id)}">修改</button><button type="button" data-delete="${esc(c.id)}">删除</button><button type="button" data-hide="${esc(c.id)}">不再召回</button></div>`;
 export function memoryListHTML(cards,{settings={},q='',category='all',opened=new Set()}={}){
   const base=cards.filter(c=>!c.customModuleId),profiles=characterProfiles(base),byRecord=new Map(profiles.flatMap(p=>p.records.map(r=>[r.id,p]))),seen=new Set();
-  const matches=c=>`${recordTitle(c)} ${recordDescription(c)} ${(c.tags??[]).join(' ')} ${c.searchText??''}`.toLocaleLowerCase().includes(q.toLocaleLowerCase());
+  const matches=c=>`${recordTitle(c)} ${recordDescription(c)} ${(c.tags??[]).join(' ')} ${c.localSearchText??c.searchText??''}`.toLocaleLowerCase().includes(q.toLocaleLowerCase());
   const rows=[];
   const open=id=>opened.has(id)?'open':'';
   for(const c of base){
@@ -27,7 +28,9 @@ export function memoryListHTML(cards,{settings={},q='',category='all',opened=new
     }
     if(!matches(c))continue;
     const meta=renderMemoryCard(c,settings,{metadataOnly:true,detail:true});
-    rows.push(`<article class="sy-card sy-memory-row"><span class="sy-tag">${CATEGORY_LABELS[c.category]??'记忆'}</span><h4>${esc(recordTitle(c))}</h4><p class="sy-help sy-memory-meta">${esc(sourceLabel(c))}</p>${c.recallSummary?`<p class="sy-narrative sy-memory-brief">${esc(c.recallSummary)}</p>`:''}${c.viewpoints?.length||c.keyDialogues?.length?`<p class="sy-help">人物观念 ${c.viewpoints?.length??0} 条 · 关键台词 ${c.keyDialogues?.length??0} 条</p>`:''}<details data-memory-detail="${esc(c.id)}" ${open(c.id)}><summary>${memoryDetailLabel(c.category)}</summary><div class="sy-packet sy-narrative">${esc(recordDescription(c))}</div>${meta?`<div class="sy-packet sy-help">${esc(meta)}</div>`:''}${c.tags?.length?`<p class="sy-help">检索标签：${esc(c.tags.join('、'))}</p>`:''}</details><details class="sy-record-actions"><summary>操作</summary>${actions(c)}</details></article>`);
+    const original=originalSourceText(c);
+    const originalHTML=original?`<details data-memory-detail="${esc(`original:${c.id}`)}" ${open(`original:${c.id}`)}><summary>查看原文依据</summary><p class="sy-help">总结时保存的本楼原文；不是额外生成的摘要。</p><div class="sy-packet sy-narrative">${esc(original)}</div></details>`:'';
+    rows.push(`<article class="sy-card sy-memory-row"><span class="sy-tag">${CATEGORY_LABELS[c.category]??'记忆'}</span><h4>${esc(recordTitle(c))}</h4><p class="sy-help sy-memory-meta">${esc(sourceLabel(c))}</p>${c.recallSummary?`<p class="sy-narrative sy-memory-brief">${esc(c.recallSummary)}</p>`:''}${c.viewpoints?.length||c.keyDialogues?.length?`<p class="sy-help">人物观念 ${c.viewpoints?.length??0} 条 · 关键台词 ${c.keyDialogues?.length??0} 条</p>`:''}<details data-memory-detail="${esc(c.id)}" ${open(c.id)}><summary>${memoryDetailLabel(c.category)}</summary><div class="sy-packet sy-narrative">${esc(recordDescription(c))}</div>${meta?`<div class="sy-packet sy-help">${esc(meta)}</div>`:''}${c.tags?.length?`<p class="sy-help">检索标签：${esc(c.tags.join('、'))}</p>`:''}</details>${originalHTML}<details class="sy-record-actions" data-memory-detail="${esc(`actions:${c.id}`)}" ${open(`actions:${c.id}`)}><summary>操作</summary>${actions(c)}</details></article>`);
   }
   return rows.slice(0,100).join('')+(rows.length>100?'<p class="sy-help">当前显示前 100 项，请按人物或关键词筛选。</p>':'')||'<p class="sy-empty">没有符合条件的记忆。</p>';
 }

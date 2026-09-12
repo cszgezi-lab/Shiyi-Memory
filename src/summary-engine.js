@@ -7,7 +7,7 @@ import {
   validateDraftBundle,
 } from './contracts.js';
 import { ScopeConflictError, ShiyiError, SummaryResponseError, ValidationError } from './errors.js';
-import { abortError, clone, decodeUtf8Chunk, estimateUnits, sha256, stableStringify, throwIfAborted } from './utils.js';
+import { abortError, clone, estimateUnits, estimateModelInputUnits, sha256, stableStringify, throwIfAborted } from './utils.js';
 import { requireIndependentFloorSummaries } from './floor-summaries.js';
 import { safeLogDetails } from './product-runtime-log.js';
 import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType } from './diagnostics.js';
@@ -18,7 +18,10 @@ import {transientSummaryError,recoveryAttemptLimit,recoveryDelay,repairCategorie
 import { selectSummaryContext, summarySources } from './summary-context.js';
 import { runSummaryStages, isolateDraftIds } from './summary-stages.js';
 import { referenceRepairRequest, applyReferenceRepair } from './summary-reference-repair.js';
+import { verificationRequest, verificationEnvelope, compactVerificationHints, applyVerificationProgress, verificationCounts, VERIFICATION_POLICY, VERIFICATION_MODULES } from './summary-verification.js';
 import { planSummaryRequests } from './summary-planner.js';
+import { moduleSummaryContract, moduleSummaryInstructions, expandModuleSummary, expandCompactSummary, normalizedModuleSourceRefs, moduleLinkNormalization, unwrapModuleSummaryResponse } from './summary-wire.js';
+import {parseSummaryJson} from './summary-json.js';
 
 function responseStatus(response) {
   return Number(response?.status ?? response?.statusCode ?? 200);
@@ -30,9 +33,13 @@ async function readRawBody(response) {
   }
   if (typeof response === 'string') return response;
   if (response?.body && typeof response.body !== 'string' && response.body[Symbol.asyncIterator]) {
-    const chunks = [];
+    const chunks = [],decoder=new TextDecoder();let bytes=false;
     try {
-      for await (const chunk of response.body) chunks.push(decodeUtf8Chunk(chunk));
+      for await (const chunk of response.body){
+        if(typeof chunk==='string'){if(bytes)chunks.push(decoder.decode());bytes=false;chunks.push(chunk);}
+        else{bytes=true;chunks.push(decoder.decode(chunk,{stream:true}));}
+      }
+      if(bytes)chunks.push(decoder.decode());
     } catch (error) {
       throw new SummaryResponseError('summary response body stream was interrupted', { causeError:error,stage:'read_body',reason:'body_interrupted' });
     }
@@ -52,7 +59,8 @@ function stripJsonFence(text) {
   return fenced ? fenced[1].trim() : value;
 }
 
-async function parseModelResponse(raw, { onMetadata = () => {}, allowArray = false } = {}) {
+async function parseModelResponse(raw, { onMetadata = () => {}, onNormalize = () => {}, allowArray = false } = {}) {
+  const parseJson=text=>{const parsed=parseSummaryJson(text);if(parsed.duplicateEmptyModules){try{onNormalize({duplicateEmptyModules:parsed.duplicateEmptyModules});}catch{/* diagnostics do not decide validity */}}return parsed.value;};
   const status = responseStatus(raw);
   if (status < 200 || status >= 300) {
     const body = await readRawBody(raw).catch(() => '');
@@ -61,7 +69,7 @@ async function parseModelResponse(raw, { onMetadata = () => {}, allowArray = fal
   let payload = raw;
   if (typeof raw === 'string' || raw?.text || raw?.body !== undefined || raw?.status !== undefined || raw?.statusCode !== undefined) {
     const text = stripJsonFence(await readRawBody(raw));
-    try { payload = JSON.parse(text); } catch (error) { throw new SummaryResponseError('summary model returned invalid JSON', jsonFailure(error,text,{status,stage:'parse_envelope'})); }
+    try { payload=parseJson(text); } catch (error) { throw new SummaryResponseError('summary model returned invalid JSON', jsonFailure(error,text,{status,stage:'parse_envelope'})); }
   }
   // OpenAI-compatible chat response. A length stop is a truncated model
   // result even when the provider happened to return syntactically valid JSON.
@@ -77,9 +85,14 @@ async function parseModelResponse(raw, { onMetadata = () => {}, allowArray = fal
   if (payload?.choices?.[0]?.message?.content !== undefined) payload = payload.choices[0].message.content;
   else if (payload?.output_text !== undefined) payload = payload.output_text;
   if (typeof payload === 'string') {
-    try { payload = JSON.parse(stripJsonFence(payload)); } catch (error) { throw new SummaryResponseError('summary model content is not valid JSON', jsonFailure(error,stripJsonFence(payload),metadata)); }
+    const text=stripJsonFence(payload);
+    try { payload=parseJson(text); } catch (error) { throw new SummaryResponseError('summary model content is not valid JSON', jsonFailure(error,text,metadata)); }
   }
-  // A non-empty array is accepted only for the unambiguous one-category
+  if(!allowArray){
+    const normalized=unwrapModuleSummaryResponse(payload);
+    if(normalized!==payload){payload=normalized;try{onNormalize({unwrappedSummaryRoots:1});}catch{/* diagnostics do not authorize parsing */}}
+  }
+  // Other non-empty arrays are accepted only for the unambiguous one-category
   // repair compatibility path.  An empty top-level array is still an invalid
   // repair response: it cannot prove that an existing row was preserved.
   if (!payload || typeof payload !== 'object' || (Array.isArray(payload) && (!allowArray || payload.length === 0))) throw new SummaryResponseError('summary model response must be an object',{...metadata,stage:'parse_content',reason:'invalid_model_root',contentType:contentType(payload)});
@@ -98,7 +111,10 @@ function modelEnvelope(request) {
     }
     value.extractionContext = {...request.extractionContext, coverage};
   }
-  return value;
+  if (request.kind==='ShiyiSummaryRequest' && !request.summaryStage && value.extractionContext?.outputContract) {
+    value.extractionContext = { ...value.extractionContext, outputContract: moduleSummaryContract(value.extractionContext.outputContract) };
+  }
+  return verificationEnvelope(value);
 }
 
 function modelInvoker(model) {
@@ -112,11 +128,12 @@ function modelInvoker(model) {
     // second, independently estimated request.
     invoke.providerPayload = (request) => ({
       model: model.profile?.model,
+      ...(model.profile?.summaryStreaming?{stream:true,stream_options:{include_usage:true}}:{}),
       ...(Number.isSafeInteger(request?.effectiveMaxTokens) && request.effectiveMaxTokens > 0
         ? { max_tokens: request.effectiveMaxTokens }
         : model.profile?.maxTokens > 0 ? { max_tokens: model.profile.maxTokens } : {}),
       messages: [
-        { role: 'system', content: request.instructions },
+        { role: 'system', content: request.kind==='ShiyiSummaryRequest'&&!request.summaryStage ? moduleSummaryInstructions : request.instructions },
         { role: 'user', content: JSON.stringify(modelEnvelope(request)) },
       ],
       response_format: { type: 'json_object' },
@@ -269,7 +286,7 @@ function defineModelAlias(target, key, value) {
 // history. Keep source-overlapping records first, shed unrelated history,
 // and update the diagnostic budget without touching frozen source evidence.
 function compactRecoveryContext(request, targetUnits, providerPayload) {
-  const measure = () => estimateUnits(JSON.stringify(typeof providerPayload === 'function' ? providerPayload(request) : request));
+  const measure = () => estimateModelInputUnits(typeof providerPayload === 'function' ? providerPayload(request) : request);
   const beforeUnits = measure();
   const records = request?.relevantRecords;
   if (!records || typeof records !== 'object') return { changed: false, beforeUnits, afterUnits: beforeUnits, removed: 0 };
@@ -320,15 +337,16 @@ function compactRecoveryContext(request, targetUnits, providerPayload) {
 
 /** P1 one-request-per-segment orchestration with atomic bundle commits. */
 export class SummaryEngine {
-  constructor({ model, supplementModel=null, staged=false, isolateIds=false, packRequests=false, repository, maxInputUnits = 12000, maxSourceUnits = null, requestSafetyUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, now = () => Date.now() } = {}) {
+  constructor({ model, supplementModel=null, staged=false, verified=false, isolateIds=false, packRequests=false, repository, maxInputUnits = 12000, maxSourceUnits = null, requestSafetyUnits = null, outputReserveUnits = null, maxRelevantRecords = 64, requireFloorSummaries = false, stageCrossBatchMerges = false, recoveryEnabled=false, now = () => Date.now() } = {}) {
     this.model = modelInvoker(model);
     this.supplementModel = supplementModel ? modelInvoker(supplementModel) : this.model;
-    this.staged = staged;
+    this.verified = verified;
+    this.staged = staged && !verified;
     this.packRequests = packRequests;
     this.isolateIds = isolateIds || staged;
     if (!repository || typeof repository.commitBundle !== 'function') throw new ValidationError('SummaryEngine requires a MemoryRepository');
     this.repository = repository;
-    // maxInputUnits is the complete serialized-request ceiling. A caller
+    // maxInputUnits bounds all model-visible prompt text. A caller
     // that also needs small body chunks for continuation can opt into the
     // separate maxSourceUnits split quota without weakening that ceiling.
     this.maxInputUnits = maxInputUnits;
@@ -339,7 +357,10 @@ export class SummaryEngine {
       : null;
     this.requireFloorSummaries=requireFloorSummaries;
     this.stageCrossBatchMerges=stageCrossBatchMerges;
-    this.recoveryEnabled=recoveryEnabled;
+    // Paid first-pass caching is intrinsic to verified mode, independent of
+    // the legacy optional automatic-repair setting. invoke still forbids any
+    // third automatic call when verified is true.
+    this.recoveryEnabled=recoveryEnabled||verified;
     this.maxSourceUnits = Number.isFinite(maxSourceUnits) && maxSourceUnits > 0 ? maxSourceUnits : null;
     this.outputReserveUnits = Number.isFinite(outputReserveUnits) ? Math.max(0, outputReserveUnits) : null;
     this.maxRelevantRecords = Math.max(1, Number(maxRelevantRecords) || 64);
@@ -368,7 +389,7 @@ export class SummaryEngine {
     const outputReserveUnits = Number.isFinite(child.budgets?.outputReserveUnits)
       ? Math.max(0, child.budgets.outputReserveUnits)
       : this.outputReserveUnits ?? Math.max(1, Math.ceil((Number(this.maxInputUnits) || 12000) * 0.2));
-    // maxInputUnits is the complete serialized input-request ceiling.
+    // maxInputUnits is the complete model-visible input ceiling.
     // Output reserve is separately reported because it is not part of the
     // serialized input payload measured immediately before adapter I/O.
     const explicitInputBudget = Number.isFinite(child.budgets?.inputUnits) && child.budgets.inputUnits >= 0;
@@ -420,7 +441,9 @@ export class SummaryEngine {
       // function adapters without duplicating provider JSON.
       coverage: {
         sourceRefs: sourceRefsFor(child),
-        bridgeRefs: evidenceRefsFor(child),
+        // Only context floors belong here. evidenceRefsFor also contains the
+        // selected new floors and is reserved for local binding/validation.
+        bridgeRefs: sourceRefsFor({sourceMessages:child.bridgeMessages??[]}),
         relevantRecordIds: Object.values(context.records).flatMap((values) => (Array.isArray(values) ? values.map((record) => record?.id).filter(Boolean) : [])),
         relevantRecordCount: context.selection.candidateCount,
         omittedRelevantRecords: context.selection.omittedCount,
@@ -457,13 +480,13 @@ export class SummaryEngine {
     defineModelAlias(extractionContext, 'relevantRecords', request.relevantRecords);
     // For a provider adapter this is the exact payload that will be sent,
     // including system/user messages and response format.  Measure that
-    // serialized envelope at the last responsible moment and reject a
+    // decoded message content at the last responsible moment and reject a
     // declared budget overflow before any adapter call.  The local
     // estimate is explicitly a bounded planning unit, not provider token
     // accounting or a claim about tokenizer behavior.
-    // Optional previous memories must fit after the complete wire envelope,
+    // Optional previous memories must fit after the complete prompt,
     // not consume the room reserved for schema and source evidence.
-    const wireUnits=()=>estimateUnits(JSON.stringify(typeof this.model.providerPayload==='function'?this.model.providerPayload(request):request));
+    const wireUnits=()=>estimateModelInputUnits(typeof this.model.providerPayload==='function'?this.model.providerPayload(request):request);
     while(wireUnits()>configuredLimit){
       const entries=Object.entries(request.relevantRecords).filter(([,rows])=>Array.isArray(rows)&&rows.length);
       if(!entries.length)break;
@@ -483,15 +506,16 @@ export class SummaryEngine {
       budget.totalReservedUnits=budget.usedInputUnits+schemaUnits+outputReserveUnits;
     }
     if (typeof this.model.providerPayload === 'function') {
-      budget.measurement = 'serialized_provider_payload_estimate_units';
+      budget.measurement = 'model_visible_prompt_estimate_units';
       const providerPayload = this.model.providerPayload(request);
-      const providerPayloadUnits = estimateUnits(JSON.stringify(providerPayload));
+      const providerPayloadUnits = estimateModelInputUnits(providerPayload);
       // Keep the diagnostic local-only. It must not become an enumerable
       // field in the measured/final provider payload.
       defineModelAlias(budget, 'providerPayloadUnits', providerPayloadUnits);
       if (providerPayloadUnits > configuredLimit) {
         const error = new ValidationError('serialized provider request exceeds input budget', {
           code: 'INPUT_BUDGET_EXCEEDED',
+          reason:'input_budget_exceeded',stage:'prepare',inputLimit:configuredLimit,inputUnits:providerPayloadUnits,
           limitUnits: configuredLimit,
           providerPayloadUnits,
           outputReserveUnits,
@@ -507,6 +531,7 @@ export class SummaryEngine {
       if (serializedRequestUnits > configuredLimit) {
         const error = new ValidationError('serialized model request exceeds input budget', {
           code: 'INPUT_BUDGET_EXCEEDED',
+          reason:'input_budget_exceeded',stage:'prepare',inputLimit:configuredLimit,inputUnits:serializedRequestUnits,
           limitUnits: configuredLimit,
           serializedRequestUnits,
           outputReserveUnits,
@@ -603,36 +628,56 @@ export class SummaryEngine {
     // again before commit. It must not independently rerun a different splitter.
     throwIfAborted(signal);
     if(onSourcePlan)await onSourcePlan({operationId:batch.operationId,sourceRevision:batch.sourceRevision,scope:clone(batch.scope),range:clone(batch.parentRange),children:children.map(child=>({operationId:child.operationId,sourceRevision:child.sourceRevision,expectedRevision:child.expectedRevision}))});
-    emit('plan',{plannedRequests:(children.length-completed.size)*(this.staged?2:1),totalChildren:children.length,completedChildren:completed.size,sourceCount:batch.sourceMessages.length});
+    if(this.verified&&children.length>1)throw new ShiyiError('本批超过输入预算；双次复核模式不会暗中拆批，请调整本批范围或输入预算','INPUT_BUDGET_EXCEEDED');
+    emit('plan',{plannedRequests:(children.length-completed.size)*(this.staged||this.verified?2:1),totalChildren:children.length,completedChildren:completed.size,sourceCount:batch.sourceMessages.length});
     if (completed.size === children.length) return state;
-    let recoveryCalls=0, verifyBeforeRequest=null;
+    let recoveryCalls=0, verifyBeforeRequest=null, childCalls=0;
     const invoke=async(request,baseDetails,{extra=false}={})=>{
       if(extra&&++recoveryCalls>2)throw new ShiyiError('本次自动恢复预算已用完，已返回结果保留','RECOVERY_LIMIT');
       let compacted=false;
       for(;;){
         if(verifyBeforeRequest)await verifyBeforeRequest();
-        throwIfAborted(signal);state.requests++;
-        const purpose=({ShiyiCategoryRepair:'category_repair',ShiyiFloorRepair:'floor_repair',ShiyiSummaryEnumRepair:'enum_repair',ShiyiReferenceRepair:'reference_repair'})[request.kind]??(request.summaryStage==='narrative'?'summary_narrative':request.summaryStage==='details'?'summary_details':'summary');
+        throwIfAborted(signal);
+        if(this.verified&&childCalls>=2)throw new ShiyiError('本批两次请求已用完；已返回内容保留，可单独重试未完成复核','RECOVERY_LIMIT');
+        const purpose=({ShiyiSummaryVerification:'summary_verification',ShiyiCategoryRepair:'category_repair',ShiyiFloorRepair:'floor_repair',ShiyiSummaryEnumRepair:'enum_repair',ShiyiReferenceRepair:'reference_repair'})[request.kind]??(request.summaryStage==='narrative'?'summary_narrative':request.summaryStage==='details'?'summary_details':'summary');
         const model=request.summaryRole==='supplement'?this.supplementModel:this.model;
-        Object.assign(baseDetails,{requestId:diagnosticRequestId(),purpose,requestNumber:state.requests});
+        Object.assign(baseDetails,{requestId:diagnosticRequestId(),purpose,requestNumber:state.requests+1});
         let providerPayload=typeof model.providerPayload==='function'?model.providerPayload(request):null;
-        let units=estimateUnits(JSON.stringify(providerPayload??request));
+        let units=estimateModelInputUnits(providerPayload??request);
         const requestLimit=this.requestSafetyUnits??this.maxInputUnits;
+        if(units>requestLimit&&request.kind==='ShiyiSummaryVerification'){
+          compactVerificationHints(request);
+          providerPayload=model.providerPayload?.(request)??null;units=estimateModelInputUnits(providerPayload??request);
+        }
+        // Per-clause highlights expand the lossless source envelope. They are
+        // advisory and duplicate sourceChecks: remove this markup before
+        // spending the budget on less useful repetition, never source text.
+        if(units>requestLimit&&request.kind==='ShiyiSummaryVerification'&&request.sourceGaps?.length){
+          request.sourceGaps=[];
+          providerPayload=model.providerPayload?.(request)??null;units=estimateModelInputUnits(providerPayload??request);
+        }
+        // Repeated attention excerpts are optional. Shed only those excerpts
+        // to fit; never drop original text, records, or source proof fields.
+        while(units>requestLimit&&request.kind==='ShiyiSummaryVerification'&&request.sourceChecks?.length){
+          request.sourceChecks.pop();
+          providerPayload=model.providerPayload?.(request)??null;units=estimateModelInputUnits(providerPayload??request);
+        }
         if(units>requestLimit&&request.summaryStage){
           compactRecoveryContext(request,requestLimit,model.providerPayload);
-          providerPayload=model.providerPayload?.(request)??null;units=estimateUnits(JSON.stringify(providerPayload??request));
+          providerPayload=model.providerPayload?.(request)??null;units=estimateModelInputUnits(providerPayload??request);
         }
-        if(units>requestLimit)throw new ShiyiError('补全请求超过安全输入上限','INPUT_BUDGET_EXCEEDED',{requestLimit,providerPayloadUnits:units});
-        emit('request',{...baseDetails,summaryStage:request.summaryStage,modelRole:request.summaryRole??'summary',sourceInputUnits:estimateUnits(JSON.stringify(request.sourceMessages??[])),historyInputUnits:estimateUnits(JSON.stringify(request.relevantRecords??{})),schemaInputUnits:estimateUnits(JSON.stringify(request.extractionContext?.outputContract??request.outputContract??{})),bridgeInputUnits:estimateUnits(JSON.stringify(request.bridgeMessages??[])),inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
+        if(units>requestLimit)throw new ShiyiError('本次模型输入超过设置的输入预算；已返回结果保留，尚未发送该请求','INPUT_BUDGET_EXCEEDED',{...baseDetails,reason:'input_budget_exceeded',stage:'prepare',inputLimit:requestLimit,inputUnits:units});
+        const wireContract=providerPayload?modelEnvelope(request).extractionContext?.outputContract:request.extractionContext?.outputContract;
+        emit('request',{...baseDetails,summaryStage:request.summaryStage,modelRole:request.summaryRole??'summary',sourceInputUnits:estimateUnits(JSON.stringify(request.sourceMessages??[])),historyInputUnits:estimateUnits(JSON.stringify(request.relevantRecords??{})),schemaInputUnits:estimateUnits(JSON.stringify(wireContract??request.outputContract??{})),bridgeInputUnits:estimateUnits(JSON.stringify(request.bridgeMessages??[])),inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
+        const started=this.now();state.requests++;childCalls++;
         try{
-          const started=this.now();
           try{return await model(request,{signal,requestId:baseDetails.requestId,purpose});}
           finally{emit('wait_complete',{...baseDetails,modelMs:Math.max(0,Math.round(this.now()-started))});}
         }
         catch(error){
-          error.details={...error.details,requestId:baseDetails.requestId,purpose};
+          error.details={...error.details,elapsedMs:Math.max(0,Math.round(this.now()-started)),requestId:baseDetails.requestId,purpose};
           emit('response',{...baseDetails,...errorDiagnostics(error)},'error');
-          if(!this.recoveryEnabled||!transientSummaryError(error)||recoveryCalls>=recoveryAttemptLimit(error))throw error;
+          if(this.verified||!this.recoveryEnabled||!transientSummaryError(error)||recoveryCalls>=recoveryAttemptLimit(error))throw error;
           // Long rate limits require user action later, not ignoring Retry-After
           // or holding a mobile task open indefinitely.
           if((error.details?.retryAfterMs??0)>5000)throw error;
@@ -665,7 +710,7 @@ export class SummaryEngine {
       // Recovery budget is per source child. A failed early batch must not
       // consume the retry/repair allowance of every later batch in a 1–300
       // run.
-      recoveryCalls=0;
+      recoveryCalls=0;childCalls=0;
       let phase='request';
       const started=this.now();
       const baseDetails={childIndex,startIndex:child.sourceMessages[0]?.index,endIndex:child.sourceMessages.at(-1)?.index,sourceCount:child.sourceMessages.length};
@@ -702,8 +747,25 @@ export class SummaryEngine {
           }
           phase=previousPhase;
         };
-        let raw;
-        if(prior?.raw!==undefined&&!prior.retryModel){raw=prior.raw;emit('resume_response',baseDetails,'success');}
+        let raw,cachedForeignSource=false;
+        if(prior?.raw!==undefined&&!prior.retryModel&&!this.verified&&!this.staged){
+          // Explicit resume must not replay an irreparably foreign source
+          // forever. Inspect only contract locators, never story/DIY values.
+          // Do not guess a replacement ID: one new request for this failed
+          // child is allowed on this user-triggered run. Valid paid responses
+          // still resume locally after persistence/commit failures.
+          try{
+            const cached=unwrapModuleSummaryResponse(await parseModelResponse(prior.raw));
+            const allowed=new Set([...child.sourceMessages,...child.bridgeMessages].map(m=>m.id));
+            cachedForeignSource=DRAFT_CATEGORIES.some(k=>Array.isArray(cached?.[k])&&cached[k].some(row=>{
+              if(typeof row?.sourceId==='string'&&!allowed.has(row.sourceId))return true;
+              const refs=Array.isArray(row?.sourceRefs)?row.sourceRefs.flatMap(r=>r&&Object.keys(r).length===1&&Array.isArray(r.sourceRefs)?r.sourceRefs:[r]):[];
+              return refs.some(r=>typeof r?.sourceId==='string'&&!allowed.has(r.sourceId));
+            }));
+          }catch{/* Existing parse/shape recovery remains authoritative. */}
+          if(cachedForeignSource)emit('resume_rejected_source',baseDetails,'warning');
+        }
+        if(prior?.raw!==undefined&&!prior.retryModel&&!cachedForeignSource){raw=prior.raw;emit('resume_response',baseDetails,'success');}
         else{
           if(this.staged){
             const checkCoverage=output=>{
@@ -726,11 +788,90 @@ export class SummaryEngine {
         }
         throwIfAborted(signal);
         phase='response';
-        const parsed = await parseModelResponse(raw,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started})});
-        const enums=normalizeSummaryEnums(parsed);
-        const {output,defaultedValidityFields}=normalizePersonaValidity(enums.output);
-        if(enums.normalizedFields||defaultedValidityFields)emit('normalize',{...baseDetails,normalizedFields:enums.normalizedFields,defaultedValidityFields},'success');
+        let parsed = await parseModelResponse(raw,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started}),onNormalize:details=>emit('normalize',{...baseDetails,...details},details.duplicateEmptyModules?'warning':'success')});
+        if(this.verified&&parsed?.format==='shiyi-module-records-v1'){
+          parsed={...parsed};for(const key of VERIFICATION_MODULES)if(!Object.hasOwn(parsed,key))parsed[key]=[];
+        }
+        phase='validate';
+        const expanded=expandModuleSummary(expandCompactSummary(parsed,child.sourceMessages),child.sourceMessages);
+        if(expanded!==parsed){
+          const links=moduleLinkNormalization(parsed,expanded,child.sourceMessages);
+          emit('normalize',{...baseDetails,...links,normalizedSourceRefs:normalizedModuleSourceRefs(parsed,expanded),compactFloors:expanded.summaryView.length,compactChanges:Object.keys(expanded).filter(k=>!['events','summaryView'].includes(k)&&Array.isArray(expanded[k])).reduce((n,k)=>n+expanded[k].length,0)},links.resolvedSourceTextHints||links.wholeFloorEventAnnotations?'warning':'success');
+        }
+        const normalizeDraftMetadata=(draft,purpose)=>{
+          const {output:enumOutput,...enumCounts}=normalizeSummaryEnums(draft);
+          const {output:value,...personaCounts}=normalizePersonaValidity(enumOutput);
+          const counts={...enumCounts,...personaCounts};
+          if(Object.values(counts).some(n=>n>0))emit('normalize',{...baseDetails,...counts,...(purpose?{purpose}:{})},counts.misplacedEvidenceKinds||counts.unknownEvidenceTypes||counts.unknownKnowledgeMetadata||counts.unknownPersonaContexts||counts.restrictedPersonaScopes||counts.unknownEventPerspectives?'warning':'success');
+          return value;
+        };
+        let output=normalizeDraftMetadata(expanded);
+        if(this.verified)for(const key of DRAFT_CATEGORIES){
+          // The narrative pass intentionally has no responsibility for the
+          // seven detail modules; they remain uncommitted until verification.
+          if(!['events','summaryView','coverage'].includes(key)&&!Object.hasOwn(output,key))output[key]=[];
+        }
         ensureAllCategories(output);
+        if(this.verified){
+          const binding=sha256({policy:VERIFICATION_POLICY,output});
+          if(prior?.verifiedDraft?.binding===binding){output=clone(prior.verifiedDraft.output);emit('stage_resume',{...baseDetails,purpose:'summary_verification'},'success');}
+          else{
+            const progress=prior?.reviewProgress?.binding===binding?prior.reviewProgress:null;
+            if(progress){output=clone(progress.output);emit('stage_resume',{...baseDetails,purpose:'summary_verification'},'info');}
+            phase='verification_request';emit('stage_start',{...baseDetails,purpose:'summary_verification'});
+            // Give review concrete local failures before spending the second
+            // request. Missing metadata is never silently invented by binding.
+            const preflight=bindDraftBundle(output,{scope:child.scope,operationId:child.operationId,expectedRevision:child.expectedRevision,sourceRefs:evidenceRefsFor(child)});
+            const checked=validateDraftBundle(preflight,{allowedSourceIds:new Set([...child.sourceMessages,...child.bridgeMessages].map(m=>m.id)),knownRecordIds:context.ids,expectedSourceRefs:sourceRefsFor(child),existingFacts:context.authoritativeRecords?.entityFactChanges??[],enforceCorrectionAuthority:true,trustedCorrectionIds:correctionAuthorizations,newSourceIds:child.sourceMessages.map(m=>m.id)});
+            const validationIssues=(checked.validationIssues??[]).map(issue=>{
+              const match=/^(\w+)\[(\d+)\]/.exec(issue.path??'');
+              return {...issue,...(match?{id:output[match[1]]?.[Number(match[2])]?.id}:{})};
+            });
+            const review=verificationRequest(request,output,{validationIssues,pending:progress?.pending??[]});
+            const apply=async response=>{
+              const changes=await parseModelResponse(response,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,purpose:'summary_verification'})});
+              const result=applyVerificationProgress(output,changes,review);
+              const value=normalizeDraftMetadata(result.output,'summary_verification');
+              return {changes,value,pending:result.pending,accepted:result.accepted,noteCoverage:result.noteCoverage};
+            };
+            let reviewed;
+            if(!progress&&!prior?.verificationRetry&&prior?.verificationRaw?.binding===binding){
+              try{reviewed=await apply(prior.verificationRaw.raw);emit('stage_resume',{...baseDetails,purpose:'summary_verification'},'success');}
+              catch(error){throwIfAborted(signal);emit('validate',{...baseDetails,...errorDiagnostics(error),purpose:'summary_verification'},'warning');}
+            }
+            if(!reviewed){
+              let response=await invoke(review,baseDetails);
+              phase='verification_response';
+              if(typeof response?.text==='function'||response?.body!==undefined)response={status:responseStatus(response),body:await readRawBody(response)};
+              const responsePatch={binding:resultBinding,verificationRetry:false,verificationRaw:{binding,raw:response}};
+              this.repository.retainPrivateResponse?.(child.scope,child.operationId,responsePatch);
+              try{await this.repository.savePrivateTask?.(child.scope,child.operationId,responsePatch);}
+              catch(error){emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'response-cache'},'warning');}
+              reviewed=await apply(response);
+            }
+            output=reviewed.value;
+            emit('review_notes',{...baseDetails,...reviewed.noteCoverage,purpose:'summary_verification'},'info');
+            // Keep individually source-checked deltas across a failed sibling
+            // or later contract error. This checkpoint is private: it never
+            // becomes a partial publication or an embedding candidate.
+            const recoveryPatch={binding:resultBinding,reviewProgress:{binding,output,pending:reviewed.pending}};
+            this.repository.retainPrivateResponse?.(child.scope,child.operationId,recoveryPatch);
+            try{await this.repository.savePrivateTask?.(child.scope,child.operationId,recoveryPatch);}
+            catch(error){emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'response-cache'},'warning');}
+            if(reviewed.pending.length){
+              const accepted=verificationCounts({checks:[],...reviewed.accepted});
+              emit('partial_repair',{...baseDetails,purpose:'summary_verification',accepted,rejected:reviewed.pending.length},'warning');
+              throw new ValidationError('部分复核项待修复；已核对的改动已缓存，尚未发布到记忆',{reason:'quality_validation',stage:'validate',accepted,rejected:reviewed.pending.length,verificationIssues:reviewed.pending.flatMap(p=>p.issues.map(issue=>({...issue,path:issue.path.replace(/^(updates|additions)\[0\]/,`${p.kind}[${p.index}]`)})))});
+            }
+            // Preserve the successfully returned second pass across commit or
+            // process failures. The original main response is kept separately.
+            const patch={binding:resultBinding,verifiedDraft:{binding,output}};
+            this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
+            try{await this.repository.savePrivateTask?.(child.scope,child.operationId,patch);}
+            catch(error){emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'response-cache'},'warning');}
+            emit('stage_complete',{...baseDetails,purpose:'summary_verification',accepted:verificationCounts(reviewed.changes)},'success');
+          }
+        }
         phase='validate';
         const sourceRefs = sourceRefsFor(child);
         const bindOutput = value => bindDraftBundle(this.isolateIds ? isolateDraftIds(value,child.scope,child.operationId,request.relevantRecords.events) : value, {
@@ -755,7 +896,7 @@ export class SummaryEngine {
           let details;
           try{details=requireIndependentFloorSummaries(bundle,child.sourceMessages);}
           catch(error){
-            if(!this.recoveryEnabled||error.details?.invalidRows||error.details?.duplicateCount||error.details?.emptyFloors?.length||!error.details?.missingFloors?.length)throw error;
+            if(this.verified||!this.recoveryEnabled||error.details?.invalidRows||error.details?.duplicateCount||error.details?.emptyFloors?.length||!error.details?.missingFloors?.length)throw error;
             const missing=child.sourceMessages.filter(m=>error.details.missingFloors.includes(m.index));
             emit('partial_repair',{...baseDetails,...safeLogDetails(error.details),purpose:'floor_repair',repairFields:missing.length},'warning');
             let fixed;
@@ -795,7 +936,7 @@ export class SummaryEngine {
           newSourceIds: child.sourceMessages.map((message) => message.id),
         };
         let validation = validateDraftBundle(bundle,validationOptions);
-        if(!validation.valid&&this.recoveryEnabled){
+        if(!validation.valid&&this.recoveryEnabled&&!this.verified){
           const repairRequest=referenceRepairRequest(request,bundle,validation);
           if(repairRequest){
             emit('partial_repair',{...baseDetails,purpose:'reference_repair',...safeLogDetails(validation)},'warning');
@@ -805,12 +946,12 @@ export class SummaryEngine {
           }
         }
         const repairTargets=repairableEnumTargets(bundle,validation);
-        if(!validation.valid&&repairTargets.length){
+        if(!validation.valid&&repairTargets.length&&!this.verified){
           // A single bounded field-only correction. Normal summaries retain one
           // model call. Source, scope, chronology and coverage rules stay intact.
           const repairRequest=createEnumRepairRequest(bundle,repairTargets,request);
           if(this.staged)repairRequest.summaryRole='supplement';
-          const repairUnits=estimateUnits(JSON.stringify(this.model.providerPayload?.(repairRequest)??repairRequest));
+          const repairUnits=estimateModelInputUnits(this.model.providerPayload?.(repairRequest)??repairRequest);
           if(repairUnits<=configuredLimit){
             phase='repair_request';
             const repairStarted=this.now();
@@ -834,7 +975,7 @@ export class SummaryEngine {
             }
           }else emit('repair_skipped',{...baseDetails,inputLimit:configuredLimit,inputUnits:repairUnits,code:'INPUT_BUDGET_EXCEEDED'},'warning');
         }
-        if(!validation.valid&&this.recoveryEnabled){
+        if(!validation.valid&&this.recoveryEnabled&&!this.verified){
           const categories=repairCategories(validation);
           if(categories.length){
             phase='repair_request';
@@ -851,7 +992,7 @@ export class SummaryEngine {
               const repairObject=Array.isArray(fixed)?{[categories[0]]:fixed}:fixed;
               const repaired=applyCategoryRepair(bundle,categories,repairObject);
               if(!repaired)throw new ValidationError('category repair changed shape or dropped records',{...validation,stage:'repair',reason:'invalid_repair_shape'});
-              const normalized=bindOutput(normalizePersonaValidity(normalizeSummaryEnums(repaired).output).output);
+              const normalized=bindOutput(normalizeDraftMetadata(repaired,'category_repair'));
               const checked=validateDraftBundle(normalized,validationOptions);
               if(!checked.valid)throw new ValidationError('category repair failed validation',{...checked,stage:'validate',repairAttempted:true});
               bundle=normalized;validation=checked;await keepResponse(bundle);emit('repair_complete',{...baseDetails,...repairDetails},'success');
@@ -892,6 +1033,11 @@ export class SummaryEngine {
         }).catch(error=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'checkpoint'},'warning'));
         if (typeof onProgress === 'function') await onProgress(clone(state));
       } catch (error) {
+        if(this.verified&&!signal?.aborted&&error?.name!=='AbortError'&&error?.code!=='CANCELED'&&!['commit','request','verification_request'].includes(phase)){
+          // Invalid second-pass output is not a successful resume checkpoint.
+          // Keep the paid main response; an explicit retry calls only review.
+          await this.repository.savePrivateTask?.(child.scope,child.operationId,{verifiedDraft:null,verificationRetry:phase!=='verification_response'}).catch(e=>emit('checkpoint_warning',{...errorDiagnostics(e),storageArtifact:'checkpoint'},'warning'));
+        }
         if(this.recoveryEnabled&&!signal?.aborted&&phase==='response'&&['MODEL_OUTPUT_TRUNCATED','SUMMARY_RESPONSE_ERROR','SUMMARY_RESPONSE_INVALID','MODEL_OUTPUT_BLOCKED'].includes(error?.code)){
           // An incomplete/blocked response cannot be repaired as a complete JSON
           // draft. A manual retry may use a newly selected model/output budget.
@@ -936,4 +1082,4 @@ export class SummaryEngine {
   async summarize(batch, options = {}) { return this.process(batch, options); }
 }
 
-export { parseModelResponse };
+export { parseModelResponse, modelInvoker };

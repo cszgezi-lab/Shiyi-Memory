@@ -1,4 +1,5 @@
 import { validationIssueText } from './validation-diagnostics.js';
+import { upstreamErrorCode } from './diagnostics.js';
 
 const NETWORK = {
   'network.timeout':'请求超时，请重试或调整请求超时。',
@@ -52,16 +53,25 @@ export function productFailure(error) {
   const rawStatus=Number(error?.details?.status);
   const status=Number.isInteger(rawStatus)&&rawStatus>=400&&rawStatus<=599?rawStatus:null;
   let message=HTTP[status]??NETWORK[code]??CODES[code];
+  if(error?.details?.upstreamCode==='insufficient_quota')message='模型服务额度已用尽，已停止自动重试。请恢复额度或在 API 中选择可用服务；已保存记忆保留。';
+  else if(status===524)message='服务网关等待模型超时（HTTP 524），不是本机回复上限不足。已返回的结果保留；等待服务恢复后可继续未完成任务，不必重做已完成阶段。';
+  else if(status===429)message=error?.details?.retryAfterMs>0?'服务限流，请按接口提示等待后重试；已保存记忆保留。':'服务限流，未提供恢复时间，已停止自动重试。请稍后重试或检查服务额度；已保存记忆保留。';
   if(code==='PERSISTENCE_ERROR'&&['vector_jobs','vector_index','vector_staging'].includes(error?.details?.storageArtifact)){
     message='向量本机保存未通过校验，已保存的故事记忆不受影响。可在召回 → 向量重试未完成项，无需重新总结；具体保存阶段见日志。';
   }
   if(code==='VALIDATION_ERROR'){
     const issue=validationIssueText(error?.details?.validationIssues?.[0]);
     if(issue)message=`${error?.details?.repairAttempted?'已自动纠错一次，但仍未通过：':''}${issue}。本次结果未保存；完整校验信息见运行日志。`;
+    if(error?.details?.reason==='quality_validation'&&Number.isSafeInteger(error.details.accepted)&&Number.isSafeInteger(error.details.rejected)&&error.details.rejected>0)
+      message=`已缓存 ${error.details.accepted} 项复核改动，${error.details.rejected} 项仍需修复。本批尚未进入正式记忆；点击继续未完成任务，仅重试复核，不重做主总结。`;
   }
   if(code==='FLOOR_SUMMARY_MISSING'&&['expected','received','covered'].every(k=>Number.isSafeInteger(error?.details?.[k])&&error.details[k]>=0)){
     const d=error.details;message=`收到 ${d.received} 条逐楼摘要，完整对应 ${d.covered}/${d.expected} 楼，本批未保存。请查看运行日志；这不代表回复上限不足。`;
   }
+  if(code==='INPUT_BUDGET_EXCEEDED'&&Number.isSafeInteger(error?.details?.inputUnits)&&Number.isSafeInteger(error?.details?.inputLimit))message=`本次模型输入估算 ${error.details.inputUnits}，超过设置的 ${error.details.inputLimit}；该请求尚未发送。已返回的结果保留，可调整输入预算后继续。`;
+  if(error?.details?.reason==='stream_incomplete')message='模型流式传输中断，未收到完整结束标记；半份结果没有保存。已完成阶段保留，可继续未完成任务。';
+  if(error?.details?.reason==='stream_invalid')message='服务返回的流式格式不兼容，本次结果未保存。可在 API 请求设置关闭流式接收后重试；不会自动追加一次收费请求。';
+  if(error?.details?.reason==='stream_error'&&!status&&error?.details?.upstreamCode!=='insufficient_quota')message='模型服务在流式返回途中报错，本批未保存。已完成阶段保留；具体服务错误分类见运行日志。';
   if(!message&&error instanceof TypeError)message='网络请求或浏览器跨域访问失败，请检查网络与服务地址。';
   // Local validation errors contain actionable Chinese text. Never echo remote
   // bodies or raw provider errors (they may contain the request and credentials).
@@ -77,6 +87,7 @@ export function providerEnvelopeFailure(response) {
   const code=Object.hasOwn(NETWORK,response?.code)?response.code:'PROVIDER_REQUEST_FAILED';
   const rawStatus=response?.status??response?.error?.status??String(response?.message??'').match(/\b(?:HTTP(?:\s+error)?|status(?:\s+code)?)\s*[:=]?\s*([45]\d\d)\b/i)?.[1];
   const status=Number(rawStatus);
-  return Object.assign(new Error('模型服务返回错误'),{code,details:{...(Number.isInteger(status)&&status>=400&&status<=599?{status}:{})}});
+  const upstreamCode=upstreamErrorCode(response);
+  return Object.assign(new Error('模型服务返回错误'),{code,details:{...(Number.isInteger(status)&&status>=400&&status<=599?{status}:{}),...(upstreamCode?{upstreamCode}:{})}});
 }
 export const modelListFailure = providerEnvelopeFailure;

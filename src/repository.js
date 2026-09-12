@@ -29,6 +29,28 @@ const CATEGORIES = [
   'conflicts',
 ];
 
+// The manual-note form creates an exact knowledge mirror for each user-selected
+// person. A correction to that note must also correct these derived mirrors.
+// Project from immutable originals so old installations benefit without a
+// migration. Independent knowledge edits, model summaries and historical
+// knowledge with a different proposition/source are never rewritten.
+function projectManualNoteKnowledge(records, controls) {
+  const events = new Map(records.events.map(r => [r.id, r]));
+  records.awarenessChanges = records.awarenessChanges.map(row => {
+    const event = events.get(row.eventRef), patch = controls.edits?.[event?.id];
+    if (!event || !patch || Object.hasOwn(controls.edits ?? {}, row.id)
+      || !String(event.id).startsWith('note_') || !String(row.id).startsWith('aware_')
+      || event.subject !== '用户补充设定' || event.epistemicStatus !== 'user_asserted'
+      || row.via !== 'user_confirmed' || row.status !== 'known'
+      || row.knowledge !== event.description || typeof patch.description !== 'string'
+      || !patch.description.trim() || event.sourceRefs?.length !== 1
+      || !String(event.sourceRefs[0].sourceId).startsWith('user-note_')
+      || stableStringify(row.sourceRefs) !== stableStringify(event.sourceRefs)) return row;
+    return { ...row, knowledge: patch.description, description: patch.description,
+      content: patch.description, fact: patch.description, entities: [], tags: [], recallSummary: null };
+  });
+}
+
 // HostStore has no CAS in the public contract.  Repositories sharing one
 // store therefore coordinate in-process by scope.  This closes the race
 // between two MemoryRepository instances in one extension process; a second
@@ -368,6 +390,7 @@ export class MemoryRepository {
     const visible=chunk=>!excludeOperations.includes(parent(chunk.operationId))&&(!['pending','deleted'].includes(controls.operations?.[parent(chunk.operationId)])||includeOperations.includes(parent(chunk.operationId)));
     const records=mergeRecords(chunks.filter(visible));
     records.history=chunks.map(chunk=>({revision:chunk.committedRevision,operationId:chunk.operationId,sourceRevision:chunk.sourceRevision,createdAt:chunk.createdAt,scopeKey:chunk.scopeKey,idMap:clone(chunk.idMap??{}),coverage:clone(chunk.coverage),categories:Object.fromEntries(CATEGORIES.map(k=>[k,clone(chunk[k]??[])])),excluded:!visible(chunk)}));
+    projectManualNoteKnowledge(records,controls);
     for(const category of CATEGORIES)records[category]=records[category].filter(r=>!controls.deletedRecords?.[r.id]).map(r=>controls.edits?.[r.id]?{...r,...clone(controls.edits[r.id]),epistemicStatus:'user_asserted'}:r);
     const eventIds=new Set(records.events.map(r=>r.id));
     records.awarenessChanges=records.awarenessChanges.filter(r=>[r.eventRef,...(r.eventRefs??[])].filter(Boolean).every(id=>eventIds.has(id)));

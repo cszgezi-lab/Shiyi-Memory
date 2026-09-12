@@ -4,9 +4,11 @@ const categories = 'events|awarenessChanges|entityFactChanges|relationshipChange
 const fields = 'id|sourceRefs|sources|state|status|epistemicStatus|perspective|via|learnedAt|eventRef|eventRefs|eventId|eventIds|sourceEventId|evidenceKind|expression|response|mutualConfirmation|publicScope|object|context|scope|expiresAt|term|title|description|recallSummary|entities|tags|mergeInto|subject|actorId|person|personId|audience|entity|entityId|field|key|value|from|to|newValue|aspect|objectRef|content|text|action|time|location|participants|floorIndex|confidence|knowledge|fact|strength|reason';
 const index = '\\[(?:0|[1-9]\\d{0,6})\\]';
 const pathPattern = new RegExp(`^(?:bundle|scope|operationId|expectedRevision|(?:${categories})(?:${index}(?:\\.(?:${fields})(?:${index})?)?)?|coverage(?:\\.(?:sourceRefs|bridgeRefs|processed|excluded|unprocessed)(?:${index})?)?)$`);
+const compactPathPattern = new RegExp(`^(?:summaryView${index}\\.(?:sourceId|changes(?:\\.(?:knowledge|facts|relationships|persona|commitments|performance|conflicts))?)|entityFactChanges${index}\\.knowledge(?:${index})?|awarenessChanges${index}\\.recordRef)$`);
 const types = new Set(['array','object','string','number','boolean','null','undefined']);
 const locatorFields = new Set(['version','swipeId','fragmentId','hash','contentHash']);
 export const VALIDATION_ISSUE_LABELS = Object.freeze({
+  unauthorized_module_field:'使用了未授权或只读的扩展字段；普通人物属性应使用中文名称，不加 custom: 前缀',
   event_merge_deferred:'合并建议已转交独立任务，不阻止总结保存',
   invalid_event_merge:'合并目标未提供或事件发生时间冲突，旧记忆未改变',
   event_merge_target_missing:'合并目标不在本次提供的事件中，旧记忆未改变',
@@ -16,6 +18,7 @@ export const VALIDATION_ISSUE_LABELS = Object.freeze({
   source_ambiguous:'来源对应多个片段，缺少准确定位', unknown_source:'引用了本批未提供的来源', missing_source:'缺少有效的正文来源',
   required:'缺少必填字段', invalid_enum:'字段值不在支持的选项中', duplicate_id:'记录编号重复', unknown_event:'引用的事件不存在',
   invalid_event:'依赖的事件未通过校验', context_only:'只引用了旧上下文，没有本批新证据', confirmed_fact_conflict:'修改了已确认事实，但没有确认依据',
+  unknown_fact:'知情关联的人物属性不在本次或当前聊天的有效记录中',
   missing_actor:'缺少知情人物', missing_knowledge:'缺少知情内容', missing_entity:'缺少人物或实体', missing_field:'缺少属性名称', missing_value:'缺少属性值',
   missing_participants:'缺少关系方向或约定参与者', missing_subject:'缺少人物主体', missing_aspect:'缺少人设变化维度', missing_content:'缺少事件或约定内容',
   invalid_shape:'字段结构不正确', coverage_reason:'排除或未处理的楼层缺少原因', coverage_overlap:'同一来源出现多个处理状态',
@@ -26,7 +29,7 @@ export function valueType(value) { return value === null ? 'null' : Array.isArra
 export function safeValidationIssues(value) {
   if (!Array.isArray(value)) return [];
   return value.slice(0,512).flatMap(issue => {
-    if (!issue || typeof issue.path !== 'string' || issue.path.length > 160 || !pathPattern.test(issue.path) || !Object.hasOwn(VALIDATION_ISSUE_LABELS,issue.reason)) return [];
+    if (!issue || typeof issue.path !== 'string' || issue.path.length > 160 || !(pathPattern.test(issue.path)||compactPathPattern.test(issue.path)) || !Object.hasOwn(VALIDATION_ISSUE_LABELS,issue.reason)) return [];
     const safe = {path:issue.path,reason:issue.reason};
     for(const key of ['expectedType','actualType'])if(types.has(issue[key]))safe[key]=issue[key];
     if(Array.isArray(issue.locatorFields))safe.locatorFields=[...new Set(issue.locatorFields.filter(f=>locatorFields.has(f)))];
@@ -43,13 +46,14 @@ export function validationDetails(errors = []) {
     let [path,...tail]=text.split(' '),suffix=tail.join(' ');
     if(path?.endsWith('.expiresAt/term'))path=path.replace('/term','');
     if(text.startsWith('missing required category ')){path=text.slice(26);suffix='is required';}
-    if(!pathPattern.test(path??''))return {path:'bundle',reason:'validation_failed'};
+    if(!pathPattern.test(path??'')&&!compactPathPattern.test(path??''))return {path:'bundle',reason:'validation_failed'};
     let reason='validation_failed',expectedType;
     if(/^must be an? (array|object|non-empty string)/.test(suffix)){reason='type_mismatch';expectedType=suffix.includes('array')?'array':suffix.includes('object')?'object':'string';}
     else if(/^is required|^must identify/.test(suffix))reason='required';
     else if(/^must be one of /.test(suffix))reason='invalid_enum';
     else if(/^is duplicated/.test(suffix))reason='duplicate_id';
     else if(/^references unknown event /.test(suffix))reason='unknown_event';
+    else if(suffix==='references unknown fact')reason='unknown_fact';
     else if(/^depends on invalid event /.test(suffix))reason='invalid_event';
     else if(/^references (unknown source|source outside frozen range) /.test(suffix))reason='unknown_source';
     else if(/^must contain a stable source/.test(suffix))reason='missing_source';

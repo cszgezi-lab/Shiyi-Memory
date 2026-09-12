@@ -1,7 +1,9 @@
 import { normalizeTerms, normalizeTags } from './product-dictionary.js';
-export const relationLabel = value => ({expression:'单方表达',response:'对方回应',mutual_confirmation:'双方确认',boundary:'相处边界',shared_experience:'共同经历',habit:'相处习惯'})[value] ?? value ?? '关系变化';
+export const relationLabel = value => ({expression:'单方表达',response:'对方回应',mutual_confirmation:'双方确认',boundary:'相处边界',shared_experience:'共同经历',habit:'相处习惯',background:'背景关系'})[value] ?? value ?? '关系变化';
 export const epistemicLabel = value => ({observed:'正文明确',user_asserted:'用户确认',character_claim:'角色自述',inferred:'推测而非事实',unknown:'未确认'})[value] ?? value;
-export const fieldLabel = value => ({identity:'身份',background:'背景',address:'住址',residence:'居所',school:'学校',hobby:'兴趣爱好',hobbies:'兴趣爱好',interests:'兴趣爱好',level:'等级',strength:'力量',agility:'敏捷',skills:'技能'})[value] ?? value;
+// Display aliases only, not a schema/field whitelist or a stored-key rewrite.
+// Arbitrary DIY names remain intact and can still be edited by the user.
+export const fieldLabel = value => ({identity:'身份',background:'背景',age:'年龄',occupation:'职业',profession:'职业',aliases:'别称',nickname:'昵称',address:'住址',residence:'居所',school:'学校',hobby:'兴趣爱好',hobbies:'兴趣爱好',interests:'兴趣爱好',level:'等级',strength:'力量',agility:'敏捷',skills:'技能',beverage_preference:'饮品偏好',action_habit:'动作习惯',energy_status:'能量状态',usage_limitation:'使用限制',skill_limitation:'技能限制',inspection_status:'检验状态',operating_mode:'运行模式'})[value] ?? value;
 const objectLabels={name:'名称',date:'日期',period:'时期',time:'时间',location:'地点',value:'内容',description:'说明',kind:'类型',unknown:'未知',raw:'原文时间',assertedAt:'表述时间',occurredAt:'发生时间',plannedFor:'原定时间',actualAt:'实际时间',learnedAt:'获知时间',subject:'主体',from:'原先',to:'变为',before:'变化前',after:'变化后',content:'内容',text:'内容',reason:'原因',context:'情境',scope:'范围',target:'对象',speaker:'说话人',holder:'持有人',evidence:'依据',basis:'依据',expression:'表达',response:'回应',mutualConfirmation:'双方确认',publicScope:'公开范围',status:'状态',via:'获知方式',knowledge:'获知内容',expiresAt:'有效期',validUntil:'有效期',term:'期限',duration:'持续时间',instruction:'演绎建议',guidance:'演绎建议',hint:'演绎建议',summary:'摘要',evidenceKind:'关系依据',perspective:'叙述视角'};
 const valueLabel=(key,value)=>key==='evidenceKind'?relationLabel(value):key==='epistemicStatus'?epistemicLabel(value):key==='via'?viaLabel(value):key==='status'?awarenessLabel(stateLabel(value)):key==='perspective'?({first_person:'第一人称',second_person:'第二人称',third_person:'第三人称',omniscient:'全知叙述',unknown:'未确认'})[value]??value:value;
 export function narrativeText(value) {
@@ -13,7 +15,7 @@ export function narrativeText(value) {
   return String(value);
 }
 export function recordTitle(card) {
-  if(typeof card.title==='string'&&card.title.trim())return card.title.trim().replace(/\b(expression|response|mutual_confirmation|boundary|shared_experience|habit)\b/g,relationLabel);
+  if(typeof card.title==='string'&&card.title.trim())return card.title.trim().replace(/\b(expression|response|mutual_confirmation|boundary|shared_experience|habit|background)\b/g,relationLabel);
   if(Number.isInteger(card.floorIndex))return `第 ${card.floorIndex} 楼纪要`;
   const body=String(card.description??card.text??card.content??card.action??'记忆');
   const first=body.split(/[。！？\n]/)[0];return first.length<=48?first:`${first.slice(0,48)}…`;
@@ -38,7 +40,7 @@ export function fullSearchText(card,body) {
 }
 export const stateLabel=value=>({proposed:'提出',attempted:'尝试',accepted:'接受',completed:'完成',declined:'拒绝',canceled:'取消',resolved:'已解决',active:'有效'})[value]??value;
 export const awarenessLabel=value=>({known:'知道',heard:'听说',suspected:'怀疑',mistaken:'误以为',explicitly_unaware:'明确不知情'})[value]??value;
-export const viaLabel=value=>({witnessed:'亲眼见证',heard_in_scene:'现场听见',read:'阅读获知',told:'被告知',background:'背景已知',user_confirmed:'用户确认',special_ability:'特殊能力获知'})[value]??value??'渠道未注明';
+export const viaLabel=value=>({witnessed:'亲眼见证',heard_in_scene:'现场听见',read:'阅读获知',told:'被告知',background:'背景已知',user_confirmed:'用户确认',special_ability:'特殊能力获知',unknown:'渠道未注明'})[value]??value??'渠道未注明';
 
 export function recallExplanation(trace={}){
   const matched=(trace.dictionary?.matched??[]).map(t=>`${t.matched.join('、')} → ${t.name}`);

@@ -98,6 +98,16 @@ export function estimateUnits(value) {
   return Math.max(1, Math.ceil(units));
 }
 
+/** Estimate model-visible text, not HTTP JSON quoting of that text. The JSON
+ * inside a message is counted intact. This is NOT a provider tokenizer.
+ * Unknown/multimodal envelopes retain the conservative serialized fallback. */
+export function estimateModelInputUnits(payload) {
+  if (!Array.isArray(payload?.messages) || !payload.messages.every(m => typeof m?.content === 'string')) return estimateUnits(JSON.stringify(payload));
+  const messages = payload.messages.reduce((sum, {content, ...metadata}) => sum + estimateUnits(content) + estimateUnits(JSON.stringify(metadata)) + 32, 0);
+  const schema = ['tools', 'functions', 'response_format'].reduce((sum, key) => sum + (payload[key] === undefined ? 0 : estimateUnits(JSON.stringify(payload[key]))), 0);
+  return messages + schema + 128;
+}
+
 export function asString(value, field, errors) {
   if (typeof value !== 'string' || value.trim() === '') {
     errors.push(`${field} must be a non-empty string`);

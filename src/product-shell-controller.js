@@ -508,7 +508,8 @@ export function createProductShellController({
         providerEndpointMode: state.settings.providerEndpointMode,
         providerModel: state.settings.providerModel,
         providerAuthMode: state.settings.providerAuthMode,
-        deadlineMs: state.settings.deadlineMs,
+        deadlineMs: state.settings.summaryDeadlineMs??state.settings.deadlineMs,
+        summaryStreaming:state.settings.summaryStreaming,
         outputBudgetUnits: state.settings.outputBudgetUnits,
       };
       transport = transportFactory(profile, { sessionApiKey: state.sessionApiKey ?? '', fetchImpl });
@@ -586,7 +587,7 @@ export function createProductShellController({
     summaryRepository.commitBundle=async (...args)=>{validateBundle(args[0]);return repository.commitBundle(...args);};
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations})).records;
     try {
-      engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
+      engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, verified:state.settings.summaryReviewEnabled, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
       const result = await engine.process(batch, { signal: abortController.signal, onDiagnostic, onSourcePlan:plan=>{
         if(!tokenValid(token,session)||abortController?.signal.aborted||activeTask!==operationId)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
         if(plan.operationId!==operationId||plan.sourceRevision!==batch.sourceRevision||stableStringify(plan.scope)!==stableStringify(session.scope))throw Object.assign(new Error('总结来源计划不一致'),{code:'SOURCE_INVALIDATED'});
@@ -623,11 +624,11 @@ export function createProductShellController({
         return { status: PRODUCT_SHELL_STATUS.CANCELED, errorCode: 'CANCELED', operationId };
       }
       const code = errorCode(error, 'PROVIDER_REQUEST_FAILED');
+      const safeFailure = productFailure(error);
       // Never remove source/focus on a model, body, 502, or persistence error.
-      if (token === generation) mark(PRODUCT_SHELL_STATUS.FAILED, code, code === 'PERSISTENCE_UNAVAILABLE' ? '持久保存/读回失败，未显示为已保存。' : '本次整理失败，草稿仍可重试。');
+      if (token === generation) mark(PRODUCT_SHELL_STATUS.FAILED, code, code === 'PERSISTENCE_UNAVAILABLE' ? '持久保存/读回失败，未显示为已保存。' : `${safeFailure.message} 总结范围与侧重点已保留，可重试。`);
       state.draft.status = 'retryable';
       state.capabilities.summary = code === 'PERSISTENCE_UNAVAILABLE' ? 'persistence_failed' : 'failed';
-      const safeFailure = productFailure(error);
       return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: code, failure: safeFailure, errorDetails: { ...safeLogDetails(errorDiagnostics(error)), status: safeFailure.status }, operationId };
     } finally {
       if(summarySourceGuard?.operationId===operationId&&summarySourceGuard.token===token)summarySourceGuard=null;
