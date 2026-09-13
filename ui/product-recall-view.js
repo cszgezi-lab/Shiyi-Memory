@@ -1,3 +1,4 @@
+import { readViewState } from '../src/product-view-scheduling.js';
 import { esc,button,settingsSection } from '../src/product-settings-ui.js';
 import { dictionaryHTML } from './product-management.js';
 import { dictionaryQuery } from '../src/product-dictionary.js';
@@ -33,19 +34,25 @@ export function mountRecallView({panel,app,run,setPage,download,host=globalThis}
   $('[data-vector-search]').addEventListener('input',()=>{rowPage=1;void loadRows();});
   $('[data-vector-filter]').addEventListener('change',()=>{rowPage=1;void loadRows();});
   $('[data-vector-prev]').addEventListener('click',()=>{rowPage--;void loadRows();});$('[data-vector-next]').addEventListener('click',()=>{rowPage++;void loadRows();});
-  function match(){const query=$('[data-dictionary-query]')?.value??'',dict=app.state.dictionary??{};if(!$('[data-dictionary-match]'))return;const found=dictionaryQuery(query,dict);$('[data-dictionary-match]').textContent=query?[...found.terms.map(t=>`${t.matched.join('、')} → ${t.name}`),...found.ambiguities.map(a=>`${a.name} 有歧义：${a.owners.join('、')}`),found.tags.length?`标签：${found.tags.join('、')}`:''].filter(Boolean).join('\n')||'没有命中词条；仍可通过普通关键词或向量检索。':'输入后立即查看匹配结果。';}
+  function match(){const query=$('[data-dictionary-query]')?.value??'',dict=readViewState(app).dictionary??{};if(!$('[data-dictionary-match]'))return;const found=dictionaryQuery(query,dict);$('[data-dictionary-match]').textContent=query?[...found.terms.map(t=>`${t.matched.join('、')} → ${t.name}`),...found.ambiguities.map(a=>`${a.name} 有歧义：${a.owners.join('、')}`),found.tags.length?`标签：${found.tags.join('、')}`:''].filter(Boolean).join('\n')||'没有命中词条；仍可通过普通关键词或向量检索。':'输入后立即查看匹配结果。';}
   $('[data-dictionary-query]')?.addEventListener('input',match);
   function paint(s){
     lastState=s;
-    $('[data-vector-retry-all]').disabled=s.busy||s.vectorIndex?.status==='updating'||!s.chatReady;
-    injectionView.paint(s);
-    const v=s.vectorIndex??{},label=indexLabels[v.status]??'待检查',n=s.dictionary?.entries?.filter(e=>!e.disabled).length??0;
+    if(!$('[data-view="current"]').hidden)injectionView.paint(s);
+    if(!$('[data-view="dictionary"]').hidden)match();
+    const vectors=!$('[data-view="vectors"]').hidden,overview=!$('[data-view="recall"]').hidden;
+    if(!vectors&&!overview)return;
+    const v=s.vectorIndex??{},label=indexLabels[v.status]??'待检查';
     const row=(name,value)=>`<div class="sy-info-row"><span>${name}</span><strong>${esc(value)}</strong></div>`;
     const mode=s.settings.vectorEnabled?'已开启':'未开启';
+    if(vectors){
+    $('[data-vector-retry-all]').disabled=s.busy||s.vectorIndex?.status==='updating'||!s.chatReady;
     $('[data-vector-overview]').innerHTML=`<div class="sy-card sy-index-status">${row('向量召回',mode)}${row('索引状态',label)}${row('当前模型',s.settings.embeddingModel||'未配置')}${v.rebuilding?row('重建暂存','全部完成后替换旧索引'):''}${row('索引进度',Number.isInteger(v.total)?`${v.indexed??0} / ${v.total}`:'尚未检查')}${row('待更新',v.pending??'—')}${row('失败项',v.failed??0)}${v.stale?row('内容已改变',v.stale):''}${v.dimensions?.length?row('向量维度',v.dimensions.join(' / ')):''}${v.message?`<p class="sy-help" role="status">${esc(v.message)}</p>`:''}</div>`;
+    }
+    if(overview){const n=s.dictionary?.entries?.filter(e=>!e.disabled).length??0;
     $('[data-recall-overview]').innerHTML=`<div class="sy-card">${row('自动注入',s.enabled&&s.settings.injectionEnabled?'已开启':'未开启')}${row('关键词检索','本地 BM25')}${row('有效字典',`${n} 个词条 · ${s.dictionary?.tags?.length??0} 个标签`)}${row('向量召回',`${mode} · ${label}`)}${row('重排',s.settings.rerankEnabled?'已开启（调用时验证）':'未开启')}${row('分类检索',s.settings.distributedEnabled&&s.settings.distributedStrategy!=='disabled'?'已开启':'未开启')}${row('最近一次注入',s.actual?`${s.actual.cards.length} 条 · ${Math.round(s.actual.trace?.timings?.recallMs??0)} ms`:'尚无记录')}</div>`;
-    const stamp=JSON.stringify([s.vectorIndex,s.chatReady]);if(!$('[data-view="vectors"]').hidden&&stamp!==indexStamp){indexStamp=stamp;void loadRows();}
-    match();
+    }
+    const stamp=JSON.stringify([s.vectorIndex,s.chatReady]);if(vectors&&stamp!==indexStamp){indexStamp=stamp;void loadRows();}
   }
   return {paint};
 }

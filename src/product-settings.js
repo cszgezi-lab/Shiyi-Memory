@@ -1,4 +1,5 @@
 import { clone, isPlainObject } from './utils.js';
+import { readSummaryPresets } from './summary-presets.js';
 
 /**
  * Settings shared by the product shell and future assistant panels.
@@ -11,6 +12,7 @@ import { clone, isPlainObject } from './utils.js';
 export const PRODUCT_SETTINGS_VERSION = 1;
 
 const DEFINITIONS = [
+  {key:'summaryPresets',label:'总结预设库',defaultValue:'',type:'string',maxLength:600000,consumers:['SummaryEngine','ProductShellController.createBatch']},
   { key:'summaryStaged', label:'分工总结', defaultValue:false, type:'boolean', consumers:['SummaryEngine'] },
   { key:'summaryReviewEnabled', label:'主总结＋原文复核（两次）', defaultValue:false, type:'boolean', consumers:['SummaryEngine'] },
   { key:'supplementFollowSummary', label:'辅助整理沿用总结模型', defaultValue:true, type:'boolean', consumers:['ProductApplication.supplement'] },
@@ -100,6 +102,7 @@ export const PRODUCT_SETTING_REGISTRY = Object.freeze(Object.fromEntries(
 const PERSISTED_KEYS = Object.freeze(DEFINITIONS.filter((definition) => definition.persisted !== false).map((definition) => definition.key));
 
 function validateDefinition(definition, value) {
+  if(definition.key==='summaryPresets'){readSummaryPresets(value??'');return value??'';}
   if (definition.type === 'session-secret') return typeof value === 'string' ? value : '';
   if (definition.type === 'boolean') return Boolean(value);
   if (definition.type === 'integer') {
@@ -123,6 +126,7 @@ export function validateProductPatch(patch) {
   const result = {};
   for (const [key, value] of Object.entries(patch)) {
     const def = PRODUCT_SETTING_REGISTRY[key];
+    if(key==='summaryPresets')readSummaryPresets(value);
     if (!def || def.persisted === false) throw new Error(`不能通过设置方案修改字段：${key}`);
     if (def.type === 'boolean' && typeof value !== 'boolean') throw new Error(`${def.label}需要开关值`);
     if (['number', 'integer'].includes(def.type) && (typeof value !== 'number' || !Number.isFinite(value) || value < def.min || value > def.max || (def.type === 'integer' && !Number.isInteger(value)))) throw new Error(`${def.label}超出允许范围`);

@@ -1,3 +1,4 @@
+import { readViewState } from '../src/product-view-scheduling.js';
 import { esc,field } from '../src/product-settings-ui.js';
 import { knowledgeImportPlan } from '../src/product-knowledge-import.js';
 
@@ -29,10 +30,10 @@ export function mountKnowledgeView({panel,app,run,host}){
   }
   $('[data-documents]').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
     run(async()=>{
-      if(b.dataset.kbRead){const parts=await app.documentPreview(b.dataset.kbRead);previews.set(b.dataset.kbRead,parts.map((p,i)=>`<details><summary>第 ${i+1} 段</summary><div class="sy-packet">${esc(p?.text)}</div></details>`).join(''));paint(app.state);}
+      if(b.dataset.kbRead){const parts=await app.documentPreview(b.dataset.kbRead);previews.set(b.dataset.kbRead,parts.map((p,i)=>`<details><summary>第 ${i+1} 段</summary><div class="sy-packet">${esc(p?.text)}</div></details>`).join(''));paint(readViewState(app));}
       if(b.dataset.kbAnalyze)return app.analyzeDocuments([b.dataset.kbAnalyze]);
       if(b.dataset.kbBuild)return app.buildKnowledgeVectors([b.dataset.kbBuild]);
-      if(b.dataset.kbToggle){const d=app.state.documents.find(d=>d.id===b.dataset.kbToggle);await app.updateDocument(d.id,{enabled:d.importOptions?.enabled===false});}
+      if(b.dataset.kbToggle){const d=readViewState(app).documents.find(d=>d.id===b.dataset.kbToggle);await app.updateDocument(d.id,{enabled:d.importOptions?.enabled===false});}
       if(b.dataset.removeDoc&&host.confirm?.('删除这份资料？无法在插件内撤销，请保留原文件；聊天原文不受影响。'))await app.removeDocument(b.dataset.removeDoc);
     },{name:b.dataset.kbBuild?'vectors':b.dataset.kbAnalyze?'analyze':'',button:b});
   });

@@ -1,4 +1,5 @@
 import { HostAdapter } from './host-adapter.js';
+import { lazyViewState } from './product-view-scheduling.js';
 import { createProductShellController } from './product-shell-controller.js';
 import { createWorkspace, importTextDocument, splitDocument } from './product-workspace.js';
 import { autoSummaryPlan } from './product-auto-summary.js';
@@ -58,7 +59,7 @@ const ASSISTANT_TOOLS = [
 ];
 
 /** Owns product flow; core controller still owns extraction and memory commits. */
-export function createProductApplication({ host = globalThis, adapter = null, controller = null, fetchImpl = globalThis.fetch, onChange = () => {} } = {}) {
+export function createProductApplication({ host = globalThis, adapter = null, controller = null, fetchImpl = globalThis.fetch, onChange = () => {}, onInvalidate = null } = {}) {
   fetchImpl = createProductFetch(host, fetchImpl);
   let hostAdapter = adapter;
   // Session pause is separate from the persisted feature opt-ins. A fresh
@@ -95,7 +96,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const credentials=createCredentialStore({getStore:globalStore});
   let autoRunning=false;
   const state = { credentialSaved:{},credentialErrors:{}, modules:[],moduleSnapshots:[],moduleCurrent:[],mvuPaths:[],mvuStatus:'no_chat', status: 'unbound', message: '开始总结时自动读取 TT 当前聊天', cards: [], documents: [], history: [], batches: [], records: {}, conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };
-  const notify = () => { try { onChange(publicState()); } catch { /* paint failure must not affect persistence */ } };
+  const notify = () => { try { if(onInvalidate)onInvalidate();else onChange(publicState()); } catch { /* paint failure must not affect persistence */ } };
   const runtimeLog=createRuntimeLog({getStore:globalStore,onChange:notify});
   const recordedErrors=new WeakSet(),diagnosticJobs=new Set(),transportRuns=new Map();
   function trackDiagnostic(work){const job=Promise.resolve(work).catch(()=>{});diagnosticJobs.add(job);void job.finally(()=>diagnosticJobs.delete(job));return job;}
@@ -135,6 +136,18 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     return {memoryCards:state.cards,cards:[...state.cards,...(core.settings.knowledgeEnabled?knowledgeCache.filter(card=>!state.hidden.includes(card.id)):[])],settings:core.settings,dictionary:activeDictionary(),revision:recallRevision,safetyRevision:recallSafetyRevision};
   }
   function publicState() { return { ...clone(state),automatic:automaticPlan(),autoRunning, merges:workspace?.isCurrent()&&!state.stale?clone(state.merges??[]):[], injectionLog:workspace?.isCurrent()?injectionLog?.state:null, dictionary:clone(activeDictionary()), runtimeLog:runtimeLog.state, enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
+  const viewIdentities=new WeakMap();let nextViewIdentity=0;
+  const viewIdentity=value=>{if(!value||typeof value!=='object')return value;if(!viewIdentities.has(value))viewIdentities.set(value,++nextViewIdentity);return viewIdentities.get(value);};
+  function readViewState(){
+    const readers=Object.fromEntries(Object.entries(state).map(([key,value])=>[key,()=>clone(value)]));
+    const cardRevision=viewIdentity(state.cards);
+    return lazyViewState({...readers,cardRevision:()=>cardRevision,automatic:automaticPlan,autoRunning:()=>autoRunning,
+      merges:()=>workspace?.isCurrent()&&!state.stale?clone(state.merges??[]):[],injectionLog:()=>workspace?.isCurrent()?injectionLog?.state:null,
+      dictionary:()=>clone(activeDictionary()),runtimeLog:()=>runtimeLog.state,enabled:()=>enabled,chatReady:()=>Boolean(workspace?.isCurrent())&&!state.stale,
+      settings:()=>core.settings,core:()=>core.state,busy:()=>Boolean(active)||apiOperations.size>0,
+      credentialDirty:()=>Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])),
+      credentialPresent:()=>Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)]))});
+  }
   function assertCurrent(token = epoch) { if (!workspace || token !== epoch || !workspace.isCurrent()) throw Object.assign(new Error('聊天或来源已变化，旧聊天操作已停止'),{code:'CHAT_CHANGED'}); }
   function begin(exclusive = true) {
     if(exclusive&&qualityOperation){qualityOperation.preempted=true;qualityOperation.abort();}
@@ -207,7 +220,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const pages=Math.max(1,Math.ceil(rows.length/20)),current=Math.min(pages,Math.max(1,Math.floor(Number(page)||1)));
     return {rows:rows.slice((current-1)*20,current*20),total:rows.length,page:current,pages};
   }
-  async function refreshVectorStatus({schedule=false}={}){
+  async function refreshVectorStatus({schedule=false,cached=false}={}){
+    // Page navigation can reuse a recent completed check. Explicit refresh and
+    // invalidation/build paths still read the store and verify every entry.
+    if(cached&&workspace?.isCurrent()&&!state.stale&&state.vectorIndex?.checkedAt&&Date.now()-state.vectorIndex.checkedAt<5000)return state.vectorIndex;
     const version=++vectorCheckVersion,token=epoch,revision=recallRevision,bound=workspace;
     if(!bound?.isCurrent()||state.stale){state.vectorIndex={status:'no_chat'};notify();return state.vectorIndex;}
     try{
@@ -661,6 +677,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       if(op.token===epoch)summaryFeedback(mergeWarning||bookkeepingWarning?'warning':'success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${bookkeepingWarning?'批次进度资料待恢复，记忆正文已确认保存，无需重新生成。':''}${awaiting||mergeWarning?'合并尚未全部完成，可在记录 → 事件合并中单独处理；无需重做总结。':''}`,trigger);
       return {status:'saved',batches:saved,level:mergeWarning||bookkeepingWarning?'warning':'success',timings:{prepareMs:(firstRequestAt??Date.now())-taskStarted,modelMs,publishMs}};
     }catch(error){
+      // Report the API failure before potentially slow native bookkeeping.
+      // The final log also carries the durable logical-batch count, not just
+      // a model/validation success or a commit-start marker.
+      error.details={...error.details,savedBatches:saved,modelMs,publishMs,
+        ...(currentBatch?{startIndex:currentBatch.startIndex,endIndex:currentBatch.endIndex}:{})};
+      if(op.token===epoch)summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批。${failureText(error)}`,trigger);
       if(currentBatch&&workspace?.isCurrent()&&op.token===epoch){
         const failed={...currentBatch,status:op.signal.aborted?'interrupted':'failed',error:failureText(error)};
         await workspace.update('summary-batches',rows=>rows.map(b=>b.id===failed.id?failed:b),[]).catch(()=>{});
@@ -1283,7 +1305,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function stop(){clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;automaticPaused=true;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
   const application={editPersonProfile,inspectAutomaticProgress,setAutoStartFloor,setAutomatic,processAutomatic:()=>autoSummary({force:true}),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
-    startChatTracking,followCurrentChat,reviewMemory,undoQuality,
+    startChatTracking,followCurrentChat,reviewMemory,undoQuality,readViewState,
     reportError,loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.export();},clearRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.clear();},
     async exportInjectionLog(options){assertCurrent();return injectionLog.export(options);},
     async clearInjectionLog(){assertCurrent();await injectionLog.clear();},

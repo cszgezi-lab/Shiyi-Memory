@@ -1,3 +1,4 @@
+import { readViewState } from '../src/product-view-scheduling.js';
 import { esc } from '../src/product-settings-ui.js';
 import { MERGE_STATUS } from '../src/product-event-merge.js';
 import { narrativeText } from '../src/product-narrative.js';
@@ -8,9 +9,9 @@ export function mountMergeManagement({panel,app,run,host}){
   const $=s=>panel.querySelector(s);let page=1,last='',scope='';
   $('[data-merge-retry-all]').addEventListener('click',e=>run(()=>app.retryMerges(),{name:'merge',button:e.currentTarget}));
   $('[data-merge-stop]').addEventListener('click',()=>run(()=>app.stop()));
-  $('[data-merge-filter]').addEventListener('change',()=>{page=1;paint(app.state);});
-  $('[data-merge-prev]').addEventListener('click',()=>{page--;paint(app.state);});
-  $('[data-merge-next]').addEventListener('click',()=>{page++;paint(app.state);});
+  $('[data-merge-filter]').addEventListener('change',()=>{page=1;paint(readViewState(app));});
+  $('[data-merge-prev]').addEventListener('click',()=>{page--;paint(readViewState(app));});
+  $('[data-merge-next]').addEventListener('click',()=>{page++;paint(readViewState(app));});
   function paint(s){
     const next=JSON.stringify(s.core?.scope);if(next!==scope){scope=next;page=1;last='';}
     const filter=$('[data-merge-filter]').value,all=s.merges??[];
@@ -26,7 +27,7 @@ export function mountMergeManagement({panel,app,run,host}){
       const id=row.dataset.mergeRow;
       row.querySelector('[data-merge-retry]').addEventListener('click',e=>run(()=>app.retryMerges([id]),{name:'merge',button:e.currentTarget}));
       row.querySelector('[data-merge-separate]').addEventListener('click',()=>run(async()=>{if(host.confirm?.('保持两条原记录独立？如已合并，将撤销该合并关系。'))await app.keepMergeSeparate(id);},{name:'merge'}));
-      const fill=()=>{const q=row.querySelector('[data-merge-search]').value.trim();row.querySelector('[data-merge-target]').innerHTML='<option value="">请选择</option>'+(app.state.records.events??[]).filter(e=>e.id!==id&&`${e.title??''} ${e.description??''}`.includes(q)).slice(0,30).map(e=>`<option value="${esc(e.id)}">${esc(e.title||e.description?.slice(0,80)||'事件')}</option>`).join('');};
+      const fill=()=>{const q=row.querySelector('[data-merge-search]').value.trim();row.querySelector('[data-merge-target]').innerHTML='<option value="">请选择</option>'+(readViewState(app).records.events??[]).filter(e=>e.id!==id&&`${e.title??''} ${e.description??''}`.includes(q)).slice(0,30).map(e=>`<option value="${esc(e.id)}">${esc(e.title||e.description?.slice(0,80)||'事件')}</option>`).join('');};
       row.querySelector('[data-merge-target-editor]').addEventListener('toggle',e=>{if(e.currentTarget.open)fill();});
       row.querySelector('[data-merge-search]').addEventListener('input',fill);
       row.querySelector('[data-merge-target-save]').addEventListener('click',()=>run(()=>app.chooseMergeTarget(id,row.querySelector('[data-merge-target]').value),{name:'merge'}));

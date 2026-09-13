@@ -1,6 +1,6 @@
 import { ShiyiError, SummaryResponseError } from './errors.js';
 import { clone } from './utils.js';
-import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType,upstreamErrorCode } from './diagnostics.js';
+import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType,upstreamErrorCode,upstreamErrorHint } from './diagnostics.js';
 import {scheduleDeadline} from './request-deadline.js';
 import {parseChatEventStream} from './provider-stream.js';
 
@@ -115,10 +115,10 @@ export async function parseProviderJson(response, { requireStatus = true, onMeta
   onMetadata(metadata);
   if (requireStatus && (status < 200 || status >= 300)) {
     let bodyError;const body = await readBody(response).catch(error => {bodyError=error;return '';});
-    let upstreamCode;try{upstreamCode=upstreamErrorCode(JSON.parse(body));}catch{/* no raw body retained */}
+    let upstreamCode,upstreamHint='unknown';try{const errorBody=JSON.parse(body);upstreamCode=upstreamErrorCode(errorBody);upstreamHint=upstreamErrorHint(errorBody);}catch{/* no raw body retained */}
     const header=response?.headers?.get?.('retry-after'),seconds=header&&Number(header);
     const retryAfterMs=header?(Number.isFinite(seconds)?Math.max(0,seconds*1000):Math.max(0,Date.parse(header)-Date.now())):0;
-    throw new ShiyiError(`provider returned HTTP ${status}`, 'PROVIDER_HTTP_ERROR', { ...metadata,stage:'request',reason:'http_error',bodyChars:body.length,upstreamDetailsProvided:Boolean(body.trim()),upstreamCode,causeError:bodyError,...(Number.isFinite(retryAfterMs)&&retryAfterMs>0?{retryAfterMs}: {}) });
+    throw new ShiyiError(`provider returned HTTP ${status}`, 'PROVIDER_HTTP_ERROR', { ...metadata,stage:'request',reason:'http_error',bodyChars:body.length,upstreamDetailsProvided:Boolean(body.trim()),upstreamCode,upstreamHint,causeError:bodyError,...(Number.isFinite(retryAfterMs)&&retryAfterMs>0?{retryAfterMs}: {}) });
   }
   const text = await readBody(response);
   if(allowStream&&(/event-stream/i.test(mime)||/^\s*(?::|data:|event:)/.test(text)))return parseChatEventStream(text);
@@ -141,9 +141,10 @@ export class ProviderClient {
   async request(resource, payload, { signal, timeoutMs, headers = {}, method = 'POST', requestId=diagnosticRequestId(), purpose, onDiagnostic } = {}) {
     const started=Date.now(),observer=onDiagnostic??observers.get(this.fetch);let finished=false;
     const emit=(phase,details={},level='info')=>{if(finished)return;try{observer?.({phase,level,details:{requestId,purpose:purpose??resource,modelRole:this.modelRole,elapsedMs:Date.now()-started,...details}});}catch{/* diagnostics never fail a request */}};
-    emit('request',{stage:'prepare',maxTokens:payload?.max_tokens??0,timeoutMs:timeoutMs??this.profile.timeoutMs});
+    const requestMeta={...(resource==='chat'?{streaming:payload?.stream===true}:{}),requestChars:JSON.stringify(payload??{}).length};
+    emit('request',{stage:'prepare',...requestMeta,maxTokens:payload?.max_tokens??0,timeoutMs:timeoutMs??this.profile.timeoutMs});
     try { return await this.performRequest(resource,payload,{signal,timeoutMs,headers,method,emit}); }
-    catch(thrown){const error=thrown instanceof Error?thrown:new ShiyiError('provider threw a non-Error value','PROVIDER_REQUEST_FAILED');error.details={stage:'prepare',...error.details,requestId,purpose:purpose??resource};emit(error.code==='CANCELED'?'canceled':'failed',errorDiagnostics(error),error.code==='CANCELED'?'warning':'error');throw error;}
+    catch(thrown){const error=thrown instanceof Error?thrown:new ShiyiError('provider threw a non-Error value','PROVIDER_REQUEST_FAILED');error.details={stage:'prepare',...requestMeta,...error.details,requestId,purpose:purpose??resource};emit(error.code==='CANCELED'?'canceled':'failed',errorDiagnostics(error),error.code==='CANCELED'?'warning':'error');throw error;}
     finally{finished=true;}
   }
 

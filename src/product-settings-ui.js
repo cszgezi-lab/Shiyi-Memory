@@ -59,6 +59,7 @@ const copy = {
 };
 
 export function setting(key, label, help, placeholder = '') {
+  if(key==='summaryPresets')return '<p class="sy-help">总提示词和各模块填写规则，可到“记录 → 总结预设”修改。</p>';
   const d = registry[key]; if (!d || d.persisted === false) throw new Error(`未知设置：${key}`);
   const [name, hint] = [label ?? copy[key]?.[0] ?? d.label, help ?? copy[key]?.[1] ?? ''];
   let input;

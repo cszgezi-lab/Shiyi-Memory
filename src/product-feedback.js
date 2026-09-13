@@ -1,5 +1,5 @@
 import { validationIssueText } from './validation-diagnostics.js';
-import { upstreamErrorCode } from './diagnostics.js';
+import { upstreamErrorCode,upstreamErrorHint } from './diagnostics.js';
 
 const NETWORK = {
   'network.timeout':'请求超时，请重试或调整请求超时。',
@@ -56,6 +56,12 @@ export function productFailure(error) {
   if(error?.details?.upstreamCode==='insufficient_quota')message='模型服务额度已用尽，已停止自动重试。请恢复额度或在 API 中选择可用服务；已保存记忆保留。';
   else if(status===524)message='服务网关等待模型超时（HTTP 524），不是本机回复上限不足。已返回的结果保留；等待服务恢复后可继续未完成任务，不必重做已完成阶段。';
   else if(status===429)message=error?.details?.retryAfterMs>0?'服务限流，请按接口提示等待后重试；已保存记忆保留。':'服务限流，未提供恢复时间，已停止自动重试。请稍后重试或检查服务额度；已保存记忆保留。';
+  else if([502,503,504].includes(status)){
+    const hint=error?.details?.upstreamHint;
+    const cause=({timeout:'服务报文提示上游等待超时。',overloaded:'服务报文提示模型繁忙。',connection_reset:'服务报文提示上游连接断开。',context_limit:'服务报文提示输入上下文超限。'})[hint]??'接口未提供可确认的具体原因。';
+    const label=({502:'网关错误',503:'暂时不可用',504:'网关超时'})[status];
+    message=`模型服务${label}（HTTP ${status}）。${cause}已保存批次保留，在批次管理中继续未完成任务即可，不必重新总结成功批次。${error?.details?.streaming===false&&hint==='timeout'?'可在 API → 请求设置开启总结流式接收后再试；不会自动追加收费请求。':''}`;
+  }
   if(code==='PERSISTENCE_ERROR'&&['vector_jobs','vector_index','vector_staging'].includes(error?.details?.storageArtifact)){
     message='向量本机保存未通过校验，已保存的故事记忆不受影响。可在召回 → 向量重试未完成项，无需重新总结；具体保存阶段见日志。';
   }
@@ -88,6 +94,6 @@ export function providerEnvelopeFailure(response) {
   const rawStatus=response?.status??response?.error?.status??String(response?.message??'').match(/\b(?:HTTP(?:\s+error)?|status(?:\s+code)?)\s*[:=]?\s*([45]\d\d)\b/i)?.[1];
   const status=Number(rawStatus);
   const upstreamCode=upstreamErrorCode(response);
-  return Object.assign(new Error('模型服务返回错误'),{code,details:{...(Number.isInteger(status)&&status>=400&&status<=599?{status}:{}),...(upstreamCode?{upstreamCode}:{})}});
+  return Object.assign(new Error('模型服务返回错误'),{code,details:{...(Number.isInteger(status)&&status>=400&&status<=599?{status}:{}),...(upstreamCode?{upstreamCode}:{}),upstreamHint:upstreamErrorHint(response)}});
 }
 export const modelListFailure = providerEnvelopeFailure;

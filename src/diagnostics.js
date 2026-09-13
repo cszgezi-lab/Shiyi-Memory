@@ -31,6 +31,19 @@ export function upstreamErrorCode(value){
   const recognized=candidates.map(code=>code==='quota_exceeded'?'insufficient_quota':code).filter(code=>typeof code==='string'&&Object.hasOwn(UPSTREAM_CODES,code));
   return recognized.includes('insufficient_quota')?'insufficient_quota':recognized[0];
 }
+// Interpret only the service's error fields, never generated model content.
+// Persist fixed labels rather than raw messages (which may echo keys/prompts).
+// These are reported causes, not proof inferred from HTTP 502 or elapsed time.
+export const UPSTREAM_HINTS=Object.freeze({timeout:'服务报文提到上游等待超时',overloaded:'服务报文提到模型繁忙',connection_reset:'服务报文提到上游连接断开',context_limit:'服务报文提到输入上下文超限',unknown:'服务未提供可识别的原因'});
+export function upstreamErrorHint(value){
+  const fields=[value?.error?.message,value?.error?.code,value?.error?.type,typeof value?.error==='string'?value.error:null,value?.message,value?.code];
+  const text=fields.filter(v=>typeof v==='string').map(v=>v.slice(0,4096)).join(' ');
+  if(/context_length_exceeded|maximum context length|context (?:window|length|limit).{0,40}(?:exceed|limit)|上下文.{0,12}(?:超限|超过)/i.test(text))return 'context_limit';
+  if(/\b(?:timeout|timed out|deadline exceeded|DEADLINE_EXCEEDED)\b|(?:请求|上游|等待|连接)超时/i.test(text))return 'timeout';
+  if(/\b(?:overloaded|overload|model is busy|capacity exhausted)\b|(?:模型|服务).{0,4}(?:繁忙|过载)/i.test(text))return 'overloaded';
+  if(/\b(?:ECONNRESET|connection reset|unexpected EOF|connection closed|socket hang up)\b|上游连接.{0,4}(?:断开|关闭|重置)/i.test(text))return 'connection_reset';
+  return 'unknown';
+}
 export const DIAGNOSTIC_ACTIONS=Object.freeze({open:'打开聊天',refresh:'刷新记忆',saveSettings:'保存设置',saveApi:'保存 API',forgetKey:'清除密钥',editRecord:'修改记忆',editPersonProfile:'修改人物档案',deleteRecord:'删除记忆',deleteRecords:'批量删除记忆',remember:'新增记忆',manageBatches:'管理总结批次',deleteBatch:'删除批次',regenerateBatch:'重新总结',retryBatch:'重试总结',retryIncompleteBatches:'重试未完成批次',saveModule:'保存扩展模块',editModuleRecord:'修改扩展记忆',rememberModule:'新增扩展记忆',importModules:'导入模块',exportModules:'导出模块',inspectMvu:'读取 MVU',syncModules:'同步 MVU',applyProposal:'应用助手方案',undoSettings:'撤销配置',saveDictionaryEntry:'修改字典',exportBackup:'导出聊天备份',exportGlobalBackup:'导出全局备份',setAutoStartFloor:'设置自动总结起点',setAutomatic:'配置自动总结',processAutomatic:'执行自动总结',setDraft:'保存助手草稿',newConversation:'新建助手对话',selectConversation:'切换助手对话',deleteConversation:'删除助手对话',hideRecord:'排除记忆',restoreHidden:'恢复被排除记忆',removeDocument:'删除知识库资料',updateDocument:'更新知识库资料',stop:'停止任务',disable:'暂停插件'});
 const files=new Set(['summary-planner.js','request-deadline.js','provider.js','summary-stages.js','summary-context.js','summary-reference-repair.js','summary-engine.js','summary-recovery.js','contracts.js','repository.js','reliable-storage.js','host-adapter.js','product-application.js','product-workspace.js','product-network.js','product-shell-controller.js','product-host-adapters.js','product-view.js','product-runtime-log.js','product-model-list.js','product-vector-indexer.js','product-vector-cache.js','product-vector-storage.js','product-dictionary.js','product-event-merge.js','product-credentials.js','product-global-settings.js','product-module-controller.js','diagnostics.js']);
 const errorTypes=new Set(['Error','TypeError','SyntaxError','RangeError','AbortError','DOMException','ShiyiError','SummaryResponseError','ValidationError','PersistenceError','ScopeConflictError','RevisionConflictError']);
@@ -50,6 +63,7 @@ export function safeDiagnosticFields(value={}){
   if(typeof value?.requestId==='string'&&/^req-[a-z0-9]{1,16}-[a-z0-9]{1,10}$/.test(value.requestId))result.requestId=value.requestId;
   if(errorTypes.has(value?.errorType))result.errorType=value.errorType;
   if(Object.hasOwn(UPSTREAM_CODES,value?.upstreamCode))result.upstreamCode=value.upstreamCode;
+  if(Object.hasOwn(UPSTREAM_HINTS,value?.upstreamHint))result.upstreamHint=value.upstreamHint;
   if(Object.hasOwn(DIAGNOSTIC_ACTIONS,value?.action))result.action=value.action;
   for(const key of ['bodyChars','jsonPosition','jsonLine','jsonColumn','choicesCount','toolCallsCount','attempt','repairCategoriesCount','timeoutMs','retryAfterMs','validationIssuesOmitted','stackFramesOmitted','causeCount'])if(Number.isSafeInteger(value?.[key])&&value[key]>=0)result[key]=value[key];
   for(const key of ['statusKnown','upstreamDetailsProvided'])if(typeof value?.[key]==='boolean')result[key]=value[key];

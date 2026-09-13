@@ -1,3 +1,4 @@
+import { frameScheduler } from './product-view-scheduling.js';
 const STORAGE_KEY = 'shiyi-memory-floating-ui-v1';
 const clamp = (value, low, high) => Math.min(Math.max(value, low), Math.max(low, high));
 const ratio = value => Number.isFinite(value) ? clamp(value, 0, 1) : null;
@@ -64,6 +65,7 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onOpen
   toggleLabel.append(toggle, documentRef.createTextNode(' 显示悬浮按钮')); shortcut.append(shortcutButton, toggleLabel);
   documentRef.getElementById('extensions_settings2')?.appendChild(shortcut);
   let disposed = false, raf = null, unsubscribe = null;
+  const cancelDrags = [];
   const cleanup = [];
   function listen(target, type, fn, options) { target?.addEventListener?.(type, fn, options); cleanup.push(() => target?.removeEventListener?.(type, fn, options)); }
   listen(stopButton,'click',onStop);
@@ -98,6 +100,7 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onOpen
   }
   function layout() {
     if (disposed) return;
+    for (const cancel of cancelDrags) cancel();
     const frame = frameFor(windowEl);
     // Leave room to drag even on a narrow screen; content scrolls below the grip.
     setPx(windowEl, 'width', Math.min(660, frame.width));
@@ -133,24 +136,37 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onOpen
   }
   function draggable(handle, element, kind, tap) {
     let drag = null, suppressClick = false;
+    const motion = frameScheduler(win, () => {
+      if (drag?.moved) element.style.transform = `translate3d(${drag.nextX - drag.left}px, ${drag.nextY - drag.top}px, 0)`;
+    });
+    const resetMotion = () => { motion.cancel(); element.style.transform = ''; element.style.willChange = ''; };
+    const cancelDrag = () => { if (drag) { drag = null; suppressClick = true; resetMotion(); } };
+    cancelDrags.push(cancelDrag); cleanup.push(() => { cancelDrag(); motion.dispose(); });
+    function track(event) {
+      const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+      if (Math.hypot(dx, dy) >= 6) drag.moved = true;
+      drag.nextX = clamp(drag.left + dx, drag.frame.x, drag.frame.x + Math.max(0, drag.frame.width - drag.width));
+      drag.nextY = clamp(drag.top + dy, drag.frame.y, drag.frame.y + Math.max(0, drag.frame.height - drag.height));
+    }
     listen(handle, 'pointerdown', event => {
       if (event.isPrimary === false || event.button !== 0) return;
+      cancelDrag();
       const r = element.getBoundingClientRect(); suppressClick = false;
-      drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: r.left, top: r.top, moved: false };
+      drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: r.left, top: r.top, width:r.width, height:r.height, frame:frameFor(element), nextX:r.left, nextY:r.top, moved: false };
       try { handle.setPointerCapture(event.pointerId); } catch { /* fallback listeners still work */ }
       event.preventDefault();
     });
     listen(handle, 'pointermove', event => {
       if (!drag || drag.id !== event.pointerId) return;
-      const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
-      if (Math.hypot(dx, dy) >= 6) drag.moved = true;
-      if (drag.moved) { event.preventDefault(); move(element, kind, drag.left + dx, drag.top + dy); }
+      track(event);
+      if (drag.moved) { event.preventDefault(); element.style.willChange = 'transform'; motion.request(); }
     });
     const finish = event => {
       if (!drag || drag.id !== event.pointerId) return;
-      const previous = drag; drag = null; suppressClick = previous.moved;
+      if (event.type === 'pointerup') track(event);
+      const previous = drag; drag = null; suppressClick = previous.moved; resetMotion();
       if (event.type === 'pointercancel') { suppressClick = true; place(element, preferences[kind]); }
-      else if (previous.moved) { const r = element.getBoundingClientRect(); move(element, kind, r.left, r.top, true); }
+      else if (previous.moved) move(element, kind, previous.nextX, previous.nextY, true);
       try { handle.releasePointerCapture(event.pointerId); } catch { /* already released */ }
       if (event.type === 'pointerup' && !previous.moved && tap) {
         // Some Android WebViews suppress/delay the compatibility click after
@@ -161,7 +177,7 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onOpen
       }
     };
     listen(handle, 'pointerup', finish); listen(handle, 'pointercancel', finish);
-    listen(handle, 'lostpointercapture', event => { if (drag?.id === event.pointerId) { drag = null; suppressClick = true; place(element, preferences[kind]); } });
+    listen(handle, 'lostpointercapture', event => { if (drag?.id === event.pointerId) { cancelDrag(); place(element, preferences[kind]); } });
     listen(handle, 'click', event => { if (suppressClick && event.detail !== 0) { suppressClick = false; event.preventDefault(); return; } tap?.(); });
     listen(handle, 'keydown', event => {
       const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
@@ -179,9 +195,14 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onOpen
   listen(content,'focusin',schedule);
   // Ignore our own left/top writes in both our observer and TT's subscription:
   // otherwise reapplying saved coordinates would snap an active drag back.
-  let geometrySignature = JSON.stringify([frameFor(windowEl), frameFor(launcher)]);
+  // Own position/transform writes cannot affect insets. Check cheap inline inputs
+  // first so neither our observer nor TT's subscription forces layout per move.
+  const geometryInputs = () => JSON.stringify([documentRef.documentElement.style.cssText, documentRef.documentElement.className,
+    documentRef.documentElement.getAttribute('data-tt-ime-active'), ...[windowEl,launcher].map(el => [el.className,el.getAttribute('data-tt-ime-active'),
+      el.style.getPropertyValue('--tt-viewport-bottom-inset'),el.style.getPropertyValue('--tt-ime-bottom')])]);
+  let geometrySignature = geometryInputs();
   function geometryChanged() {
-    const next = JSON.stringify([frameFor(windowEl), frameFor(launcher)]);
+    const next = geometryInputs();
     if (next !== geometrySignature) { geometrySignature = next; schedule(); }
   }
   let observer;

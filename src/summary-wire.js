@@ -86,7 +86,7 @@ export function unwrapModuleSummaryResponse(output) {
   return bundle;
 }
 
-function normalizeWholeSourceRef(ref,sourceMessages,{confirmedWholeEvent=false}={}) {
+function normalizeWholeSourceRef(ref,sourceMessages,{confirmedWholeEvent=false,confirmedWholeRecord=false}={}) {
   if(!isPlainObject(ref))return ref;
   const matches=sourceMessages.filter(m=>m.id===ref.sourceId);
   if(matches.length!==1||matches[0].fragmentId!=null)return ref;
@@ -101,7 +101,12 @@ function normalizeWholeSourceRef(ref,sourceMessages,{confirmedWholeEvent=false}=
   // If that SAME whole floor also has an exact, unfragmented floor-summary
   // locator, an extra textual event annotation can use the parent evidence.
   // This never establishes floor coverage and never resolves real fragments.
-  const eventAnnotation=confirmedWholeEvent&&typeof hint==='string'&&hint.trim()===hint&&hint.length>=2&&hint.length<=80;
+  // Apply the same parent-floor rule to a Chinese human annotation on any
+  // non-floor module. A real/ambiguous fragment never reaches here; unknown
+  // machine-looking IDs remain invalid. This supplies no new coverage,
+  // epistemic status or source ID, and hash/version checks still run later.
+  const annotatedRecord=confirmedWholeRecord&&typeof hint==='string'&&/[\u3400-\u9fff]/u.test(hint);
+  const eventAnnotation=(confirmedWholeEvent||annotatedRecord)&&typeof hint==='string'&&hint.trim()===hint&&hint.length>=2&&hint.length<=80;
   if(hint!==null&&hint!==''&&!literal&&!eventAnnotation)return ref;
   const normalized={...ref};delete normalized.fragmentId;return normalized;
 }
@@ -131,7 +136,7 @@ export function expandModuleSummary(output,sourceMessages=[]) {
         delete row.sourceId;delete row.fragmentId;
       }else if(category==='summaryView')fail(`summaryView[${i}].sourceId`,'source_mismatch');
       if(Array.isArray(row.sourceRefs))row.sourceRefs=row.sourceRefs.flatMap(ref=>isPlainObject(ref)&&Object.keys(ref).length===1&&Array.isArray(ref.sourceRefs)&&ref.sourceRefs.length?ref.sourceRefs:[ref])
-        .map(ref=>normalizeWholeSourceRef(ref,sourceMessages,{confirmedWholeEvent:category==='events'&&wholeFloors.has(ref?.sourceId)}));
+        .map(ref=>normalizeWholeSourceRef(ref,sourceMessages,{confirmedWholeEvent:category==='events'&&wholeFloors.has(ref?.sourceId),confirmedWholeRecord:category!=='summaryView'&&wholeFloors.has(ref?.sourceId)}));
       if(!Object.hasOwn(row,'id')&&category!=='events')row.id=`module-${category}-${i}`;
       return row;
     });
@@ -166,13 +171,13 @@ export function normalizedModuleSourceRefs(output,expanded) {
 
 export function moduleLinkNormalization(output,expanded,sourceMessages=[]){
   if(!isModuleSummaryWire(output))return {};
-  let wholeFloorEventAnnotations=0;
+  let wholeFloorEventAnnotations=0,wholeFloorRecordAnnotations=0;
   const resolvedSourceTextHints=['events','summaryView',...Object.values(categories)].reduce((n,k)=>n+(output[k]??[]).reduce((sum,row,i)=>{
     const before=row.sourceId?[{sourceId:row.sourceId,fragmentId:row.fragmentId}]:row.sourceRefs;
     return sum+(Array.isArray(before)?before:[]).filter((ref,j)=>{
       if(!(typeof ref?.fragmentId==='string'&&ref.fragmentId.length>0&&expanded[k]?.[i]?.sourceRefs?.[j]?.sourceId===ref.sourceId&&expanded[k][i].sourceRefs[j].fragmentId===undefined))return false;
       const text=sourceMessages.find(m=>m.id===ref.sourceId)?.text,hint=ref.fragmentId;
-      if(k==='events'&&sourceMessages.length&&!(typeof text==='string'&&text.indexOf(hint)>=0&&text.indexOf(hint)===text.lastIndexOf(hint))){wholeFloorEventAnnotations++;return false;}
+      if(k!=='summaryView'&&sourceMessages.length&&!(typeof text==='string'&&text.indexOf(hint)>=0&&text.indexOf(hint)===text.lastIndexOf(hint))){if(k==='events')wholeFloorEventAnnotations++;else wholeFloorRecordAnnotations++;return false;}
       return true;
     }).length;
   },0),0);
@@ -181,6 +186,7 @@ export function moduleLinkNormalization(output,expanded,sourceMessages=[]){
     ...(unwrappedSourceGroups?{unwrappedSourceGroups}:{}),
     ...(resolvedSourceTextHints?{resolvedSourceTextHints}:{}),
     ...(wholeFloorEventAnnotations?{wholeFloorEventAnnotations}:{}),
+    ...(wholeFloorRecordAnnotations?{wholeFloorRecordAnnotations}:{}),
     ...(!Object.hasOwn(output,'format')?{inferredModuleFormats:1}:{}),
     linkedEventSources:(output.events??[]).filter((e,i)=>!Object.hasOwn(e,'sourceRefs')&&!Object.hasOwn(e,'sourceId')&&expanded.events[i]?.sourceRefs?.length).length,
     unknownEventPerspectives:(output.events??[]).filter((e,i)=>!Object.hasOwn(e,'perspective')&&expanded.events[i]?.perspective==='unknown').length,

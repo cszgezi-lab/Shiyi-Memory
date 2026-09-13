@@ -65,11 +65,11 @@ export function memoryCards(records = {}, { hidden = [], knowledge = [], include
       const description = recordDescription({...record,category});
       const card={ ...enrichRetrievalMetadata(clone(record),[description,...(record.keyDialogues??[]).map(q=>q.text)].join('\n')), id: record.id, category, description, awareness, followUps, temporal: record.temporal ?? record.storyTime ?? record.time ?? null };
       if(category==='events' && awareness.length!==associated.length)card.associationReviewCount=associated.length-awareness.length;
-      if(category==='summaryView'||['relationshipChanges','personaChanges','commitmentChanges','performanceHints','conflicts'].includes(category)){
+      if(category==='summaryView'||['awarenessChanges','relationshipChanges','personaChanges','commitmentChanges','performanceHints','conflicts'].includes(category)){
         const explicit=links(record);
         // Old summaries can reconnect by exact frozen source, never by names,
         // similar text, floor number alone, or memories in another chat.
-        const related=explicit.length?explicit.map(id=>eventById.get(id)).filter(Boolean):category==='summaryView'?eventsBySource((record.sourceRefs??[]).map(r=>r.sourceId)).filter(e=>sharesSource(e,record)):[];
+        const related=explicit.length?explicit.map(id=>eventById.get(id)).filter(e=>e&&(category!=='awarenessChanges'||awarenessAssociationSupported(record,e))):category==='summaryView'?eventsBySource((record.sourceRefs??[]).map(r=>r.sourceId)).filter(e=>sharesSource(e,record)):[];
         const notLater=a=>{const floors=sourceFloors(a);return Number.isInteger(record.floorIndex)&&floors.length?Math.max(...floors)<=record.floorIndex:sharesSource(a,record)&&(a.sourceRefs??[]).length===1;};
         // A missing event ID must not make independently sourced knowledge
         // disappear. Attach only to its exact frozen floor, never invent an
@@ -358,13 +358,40 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   }
   const memoryUnits=memoryCount?estimateUnits(content):0;
   const eventPacket=compileEventPacket(packetEntries);
-  content=packed.length?[packetHeader,characterText,eventPacket.text].filter(Boolean).join('\n\n'):'';
+  // Dossiers include each actor's knowledge in full. A knowledge row selected
+  // there must not become an unexplained “knows about it” when its event falls
+  // outside ordinary top-K. Resolve only the already checked explicit links,
+  // locally, once per event, and never re-enable hidden/deleted event cards.
+  const packedIds=new Set(packed.map(r=>r.id)),eventLookup=new Map(selected.filter(c=>c.category==='events').map(c=>[c.id,c]));
+  const relevantContextIds=new Set(candidates.filter(c=>!nameOnly.has(c.id)).map(c=>c.id));
+  const knowledgeContext=new Map(),unresolvedKnowledge=[];
+  const recalledKnowledge=new Map(packed.flatMap(c=>c.category==='awarenessChanges'?[c]:(c.awareness??[])).map(row=>[row.id,row]));
+  for(const row of recalledKnowledge.values()){
+    const ids=[...new Set([row.eventRef,row.eventId,row.sourceEventId,row.recordRef,...(row.eventRefs??[])].filter(Boolean))];
+    let resolved=false;
+    for(const id of ids){
+      const event=eventLookup.get(id);
+      if(!event||!(event.awareness??[]).some(a=>a.id===row.id))continue;
+      resolved=true;
+      // Full dossiers can mention a lifetime of unrelated facts. Concrete
+      // propositions already explain themselves; don't import all those past
+      // events merely because the holder's name appeared. Vague legacy rows
+      // need their explicit referent even if it missed ordinary retrieval.
+      const vague=/^(?:(?:知道|了解|听说|得知|不知|不清楚|明白|目睹|获知)了?)?(?:这|那|此|该|相关|某|一些|整个|具体|其中|发生的|之前的|所有|的|个|件)*(?:事|事情|事件|情况|详情|经过|秘密|信息|内容|真相)[。.!！]?$/u.test(String(row.knowledge??'').trim());
+      if(!packedIds.has(id)&&(relevantContextIds.has(id)||vague))knowledgeContext.set(id,event);
+    }
+    if(!resolved)unresolvedKnowledge.push(row.id);
+  }
+  const contextText=knowledgeContext.size?['[知情所指的事件背景：仅解释具体事实的来龙去脉，不扩大任何角色的知情范围；知情状态仍以人物条目为准。]',...[...knowledgeContext.values()].map(event=>renderMemoryCard(event,{...settings,timeProtection:true},{body:event.recallSummary||event.description,query:focusQuery}))].join('\n\n'):'';
+  content=packed.length?[packetHeader,characterText,eventPacket.text,contextText].filter(Boolean).join('\n\n'):'';
   result.trace.index = prepared?.stats ?? { status: 'uncached', size: selected.length };
   result.trace.dictionary={matched:matched.terms,ambiguous:lexicon.entries.filter(e=>e.ambiguous.length).length};
   result.trace.evidence={quarantinedLinks:selected.reduce((n,c)=>n+(c.associationReviewCount??0),0)};
   result.trace.characters={mode:'full',people:characters.people,records:characterChosen.length,units:estimateUnits(characterText),truncated:false};
-  result.trace.packing={selected:packed.length,memorySelected:memoryCount,memoryUnits,expanded:0,excerpts,brief:memoryCount-excerpts,omitted:omitted.length,duplicates:decisions.filter(d=>d.status==='duplicate').length,decisions};
+  result.trace.knowledgeContext={eventIds:[...knowledgeContext.keys()],units:estimateUnits(contextText),unresolvedRecordIds:unresolvedKnowledge,mode:'explicit_link_brief',extraModelCalls:0};
+  for(const event of knowledgeContext.values())decisions.push({id:event.id,title:recordTitle(event),category:'events',status:'selected',detail:'knowledge_context',reason:'解释已注入知情的明确关联事件'});
+  result.trace.packing={selected:packed.length+knowledgeContext.size,memorySelected:memoryCount,memoryUnits,expanded:0,excerpts,brief:memoryCount-excerpts,omitted:omitted.length,duplicates:decisions.filter(d=>d.status==='duplicate').length,decisions};
   result.trace.packing.eventPacket={groups:eventPacket.groups,groupedRecords:eventPacket.groupedRecords,sharedLines:eventPacket.sharedLines,beforeChars:eventPacket.beforeChars,afterChars:eventPacket.afterChars,savedChars:eventPacket.savedChars};
   result.trace.timings.recallMs = (globalThis.performance?.now?.() ?? Date.now()) - startedAt;
-  return { status: 'preview', previewOnly: true, sent: false, degraded: result.trace.degraded, text: content, cards: packed, usedUnits: content ? estimateUnits(content) : 0, omitted, trace: result.trace };
+  return { status: 'preview', previewOnly: true, sent: false, degraded: result.trace.degraded, text: content, cards: [...packed,...knowledgeContext.values()], usedUnits: content ? estimateUnits(content) : 0, omitted, trace: result.trace };
 }

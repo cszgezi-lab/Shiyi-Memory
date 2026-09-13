@@ -1,3 +1,4 @@
+import { readViewState } from '../src/product-view-scheduling.js';
 import { esc,field } from '../src/product-settings-ui.js';
 import { characterProfiles } from '../src/product-person-profiles.js';
 import { sha256 } from '../src/utils.js';
@@ -12,13 +13,13 @@ export function mountPersonEditor({panel,app,run}){
   function capture(){for(const el of editor.querySelectorAll('[data-profile-row]')){const r=rows[Number(el.dataset.profileRow)];r.field=el.querySelector('[data-profile-field]').value;r.text=el.querySelector('[data-profile-text]').value;r.format=el.querySelector('[data-profile-format]').value;r.remove=el.querySelector('[data-profile-remove]').checked;}}
   function reattach(){
     if(!editor)return;
-    if(scope!==JSON.stringify(app.state.core?.scope)||!app.state.chatReady){close();return;}
+    if(scope!==JSON.stringify(readViewState(app).core?.scope)||!readViewState(app).chatReady){close();return;}
     const card=[...panel.querySelectorAll('[data-profile]')].find(el=>el.dataset.profile===subject);
     if(card&&!card.contains(editor))card.append(editor);
   }
   function open(name){
-    close();const profile=characterProfiles(app.state.cards).find(p=>p.subject===name);if(!profile)return;
-    subject=name;scope=JSON.stringify(app.state.core?.scope);
+    close();const profile=characterProfiles(readViewState(app).cards).find(p=>p.subject===name);if(!profile)return;
+    subject=name;scope=JSON.stringify(readViewState(app).core?.scope);
     rows=profile.fields.flatMap(f=>f.versions.map(v=>({field:f.key,text:typeof v.value==='string'?v.value:JSON.stringify(v.value,null,2),format:typeof v.value==='string'?'text':'json',source:sourceLabel({sourceRefs:v.records.flatMap(r=>r.sourceRefs??[])}),records:v.records.map(r=>({id:r.id,expected:sha256(r)})),remove:false})));
     editor=panel.ownerDocument.createElement('div');editor.className='sy-profile-editor';editor.dataset.personEditor=name;render();
     editor.addEventListener('input',capture);editor.addEventListener('change',capture);

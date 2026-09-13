@@ -3,8 +3,9 @@ import {estimateUnits} from './utils.js';
 
 // Product-owned configuration guides. They describe implemented capabilities,
 // not uploaded files, private prompts, credentials, or external agent skills.
-export const ASSISTANT_SKILL_VERSION='1.14';
+export const ASSISTANT_SKILL_VERSION='1.15';
 export const ASSISTANT_SKILLS=Object.freeze([
+  {id:'summary-presets',title:'玩家自定义总结预设',text:'记录→总结预设提供全局的总提示词、九模块规则、填写示例和发送预览；可复制、编辑、恢复推荐、导入导出 JSON，保存并启用后才对新批次生效。手动与自动共用；不会增加模型调用，正在运行的批次及其续跑用冻结规则。普通人物属性允许任意中文字段；新增独立区块仍使用扩展模块接口。预设不改变技术字段/来源校验/MVU只读权限。summaryPresets 是受校验的完整 JSON 预设库，不应凭空拼写或用 recordingRules 冒充修改预设；需要精细改提示词时引导用户打开预设编辑器。事件纪要和召回速览分开写，知情必须是具体命题而非“了解情况”；对应事件的 eventRef 只是背景关联，不表示角色知道该事件全部事实。'},
   {id:'summary-stream',title:'后台总结的流式接收',text:'summaryStreaming 是 API 全局设置，控制总结与辅助复核的 OpenAI 兼容流式接收。不开新请求、不改模型、不降低回复上限；API 支持时分段传输能尽早开始接收，降低长时间空等遇到网关超时的风险，但不保证所有代理服务兼容。服务忽略 stream 并返回普通 JSON 时沿原流程处理。等待全部响应、结束标记和来源校验后才发布，断流或输出截断不会把半份记忆当成成功。已完成阶段仍可从恢复缓存继续，失败重试可能收费，不谎称免费；不自动追加第三次修复请求。日志显示是否流式及片段数，不保存推理文本、API Key 或原始聊天正文。此设置不改变召回超时或前台聊天 API。'},
   {id:'source-evidence',title:'原文依据与后台质量优先',text:'后台总结允许较长时间，summaryDeadlineMs单独控制总结/复核请求，不延长召回。主总结和复核等待时，聊天使用上一份完整已提交记忆；不把待修草稿混入注入。新完成批次的楼层摘要由程序绑定本楼冻结原文，查看原文依据可展开核对，旧记录没有原文依据时不能谎称已补齐。原文只增加本地关键词索引，不直接追加到向量正文或下一次总结上下文；重排与注入按本次问题选取原文段落，保留相邻上下文，沿用原有事件注入预算，超额整段不带入，不截掉句尾限制。注入日志中原文补充未覆盖的检索细节/source_evidence表示引入了有来源的补充，不能当成模型已提取完整或所有角色知情。原文依据随正式楼层记录进入聊天备份，可能增加备份体积；隐藏/删除/替换批次和切换聊天遵循现有隔离。它不能自动纠正模型正文里的事实错误，内容复核仍必需。'},
   {id:'verification',title:'完整总结与查漏纠错（候选）',text:'summaryReviewEnabled 开启后覆盖旧分工模式，一批预算内最多两次：总结模型先完整记录全部九模块，辅助整理模型对照完整原文仅提交纠错与补漏，不重新替换七个模块。程序为原文片段编号，复核引用片段号，程序从冻结原文取回依据；不能编造时间、知情或作用范围。不追加自动合并、独立校对和格式修复请求，不暗中拆批。summaryDeadlineMs 是后台总结和复核的独立等待时间，默认单次5分钟，可修改；不延长召回超时。主响应与已核对的补丁保留在私有恢复缓存，单个补丁失败不会丢掉其他改动，重试只修未完成的复核。缓存不是正式记忆，未完成内容不进入向量与注入；完整来源与结构校验通过才原子发布，旧成功记忆始终保留。两个结果已返回而保存失败只重试保存。原文变化使旧结果失效。校验通过不等于语义完全无漏。当前仍是未通过完整真实质量验收的候选，不替用户自动打开。选择辅助模型使用既有 supplement 配置，沿用总结连接时辅助模型可独立选或留空继承。'},
@@ -30,7 +31,7 @@ export function assistantBootstrap(input,{modules=[],budgetUnits=16000}={}){
     boundary:'这里只包含区块定义，不包含变量值或Key；不是修改授权。已提供的规则和区块无需重复read_skill/list_modules。仅修改区块时不必读取无关settings；其他规则仍可按需读取。MVU绑定仍须inspect_mvu，不能猜路径。生成方案后等待用户确认。'};
   return estimateUnits(JSON.stringify(value))<=Math.min(3000,Math.max(0,Math.floor(budgetUnits*0.2)))?value:null;
 }
-export function assistantSettings(settings){return Object.values(PRODUCT_SETTING_REGISTRY).filter(d=>d.persisted!==false).map(({key,label,type,min,max,values,maxLength,defaultValue})=>({key,label,type,min,max,values,maxLength,recommended:defaultValue,current:settings[key]}));}
+export function assistantSettings(settings){return Object.values(PRODUCT_SETTING_REGISTRY).filter(d=>d.persisted!==false).map(({key,label,type,min,max,values,maxLength,defaultValue})=>({key,label,type,min,max,values,maxLength,recommended:defaultValue,current:key==='summaryPresets'?(settings[key]?'已配置预设库；在记录→总结预设编辑（不向助手重复发送全部预设）':'使用内置推荐预设'):settings[key]}));}
 // Explicit one-click preset: no API, Key, document choice, custom rules, or
 // automatic paid jobs. Existing installations are never migrated onto it.
 export const RECOMMENDED_MEMORY_SETTINGS=Object.freeze(Object.fromEntries([

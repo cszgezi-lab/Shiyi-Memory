@@ -4,6 +4,7 @@ import {
   SUMMARY_OUTPUT_CONTRACT,
 } from './contracts.js';
 import { MemoryRepository } from './repository.js';
+import { freezeSummaryRules } from './summary-presets.js';
 import { LocalBM25Index, retrieveAndPack } from './retrieval.js';
 import { SummaryEngine } from './summary-engine.js';
 import { HostAdapter } from './host-adapter.js';
@@ -537,7 +538,7 @@ export function createProductShellController({
       inputBudget: state.settings.inputBudgetUnits,
       outputBudget: state.settings.outputBudgetUnits,
       outputReserveUnits: 0,
-      recordingRules: [state.settings.recordingRules, runtimeRules()].filter(Boolean).join('\n'),
+      recordingRules: freezeSummaryRules([state.settings.recordingRules, runtimeRules()].filter(Boolean).join('\n'),state.settings.summaryPresets),
       trigger,
     });
     const preflightAbort=new AbortController();abortController=preflightAbort;activeTask=operationId;

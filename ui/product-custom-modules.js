@@ -1,3 +1,4 @@
+import { readViewState } from '../src/product-view-scheduling.js';
 import { esc,field,button } from '../src/product-settings-ui.js';
 import { recordDescription } from '../src/product-memory.js';
 import { moduleBinding } from '../src/product-custom-modules.js';
@@ -28,7 +29,7 @@ export function mountCustomModules({panel,app,run,host,onAssistant,download}){
   let editing=null,recordEdit=null,fieldDefs=[],lastList='';
   const action=(name,fn)=>$(`[data-action="${name}"]`)?.addEventListener('click',()=>run(fn,{name:`custom-${name}`}));
   function fields(){
-    const mode=$('[data-module-mode]').value,paths=app.state.mvuPaths??[];
+    const mode=$('[data-module-mode]').value,paths=readViewState(app).mvuPaths??[];
     $('[data-module-fields]').innerHTML=fieldDefs.map((f,i)=>`<div class="sy-card" data-field-row="${i}">${field('字段名称',`<input data-field-label value="${esc(f.label)}" maxlength="80">`)}${field('字段类型',`<select data-field-type>${[['text','文字'],['number','数值'],['boolean','开关']].map(([v,l])=>`<option value="${v}" ${f.type===v?'selected':''}>${l}</option>`).join('')}</select>`)}${mode==='mvu'?field('MVU 变量',`<select data-field-path><option value="">先读取变量，然后选择</option>${[...(f.path&&!paths.some(p=>JSON.stringify(p.path)===JSON.stringify(f.path))?[{path:f.path}]:[]),...paths].map(p=>`<option value="${esc(JSON.stringify(p.path))}" ${JSON.stringify(f.path)===JSON.stringify(p.path)?'selected':''}>${esc(p.path.join(' → '))}</option>`).join('')}</select>`):''}<button type="button" data-remove-field="${i}">移除字段</button></div>`).join('');
     for(const b of root.querySelectorAll('[data-remove-field]'))b.addEventListener('click',()=>{captureFields();fieldDefs.splice(Number(b.dataset.removeField),1);fields();});
   }
@@ -48,7 +49,7 @@ export function mountCustomModules({panel,app,run,host,onAssistant,download}){
   function paint(s){
     const modules=s.modules??[];$('[data-module-count]').textContent=String(modules.filter(m=>!m.archived).length);
     $('[data-mvu-status]').textContent=({no_chat:'加载当前聊天后可读取 MVU。',unavailable:'尚未检测到 MVU，请确认角色卡的变量框架已运行。',empty:'最近楼层尚无 MVU 数据。',ready:'已读取 MVU，只读同步；不会改写原变量。',error:'MVU 读取失败，当前值未更新。'})[s.mvuStatus]??'';
-    const signature=JSON.stringify([modules,s.cards.filter(c=>c.customModuleId),s.moduleSnapshots,s.moduleCurrent,s.stale]);if(signature===lastList)return;lastList=signature;
+    const signature=JSON.stringify([modules,s.cardRevision??s.cards.filter(c=>c.customModuleId),s.moduleSnapshots,s.moduleCurrent,s.stale]);if(signature===lastList)return;lastList=signature;
     const expanded=new Set([...root.querySelectorAll('details[data-module-id][open]')].map(e=>e.dataset.moduleId));
     $('[data-module-list]').innerHTML=modules.filter(m=>!m.archived).map(m=>{
       const cards=s.cards.filter(c=>c.customModuleId===m.id),history=(s.moduleSnapshots??[]).filter(r=>r.moduleId===m.id&&r.definition===moduleBinding(m));

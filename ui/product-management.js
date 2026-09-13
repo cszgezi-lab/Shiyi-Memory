@@ -1,3 +1,4 @@
+import { readViewState } from '../src/product-view-scheduling.js';
 import { esc,button,field,setting } from '../src/product-settings-ui.js';
 import { CATEGORY_LABELS,recordDescription,readable,renderMemoryCard } from '../src/product-memory.js';
 import { characterProfiles,factValue,factSubject,factKey } from '../src/product-person-profiles.js';
@@ -17,6 +18,9 @@ export function memoryListHTML(cards,{settings={},q='',category='all',opened=new
   const rows=[];
   const open=id=>opened.has(id)?'open':'';
   for(const c of base){
+    // Stop constructing full narratives once the existing 100-row UI limit is
+    // reached. All records remain searchable/stored and available for recall.
+    if(rows.length>100)break;
     if(category!=='all'&&category!==c.category)continue;
     const profile=byRecord.get(c.id);
     if(profile){
@@ -30,7 +34,7 @@ export function memoryListHTML(cards,{settings={},q='',category='all',opened=new
     const meta=renderMemoryCard(c,settings,{metadataOnly:true,detail:true});
     const original=originalSourceText(c);
     const originalHTML=original?`<details data-memory-detail="${esc(`original:${c.id}`)}" ${open(`original:${c.id}`)}><summary>查看原文依据</summary><p class="sy-help">总结时保存的本楼原文；不是额外生成的摘要。</p><div class="sy-packet sy-narrative">${esc(original)}</div></details>`:'';
-    rows.push(`<article class="sy-card sy-memory-row"><span class="sy-tag">${CATEGORY_LABELS[c.category]??'记忆'}</span><h4>${esc(recordTitle(c))}</h4><p class="sy-help sy-memory-meta">${esc(sourceLabel(c))}</p>${c.recallSummary?`<p class="sy-narrative sy-memory-brief">${esc(c.recallSummary)}</p>`:''}${c.viewpoints?.length||c.keyDialogues?.length?`<p class="sy-help">人物观念 ${c.viewpoints?.length??0} 条 · 关键台词 ${c.keyDialogues?.length??0} 条</p>`:''}<details data-memory-detail="${esc(c.id)}" ${open(c.id)}><summary>${memoryDetailLabel(c.category)}</summary><div class="sy-packet sy-narrative">${esc(recordDescription(c))}</div>${meta?`<div class="sy-packet sy-help">${esc(meta)}</div>`:''}${c.tags?.length?`<p class="sy-help">检索标签：${esc(c.tags.join('、'))}</p>`:''}</details>${originalHTML}<details class="sy-record-actions" data-memory-detail="${esc(`actions:${c.id}`)}" ${open(`actions:${c.id}`)}><summary>操作</summary>${actions(c)}</details></article>`);
+    rows.push(`<article class="sy-card sy-memory-row" data-record-id="${esc(c.id)}"><span class="sy-tag">${CATEGORY_LABELS[c.category]??'记忆'}</span><h4>${esc(recordTitle(c))}</h4><p class="sy-help sy-memory-meta">${esc(sourceLabel(c))}</p>${c.recallSummary?`<p class="sy-narrative sy-memory-brief">${esc(c.recallSummary)}</p>`:''}${c.viewpoints?.length||c.keyDialogues?.length?`<p class="sy-help">人物观念 ${c.viewpoints?.length??0} 条 · 关键台词 ${c.keyDialogues?.length??0} 条</p>`:''}<details data-memory-detail="${esc(c.id)}" ${open(c.id)}><summary>${memoryDetailLabel(c.category)}</summary><div class="sy-packet sy-narrative">${esc(recordDescription(c))}</div>${meta?`<div class="sy-packet sy-help">${esc(meta)}</div>`:''}${c.tags?.length?`<p class="sy-help">检索标签：${esc(c.tags.join('、'))}</p>`:''}</details>${originalHTML}<details class="sy-record-actions" data-memory-detail="${esc(`actions:${c.id}`)}" ${open(`actions:${c.id}`)}><summary>操作</summary>${actions(c)}</details></article>`);
   }
   return rows.slice(0,100).join('')+(rows.length>100?'<p class="sy-help">当前显示前 100 项，请按人物或关键词筛选。</p>':'')||'<p class="sy-empty">没有符合条件的记忆。</p>';
 }
@@ -48,7 +52,7 @@ export function mountMemoryManagement({panel,app,run,host}){
   const currentCategory=$('[data-category]');
   const selectCategory=key=>{currentCategory.value=key;$('[data-note-category]').value=key;currentCategory.dispatchEvent(new panel.ownerDocument.defaultView.Event('change'));syncFields();};
   const conflictHelp='来源有矛盾或尚不能确定的内容，不参与自动召回。核实后在相应区块保存正确记忆，再删除这条疑点。';
-  function selectedModule(){const key=$('[data-note-category]').value;return key.startsWith('module:')?app.state.modules?.find(m=>m.id===key.slice(7)&&!m.archived):null;}
+  function selectedModule(){const key=$('[data-note-category]').value;return key.startsWith('module:')?readViewState(app).modules?.find(m=>m.id===key.slice(7)&&!m.archived):null;}
   function syncFields(){
     const key=$('[data-note-category]').value,m=selectedModule(),readonly=m?.mode==='mvu';
     for(const [attr,show]of [['data-note-subject',Boolean(m)&&!readonly||['entityFactChanges','relationshipChanges','personaChanges','commitmentChanges','awarenessChanges'].includes(key)],['data-note-target',['relationshipChanges','personaChanges'].includes(key)],['data-note-field',!m&&['entityFactChanges','personaChanges'].includes(key)],['data-note-event',key==='awarenessChanges'],['data-people',key==='events'],['data-note-module-field',Boolean(m)],['data-note',!readonly]])$(`[${attr}]`).closest('label').hidden=!show;
@@ -63,7 +67,7 @@ export function mountMemoryManagement({panel,app,run,host}){
   $('[data-edit-text]').addEventListener('input',()=>{$('[data-edit-brief]').value='';});
   $('[data-action="cancel-memory-edit"]').addEventListener('click',()=>{$('[data-edit-memory]').hidden=true;editingId=null;});
   function edit(id){
-    const card=app.state.cards.find(c=>c.id===id);if(!card)return;editingId=id;
+    const card=readViewState(app).cards.find(c=>c.id===id);if(!card)return;editingId=id;
     const fact=card.category==='entityFactChanges'&&!card.customModuleId,value=factValue(card),structured=fact&&typeof value!=='string';
     $('[data-edit-fact-fields]').hidden=!fact;
     $('[data-edit-entity]').value=fact?factSubject(card):'';$('[data-edit-field]').value=fact?factKey(card):'';
@@ -78,11 +82,16 @@ export function mountMemoryManagement({panel,app,run,host}){
     $('[data-add-memory]').scrollIntoView({block:'nearest'});$('[data-note-field]').focus({preventScroll:true});
   }
   panel.addEventListener('shiyi-edit-memory',e=>edit(e.detail));
-  function paint(state){
+  let memoryStamp='';
+  function paint(state,{memory=true,batches=true}={}){
+    const nextMemoryStamp=memory?JSON.stringify([state.cardRevision??state.cards,state.modules,currentCategory.value]):memoryStamp;
+    if(memory&&nextMemoryStamp!==memoryStamp){memoryStamp=nextMemoryStamp;
     const grid=$('[data-memory-categories]');grid.innerHTML=MEMORY_CATEGORIES.map(key=>`<button type="button" data-memory-category="${key}" ${currentCategory.value===key?'class="active"':''}><strong>${CATEGORY_LABELS[key]}</strong><small>${key==='entityFactChanges'?`${characterProfiles(state.cards).length} 份`:`${state.cards.filter(c=>!c.customModuleId&&c.category===key).length} 条`}</small></button>`).join('');
     for(const b of grid.querySelectorAll('button'))b.addEventListener('click',()=>selectCategory(b.dataset.memoryCategory));
     const options=JSON.stringify(state.modules??[]);if(options!==lastOptions){lastOptions=options;const select=$('[data-note-category]'),value=select.value;select.innerHTML=`<optgroup label="基础区块">${categoryOptions()}</optgroup>`+(state.modules?.some(m=>!m.archived)?`<optgroup label="扩展模块">${state.modules.filter(m=>!m.archived).map(m=>`<option value="module:${esc(m.id)}">${esc(m.name)}${m.mode==='mvu'?'（MVU 只读）':''}</option>`).join('')}</optgroup>`:'');if([...select.options].some(o=>o.value===value))select.value=value;syncFields();}
     const select=$('[data-note-event]'),value=select.value;select.innerHTML='<option value="">请选择事件</option>'+state.cards.filter(c=>c.category==='events').map(c=>`<option value="${esc(c.id)}">${esc(recordDescription(c).slice(0,60))}</option>`).join('');select.value=value;
+    }
+    if(!batches)return;
     batchList.paint(state);
     $('[data-recycle]').innerHTML=(state.deletedRecords??[]).map(r=>`<div class="sy-document"><span>${esc(batchRecordDescription(r,state.modules))}</span><button type="button" data-restore-record="${esc(r.id)}">恢复</button></div>`).join('')||'<p class="sy-help">没有单独删除的记忆。批次回收站可从上方按钮打开。</p>';
     for(const b of panel.querySelectorAll('[data-restore-record]'))b.addEventListener('click',()=>run(()=>app.restoreRecord(b.dataset.restoreRecord)));
@@ -114,19 +123,19 @@ export function mountDictionary({panel,app,run,save=input=>app.saveDictionaryEnt
   list.addEventListener('click',e=>{
     const b=e.target.closest('button');if(!b)return;
     const name=b.dataset.wordEdit??b.dataset.wordSave??b.dataset.wordCancel??b.dataset.wordDelete??b.dataset.wordDisable??b.dataset.wordReset;
-    const entry=app.state.dictionary.entries.find(t=>t.name===name);if(!entry)return;
-    if(b.hasAttribute('data-word-edit')){if(!drafts.has(name))drafts.set(name,{name:entry.name,aliases:entry.aliases.join('，'),indexWords:(entry.indexWords??[]).join('，')});paint(snapshot??app.state);return;}
-    if(b.hasAttribute('data-word-cancel')){drafts.delete(name);paint(snapshot??app.state);return;}
+    const entry=readViewState(app).dictionary.entries.find(t=>t.name===name);if(!entry)return;
+    if(b.hasAttribute('data-word-edit')){if(!drafts.has(name))drafts.set(name,{name:entry.name,aliases:entry.aliases.join('，'),indexWords:(entry.indexWords??[]).join('，')});paint(snapshot??readViewState(app));return;}
+    if(b.hasAttribute('data-word-cancel')){drafts.delete(name);paint(snapshot??readViewState(app));return;}
     void run(async()=>{
       if(b.hasAttribute('data-word-save')){await save({...entry,...drafts.get(name),originalName:name});drafts.delete(name);}
       else if(b.hasAttribute('data-word-delete'))await save({...entry,deleted:!entry.deleted,disabled:false});
       else if(b.hasAttribute('data-word-disable'))await save({...entry,disabled:!entry.disabled});
       else if(b.hasAttribute('data-word-reset'))await save({name,remove:true});
-      signature='';paint(app.state);
+      signature='';paint(readViewState(app));
     },{name:'save-dictionary'});
   });
-  $('[data-dictionary-search]').addEventListener('input',()=>{page=1;paint(snapshot??app.state);});
-  $('[data-dictionary-deleted]').addEventListener('change',()=>{page=1;paint(snapshot??app.state);});
+  $('[data-dictionary-search]').addEventListener('input',()=>{page=1;paint(snapshot??readViewState(app));});
+  $('[data-dictionary-deleted]').addEventListener('change',()=>{page=1;paint(snapshot??readViewState(app));});
   $('[data-dictionary-prev]').addEventListener('click',()=>{page--;paint(snapshot);});$('[data-dictionary-next]').addEventListener('click',()=>{page++;paint(snapshot);});
   $('[data-dictionary-save]').addEventListener('click',()=>run(()=>save({name:$('[data-dictionary-name]').value,aliases:$('[data-dictionary-aliases]').value,indexWords:$('[data-dictionary-related]').value}),{name:'save-dictionary'}));
   $('[data-dictionary-clear]').addEventListener('click',()=>{$('[data-dictionary-name]').value='';$('[data-dictionary-aliases]').value='';$('[data-dictionary-related]').value='';});

@@ -21,6 +21,7 @@ import { referenceRepairRequest, applyReferenceRepair } from './summary-referenc
 import { verificationRequest, verificationEnvelope, compactVerificationHints, applyVerificationProgress, verificationCounts, VERIFICATION_POLICY, VERIFICATION_MODULES } from './summary-verification.js';
 import { planSummaryRequests } from './summary-planner.js';
 import { moduleSummaryContract, moduleSummaryInstructions, expandModuleSummary, expandCompactSummary, normalizedModuleSourceRefs, moduleLinkNormalization, unwrapModuleSummaryResponse } from './summary-wire.js';
+import { applySummaryPreset, summaryPresetFromRules, PRESET_TRANSPORT_GUARD } from './summary-presets.js';
 import {parseSummaryJson} from './summary-json.js';
 
 function responseStatus(response) {
@@ -101,6 +102,7 @@ async function parseModelResponse(raw, { onMetadata = () => {}, onNormalize = ()
 }
 
 function modelEnvelope(request) {
+  const preset=summaryPresetFromRules(request.extractionContext?.rules);
   const value = Object.fromEntries(Object.entries(request).filter(([key])=>key!=='instructions'));
   if (request.extractionContext?.coverage) {
     const coverage = {...request.extractionContext.coverage};
@@ -112,8 +114,11 @@ function modelEnvelope(request) {
     value.extractionContext = {...request.extractionContext, coverage};
   }
   if (request.kind==='ShiyiSummaryRequest' && !request.summaryStage && value.extractionContext?.outputContract) {
-    value.extractionContext = { ...value.extractionContext, outputContract: moduleSummaryContract(value.extractionContext.outputContract) };
+    value.extractionContext = { ...value.extractionContext, outputContract: applySummaryPreset(moduleSummaryContract(value.extractionContext.outputContract),preset) };
   }
+  // Keep the frozen preset locally for checkpoint identity, but transmit its
+  // system prompt and writing rules once, not the entire library a second time.
+  if(preset)value.extractionContext={...value.extractionContext,rules:request.extractionContext.rules.recordingRules};
   return verificationEnvelope(value);
 }
 
@@ -133,7 +138,7 @@ function modelInvoker(model) {
         ? { max_tokens: request.effectiveMaxTokens }
         : model.profile?.maxTokens > 0 ? { max_tokens: model.profile.maxTokens } : {}),
       messages: [
-        { role: 'system', content: request.kind==='ShiyiSummaryRequest'&&!request.summaryStage ? moduleSummaryInstructions : request.instructions },
+        { role: 'system', content: request.kind==='ShiyiSummaryRequest'&&!request.summaryStage ? (summaryPresetFromRules(request.extractionContext?.rules)?`${PRESET_TRANSPORT_GUARD}\n${summaryPresetFromRules(request.extractionContext.rules).instructions}`:moduleSummaryInstructions) : request.instructions },
         { role: 'user', content: JSON.stringify(modelEnvelope(request)) },
       ],
       response_format: { type: 'json_object' },
@@ -380,12 +385,13 @@ export class SummaryEngine {
     const focusForChild = focusGate(child.focusSpec);
     const wireFocusSpec = serializableFocusSpec(child.focusSpec);
     const effectiveRules = child.rules ?? child.focusSpec?.rules ?? child.focusSpec?.focusRules ?? null;
+    const writingPreset=summaryPresetFromRules(effectiveRules);
     const outputContract = clone(SUMMARY_OUTPUT_CONTRACT);
     const sourceUnits = estimateUnits(JSON.stringify(summarySources(child.sourceMessages)));
     const bridgeUnits = estimateUnits(JSON.stringify(summarySources(child.bridgeMessages ?? [])));
     const focusRules = { focusSpec: wireFocusSpec, focus: focusForChild.focus, rules: effectiveRules, configVersion: child.configVersion, rulesVersion: child.rulesVersion };
-    const focusRulesUnits = estimateUnits(JSON.stringify(focusRules));
-    const schemaUnits = estimateUnits(JSON.stringify(outputContract));
+    const focusRulesUnits = estimateUnits(JSON.stringify(writingPreset?{...focusRules,rules:effectiveRules.recordingRules}:focusRules));
+    const schemaUnits = writingPreset?estimateUnits(JSON.stringify(applySummaryPreset(moduleSummaryContract(outputContract),writingPreset))+writingPreset.instructions):estimateUnits(JSON.stringify(outputContract));
     const outputReserveUnits = Number.isFinite(child.budgets?.outputReserveUnits)
       ? Math.max(0, child.budgets.outputReserveUnits)
       : this.outputReserveUnits ?? Math.max(1, Math.ceil((Number(this.maxInputUnits) || 12000) * 0.2));
@@ -453,7 +459,7 @@ export class SummaryEngine {
     };
     const request = {
       kind: 'ShiyiSummaryRequest',
-      instructions: makeInstructions(focusForChild, effectiveRules),
+      instructions: writingPreset?`${PRESET_TRANSPORT_GUARD}\n${writingPreset.instructions}\n写作规则采用 rules.summaryPreset.rules；适配器输出结构仍须遵守本次 outputContract。`:makeInstructions(focusForChild, effectiveRules),
       scope: clone(child.scope),
       operationId: child.operationId,
       parentOperationId: batch.operationId,

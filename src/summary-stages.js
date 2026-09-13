@@ -2,6 +2,7 @@ import { DRAFT_CATEGORIES } from './contracts.js';
 import { clone, sha256 } from './utils.js';
 import { SummaryResponseError } from './errors.js';
 import { summarySources, summaryRecord } from './summary-context.js';
+import { summaryPresetFromRules, PRESET_TRANSPORT_GUARD } from './summary-presets.js';
 
 export const NARRATIVE_CATEGORIES=['events','summaryView','coverage'];
 export const DETAIL_CATEGORIES=DRAFT_CATEGORIES.filter(k=>!['events','summaryView'].includes(k));
@@ -61,6 +62,14 @@ export function summaryStageRequest(original, stage, narrative=null) {
     sourceMessages:summarySources(original.sourceMessages),bridgeMessages:summarySources(original.bridgeMessages),
     relevantRecords:clone(original.relevantRecords),
     extractionContext:{...clone(original.extractionContext),outputContract}};
+  const preset=summaryPresetFromRules(original.extractionContext?.rules);
+  if(preset){
+    request.instructions=`${PRESET_TRANSPORT_GUARD}\n${preset.instructions}\n本次为分工阶段，只返回这些区块：${categories.join('、')}，其输出结构以 outputContract 为准。写作要求以 summaryPresetRules 为准。`;
+    // Stages use the legacy transport, so replace its writing-policy keys
+    // with the user's policy instead of leaving competing built-in prose.
+    for(const key of ['narrativeRules','floorSummaryRules','consolidationRules','dynamicProfileRule','supplementalNarrativeRule','characterDetailRules','retrievalMetadataRules'])delete outputContract[key];
+    outputContract.summaryPresetRules=clone(preset.rules);
+  }
   if (stage==='narrative') request.relevantRecords={events:request.relevantRecords.events??[],awarenessChanges:request.relevantRecords.awarenessChanges??[]};
   if (narrative) request.events=narrative.events.map(summaryRecord);
   // Ergonomic aliases for custom adapters without duplicate JSON on the wire.

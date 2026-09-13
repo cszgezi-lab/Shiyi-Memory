@@ -1,5 +1,5 @@
 import {SummaryResponseError,ShiyiError} from './errors.js';
-import {upstreamErrorCode} from './diagnostics.js';
+import {upstreamErrorCode,upstreamErrorHint} from './diagnostics.js';
 import {providerEnvelopeFailure} from './product-feedback.js';
 
 const invalid=(reason='stream_invalid',details={})=>{throw new SummaryResponseError('chat stream was not complete or valid',{reason,stage:'read_body',...details});};
@@ -21,7 +21,7 @@ export function parseChatEventStream(text){
       const error=providerEnvelopeFailure({message:value?.choices?.[0]?.delta?.content});
       throw new ShiyiError('native chat stream returned an error','PROVIDER_STREAM_ERROR',{...error.details,reason:'stream_error',stage:'read_body',streamChunks:chunks,upstreamDetailsProvided:true});
     }
-    if(value?.error)throw new ShiyiError('chat stream returned an error','PROVIDER_STREAM_ERROR',{reason:'stream_error',stage:'read_body',streamChunks:chunks,upstreamCode:upstreamErrorCode(value),upstreamDetailsProvided:true});
+    if(value?.error)throw new ShiyiError('chat stream returned an error','PROVIDER_STREAM_ERROR',{reason:'stream_error',stage:'read_body',streamChunks:chunks,upstreamCode:upstreamErrorCode(value),upstreamHint:upstreamErrorHint(value),upstreamDetailsProvided:true});
     if(!Array.isArray(value?.choices)||value.choices.length>1)invalid('stream_invalid',{streamChunks:chunks});
     if(value.usage)usage=value.usage;
     if(typeof value.model==='string')model=value.model;

@@ -9,13 +9,14 @@ const num=v=>typeof v==='number'&&Number.isFinite(v)&&v>=0?v:0;
 const str=(v,n)=>typeof v==='string'?v.slice(0,n):'';
 const stage=v=>['passed','disabled','fallback','skipped'].includes(v)?v:'disabled';
 const array=v=>Array.isArray(v)?v:[];
-const reasons=new Set(['人物身份匹配','人物档案全量','关键词匹配','标签匹配','分类检索','语义匹配','人物精确匹配','相关候选']);
+const reasons=new Set(['人物身份匹配','人物档案全量','关键词匹配','标签匹配','分类检索','语义匹配','人物精确匹配','相关候选','解释已注入知情的明确关联事件']);
 const scores=v=>Object.fromEntries(['keyword','vector','fusion','final'].map(k=>[k,typeof v?.[k]==='number'&&Number.isFinite(v[k])?v[k]:null]));
 function storedEntry(e){
   if(!statuses.has(e?.status)||typeof e.id!=='string')return null;
   const safe=injectionEntry({id:str(e.id,160),at:num(e.at),status:e.status,query:e.query,text:e.text,budgetUnits:e.budgetUnits,elapsedMs:e.elapsedMs,role:e.role,position:e.position,result:{usedUnits:e.usedUnits,degraded:e.degraded,cards:array(e.selected).filter(c=>c&&typeof c==='object'),trace:{timings:e.timings,vector:{status:e.vector},rerank:{status:e.rerank},local:{count:e.localCandidates},dictionary:{matched:array(e.dictionary).map(name=>({name}))},tags:{lanes:array(e.tags).map(tag=>({tag}))},packing:{duplicates:e.duplicates,decisions:array(e.decisions).filter(d=>d&&typeof d==='object')}}}});
-  return {...safe,quarantinedLinks:num(e.quarantinedLinks),eventPacket:packetStats(e.eventPacket),version:str(e.version,30),chars:num(e.chars),contentTruncated:Boolean(e.contentTruncated)||safe.contentTruncated,characters:characterStats(e.characters),selectedCount:num(e.selectedCount)||safe.selectedCount,memorySelected:num(e.memorySelected)};
+  return {...safe,quarantinedLinks:num(e.quarantinedLinks),knowledgeContext:knowledgeStats(e.knowledgeContext),eventPacket:packetStats(e.eventPacket),version:str(e.version,30),chars:num(e.chars),contentTruncated:Boolean(e.contentTruncated)||safe.contentTruncated,characters:characterStats(e.characters),selectedCount:num(e.selectedCount)||safe.selectedCount,memorySelected:num(e.memorySelected)};
 }
+const knowledgeStats=v=>({events:num(v?.events),units:num(v?.units),unresolved:num(v?.unresolved)});
 const characterStats=v=>({full:v?.full===true,people:num(v?.people),records:num(v?.records),units:num(v?.units)});
 const packetStats=v=>Object.fromEntries(['groups','groupedRecords','sharedLines','beforeChars','afterChars','savedChars'].map(k=>[k,num(v?.[k])]));
 export function injectionEntry(input={}){
@@ -29,6 +30,7 @@ export function injectionEntry(input={}){
     timings:Object.fromEntries(['localMs','vectorMs','rerankMs','recallMs'].map(k=>[k,num(trace.timings?.[k])])),
     vector:stage(trace.vector?.status),rerank:stage(trace.rerank?.status),localCandidates:num(trace.local?.count),duplicates:num(trace.packing?.duplicates),
     eventPacket:packetStats(trace.packing?.eventPacket),
+    knowledgeContext:knowledgeStats({events:trace.knowledgeContext?.eventIds?.length,units:trace.knowledgeContext?.units,unresolved:trace.knowledgeContext?.unresolvedRecordIds?.length}),
     quarantinedLinks:num(trace.evidence?.quarantinedLinks),
     dictionary:(trace.dictionary?.matched??[]).slice(0,12).map(t=>str(t.name,80)),tags:(trace.tags?.lanes??[]).slice(0,12).map(t=>str(t.tag,40)),
     decisions:(trace.packing?.decisions??[]).slice(0,200).map(d=>({id:str(d.id,160),title:str(d.title,160),status:['selected','duplicate','budget','limit','name_only'].includes(d.status)?d.status:'limit',reason:String(d.reason??'').split('、').filter(r=>reasons.has(r)).join('、'),scores:scores(d.scores)})),
@@ -45,7 +47,7 @@ export function createInjectionLog({workspace,onChange=()=>{}}){
     get state(){return {entries:clone(entries),persistence,limit:INJECTION_LOG_LIMIT};},
     async remove(id){entries=entries.filter(e=>e.id!==id);notify();await persist();if(!writable||persistence!=='saved')throw new Error('注入日志删除未通过保存确认');},
     async clear(){entries=[];notify();await persist();if(!writable||persistence!=='saved')throw new Error('注入日志清空未通过保存确认');},
-    async export({includeContent=false}={}){await queue;return {kind:'shiyi-injection-log',version:1,pluginVersion:PRODUCT_VERSION,persistence,containsStoryContent:includeContent,entries:entries.map(e=>includeContent?clone(e):{id:e.id,at:e.at,version:e.version,status:e.status,sent:false,chars:e.chars,usedUnits:e.usedUnits,budgetUnits:e.budgetUnits,elapsedMs:e.elapsedMs,degraded:e.degraded,timings:e.timings,vector:e.vector,rerank:e.rerank,localCandidates:e.localCandidates,selectedCount:e.selectedCount,characters:e.characters,memorySelected:e.memorySelected,duplicates:e.duplicates,eventPacket:e.eventPacket,quarantinedLinks:e.quarantinedLinks,dictionaryCount:e.dictionary.length,tagCount:e.tags.length})};},
+    async export({includeContent=false}={}){await queue;return {kind:'shiyi-injection-log',version:1,pluginVersion:PRODUCT_VERSION,persistence,containsStoryContent:includeContent,entries:entries.map(e=>includeContent?clone(e):{id:e.id,at:e.at,version:e.version,status:e.status,sent:false,chars:e.chars,usedUnits:e.usedUnits,budgetUnits:e.budgetUnits,elapsedMs:e.elapsedMs,degraded:e.degraded,timings:e.timings,vector:e.vector,rerank:e.rerank,localCandidates:e.localCandidates,selectedCount:e.selectedCount,characters:e.characters,memorySelected:e.memorySelected,duplicates:e.duplicates,knowledgeContext:e.knowledgeContext,eventPacket:e.eventPacket,quarantinedLinks:e.quarantinedLinks,dictionaryCount:e.dictionary.length,tagCount:e.tags.length})};},
     async flush(){await queue;},
   };
 }

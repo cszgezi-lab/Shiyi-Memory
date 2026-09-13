@@ -1,8 +1,9 @@
+import { readViewState } from '../src/product-view-scheduling.js';
 import { LOG_TASKS, LOG_PHASES } from '../src/product-runtime-log.js';
 import { esc } from '../src/product-settings-ui.js';
 import { failureText } from '../src/product-feedback.js';
 import { safeValidationIssues, validationIssueText } from '../src/validation-diagnostics.js';
-import {DIAGNOSTIC_REASONS,DIAGNOSTIC_PURPOSES,DIAGNOSTIC_STAGES,DIAGNOSTIC_ACTIONS,UPSTREAM_CODES} from '../src/diagnostics.js';
+import {DIAGNOSTIC_REASONS,DIAGNOSTIC_PURPOSES,DIAGNOSTIC_STAGES,DIAGNOSTIC_ACTIONS,UPSTREAM_CODES,UPSTREAM_HINTS} from '../src/diagnostics.js';
 
 export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help">保留最近 2000 条，最多 2 MB。记录请求、解析、校验与保存过程；不包含 Key、聊天正文或模型原文。导出包含全部保留记录，不受筛选和分页影响。</p><div class="sy-actions"><button type="button" data-log-export>导出日志</button><button type="button" data-log-clear>清空日志</button></div><label class="sy-field"><span>显示</span><select data-log-filter><option value="all">全部记录</option><option value="issues">失败与警告</option><option value="vectors">向量索引</option><option value="summary">总结</option><option value="merge">事件合并</option><option value="api">API 与助手</option></select></label><p data-log-storage class="sy-help" role="status"></p><div data-log-list></div><div class="sy-batch-pagination"><button type="button" data-log-prev>上一页</button><span data-log-page></span><button type="button" data-log-next>下一页</button></div>`;}
 const fields={requestNumber:'向量请求序号',requestItems:'输入片段数',receivedVectors:'返回向量数',inputChars:'本次输入字符数',longestInputChars:'最长片段字符数',vectorDimensions:'向量维度',indexedItems:'已保存索引条数',pendingItems:'未完成索引条数',failedItems:'失败索引条数',batchNumber:'总结批次',childIndex:'内部子批（从 0 计）',sourceCount:'读取消息数',inputLimit:'输入预算',inputUnits:'实际输入估算',elapsedMs:'耗时（毫秒）',status:'HTTP 状态',expected:'应有逐楼摘要',received:'收到摘要条数',covered:'完整对应楼数',invalidRows:'来源无效或多楼合并',duplicateCount:'重复摘要条数',promptTokens:'服务报告输入 Token',completionTokens:'服务报告输出 Token',totalTokens:'服务报告总 Token',reasoningTokens:'其中推理 Token',responseChars:'回复文本字符数',savedBatches:'保存批数'};
@@ -27,6 +28,7 @@ function detailsHTML(entry){
   if(d.restrictedPersonaScopes)lines.push(['人设适用范围未填写',`${d.restrictedPersonaScopes} 条仅保留为来源场景中的观察，不外推为长期人设；未新增模型调用`]);
   if(d.resolvedSourceTextHints)lines.push(['原文片段标注兼容',`${d.resolvedSourceTextHints} 处短语已在指定原楼层内唯一匹配，仍引用该完整楼层；未换楼、未新增模型调用`]);
   if(d.wholeFloorEventAnnotations)lines.push(['事件来源备注兼容',`${d.wholeFloorEventAnnotations} 处非真实片段的文字备注已改用同一楼层的完整依据；逐楼摘要另行校验，未换楼、未新增模型调用`]);
+  if(d.wholeFloorRecordAnnotations)lines.push(['模块来源备注兼容',`${d.wholeFloorRecordAnnotations} 处中文备注使用已明确的同一完整楼层；未改事实或知情状态，未换楼、未新增模型调用`]);
   if(d.duplicateEmptyModules)lines.push(['重复空区块兼容',`${d.duplicateEmptyModules} 个重复空区块未覆盖原有内容；保留唯一非空结果，未拼接不同回答、未新增模型调用`]);
   if(d.misplacedEvidenceKinds)lines.push(['依据分类兼容',`${d.misplacedEvidenceKinds} 处互动类型误填为事实性质；原记录保留，性质标为未确认，不提升为已证实`]);
   if(d.unwrappedSourceGroups)lines.push(['来源数组兼容',`${d.unwrappedSourceGroups} 处多套一层的来源数组已展开；每条来源仍逐项校验，未丢弃无效引用`]);
@@ -42,6 +44,8 @@ function detailsHTML(entry){
   for(const [key,label]of [['accepted','通过校验的修改/新增'],['rejected','未通过的校对项'],['rejectedRows','未通过的校对项']])if(d[key]!==undefined)lines.push([label,d[key]]);
   for(const r of d.qualityRejections??[])lines.push([`${({update:'修改',addition:'新增',issue:'疑点'})[r.kind]}第 ${r.index+1} 项`,r.reason]);
   if(d.upstreamCode)lines.push(['服务错误分类',UPSTREAM_CODES[d.upstreamCode]]);
+  if(d.upstreamHint)lines.push(['服务报文提示',UPSTREAM_HINTS[d.upstreamHint]]);
+  if(d.requestChars!==undefined)lines.push(['请求 JSON 字符数（不是 Token）',d.requestChars]);
   if(d.modelRole)lines.push(['模型用途',({summary:'总结模型',supplement:'辅助整理模型',assistant:'配置助手',embedding:'向量模型',rerank:'重排模型'})[d.modelRole]]);
   if(d.errorType)lines.push(['错误类型',d.errorType]);
   for(const [key,label]of [['bodyChars','接口正文字符数'],['jsonPosition','JSON 出错字符位置'],['jsonLine','JSON 出错行'],['jsonColumn','JSON 出错列'],['choicesCount','回复候选数量'],['toolCallsCount','工具调用数量'],['timeoutMs','请求等待上限（毫秒）']])if(d[key]!==undefined)lines.push([label,d[key]]);
@@ -103,9 +107,9 @@ export function mountRuntimeLog({panel,app,run,host,download}){
     for(const el of panel.querySelectorAll('[data-log-id]'))el.addEventListener('toggle',()=>{const id=Number(el.dataset.logId);if(el.open)opened.add(id);else opened.delete(id);});
     $('[data-log-page]').textContent=`${page} / ${pages} · ${selected.length} 条`;$('[data-log-prev]').disabled=page===1;$('[data-log-next]').disabled=page===pages;
   }
-  $('[data-log-filter]').addEventListener('change',()=>{page=1;paint(state??app.state);});
-  for(const [sel,delta]of [['[data-log-prev]',-1],['[data-log-next]',1]])$(sel).addEventListener('click',()=>{page+=delta;paint(state??app.state);});
+  $('[data-log-filter]').addEventListener('change',()=>{page=1;paint(state??readViewState(app));});
+  for(const [sel,delta]of [['[data-log-prev]',-1],['[data-log-next]',1]])$(sel).addEventListener('click',()=>{page+=delta;paint(state??readViewState(app));});
   $('[data-log-export]').addEventListener('click',()=>run(async()=>download(await app.exportRuntimeLog(),'拾忆-运行日志.json')));
-  $('[data-log-clear]').addEventListener('click',()=>run(async()=>{if(host.confirm?.('清空运行日志？记忆、总结批次、设置和助手对话不会删除。')){await app.clearRuntimeLog();opened.clear();page=1;signature='';paint(app.state);}}));
+  $('[data-log-clear]').addEventListener('click',()=>run(async()=>{if(host.confirm?.('清空运行日志？记忆、总结批次、设置和助手对话不会删除。')){await app.clearRuntimeLog();opened.clear();page=1;signature='';paint(readViewState(app));}}));
   return {paint};
 }
