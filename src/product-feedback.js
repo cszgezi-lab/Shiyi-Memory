@@ -65,6 +65,8 @@ export function productFailure(error) {
   if(code==='PERSISTENCE_ERROR'&&['vector_jobs','vector_index','vector_staging'].includes(error?.details?.storageArtifact)){
     message='向量本机保存未通过校验，已保存的故事记忆不受影响。可在召回 → 向量重试未完成项，无需重新总结；具体保存阶段见日志。';
   }
+  if(error?.details?.upstreamHint==='content_blocked')message='服务错误报文明确提到内容过滤；这不是 JSON 填写或回复上限问题。请检查服务规则与输入内容，已保存的记忆保留。';
+  if(error?.details?.upstreamHint==='context_limit')message='服务报文明确提到上下文超限；请核对该接口实际支持的上下文及日志中的输入体积。增大回复上限不能解决输入超限。已保存批次保留。';
   if(code==='VALIDATION_ERROR'){
     const issue=validationIssueText(error?.details?.validationIssues?.[0]);
     if(issue)message=`${error?.details?.repairAttempted?'已自动纠错一次，但仍未通过：':''}${issue}。本次结果未保存；完整校验信息见运行日志。`;

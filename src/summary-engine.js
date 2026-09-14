@@ -681,7 +681,7 @@ export class SummaryEngine {
           finally{emit('wait_complete',{...baseDetails,modelMs:Math.max(0,Math.round(this.now()-started))});}
         }
         catch(error){
-          error.details={...error.details,elapsedMs:Math.max(0,Math.round(this.now()-started)),requestId:baseDetails.requestId,purpose};
+          error.details={...error.details,elapsedMs:error.details?.requestElapsedMs??Math.max(0,Math.round(this.now()-started)),requestId:baseDetails.requestId,purpose};
           emit('response',{...baseDetails,...errorDiagnostics(error)},'error');
           if(this.verified||!this.recoveryEnabled||!transientSummaryError(error)||recoveryCalls>=recoveryAttemptLimit(error))throw error;
           // Long rate limits require user action later, not ignoring Retry-After
@@ -699,7 +699,7 @@ export class SummaryEngine {
             compacted=true;
             emit('recovery_compact',{...baseDetails,beforeInputUnits:shed.beforeUnits,afterInputUnits:shed.afterUnits,removedRelevantRecords:shed.removed,recoveryInputTarget:targetUnits,requestedMaxTokens:configuredOutput,effectiveMaxTokens:reducedOutput||configuredOutput},'warning');
           }
-          recoveryCalls++;const retryDelayMs=Math.max(recoveryCalls*400,error.details?.retryAfterMs??0);
+          recoveryCalls++;const retryDelayMs=Math.max(recoveryCalls*400,error.details?.retryAfterMs??0,error.details?.retryDelayMs??0);
           emit('retry_wait',{...baseDetails,retryDelayMs,recoveryCalls,code:error.code,status:error.details?.status},'warning');
           const timing=await recoveryDelay(retryDelayMs,signal);
           emit('wait_complete',{...baseDetails,retryDelayMs,actualWaitMs:Math.round(timing.elapsedMs),timerLagMs:Math.round(timing.timerLagMs)});

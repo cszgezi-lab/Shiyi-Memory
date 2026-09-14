@@ -5,6 +5,7 @@ import {summaryRecord,summarySources} from './summary-context.js';
 import {scheduleDeadline} from './request-deadline.js';
 
 export function transientSummaryError(e){
+  if(['content_blocked','context_limit'].includes(e?.details?.upstreamHint))return false;
   if(['insufficient_quota','invalid_api_key','api_key_missing','context_length_exceeded','model_not_found','invalid_request_error','outbound_host_denied'].includes(e?.details?.upstreamCode))return false;
   // A fully exhausted caller deadline is not a brief service hiccup. Do not
   // turn a two-minute timeout into another paid two-minute batch automatically.

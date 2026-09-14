@@ -198,3 +198,11 @@
 .sy-root .sy-word-editor { padding:10px 0; }
 .sy-root [data-auto-progress] { white-space:pre-line; }
 .sy-root [data-kb-preview-list],.sy-root [data-documents] { overflow-wrap:anywhere; }
+/* Character keepsakes: bounded pages, readable paragraphs, no large cards. */
+.sy-root [data-keepsake] blockquote{margin:10px 0;padding:6px 12px;border-left:3px solid var(--sy-accent,#8db8aa);white-space:pre-wrap;overflow-wrap:anywhere}
+.sy-root [data-keepsake] h4{font-size:1em;margin:8px 0}
+.sy-root [data-keepsake] .sy-card{padding:12px;min-width:0}
+.sy-root [data-keepsake] p,.sy-root [data-keepsake] .sy-narrative{overflow-wrap:anywhere;white-space:pre-wrap}
+.sy-root [data-keepsake] input,.sy-root [data-keepsake] select,.sy-root [data-keepsake] textarea{width:100%;min-width:0;box-sizing:border-box}
+#shiyi-product-shell [data-keepsake-add]{white-space:nowrap;flex-shrink:0}
+#shiyi-product-shell [data-keepsake-search]{flex:1;min-width:0}

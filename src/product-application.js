@@ -1,4 +1,5 @@
 import { HostAdapter } from './host-adapter.js';
+import { editKeepsakePatch } from './character-journal.js';
 import { lazyViewState } from './product-view-scheduling.js';
 import { createProductShellController } from './product-shell-controller.js';
 import { createWorkspace, importTextDocument, splitDocument } from './product-workspace.js';
@@ -6,7 +7,8 @@ import { autoSummaryPlan } from './product-auto-summary.js';
 import { factSubject,factKey,factValue } from './product-person-profiles.js';
 import { sourceKey } from './product-sources.js';
 import { PRODUCT_SETTING_REGISTRY, persistedProductSettings, validateProductPatch, splitProductSettings } from './product-settings.js';
-import { ProviderClient, observeProviderRequests } from './provider.js';
+import { ProviderClient, observeProviderRequests, scheduleProviderRequests } from './provider.js';
+import {createProviderScheduler,shouldPauseProviderBatch} from './provider-scheduler.js';
 import { errorDiagnostics, jsonFailure,installDiagnosticBoundary,diagnosticRequestId } from './diagnostics.js';
 import { SummaryResponseError } from './errors.js';
 import { memoryCards, recallMemory, readable, recordDescription, selectRecallCards, prepareRecallIndex, relevantPassage } from './product-memory.js';
@@ -59,7 +61,7 @@ const ASSISTANT_TOOLS = [
 ];
 
 /** Owns product flow; core controller still owns extraction and memory commits. */
-export function createProductApplication({ host = globalThis, adapter = null, controller = null, fetchImpl = globalThis.fetch, onChange = () => {}, onInvalidate = null } = {}) {
+export function createProductApplication({ host = globalThis, adapter = null, controller = null, fetchImpl = globalThis.fetch, onChange = () => {}, onInvalidate = null, requestScheduler = null } = {}) {
   fetchImpl = createProductFetch(host, fetchImpl);
   let hostAdapter = adapter;
   // Session pause is separate from the persisted feature opt-ins. A fresh
@@ -98,7 +100,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const state = { credentialSaved:{},credentialErrors:{}, modules:[],moduleSnapshots:[],moduleCurrent:[],mvuPaths:[],mvuStatus:'no_chat', status: 'unbound', message: '开始总结时自动读取 TT 当前聊天', cards: [], documents: [], history: [], batches: [], records: {}, conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };
   const notify = () => { try { if(onInvalidate)onInvalidate();else onChange(publicState()); } catch { /* paint failure must not affect persistence */ } };
   const runtimeLog=createRuntimeLog({getStore:globalStore,onChange:notify});
-  const recordedErrors=new WeakSet(),diagnosticJobs=new Set(),transportRuns=new Map();
+  const stopRequestScheduler=scheduleProviderRequests(fetchImpl,requestScheduler??createProviderScheduler({requestsPerMinute:()=>core.settings.chatRequestsPerMinute}));
+  const recordedErrors=new WeakSet(),diagnosticJobs=new Set(),transportRuns=new Map(),queuedRequests=new Map();
   function trackDiagnostic(work){const job=Promise.resolve(work).catch(()=>{});diagnosticJobs.add(job);void job.finally(()=>diagnosticJobs.delete(job));return job;}
   function reportError(error,{task='operation',stage='ui',modelRole,action,level='error'}={}){
     if(error&&typeof error==='object'){if(recordedErrors.has(error))return Promise.resolve();recordedErrors.add(error);}
@@ -107,6 +110,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   const stopTransportDiagnostics=observeProviderRequests(fetchImpl,event=>{
     const id=event.details.requestId;
+    if(event.phase==='queued')queuedRequests.set(id,event.details);
+    else if(['request','complete','failed','canceled'].includes(event.phase))queuedRequests.delete(id);
+    const waiting=queuedRequests.values().next().value;
+    const notice=waiting?`${({summary:'总结',supplement:'辅助整理',assistant:'助手'})[waiting.modelRole]??'聊天请求'}：${waiting.reason==='queue_busy'?'等待同一接口上一条请求完成':`接口${waiting.reason==='queue_rpm'?'每分钟限额已满':'异常后冷却'}，本次等待约 ${Math.max(1,Math.ceil(waiting.retryDelayMs/1000))} 秒`}；可停止等待`:'';
+    if(state.requestQueueNotice!==notice){state.requestQueueNotice=notice;notify();}
     let run=transportRuns.get(id);
     if(!run){run=runtimeLog.start('transport',{requestId:id,purpose:event.details.purpose});transportRuns.set(id,run);}
     trackDiagnostic(run.then(runId=>runtimeLog.record({run:runId,task:'transport',...event})).finally(()=>{if(['complete','failed','canceled'].includes(event.phase))transportRuns.delete(id);}));
@@ -269,7 +277,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         qualityOperation=op;
         try{
           const result=await processQuality(op,{recordIds:pending,automatic:true});
-          if(op.token===epoch&&(result.failed||result.unresolved))setMessage(`总结已保存；后台内容校对有 ${result.failed} 组未完成、${result.unresolved} 处待核对，可稍后单独重试。`);
+          if(result.paused)automaticQualityQueue.length=0;
+          if(op.token===epoch&&(result.failed||result.unresolved))setMessage(`总结已保存；后台内容校对有 ${result.failed} 组未完成、${result.unresolved} 处待核对。${result.paused?'接口异常，本次校对队列已暂停；':''}可稍后单独重试。`);
         }catch(error){
           if(!['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error?.code)&&!disposed){
             void reportError(error,{task:'quality',stage:'background'});
@@ -695,7 +704,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function processMergeQueue(op,ids=null,{automatic=false}={}){
     await refresh();op.check();
     const candidates=(state.merges??[]).filter(j=>ids?ids.includes(j.id):automatic?j.status==='pending':['pending','failed','uncertain'].includes(j.status)).slice(0,10);
-    let merged=0,failed=0;
+    let merged=0,failed=0,processed=0,paused=false;
     for(const initial of candidates){
       op.check();await refresh();op.check();
       const job=state.merges.find(j=>j.id===initial.id);if(!job)continue;
@@ -721,7 +730,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           runtimeLog.record({run,task:'merge',phase:'canceled',level:'warning',details:diagnostic});throw error;
         }
         decision=mergeDecision(snapshot,job,{status:'failed',reason:`${failureText({code:diagnostic.code,details:diagnostic})} 原总结与旧事件均保留，可只重试合并。`},job.attempts+1);
-        failed++;runtimeLog.record({run,task:'merge',phase:'failed',level:'error',details:diagnostic});
+        failed++;paused=shouldPauseProviderBatch(error);runtimeLog.record({run,task:'merge',phase:'failed',level:'error',details:diagnostic});
       }
       await refresh();op.check();
       const current=mergeDecision(state.records,job,{status:'pending'});
@@ -729,10 +738,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       await op.workspace.update(MERGE_STORE_KEY,rows=>({...rows,[job.id]:decision}),{});op.check();
       if(decision.status==='merged')merged++;
       runtimeLog.record({run,task:'merge',phase:'complete',level:decision.status==='failed'||decision.status==='uncertain'?'warning':'success'});
+      processed++;
+      if(paused){runtimeLog.record({run,task:'merge',phase:'service_paused',level:'warning',details:{pendingItems:candidates.length-processed}});break;}
     }
     await refresh();op.check();await runtimeLog.flush();
     const remaining=(state.merges??[]).filter(j=>['pending','failed','uncertain','missing'].includes(j.status)).length;
-    return {merged,failed,processed:candidates.length,remaining};
+    return {merged,failed,processed,remaining,paused};
   }
   async function processQuality(op,{recordIds=null,automatic=false}={}){
     await refresh();op.check();
@@ -740,7 +751,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const initial=clone(state.rawRecords),findings=memoryQualityIssues(initial);
     const reviewed=new Set(Object.values(qualitySaved).filter(e=>e.status==='reviewed'&&qualityEntryCurrent(e,initial)).flatMap(e=>Object.keys(e.anchors)));
     const groups=qualityGroups(initial).map(ids=>ids.filter(id=>!reviewed.has(id))).filter(ids=>ids.length&&(!recordIds||ids.some(id=>recordIds.includes(id)))&&(!automatic||findings.some(i=>i.recordIds.some(id=>ids.includes(id)))));
-    let corrected=0,failed=0,unresolved=0;
+    let corrected=0,failed=0,unresolved=0,paused=false,pending=0;
     for(const ids of groups){
       op.check();await refresh();op.check();
       const raw=clone(state.rawRecords),all=rows(raw),targets=all.filter(r=>ids.includes(r.id));
@@ -786,7 +797,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         runtimeLog.record({run,task:'quality',phase:'validate',level:entry.issues.length||entry.rejected?.length?'warning':'success',details:{received:entry.updates.length+entry.additions.length,invalidRows:entry.issues.length,rejectedRows:entry.rejected?.length??0}});
       }catch(error){
         if(op.signal.aborted||['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error.code)){runtimeLog.record({run,task:'quality',phase:'canceled',level:'warning',details:errorDiagnostics(error)});throw error;}
-        failed++;entry={status:'failed',anchors,at:Date.now(),error:failureText(error)};
+        failed++;paused=shouldPauseProviderBatch(error);entry={status:'failed',anchors,at:Date.now(),error:failureText(error)};
         runtimeLog.record({run,task:'quality',phase:'failed',level:'error',details:errorDiagnostics(error)});
       }
       await refresh();op.check();
@@ -795,13 +806,14 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       catch(error){runtimeLog.record({run,task:'quality',phase:'failed',level:'error',details:{...errorDiagnostics(error),requestId}});throw error;}
       runtimeLog.record({run,task:'quality',phase:'commit',level:'success',details:{requestId}});
       runtimeLog.record({run,task:'quality',phase:'complete',level:entry.status==='failed'||entry.issues?.length||entry.rejected?.length?'warning':'success'});
+      if(paused){pending=groups.length-groups.indexOf(ids)-1;runtimeLog.record({run,task:'quality',phase:'service_paused',level:'warning',details:{pendingItems:pending}});break;}
     }
     state.qualityProgress='';await refresh();op.check();await runtimeLog.flush();
-    return {corrected,failed,unresolved,level:failed||unresolved?'warning':'success'};
+    return {corrected,failed,unresolved,paused,pending,level:failed||unresolved?'warning':'success'};
   }
   async function reviewMemory(){
     await prepareSummaryChat();const op=begin();
-    try{const result=await processQuality(op);const text=`已校对 ${result.corrected} 组，${result.failed} 组未完成，${result.unresolved} 处需确认。原总结保留；再次点击只处理未完成或已变化的记录。`;state.feedback={id:++feedbackSequence,level:result.level,text};setMessage(text);return result;}
+    try{const result=await processQuality(op);const text=`已校对 ${result.corrected} 组，${result.failed} 组未完成，${result.unresolved} 处需确认。${result.paused?`接口异常，本次队列已暂停，另有 ${result.pending} 组尚未请求。`:''}原总结保留；再次点击只处理未完成或已变化的记录。`;state.feedback={id:++feedbackSequence,level:result.level,text};setMessage(text);return result;}
     finally{state.qualityProgress='';op.finish();}
   }
   async function undoQuality(){
@@ -810,7 +822,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function retryMerges(ids=null){
     await prepareSummaryChat();const op=begin();
-    try{const result=await processMergeQueue(op,ids);const text=`本次合并 ${result.merged} 对，${result.failed} 对失败，${result.remaining} 对待处理。已保存总结未重跑。`;setMessage(text);state.feedback={id:++feedbackSequence,level:result.failed?'warning':'success',text};notify();return result;}
+    try{const result=await processMergeQueue(op,ids);const text=`本次合并 ${result.merged} 对，${result.failed} 对失败，${result.remaining} 对待处理。${result.paused?'接口异常，本次队列已暂停，可稍后重试。':''}已保存总结未重跑。`;setMessage(text);state.feedback={id:++feedbackSequence,level:result.failed?'warning':'success',text};notify();return result;}
     finally{op.finish();}
   }
   async function keepMergeSeparate(id){
@@ -910,7 +922,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     for(const name of ['title','recallSummary'])if(Object.hasOwn(metadata,name)){if(typeof metadata[name]!=='string'||metadata[name].length>(name==='title'?160:2000))throw new Error('标题或召回速览过长');patch[name]=metadata[name].trim()||null;}
     if(Object.hasOwn(metadata,'tags'))patch.tags=normalizeTags(metadata.tags);
-    await core.updateMemoryControls({edits:{[id]:patch}});
+    const existing=await core.readMemoryView();assertCurrent();
+    await core.updateMemoryControls({edits:{[id]:{...existing.controls?.edits?.[id],...patch}}});
     await refresh();setMessage('修改已保存，后续召回使用新内容');
   }
   async function editPersonProfile(subject,rows){
@@ -938,6 +951,21 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       op.check();
     }finally{op.finish();}
     await refresh();setMessage('人物档案已保存；原始来源与删除记录可追溯');
+  }
+  async function saveCharacterKeepsake(input){
+    assertCurrent();if(active)throw new Error('请先停止总结');
+    if(!input||typeof input!=='object'||input.origins!==undefined&&(!Array.isArray(input.origins)||!input.origins.length||input.origins.length>10000))throw new Error('角色记录的编辑来源无效，请重新打开');
+    const edits={},rows=input.origins?.length?input.origins:[input];
+    for(const row of [...rows].sort((a,b)=>(b.index??0)-(a.index??0))){
+      const record=state.cards.find(c=>c.id===row.recordId);
+      if(!record||sha256(record)!==row.expected)throw new Error('原记录已变化，请重新打开后修改');
+      if(record.mergedIds?.length)throw new Error('请先在事件合并中撤销合并，再修改原记录的台词');
+      edits[record.id]={...edits[record.id],...editKeepsakePatch({...record,...edits[record.id]},{...input,index:row.index})};
+    }
+    const op=begin();
+    try{const view=await core.readMemoryView();op.check();for(const id of Object.keys(edits))edits[id]={...view.controls?.edits?.[id],...edits[id]};await core.updateMemoryControls({edits});op.check();}
+    finally{op.finish();}
+    await refresh();setMessage(input.remove?'已移除此项，原事件和聊天原文保留':'角色记录已保存，后续注入使用新内容');
   }
   function automaticPlan(){const batches=state.batches.filter(b=>!Object.values(b.records??{}).flat().some(r=>r.sourceRefs?.some(ref=>autoInvalidSources.has(sourceKey(ref)))));return autoSummaryPlan(batches,{startFloor:state.autoStartFloor??1,batchSize:core.settings.autoSummaryEvery,keepRecent:core.settings.autoKeepRecent,lastIndex:state.autoLastIndex??null});}
   async function inspectAutomaticProgress(){
@@ -1304,7 +1332,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
   async function stop(){clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;automaticPaused=true;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
-  const application={editPersonProfile,inspectAutomaticProgress,setAutoStartFloor,setAutomatic,processAutomatic:()=>autoSummary({force:true}),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
+  const application={saveCharacterKeepsake,editPersonProfile,inspectAutomaticProgress,setAutoStartFloor,setAutomatic,processAutomatic:()=>autoSummary({force:true}),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
     startChatTracking,followCurrentChat,reviewMemory,undoQuality,readViewState,
     reportError,loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.export();},clearRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.clear();},
     async exportInjectionLog(options){assertCurrent();return injectionLog.export(options);},
@@ -1332,7 +1360,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     setKey(kind,value,endpoint){if(!Object.hasOwn(keys,kind))throw new Error('未知连接');keyEdited.add(kind);keyVersions[kind]=(keyVersions[kind]??0)+1;keys[kind]=String(value??'');keyOrigins[kind]=credentialOrigin(endpoint??core.settings[`${prefixFor(kind)}Endpoint`]);if(kind==='summary')core.setSessionCredential(effectiveKeys().summary);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true,scheduleVectors:false});},
     exportSettings(){return {kind:'shiyi-config',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings)};},
     async exportBackup(){assertCurrent();return {kind:'shiyi-backup',version:1,scope:boundScope,modules:clone(state.modules),moduleSnapshots:clone(state.moduleSnapshots),eventMergeDecisions:clone(mergeDecisions),settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`)))}))),assistant:state.history};},
-    async dispose(){disposed=true;tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of chatListeners.splice(0)){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();stopTransportDiagnostics();stopErrorBoundary();for(const resolve of followWaiters.splice(0))resolve(publicState());await flushDiagnostics();},
+    async dispose(){disposed=true;tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of chatListeners.splice(0)){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();stopRequestScheduler();stopTransportDiagnostics();stopErrorBoundary();for(const resolve of followWaiters.splice(0))resolve(publicState());await flushDiagnostics();},
   };
   const exportRawBackup=application.exportBackup;
   application.exportBackup=async()=>{const token=epoch,backup=await exportRawBackup();assertCurrent(token);return {...backup,qualityReview:clone(qualitySaved),effectiveRecords:clone(state.records)};};

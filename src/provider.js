@@ -3,10 +3,13 @@ import { clone } from './utils.js';
 import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType,upstreamErrorCode,upstreamErrorHint } from './diagnostics.js';
 import {scheduleDeadline} from './request-deadline.js';
 import {parseChatEventStream} from './provider-stream.js';
+import {providerQueueScope} from './provider-scheduler.js';
 
 // Scoped to this plugin's transport function, never a global fetch hook.
 const observers=new WeakMap();
 export function observeProviderRequests(fetchImpl,observer){observers.set(fetchImpl,observer);return()=>observers.delete(fetchImpl);}
+const schedulers=new WeakMap();
+export function scheduleProviderRequests(fetchImpl,scheduler){schedulers.set(fetchImpl,scheduler);return()=>{if(schedulers.get(fetchImpl)===scheduler)schedulers.delete(fetchImpl);scheduler.dispose();};}
 
 export const PROVIDER_RESOURCES = Object.freeze({
   chat: '/chat/completions',
@@ -141,11 +144,18 @@ export class ProviderClient {
   async request(resource, payload, { signal, timeoutMs, headers = {}, method = 'POST', requestId=diagnosticRequestId(), purpose, onDiagnostic } = {}) {
     const started=Date.now(),observer=onDiagnostic??observers.get(this.fetch);let finished=false;
     const emit=(phase,details={},level='info')=>{if(finished)return;try{observer?.({phase,level,details:{requestId,purpose:purpose??resource,modelRole:this.modelRole,elapsedMs:Date.now()-started,...details}});}catch{/* diagnostics never fail a request */}};
-    const requestMeta={...(resource==='chat'?{streaming:payload?.stream===true}:{}),requestChars:JSON.stringify(payload??{}).length};
-    emit('request',{stage:'prepare',...requestMeta,maxTokens:payload?.max_tokens??0,timeoutMs:timeoutMs??this.profile.timeoutMs});
-    try { return await this.performRequest(resource,payload,{signal,timeoutMs,headers,method,emit}); }
-    catch(thrown){const error=thrown instanceof Error?thrown:new ShiyiError('provider threw a non-Error value','PROVIDER_REQUEST_FAILED');error.details={stage:'prepare',...requestMeta,...error.details,requestId,purpose:purpose??resource};emit(error.code==='CANCELED'?'canceled':'failed',errorDiagnostics(error),error.code==='CANCELED'?'warning':'error');throw error;}
-    finally{finished=true;}
+    const serialized=JSON.stringify(payload??{});
+    const requestMeta={...(resource==='chat'?{streaming:payload?.stream===true}:{}),requestChars:serialized.length,requestBytes:new TextEncoder().encode(serialized).length};
+    let lease,networkStarted;
+    try {
+      const scheduler=resource==='chat'?schedulers.get(this.fetch):null;
+      if(scheduler)lease=await scheduler.acquire(providerQueueScope(resolveProviderEndpoint(this.profile,resource),buildProviderHeaders(this.profile,headers)),{signal,onWait:details=>emit('queued',details)});
+      networkStarted=Date.now();
+      emit('request',{stage:'request',...requestMeta,queueWaitMs:lease?.queueWaitMs??0,maxTokens:payload?.max_tokens??0,timeoutMs:timeoutMs??this.profile.timeoutMs});
+      return await this.performRequest(resource,payload,{signal,timeoutMs,headers,method,emit});
+    }
+    catch(thrown){const error=thrown instanceof Error?thrown:new ShiyiError('provider threw a non-Error value','PROVIDER_REQUEST_FAILED');error.details={stage:'prepare',...requestMeta,...error.details,...lease?.finish(error),queueWaitMs:lease?.queueWaitMs??Math.max(0,Date.now()-started),requestElapsedMs:networkStarted===undefined?0:Math.max(0,Date.now()-networkStarted),requestId,purpose:purpose??resource};emit(error.code==='CANCELED'?'canceled':'failed',errorDiagnostics(error),error.code==='CANCELED'?'warning':'error');throw error;}
+    finally{lease?.finish();finished=true;}
   }
 
   async performRequest(resource, payload, { signal, timeoutMs, headers, method, emit }) {

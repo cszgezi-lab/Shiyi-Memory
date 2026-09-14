@@ -57,9 +57,9 @@ export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
     awarenessChanges: Object.freeze(['id', 'eventRef|eventRefs', 'actorId|person|audience', 'knowledge|fact|content', 'description(optional)', 'status', 'via', 'learnedAt', 'sourceRefs']),
     entityFactChanges: Object.freeze(['id', 'entity|entityId', 'field|key', 'to|value|newValue', 'fieldLabel(optional)', 'temporal(optional)', 'validFrom(optional)', 'validUntil(optional)', 'epistemicStatus', 'sourceRefs']),
     relationshipChanges: Object.freeze(['id', 'from|subject', 'to|object', 'description', 'evidenceKind', 'eventRefs(optional)', 'temporal(optional)', 'epistemicStatus', 'sourceRefs']),
-    personaChanges: Object.freeze(['id', 'subject|person|entity', 'description', 'aspect|field|key', 'object|objectRef', 'context', 'scope', 'expiresAt|validUntil|term|duration', 'epistemicStatus', 'sourceRefs']),
+    personaChanges: Object.freeze(['id', 'subject|person|entity', 'description', 'aspect|field|key', 'object|objectRef', 'context', 'scope', 'expiresAt|validUntil|term|duration', 'epistemicStatus', 'sourceRefs','innerLife(optional)']),
     commitmentChanges: Object.freeze(['id', 'participants|subject', 'content|description', 'state', 'epistemicStatus', 'sourceRefs']),
-    performanceHints: Object.freeze(['id', 'description', 'context(optional)', 'sourceRefs']),
+    performanceHints: Object.freeze(['id', 'description', 'context(optional)', 'sourceRefs','innerLife(optional)']),
     summaryView: Object.freeze(['id', 'floorIndex', 'text', 'participants', 'location', 'temporal', 'eventRefs', 'sourceRefs']),
     conflicts: Object.freeze(['id', 'description', 'sourceRefs']),
     coverage: Object.freeze(['sourceRefs', 'bridgeRefs', 'processed', 'excluded', 'unprocessed']),
@@ -521,6 +521,8 @@ export function bindDraftBundle(modelOutput, {
     }
     next.entities=[...terms.values()];
     if(next.tags!==undefined)next.tags=normalizeTags(next.tags);
+    delete next.journalOnly;
+    if(next.innerLife!==undefined&&!['personaChanges','performanceHints'].includes(category))delete next.innerLife;
     return bindOriginalSource(bindCharacterDetails(enrichRetrievalMetadata(next,evidence),evidence),category,sourceTexts);
   };
   const bindCategory = category => normalizedCategory(source[category],category).map((record,index)=>bindEvidence(record,category,index));

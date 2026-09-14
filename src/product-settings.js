@@ -28,6 +28,7 @@ const DEFINITIONS = [
   { key: 'deadlineMs', label: '请求截止时间', defaultValue: 120000, type: 'integer', min: 100, max: 600000, consumers: ['ProductShellController.transport', 'ProviderClient'] },
   { key: 'summaryDeadlineMs', label: '后台总结与复核超时', defaultValue: 300000, type: 'integer', min: 1000, max: 600000, consumers: ['ProductShellController.transport', 'ProductApplication.summary', 'ProductApplication.supplement'] },
   { key:'summaryStreaming', label:'总结流式接收', defaultValue:false, type:'boolean', consumers:['SummaryEngine','ProviderClient'] },
+  { key:'chatRequestsPerMinute', label:'同一接口每分钟聊天请求上限', defaultValue:0, type:'integer', min:0, max:6000, consumers:['ProviderScheduler'] },
   { key: 'focusMode', label: '侧重点确认方式', defaultValue: 'ask_manual', type: 'enum', values: ['inherit', 'ask_manual', 'ask_every'], consumers: ['ProductShellController.startSummary', 'SummaryEngine'] },
 
   { key: 'bm25K1', label: 'BM25 k1', defaultValue: 1.2, type: 'number', min: 0.01, max: 10, consumers: ['ProductShellController.previewRecall', 'LocalBM25Index'] },
@@ -76,6 +77,8 @@ const DEFINITIONS = [
   { key: 'timeProtection', label: '附带日期与时间参照', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.pack'] },
   { key: 'personaEnabled', label: '携带相关人物身份与变化', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.recall'] },
   { key: 'performanceEnabled', label: '携带有依据的演绎参考', defaultValue: true, type: 'boolean', consumers: ['ProductApplication.recall'] },
+  {key:'dialogueEnabled',label:'注入关键对话',defaultValue:true,type:'boolean',consumers:['ProductApplication.recall']},
+  {key:'journalEnabled',label:'注入角色心迹',defaultValue:true,type:'boolean',consumers:['ProductApplication.recall']},
   { key: 'knowledgeEnabled', label: '检索外部资料', defaultValue: false, type: 'boolean', consumers: ['ProductApplication.recall'] },
   { key: 'worldMode', label: '故事类型', defaultValue: 'original', type: 'enum', values: ['original', 'fanfiction'], consumers: ['ProductApplication.pack'] },
   { key: 'aliases', label: '人物称呼（每行 主名=别名,别名）', defaultValue: '', type: 'string', maxLength: 12000, consumers: ['ProductApplication.recall'] },
@@ -195,7 +198,7 @@ export const PRODUCT_PERSISTED_SETTING_KEYS = PERSISTED_KEYS;
 // Credentials remain runtime-only and are deliberately absent from this list.
 export const PRODUCT_API_SETTING_KEYS = Object.freeze([
   ...['provider','assistant','supplement','embedding','rerank'].flatMap(prefix => ['Endpoint','EndpointMode','Model','AuthMode'].map(suffix => prefix + suffix)),
-  'assistantFollowSummary','supplementFollowSummary','deadlineMs','summaryDeadlineMs','summaryStreaming','assistantBudgetUnits','assistantOutputTokens',
+  'assistantFollowSummary','supplementFollowSummary','deadlineMs','summaryDeadlineMs','summaryStreaming','chatRequestsPerMinute','assistantBudgetUnits','assistantOutputTokens',
 ]);
 export function splitProductSettings(patch) {
   const api = {}, chat = {};

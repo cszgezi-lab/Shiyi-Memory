@@ -1,4 +1,5 @@
 import { DRAFT_CATEGORIES } from './contracts.js';
+import { JOURNAL_RULE } from './character-journal.js';
 import { clone, sha256 } from './utils.js';
 import { SummaryResponseError } from './errors.js';
 import { summarySources, summaryRecord } from './summary-context.js';
@@ -47,6 +48,7 @@ export function stageContract(contract, categories) {
     if(result.floorSummaryRules) result.floorSummaryRules.awareness='知情变化由下一阶段依据原文与本阶段事件编号整理，不在本阶段输出。';
   }else{
     delete result.narrativeRules;delete result.consolidationRules;
+    result.characterDetailRules=(result.characterDetailRules??'')+'\n'+JOURNAL_RULE;
   }
   return result;
 }

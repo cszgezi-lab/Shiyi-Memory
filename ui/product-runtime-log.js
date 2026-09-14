@@ -9,6 +9,7 @@ export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help"
 const fields={requestNumber:'向量请求序号',requestItems:'输入片段数',receivedVectors:'返回向量数',inputChars:'本次输入字符数',longestInputChars:'最长片段字符数',vectorDimensions:'向量维度',indexedItems:'已保存索引条数',pendingItems:'未完成索引条数',failedItems:'失败索引条数',batchNumber:'总结批次',childIndex:'内部子批（从 0 计）',sourceCount:'读取消息数',inputLimit:'输入预算',inputUnits:'实际输入估算',elapsedMs:'耗时（毫秒）',status:'HTTP 状态',expected:'应有逐楼摘要',received:'收到摘要条数',covered:'完整对应楼数',invalidRows:'来源无效或多楼合并',duplicateCount:'重复摘要条数',promptTokens:'服务报告输入 Token',completionTokens:'服务报告输出 Token',totalTokens:'服务报告总 Token',reasoningTokens:'其中推理 Token',responseChars:'回复文本字符数',savedBatches:'保存批数'};
 function detailsHTML(entry){
   const d=entry.details,lines=[];
+  if(d.requestBytes!==undefined)lines.push(['请求体字节数（UTF-8，不是 Token）',d.requestBytes]);
   for(const [key,label]of [['prepareMs','首次请求前准备（毫秒）'],['modelMs','总结模型等待合计（毫秒）'],['publishMs','发布已保存记忆（毫秒）'],['historyPages','读取历史页数'],['fetchedMessages','宿主返回楼数'],['normalizedMessages','实际处理正文楼数']])if(d[key]!==undefined)lines.push([label,d[key]]);
   fields.requestNumber='本任务请求序号';
   lines.push(['执行版本',entry.pluginVersion??'旧日志未记录']);
@@ -80,6 +81,9 @@ function detailsHTML(entry){
   if(d.repairFields!==undefined)lines.push([d.purpose==='enum_repair'?'自动纠错字段':'待补全或纠错项',d.repairFields]);
   if(d.recoveryCalls!==undefined)lines.push(['当前片段额外恢复调用',`${d.recoveryCalls} / 2`]);
   if(d.retryDelayMs!==undefined)lines.push(['重试前等待',`${d.retryDelayMs} 毫秒`]);
+  if(d.queuePosition!==undefined)lines.push(['队列位置',`第 ${d.queuePosition} 个`]);
+  if(d.queueWaitMs!==undefined)lines.push(['共享队列等待',`${d.queueWaitMs} 毫秒`]);
+  if(d.requestElapsedMs!==undefined)lines.push(['实际接口等待',`${d.requestElapsedMs} 毫秒`]);
   if(d.repairAttempted)lines.push(['自动纠错','已尝试一次，未通过校验；没有强行保存']);
   const issues=safeValidationIssues(d.validationIssues);
   if(issues.length){

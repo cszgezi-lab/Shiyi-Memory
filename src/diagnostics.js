@@ -1,6 +1,7 @@
 // Shared, content-free diagnostics. Never serialize Error.message, API bodies,
 // headers, URLs, user filenames or arbitrary server error objects into exports.
 export const DIAGNOSTIC_REASONS = Object.freeze({
+  queue_busy:'等待同一接口的上一条聊天请求完成',queue_cooldown:'接口异常后冷却等待',queue_rpm:'等待每分钟请求名额',
   input_budget_exceeded:'模型输入超过配置预算，请求尚未发送；已返回的结果保留',
   stream_invalid:'流式响应格式异常，未保存不完整内容',stream_incomplete:'流式响应在完成标记之前中断，未保存半份总结',stream_error:'服务在流式返回途中报告错误',
   chat_ref_unavailable:'宿主未能返回当前聊天标识',
@@ -22,7 +23,7 @@ export const DIAGNOSTIC_REASONS = Object.freeze({
   log_document_invalid:'旧日志格式无法读取，未覆盖旧文件', unclassified:'错误未提供可识别原因；请结合阶段与代码位置定位',
 });
 export const DIAGNOSTIC_PURPOSES=Object.freeze({summary_verification:'原文复核与补漏',summary_narrative:'事件与楼层整理',summary_details:'人物与知情整理',reference_repair:'纠正事件引用',summary:'主总结',floor_repair:'逐楼摘要补全',category_repair:'区块补全',enum_repair:'字段纠错',chat:'聊天模型',embeddings:'向量',rerank:'重排',models:'模型列表',ui:'界面操作',background:'后台任务'});
-export const DIAGNOSTIC_STAGES=Object.freeze({prepare:'准备请求',request:'等待接口',read_body:'读取响应正文',parse_envelope:'解析接口响应',parse_content:'解析模型正文',validate:'校验结果',repair:'补全结果',storage:'本机保存',ui:'界面操作',background:'后台处理'});
+export const DIAGNOSTIC_STAGES=Object.freeze({queue:'等待共享请求队列',prepare:'准备请求',request:'等待接口',read_body:'读取响应正文',parse_envelope:'解析接口响应',parse_content:'解析模型正文',validate:'校验结果',repair:'补全结果',storage:'本机保存',ui:'界面操作',background:'后台处理'});
 export const UPSTREAM_CODES=Object.freeze({invalid_api_key:'密钥无效',api_key_missing:'服务要求密钥',context_length_exceeded:'超出模型上下文',insufficient_quota:'额度不足',rate_limit_exceeded:'服务限流',model_not_found:'模型不存在',server_error:'服务内部错误',invalid_request_error:'服务拒绝请求格式',outbound_host_denied:'出站地址被服务拒绝'});
 // Providers may put a vendor-specific code beside a standard error type.
 // An unrecognized code must not hide a recognized quota/authentication cause.
@@ -34,10 +35,11 @@ export function upstreamErrorCode(value){
 // Interpret only the service's error fields, never generated model content.
 // Persist fixed labels rather than raw messages (which may echo keys/prompts).
 // These are reported causes, not proof inferred from HTTP 502 or elapsed time.
-export const UPSTREAM_HINTS=Object.freeze({timeout:'服务报文提到上游等待超时',overloaded:'服务报文提到模型繁忙',connection_reset:'服务报文提到上游连接断开',context_limit:'服务报文提到输入上下文超限',unknown:'服务未提供可识别的原因'});
+export const UPSTREAM_HINTS=Object.freeze({timeout:'服务报文提到上游等待超时',overloaded:'服务报文提到模型繁忙',connection_reset:'服务报文提到上游连接断开',context_limit:'服务报文提到输入上下文超限',content_blocked:'服务错误报文明确提到内容过滤',unknown:'服务未提供可识别的原因'});
 export function upstreamErrorHint(value){
   const fields=[value?.error?.message,value?.error?.code,value?.error?.type,typeof value?.error==='string'?value.error:null,value?.message,value?.code];
   const text=fields.filter(v=>typeof v==='string').map(v=>v.slice(0,4096)).join(' ');
+  if(/\b(?:content_filter|content_policy_violation|safety_blocked|blocked by safety|blocked due to safety)\b|(?:内容|安全策略)(?:审查|过滤|拦截|违规)|因安全.{0,6}(?:拦截|阻止)/i.test(text))return 'content_blocked';
   if(/context_length_exceeded|maximum context length|context (?:window|length|limit).{0,40}(?:exceed|limit)|上下文.{0,12}(?:超限|超过)/i.test(text))return 'context_limit';
   if(/\b(?:timeout|timed out|deadline exceeded|DEADLINE_EXCEEDED)\b|(?:请求|上游|等待|连接)超时/i.test(text))return 'timeout';
   if(/\b(?:overloaded|overload|model is busy|capacity exhausted)\b|(?:模型|服务).{0,4}(?:繁忙|过载)/i.test(text))return 'overloaded';
@@ -45,7 +47,7 @@ export function upstreamErrorHint(value){
   return 'unknown';
 }
 export const DIAGNOSTIC_ACTIONS=Object.freeze({open:'打开聊天',refresh:'刷新记忆',saveSettings:'保存设置',saveApi:'保存 API',forgetKey:'清除密钥',editRecord:'修改记忆',editPersonProfile:'修改人物档案',deleteRecord:'删除记忆',deleteRecords:'批量删除记忆',remember:'新增记忆',manageBatches:'管理总结批次',deleteBatch:'删除批次',regenerateBatch:'重新总结',retryBatch:'重试总结',retryIncompleteBatches:'重试未完成批次',saveModule:'保存扩展模块',editModuleRecord:'修改扩展记忆',rememberModule:'新增扩展记忆',importModules:'导入模块',exportModules:'导出模块',inspectMvu:'读取 MVU',syncModules:'同步 MVU',applyProposal:'应用助手方案',undoSettings:'撤销配置',saveDictionaryEntry:'修改字典',exportBackup:'导出聊天备份',exportGlobalBackup:'导出全局备份',setAutoStartFloor:'设置自动总结起点',setAutomatic:'配置自动总结',processAutomatic:'执行自动总结',setDraft:'保存助手草稿',newConversation:'新建助手对话',selectConversation:'切换助手对话',deleteConversation:'删除助手对话',hideRecord:'排除记忆',restoreHidden:'恢复被排除记忆',removeDocument:'删除知识库资料',updateDocument:'更新知识库资料',stop:'停止任务',disable:'暂停插件'});
-const files=new Set(['summary-planner.js','request-deadline.js','provider.js','summary-stages.js','summary-context.js','summary-reference-repair.js','summary-engine.js','summary-recovery.js','contracts.js','repository.js','reliable-storage.js','host-adapter.js','product-application.js','product-workspace.js','product-network.js','product-shell-controller.js','product-host-adapters.js','product-view.js','product-runtime-log.js','product-model-list.js','product-vector-indexer.js','product-vector-cache.js','product-vector-storage.js','product-dictionary.js','product-event-merge.js','product-credentials.js','product-global-settings.js','product-module-controller.js','diagnostics.js']);
+const files=new Set(['provider-scheduler.js','summary-planner.js','request-deadline.js','provider.js','summary-stages.js','summary-context.js','summary-reference-repair.js','summary-engine.js','summary-recovery.js','contracts.js','repository.js','reliable-storage.js','host-adapter.js','product-application.js','product-workspace.js','product-network.js','product-shell-controller.js','product-host-adapters.js','product-view.js','product-runtime-log.js','product-model-list.js','product-vector-indexer.js','product-vector-cache.js','product-vector-storage.js','product-dictionary.js','product-event-merge.js','product-credentials.js','product-global-settings.js','product-module-controller.js','diagnostics.js']);
 const errorTypes=new Set(['Error','TypeError','SyntaxError','RangeError','AbortError','DOMException','ShiyiError','SummaryResponseError','ValidationError','PersistenceError','ScopeConflictError','RevisionConflictError']);
 files.add('summary-verification.js');
 files.add('provider-stream.js');

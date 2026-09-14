@@ -1,0 +1,96 @@
+import { clone, stableStringify, sha256 } from './utils.js';
+import { sourceFloors, narrativeText,awarenessLabel,viaLabel } from './product-narrative.js';
+import { dictionaryQuery } from './product-dictionary.js';
+import { hasStoryTime } from './temporal.js';
+
+// These are views of sourced records, not additional memory tables. A diary is
+// an interpretation aid, never proof that a physical diary exists in-world.
+export const JOURNAL_RULE = '人物有明确的内心、自述或态度转折时，在对应personaChanges或performanceHints附innerLife:{stage:"阶段名称，自由填写",text:"角色视角的心迹",cause:"哪件事促成变化",basis:"observed|character_claim|inferred",status:"current|historical"}，沿用该记录主体、对象、时间、eventRef及sourceRefs。只对有新证据的阶段增补，不每批重复整本日记；不得替角色编造秘密、恋爱回应或全知视角。推测用inferred，私密心迹不是他人知情，也不表示角色实际写了日记。关键对话使用keyDialogues，保存双方各自原话及回应语境；台词status为active（仍重要）或historical（已变化），已撤回不能当作当前承诺。不要为这些视图增加模型调用或重复创建事件。';
+const clean=(v,max=12000)=>typeof v==='string'&&v.trim().length<=max?v.trim():'';
+export function normalizeInnerLife(value,{manual=false}={}){
+  if(!value||typeof value!=='object'||Array.isArray(value))return null;
+  const text=clean(value.text),stage=clean(value.stage,160);
+  if(!text||!stage)return null;
+  return {stage,text,cause:clean(value.cause,4000),basis:manual?'user_asserted':['observed','character_claim','inferred'].includes(value.basis)?value.basis:'inferred',status:value.status==='historical'?'historical':'current',private:true,representation:'role_reference'};
+}
+export function innerLifeText(card){
+  const d=card.innerLife;if(!d?.text||d.disabled)return '';
+  const basis={observed:'依据正文明确描写',character_claim:'依据角色自述',user_asserted:'用户编写',inferred:'可选演绎推测，不是事实'}[d.basis]??'来源性质未确认';
+  return `[角色心迹 · ${d.stage} · ${d.status==='historical'?'过去阶段，非当前状态':'按本条时间与情境适用'} · ${basis}]\n人物：${card.subject??card.person??card.entity??'未注明'}${card.object?`；涉及对象：${card.object}`:''}${hasStoryTime(card.temporal)?`；时间：${narrativeText(card.temporal)}`:''}${sourceFloors(card).length?`；来源：第${sourceFloors(card).join('、')}楼`:''}\n${d.text}${d.cause?`\n变化缘由：${d.cause}`:''}\n仅供${card.subject??card.person??card.entity??'所属角色'}演绎参考，不代表实际写过日记；私密想法不赋予其他角色知情权。`;
+}
+export function markDiaryHistory(cards){
+  const groups=new Map(),historical=new Set();
+  for(const r of cards)if(r.innerLife&&!r.innerLife.disabled){
+    const floors=sourceFloors(r);if(!floors.length)continue;
+    const key=stableStringify([r.subject??r.person??r.entity,r.object??'',r.aspect??'心迹']);
+    if(!groups.has(key))groups.set(key,[]);groups.get(key).push({r,last:Math.max(...floors)});
+  }
+  for(const rows of groups.values()){
+    rows.sort((a,b)=>b.last-a.last);const latest=rows[0];let past=false;
+    for(const row of rows){
+      if(row.last<latest.last&&(row.r.innerLife.stage!==latest.r.innerLife.stage||row.r.innerLife.status==='historical'))past=true;
+      if(past||row.r.innerLife.status==='historical')historical.add(row.r.id);
+    }
+  }
+  return cards.map(r=>r.innerLife?{...r,innerLifeHistorical:historical.has(r.id)}:r);
+}
+const refs=r=>(r.sourceRefs??[]).map(s=>stableStringify([s.sourceId,s.fragmentId??null,s.hash??null]));
+const quoteKey=q=>stableStringify([q.speaker,q.to??'',q.text]);
+const quoteAwareness=r=>(r.awareness??[]).length?`\n知情限制：${r.awareness.map(a=>`${a.person??a.subject??'未注明角色'}：${narrativeText(a.knowledge??a.fact??a.content)}〔${awarenessLabel(a.status??a.knowledgeStatus)}；${viaLabel(a.via)}${hasStoryTime(a.learnedAt)?`；获知时间：${narrativeText(a.learnedAt)}`:''}〕`).join('；')}`:'\n仅保留说话人与接收对象；未关联他人知情记录，不等于其他角色知道这段对话。';
+export function characterKeepsakes(cards=[],{withExpected=true}={}){
+  const dialogues=[],diaries=[];
+  for(const r of cards){
+    if(r.lifecycleState==='retracted'||r.lifecycleState==='superseded')continue;
+    if(!r.keyDialogues?.length&&!r.innerLife?.text)continue;
+    const expected=withExpected?sha256(r):null;
+    for(const [index,q]of (r.keyDialogues??[]).entries()){
+      if(!q?.speaker||!q.text)continue;
+      const row={kind:'dialogue',id:`${r.id}:${index}`,recordId:r.id,index,expected,subject:q.speaker,target:q.to??'',data:clone(q),record:r,refs:refs(r),origins:[{recordId:r.id,index,expected}]};
+      // Repetition is coalesced only with shared original evidence. Identical
+      // words on different dates must remain separately editable occurrences.
+      const previous=dialogues.find(p=>quoteKey(p.data)===quoteKey(q)&&p.refs.some(s=>row.refs.includes(s))&&p.data.status===q.status&&Boolean(p.data.disabled)===Boolean(q.disabled));
+      if(previous){previous.origins.push(...row.origins);previous.refs=[...new Set([...previous.refs,...row.refs])];}
+      else dialogues.push(row);
+    }
+    if(r.innerLife?.text)diaries.push({kind:'diary',id:r.id,recordId:r.id,index:null,expected,subject:r.subject??r.person??r.entity??'',target:r.object??'',data:clone(r.innerLife),record:r,origins:[{recordId:r.id,index:null,expected}]});
+  }
+  const last=r=>Math.max(-1,...sourceFloors(r.record));
+  const phases=[],previous=new Map();
+  for(const r of diaries.sort((a,b)=>last(a)-last(b))){
+    const key=stableStringify([r.subject,r.target,r.record.aspect??'心迹']),p=previous.get(key);
+    if(p&&last(r)>=0&&last(p)>=0&&['stage','basis','status','disabled'].every(k=>r.data[k]===p.data[k])){
+      for(const k of ['text','cause'])p.data[k]=[...new Set([p.data[k],r.data[k]].filter(Boolean))].join('\n');
+      p.origins.push(...r.origins);p.record={...r.record,sourceFloors:[...new Set([...sourceFloors(p.record),...sourceFloors(r.record)])]};
+    }else {phases.push(r);previous.set(key,r);}
+  }
+  return {dialogues,diaries:phases.sort((a,b)=>last(b)-last(a))};
+}
+export function editKeepsakePatch(record,{kind,index,data,remove=false}){
+  if(kind==='diary'){
+    if(!['personaChanges','performanceHints'].includes(record.category))throw new Error('角色心迹应归入人设变化或演绎参考');
+    if(remove)return {innerLife:null};
+    const value=normalizeInnerLife(data,{manual:true});if(!value)throw new Error('请填写阶段名称和心迹正文');
+    const same=['text','stage','cause'].every(k=>(record.innerLife?.[k]??'')===(value[k]??''));
+    return {innerLife:{...value,...(same?{basis:record.innerLife.basis}:{}),disabled:data.disabled===true}};
+  }
+  if(kind!=='dialogue')throw new Error('未知记录类型');
+  const list=clone(record.keyDialogues??[]);
+  if(index!==null&&(!Number.isInteger(index)||index<0||index>=list.length))throw new Error('台词条目已变化，请重新打开');
+  if(remove){if(index===null)throw new Error('尚未选择台词');list.splice(index,1);return {keyDialogues:list};}
+  if(!clean(data?.speaker,160)||!clean(data?.text))throw new Error('请填写说话人和台词');
+  const q={speaker:clean(data.speaker,160),to:clean(data.to,160),text:clean(data.text),context:clean(data.context,4000),meaning:clean(data.meaning,4000),status:data.status==='historical'?'historical':'active',disabled:data.disabled===true,provenance:'user_authored'};
+  if(index!==null&&['speaker','to','text','context','meaning'].every(k=>(list[index][k]??'')===(q[k]??''))){if(list[index].provenance)q.provenance=list[index].provenance;else delete q.provenance;}
+  if(index===null)list.push(q);else list[index]=q;
+  return {keyDialogues:list};
+}
+export function importantDialoguePacket(cards,query,dictionary,alreadyText=''){
+  const rows=characterKeepsakes(cards,{withExpected:false}).dialogues.filter(r=>r.data.status!=='historical'&&!r.data.disabled);
+  const entries=[...(dictionary.entries??[])];
+  for(const n of new Set(rows.flatMap(r=>[r.subject,r.target]).filter(Boolean)))if(!entries.some(e=>e.name===n||e.aliases?.includes(n)))entries.push({name:n,aliases:[],indexWords:[],ambiguous:[],kind:'人物'});
+  const matched=dictionaryQuery(query,{...dictionary,entries},{entityLimit:Infinity});
+  const names=new Set(matched.entities);
+  const matchedName=n=>names.has(n)||entries.some(e=>!e.disabled&&names.has(e.name)&&e.aliases?.includes(n)&&!e.ambiguous?.includes(n));
+  const selected=rows.filter(r=>[r.subject,r.target].some(matchedName)&&!alreadyText.includes(`关键台词：${r.subject}${r.target?` 对 ${r.target}`:''}：「${r.data.text}」${r.data.context?`〔${r.data.context}〕`:''}`));
+const text=selected.length?['[重要对话：历史原话及当时语境，不要求复读；说过不等于已经兑现，不改变未获知者的知识。]',...selected.map(r=>`${r.subject}${r.target?` 对 ${r.target}`:''}：「${r.data.text}」${r.data.provenance==='user_authored'?'〔用户编写，非程序核对的逐字原文〕':''}\n语境：${r.data.context||r.record.title||'见原事件'}${r.data.meaning?`；含义：${r.data.meaning}`:''}${r.record.temporal?`\n时间：${narrativeText(r.record.temporal)}`:''}\n${quoteAwareness(r.record)}\n来源：${sourceFloors(r.record).map(n=>`第${n}楼`).join('、')||'原记录'}`)].join('\n\n'):'';
+  return {text,rows:selected};
+}

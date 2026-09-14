@@ -3,6 +3,7 @@ import { clone, isPlainObject, sha256, estimateUnits } from './utils.js';
 import { summaryRecord, summarySources } from './summary-context.js';
 import { moduleSummaryContract, expandModuleSummary, MODULE_SUMMARY_FORMAT } from './summary-wire.js';
 import { applySummaryPreset, summaryPresetFromRules, PRESET_TRANSPORT_GUARD } from './summary-presets.js';
+const journalReviewRule=draft=>['personaChanges','performanceHints'].some(k=>draft[k]?.some(r=>r.innerLife))?'保留并核对innerLife的stage/text/cause/basis/status：心迹只属于本角色，推测用inferred，不写成他人知情或实体日记；不将过去阶段覆盖为当前态度。':'';
 import { ValidationError } from './errors.js';
 import { storyTimeRange } from './temporal.js';
 
@@ -35,7 +36,7 @@ export function verificationCues(messages,budget=2600){
 }
 const fields=Object.fromEntries(categories.map(k=>[k,new Set([
   ...SUMMARY_OUTPUT_CONTRACT.fields[k],...contract.fields[k],
-  'sourceRefs','entities','tags','keyDialogues','viewpoints','recordRef','eventRef','eventRefs','context',
+  'sourceRefs','entities','tags','keyDialogues','viewpoints','innerLife','recordRef','eventRef','eventRefs','context',
 ].flatMap(s=>s.replace(/\(.*/, '').trim().split(/\|| or /)).filter(s=>s&&!['id','sourceId','fragmentId','floorIndex','mergeInto'].includes(s)))]));
 
 export function legacyVerificationRequest(request,draft){
@@ -59,7 +60,7 @@ export function legacyVerificationRequest(request,draft){
     sourceMessages:summarySources(request.sourceMessages),bridgeMessages:summarySources(request.bridgeMessages??[]),
     draft:Object.fromEntries(categories.map(k=>[k,(draft[k]??[]).map(summaryRecord)])),
     fields:contract.fields,enums:contract.enums,
-    metadataRules:contract.detailRules,
+    metadataRules:[contract.detailRules,journalReviewRule(draft)].filter(Boolean).join('\n'),
     focus:clone(request.extractionContext?.focus??{}),
     relevantRecords:Object.fromEntries(categories.map(k=>[k,(request.relevantRecords?.[k]??[]).map(summaryRecord)])),
     sourceCues:verificationCues(request.sourceMessages),
@@ -323,7 +324,7 @@ export function deltaVerificationRequest(request,draft,{validationIssues=[],pend
     validationIssues:clone(validationIssues),pending:clone(pending),
     fields:Object.fromEntries(Object.entries(contract.fields).map(([k,values])=>[k,values.filter(v=>!/^sourceId|^sourceRefs|^fragmentId/.test(v))])),enums:contract.enums,
     rules:{time:contract.timeRules,knowledge:contract.knowledgeRules,stateTransitions:contract.stateTransitionRules,commitments:contract.commitmentRules},
-    metadataRules:contract.detailRules,focus:clone(request.extractionContext?.focus??{}),recordingRules:clone(request.extractionContext?.rules??{}),
+    metadataRules:[contract.detailRules,journalReviewRule(draft)].filter(Boolean).join('\n'),focus:clone(request.extractionContext?.focus??{}),recordingRules:clone(request.extractionContext?.rules??{}),
     relevantRecords:Object.fromEntries(categories.map(k=>[k,(request.relevantRecords?.[k]??[]).map(summaryRecord)])),
   };
 }

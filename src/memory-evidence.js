@@ -16,8 +16,18 @@ export function normalizeFactValidity(record) {
 export function hasQuotedEvidence(evidence, quote) {
   // Substrings in narrator prose are not direct speech. Do not change or
   // fabricate an original line just to satisfy the quotation field.
-  const spans = String(evidence).match(/[“「『"][^”」』"\n]{1,4000}[”」』"]/gu) ?? [];
+  const spans = String(evidence).match(/“[^”]{1,12000}”|「[^」]{1,12000}」|『[^』]{1,12000}』|"[^"]{1,12000}"/gu) ?? [];
   return spans.some(span => span.slice(1, -1).includes(quote));
+}
+
+export function hasSpeechEvidence(evidence,quote,speaker){
+  if(!String(evidence).includes(speaker)||!String(evidence).includes(quote))return false;
+  if(hasQuotedEvidence(evidence,quote))return true;
+  // No narrator-substring promotion: unquoted dialogue must have an explicit
+  // same-line speaker and speech marker. Newline continuations need quotes.
+  const escaped=speaker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const start=new RegExp(`^\\s*${escaped}(?:\\s*(?:对|向)[^：:\\n]{1,80})?\\s*(?:说(?:道)?|说道|回答|答道|问道|问|喊道|喊|回应)?\\s*[：:]\\s*(.+)$`,'u');
+  return String(evidence).split(/\r?\n/).some(line=>{const m=start.exec(line);return m&&m[1]===quote;});
 }
 
 const generic = /^(知道|不知|知情|得知|已经|此前|之前|当时|位置|信息|事情|内容|消息|他们|她们|没有|不能|明确|现在|相关|带来|来了|带了)$/;

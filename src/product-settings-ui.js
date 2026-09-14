@@ -26,6 +26,8 @@ const copy = {
   timeProtection:['注入日期参照','附带事件日期和时间关系。'],
   personaEnabled:['全量注入相关人物信息','整份带入已启用的属性、人设变化与关系，不设人物篇幅上限。'],
   performanceEnabled:['注入人物演绎参考','使用有记录依据的变化，不编造内心。'],
+  dialogueEnabled:['注入关键对话','仍重要的台词随相关人物带入；历史台词按需使用，不要求复读。'],
+  journalEnabled:['注入角色心迹','当前阶段随人物带入，私密心迹不赋予他人知情；过去阶段在回顾时调用。'],
   injectionPosition:['记忆放置位置',''], injectionRole:['记忆消息角色',''],
   vectorEnabled:['向量检索','按语义寻找记忆；需要配置向量 API。'],
   vectorAutoUpdate:['后台更新索引','启用向量后，记忆变化会自动调用向量 API 补建索引，不等待发送聊天时才处理。'],
@@ -52,6 +54,7 @@ const copy = {
   deadlineMs:['模型请求超时（毫秒）','120000 即 2 分钟。'],
   summaryDeadlineMs:['后台总结与复核超时（毫秒）','300000 即单次最多等待 5 分钟，可修改；不延长召回的等待时间。'],
   summaryStreaming:['总结流式接收','边生成边接收，完整校验后才保存。服务不支持流式时可关闭；不额外调用模型。'],
+  chatRequestsPerMinute:['同一接口每分钟聊天请求上限','填服务商的 RPM；0 不猜测固定配额。总结、合并与助手按相同接口和 Key 共用队列，异常后自动等待；向量和重排不受此项限制。'],
   assistantBudgetUnits:['助手输入预算','估算对话、文件和工具说明的输入长度；不是回复上限。'],
   assistantOutputTokens:['助手回复上限（Token）','0 表示沿用服务商默认值。'],
   summaryBatchSize:['每多少楼记录一次','10 楼一批：1–300 楼会分成 30 批。'],
@@ -78,7 +81,7 @@ const card = (title, body) => `<div class="sy-card"><h4>${title}</h4>${body}</di
 export const SETTING_GROUPS = Object.freeze({
   recording: ['messageCount','summaryReviewEnabled','summaryStaged','recordingRules','focusMode','autoMergeEnabled','autoQualityEnabled','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
   automatic: ['autoSummaryEnabled','autoSummaryEvery','autoKeepRecent'],
-  injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','injectionPosition','injectionRole','injectionLogEnabled'],
+  injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','dialogueEnabled','journalEnabled','injectionPosition','injectionRole','injectionLogEnabled'],
   vectors: ['vectorEnabled','vectorAutoUpdate'],
   retrieval: ['rerankEnabled','tagRecallEnabled','tagCandidateLimit','retrievalCandidateLimit','rerankMaxCandidates','bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant','distributedEnabled','distributedStrategy','distributedChannel','retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs'],
   world: ['worldMode','knowledgeEnabled','dictionaryEnabled','aliases','externalStatePaths','storyDate'],
@@ -114,7 +117,7 @@ export function apiSettingsHTML() {
     ${setting(`${prefix}Model`, '模型名称', '', kind==='supplement'?'留空沿用总结模型；也可选择快速模型':'选择列表中的模型，或手动填写')}
     <p class="sy-help" role="status" data-model-status="${kind}"></p></div>
     <details class="sy-advanced"><summary>高级连接选项（通常不用改）</summary>${setting(`${prefix}EndpointMode`, '地址如何使用', `默认只补 ${resource}，绝不补 /v1。填完整接口地址时可选“不补路径”。`)}${setting(`${prefix}AuthMode`, 'Key 发送方式', '一般保持“标准 Key”；不需要 Key 可留空或选“无需 Key”。只有服务商明确要求时才改用 x-api-key。')}${field('模型列表地址（可选）', `<input data-models-url="${kind}" placeholder="留空时按 API 地址推导 /models" autocomplete="off">`)}</details>
-    </div><div class="sy-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></section>`).join('') + card('请求设置', setting('summaryStreaming') + setting('summaryDeadlineMs') + setting('deadlineMs') + setting('assistantBudgetUnits') + setting('assistantOutputTokens'));
+    </div><div class="sy-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></section>`).join('') + card('请求设置', setting('chatRequestsPerMinute') + setting('summaryStreaming') + setting('summaryDeadlineMs') + setting('deadlineMs') + setting('assistantBudgetUnits') + setting('assistantOutputTokens'));
 }
 
 // Upgrade opt-in: never replace a custom endpoint, model, or a deliberate zero/false.

@@ -1,3 +1,4 @@
+import { normalizeInnerLife } from './character-journal.js';
 import {
   createSummaryBatch,
   bindDraftBundle,
@@ -733,7 +734,7 @@ export function createProductShellController({
     return { status: 'session_only', configured: Boolean(state.sessionApiKey) };
   }
 
-  async function remember(textValue, { people = '', category='events',subject='',target='',field='补充信息',eventRef='',context='当前聊天',term='直至用户修改',typedValue,profileFacts=null,controlsPatch=null } = {}) {
+  async function remember(textValue, { people = '', category='events',subject='',target='',field='补充信息',eventRef='',context='当前聊天',term='直至用户修改',typedValue,profileFacts=null,controlsPatch=null,innerLife=null } = {}) {
     const content = text(textValue);
     if (!content || content.length > 12000) throw new Error('记事需要 1–12000 字');
     if (!repository || !state.session || state.status === 'invalidated' || activeTask) throw new Error('请先打开当前聊天，等待当前整理结束');
@@ -755,6 +756,7 @@ export function createProductShellController({
         relationshipChanges:{from:subject,to:target,evidenceKind:'user_confirmed'},
         personaChanges:{subject,aspect:field||'变化',object:target,context,scope:'当前关系与场景',term},
         commitmentChanges:{subject:subject||people||'用户确认',content,state:'proposed'},
+        performanceHints:{subject,context,...(target?{object:target}:{})},
       };
       if(category==='relationshipChanges')fields[category].evidenceKind='expression';
       if(category==='awarenessChanges'&&!eventRef)throw new Error('请选择关联事件；不会凭空推断知情来源');
@@ -765,6 +767,14 @@ export function createProductShellController({
       output.entityFactChanges=profileFacts.map(f=>({id:makeId('note'),entity:subject,field:f.field,to:f.value,sourceRefs,epistemicStatus:'user_asserted'}));
     }
     const bundle = bindDraftBundle(output, { scope: session.scope, operationId, expectedRevision, sourceRefs, sourceRevision });
+    if(innerLife){
+      const diary=normalizeInnerLife(innerLife,{manual:true});
+      if(!diary||!subject.trim()||!['personaChanges','performanceHints'].includes(category))throw new Error('心迹需要角色、阶段和正文，并归入人设或演绎参考');
+      bundle[category][0].innerLife=diary;
+      // A manual diary has no second copy of its prose in generic memory.
+      bundle[category][0].journalOnly=true;
+      bundle[category][0].description=`${subject} · 角色心迹：${diary.stage}`;
+    }
     manualOperation = { id: operationId, sourceRevision, token };
     try {
       const receipt = await repository.commitBundle(bundle,{controlsPatch});

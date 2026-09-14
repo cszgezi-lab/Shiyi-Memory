@@ -54,7 +54,15 @@ export function sourceRecallExcerpt(record, tokens, extraNames = []) {
     .filter(p => p.hits).sort((a, b) => b.hits - a.hits || a.index - b.index);
   if (!ranked.length) return '';
   const index = ranked[0].index;
-  const excerpt = paragraphs.slice(Math.max(0, index - 1), index + 2).join('');
+  // The first mention can be an OLD permission. Preserve other matching
+  // passages with explicit restrictions/knowledge/state changes, even when
+  // separated by scenery. These are source quotes, not inferred corrections.
+  const guard=/不|未|无权|拒绝|禁止|取消|撤回|改为|改期|收回|归还|交还|放回|只有|仅限|只限|必须|前提|条件|允许|许可|才(?:能|可|知道|得知)|获知|知情|\b(?:not|never|only|unless|until|revoked|cancelled|canceled)\b/iu;
+  const centers=[index,...ranked.filter(p=>guard.test(paragraphs[p.index])).map(p=>p.index)];
+  const included=new Set();
+  for(const center of centers)for(let n=Math.max(0,center-1);n<=Math.min(paragraphs.length-1,center+1);n++)included.add(n);
+  const indices=[...included].sort((a,b)=>a-b);
+  const excerpt=indices.map((n,i)=>(i&&n>indices[i-1]+1?'\n〔中间段落未摘录〕\n':'')+paragraphs[n]).join('');
   // Mentioning an object is not completeness ("battery removed" can omit
   // where it was stored). Only exact coverage of the source passage qualifies.
   return brief.replace(/\s+/gu,'').includes(excerpt.toLocaleLowerCase().replace(/\s+/gu,'')) ? '' : excerpt;
