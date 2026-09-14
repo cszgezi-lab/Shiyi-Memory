@@ -2,7 +2,7 @@ import { clone, sha256, stableStringify, makeId } from './utils.js';
 import { knowledgeImportPlan } from './product-knowledge-import.js';
 import { isMissingProductEntry } from './product-host-adapters.js';
 import { PersistenceError } from './errors.js';
-import { encodeVectorDocument, decodeVectorDocument, vectorStorageArtifact } from './product-vector-storage.js';
+import { encodeVectorDocumentAsync, decodeVectorDocumentAsync, sameVectorDocument, vectorStorageArtifact } from './product-vector-storage.js';
 import {losslessStore,verifiedWrite} from './reliable-storage.js';
 
 const NS = 'shiyi-product-workspace';
@@ -30,17 +30,20 @@ export function createWorkspace(bound) {
     return clone(found?.found && found.value !== undefined ? found.value : fallback);
   }
   async function read(name, fallback = null) {
-    return decodeVectorDocument(name, await readRaw(name, fallback));
+    const value=await decodeVectorDocumentAsync(name, await readRaw(name, fallback));guard();return value;
   }
-  async function write(name, value) {
+  async function write(name, value,{returnValue=true}={}) {
     guard();
-    const frozen = encodeVectorDocument(name, clone(value));
+    const vector=Boolean(vectorStorageArtifact(name));
+    const frozen = await encodeVectorDocumentAsync(name, clone(value));guard();
     let actual;
-    try { actual=await verifiedWrite(store,{namespace:NS,key:`${prefix}-${name}`},frozen); }
+    try { actual=await verifiedWrite(store,{namespace:NS,key:`${prefix}-${name}`},frozen,vector?{equals:sameVectorDocument}:{}); }
     catch(error) { guard(); throw storageError(name,error?.details?.storageStage??'write',error); }
     guard();
-    if (stableStringify(actual) !== stableStringify(frozen)) throw storageError(name, 'compare');
-    return decodeVectorDocument(name, actual);
+    // verifiedWrite already performed exact readback. Rehashing/decoding the
+    // entire index again here added seconds per checkpoint on mobile.
+    if(!returnValue)return;
+    return vector?JSON.parse(actual.payload):actual;
   }
   function update(name, callback, fallback = null) {
     let byKey = queues.get(store); if (!byKey) { byKey = new Map(); queues.set(store, byKey); }

@@ -21,7 +21,7 @@ export function stableStringify(value) {
   return `{${Object.keys(value).sort().flatMap(key => { const serialized=stableStringify(value[key]); return serialized === undefined ? [] : [`${JSON.stringify(key)}:${serialized}`]; }).join(',')}}`;
 }
 
-export function sha256(value) {
+function* sha256Steps(value) {
   const input = typeof value === 'string' ? value : (stableStringify(value) ?? 'undefined');
   const bytes = new TextEncoder().encode(input);
   // A 400 × 4096-dimensional index is tens of MB. A growable JS number
@@ -51,6 +51,7 @@ export function sha256(value) {
   const state = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
   const w = new Uint32Array(64);
   for (let offset = 0; offset < words.length; offset += 64) {
+    if(offset&&offset%32768===0)yield;
     for (let i = 0; i < 16; i += 1) {
       const p = offset + i * 4;
       w[i] = ((words[p] << 24) | (words[p + 1] << 16) | (words[p + 2] << 8) | words[p + 3]) >>> 0;
@@ -76,6 +77,20 @@ export function sha256(value) {
     state[6] = (state[6] + g) >>> 0; state[7] = (state[7] + h) >>> 0;
   }
   return state.map((word) => word.toString(16).padStart(8, '0')).join('');
+}
+
+export function sha256(value){const steps=sha256Steps(value);let next;do{next=steps.next();}while(!next.done);return next.value;}
+export function yieldLocalWork(){
+  if(globalThis.scheduler?.yield)return globalThis.scheduler.yield();
+  if(typeof MessageChannel==='function')return new Promise(resolve=>{const channel=new MessageChannel();channel.port1.onmessage=()=>{channel.port1.close();channel.port2.close();resolve();};channel.port2.postMessage(null);});
+  return new Promise(resolve=>setTimeout(resolve,0));
+}
+/** Same digest as existing saves. Native hashing runs off the UI thread;
+ * insecure/older webviews use the same algorithm in cooperative chunks. */
+export async function sha256Async(value,{cryptoApi=globalThis.crypto,yieldTask=yieldLocalWork}={}){
+  const input=typeof value==='string'?value:(stableStringify(value)??'undefined');
+  if(cryptoApi?.subtle)try{const bytes=await cryptoApi.subtle.digest('SHA-256',new TextEncoder().encode(input));return Array.from(new Uint8Array(bytes),x=>x.toString(16).padStart(2,'0')).join('');}catch{/* Fall back without changing the file format. */}
+  const steps=sha256Steps(input);let next;do{next=steps.next();if(!next.done)await yieldTask();}while(!next.done);return next.value;
 }
 
 export function normalizeText(value) {

@@ -58,7 +58,7 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
   const snapshot=()=>({total:cards.length,indexed:validIds.size,pending:cards.length-validIds.size,failed:cards.filter(c=>!complete(c)&&jobs.failures[c.id]?.hash===hashes.get(c.id)).length,requests,blocked:jobs.blocked,rebuilding:jobs.rebuilding});
   const persist=async(name,value)=>{
     check();
-    try{await workspace.write(name,value);}
+    try{await workspace.write(name,value,{returnValue:false});}
     catch(error){
       check();
       const details={storageArtifact:vectorStorageArtifact(name),storageStage:error?.details?.storageStage??'unknown',indexedItems:validIds.size,pendingItems:cards.length-validIds.size};

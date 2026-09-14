@@ -34,6 +34,8 @@ import { fullSearchText } from './product-narrative.js';
 import { sceneRecallQuery } from './product-recall-packing.js';
 import { sceneClockFromMessages } from './temporal.js';
 import { QUALITY_STORE_KEY,QUALITY_PROMPT,memoryQualityIssues,qualityGroups,qualityStatus,qualityEntryCurrent,qualityReviewedIds,qualityFingerprint,validateQualityReview,validateQualityReviewPartial,projectQualityRecords } from './product-memory-quality.js';
+import {planQuality,qualityTargets,qualityRows,mergeQualityEntry} from './product-quality-plan.js';
+import {manualQualityFields} from './product-memory-quality.js';
 import { createInjectionLog } from './product-injection-log.js';
 import { ASSISTANT_SKILLS, assistantSkillCatalog, readAssistantSkill, assistantSettings,assistantBootstrap } from './product-assistant-skills.js';
 import { MERGE_STORE_KEY, MERGE_JUDGE_PROMPT, mergeJobs, mergeDecision, mergeJudgeInput, validateMergeVote, projectMergedCards, sameMergeSnapshot, eventFingerprint } from './product-event-merge.js';
@@ -76,7 +78,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let dictionaryRevision=-1, dictionaryCache=null;
   let recallBusy = 0, moduleSourceBaseline=null;
   let vectorTimer=null,vectorJob=null,vectorCheckVersion=0,vectorStorageFailure=null;
-  let injectionLog=null,vectorExcluded=[],mergeDecisions={},qualitySaved={};
+  let injectionLog=null,vectorExcluded=[],mergeDecisions={},qualitySaved={},preparedQuality=null;
   let tracking=false,trackingStart=null,disposed=false,followPending=false,followTimer=null,following=null,followVersion=0;
   let qualityJob=null,automaticQualityQueue=[],qualityOperation=null;
   const chatListeners=[],followWaiters=[];
@@ -305,7 +307,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function stopListeners() { for (const off of bindings.splice(0)) { try { await off(); } catch { /* tracked by host */ } } }
   function emptyChatView(status='loading'){
     workspace=null;boundScope=null;boundRefKey=null;moduleSourceBaseline=null;modules.clear();
-    qualitySaved={};Object.assign(state,{rawRecords:{},memoryControls:{},quality:null,qualityProgress:'',cards:[],records:{},batches:[],deletedRecords:[],hidden:[],savedThrough:-1,autoStartFloor:1,autoLastIndex:null,sourceStatus:null,progress:'',preview:null,actual:null,status,stale:status==='loading'});
+    qualitySaved={};preparedQuality=null;Object.assign(state,{rawRecords:{},memoryControls:{},quality:null,qualityPlan:null,qualityProgress:'',cards:[],records:{},batches:[],deletedRecords:[],hidden:[],savedThrough:-1,autoStartFloor:1,autoLastIndex:null,sourceStatus:null,progress:'',preview:null,actual:null,status,stale:status==='loading'});
     recallChanged({clear:true});
   }
   function wakeChatFollower(){
@@ -746,54 +748,89 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const remaining=(state.merges??[]).filter(j=>['pending','failed','uncertain','missing'].includes(j.status)).length;
     return {merged,failed,processed,remaining,paused};
   }
-  async function processQuality(op,{recordIds=null,automatic=false}={}){
+  async function prepareQuality(op,recordIds=null){
+    const started=Date.now(),run=await runtimeLog.start('quality',{});
+    try{
+    state.qualityProgress='正在准备校对计划，不会调用模型';notify();
     await refresh();op.check();
+    const records=state.rawRecords,targetIds=new Set(qualityTargets(records,qualitySaved,recordIds).map(r=>r.id));
+    const targets=qualityRows(state.records).filter(r=>targetIds.has(r.id));
+    const sources=targets.length?await core.readQualitySources(targets):[];op.check();
+    const c=client('supplement');
+    const plan=await planQuality({records,effectiveRecords:state.records,saved:qualitySaved,sources,settings:core.settings,model:c.profile.model,recordIds,check:op.check});op.check();
+    const baseline=await core.readMemoryView();op.check();
+    const value={...plan,id:makeId('quality-plan'),token:op.token,sources,targets:clone(targets),stamp:qualityFingerprint(records),baseline:qualityFingerprint(baseline.records??{}),settingsStamp:sha256(persistedProductSettings(core.settings)),savedStamp:sha256(qualitySaved)};
+    state.qualityPlan={id:value.id,requests:plan.jobs.length,records:plan.targetCount,sources:plan.sourceCount,blocked:plan.blocked,inputLimit:plan.inputLimit};
+    state.qualityProgress='';notify();
+    runtimeLog.record({run,task:'quality',phase:'plan',details:{plannedRequests:plan.jobs.length,expected:plan.targetCount,sourceCount:sources.length,inputLimit:plan.inputLimit,prepareMs:Date.now()-started}});
+    runtimeLog.record({run,task:'quality',phase:'complete'});
+    return value;
+    }catch(error){runtimeLog.record({run,task:'quality',phase:['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error.code)?'canceled':'failed',level:'warning',details:{...errorDiagnostics(error),prepareMs:Date.now()-started}});throw error;}
+  }
+  async function previewQuality(recordIds=null){
+    await prepareSummaryChat();const op=begin();
+    try{preparedQuality=await prepareQuality(op,recordIds);return clone(state.qualityPlan);}
+    finally{state.qualityProgress='';op.finish();}
+  }
+  async function inspectQualityRecord(id){
+    assertCurrent();const token=epoch;
+    const record=qualityRows(state.records).find(r=>r.id===id);if(!record)throw new Error('这条记忆已变化，请刷新');
+    const sources=await core.readQualitySources([record]);assertCurrent(token);
+    return {record:summaryRecord(record),expected:sha256(record),sources:sources.map(({id,index,text})=>({id,index,text}))};
+  }
+  async function saveQualityRecord(id,{fields={},expected}={}){
+    assertCurrent();if(active)throw new Error('请先停止当前任务，再保存人工校对');
+    const token=epoch;await refresh();assertCurrent(token);
+    const record=qualityRows(state.records).find(r=>r.id===id);
+    if(!record||sha256(record)!==expected)throw new Error('这条记忆已被更新，请重新打开后修改');
+    const patch=manualQualityFields(record,fields),view=await core.readMemoryView();assertCurrent(token);
+    await core.updateMemoryControls({edits:{[id]:{...view.controls?.edits?.[id],...patch}}});assertCurrent(token);
+    preparedQuality=null;state.qualityPlan=null;await refresh();
+    await refreshVectorStatus({schedule:true});setMessage('人工校对已保存；原总结与批次保留，只更新受影响的检索内容');
+  }
+  async function processQuality(op,{recordIds=null,automatic=false,planId=null}={}){
+    let plan;
+    if(planId){
+      plan=preparedQuality;
+      if(!plan||plan.id!==planId||plan.token!==op.token||plan.settingsStamp!==sha256(persistedProductSettings(core.settings)))throw new Error('校对计划已变化，请重新预览');
+      await refresh();op.check();
+      if(plan.stamp!==qualityFingerprint(state.rawRecords)||plan.savedStamp!==sha256(qualitySaved))throw new Error('记忆已变化，请重新预览校对计划');
+      await core.readQualitySources(plan.targets.filter(r=>plan.jobs.some(j=>j.ids.includes(r.id))));op.check();
+    }else plan=await prepareQuality(op,recordIds);
+    preparedQuality=null;
     const rows=r=>MEMORY_CATEGORIES.flatMap(k=>(r[k]??[]).map(record=>({category:k,...record})));
-    const initial=clone(state.rawRecords),findings=memoryQualityIssues(initial);
-    const reviewed=new Set(Object.values(qualitySaved).flatMap(e=>qualityReviewedIds(e,initial)));
-    const groups=qualityGroups(initial).map(ids=>ids.filter(id=>!reviewed.has(id))).filter(ids=>ids.length&&(!recordIds||ids.some(id=>recordIds.includes(id)))&&(!automatic||findings.some(i=>i.recordIds.some(id=>ids.includes(id)))));
+    const raw=state.rawRecords,reviewRecords=clone(state.records),all=rows(raw),sourceMap=new Map(plan.sources.map(s=>[s.id,s])),groups=plan.jobs;
     let corrected=0,failed=0,unresolved=0,paused=false,pending=0;
-    for(const ids of groups){
-      op.check();await refresh();op.check();
-      const raw=clone(state.rawRecords),all=rows(raw),targets=all.filter(r=>ids.includes(r.id));
+    for(const job of groups){
+      await new Promise(r=>setTimeout(r,0));op.check();
+      const ids=job.ids,targets=all.filter(r=>ids.includes(r.id));
       if(targets.length!==ids.length)throw Object.assign(new Error('待校对记忆已变化'),{code:'SOURCE_INVALIDATED'});
-      const stamp=qualityFingerprint(raw),key=sha256([...ids].sort()),anchors=Object.fromEntries(ids.map(id=>[id,sha256(MEMORY_CATEGORIES.flatMap(k=>raw[k]??[]).find(r=>r.id===id))]));
-      const requestId=diagnosticRequestId(),run=await runtimeLog.start('quality',{expected:ids.length,requestId});op.check();
+      const key=sha256([...ids].sort()),anchors=job.anchors;
+      const requestId=diagnosticRequestId(),run=await runtimeLog.start('quality',{expected:ids.length,requestId,requestNumber:groups.indexOf(job)+1,plannedRequests:groups.length});op.check();
       let entry;
       try{
-        state.qualityProgress=`正在校对 ${corrected+failed+1}/${groups.length} 组`;notify();
-        const sources=await core.readQualitySources(targets);op.check();
-        const related=selectSummaryContext(state.records,sources,{budgetUnits:4000,maxRecords:24});
-        const referenceRecords=rows(related.records).filter(r=>!ids.includes(r.id));
-        const input={sources:sources.map(({id,index,text})=>({id,index,text})),records:targets.map(summaryRecord),referenceRecords,issues:findings.filter(i=>i.recordIds.some(id=>ids.includes(id)))};
+        state.qualityProgress=`AI 校对 ${corrected+failed+1}/${groups.length} 次请求`;notify();
+        const sources=job.sourceIds.map(id=>sourceMap.get(id));
+        const payload=job.payload,input=JSON.parse(payload.messages[1].content),inputUnits=job.inputUnits,qualityLimit=plan.inputLimit;
         const c=client('supplement');
-        const makePayload=()=>({model:c.profile.model,messages:[{role:'system',content:QUALITY_PROMPT},{role:'user',content:JSON.stringify(input)}],stream:false,...(core.settings.outputBudgetUnits>0?{max_tokens:core.settings.outputBudgetUnits}:{})});
-        let payload=makePayload(),inputUnits=estimateUnits(JSON.stringify(payload));
-        // References are optional context. Original evidence and target records
-        // are never silently clipped to squeeze a review into the budget.
-        const qualityLimit=Math.min(core.settings.inputBudgetUnits,30000);
-        while(inputUnits>qualityLimit&&input.referenceRecords.length){input.referenceRecords.pop();payload=makePayload();inputUnits=estimateUnits(JSON.stringify(payload));}
-        if(inputUnits>qualityLimit&&ids.length>1){
-          const mid=Math.ceil(ids.length/2);groups.push(ids.slice(0,mid),ids.slice(mid));
-          runtimeLog.record({run,task:'quality',phase:'quality_split',details:{expected:ids.length,inputUnits,inputLimit:qualityLimit}});
-          runtimeLog.record({run,task:'quality',phase:'complete',level:'info'});continue;
-        }
-        if(inputUnits>qualityLimit)throw Object.assign(new Error('这条记忆的完整原文超过单次校对预算，原记忆保留；可在来源批次中重新整理'),{code:'INPUT_BUDGET_EXCEEDED'});
         runtimeLog.record({run,task:'quality',phase:'request',details:{requestId,modelRole:'supplement',inputUnits,inputLimit:qualityLimit,sourceInputUnits:estimateUnits(JSON.stringify(input.sources)),historyInputUnits:estimateUnits(JSON.stringify(input.referenceRecords)),maxTokens:core.settings.outputBudgetUnits,sourceCount:sources.length,expected:ids.length}});
         const response=await c.chatCompletions(payload,{signal:op.signal,timeoutMs:core.settings.deadlineMs,requestId,onDiagnostic:e=>runtimeLog.record({run,task:'quality',...e})});op.check();
         runtimeLog.record({run,task:'quality',phase:'response',details:{finishReason:response.choices?.[0]?.finish_reason??'unknown',promptTokens:response.usage?.prompt_tokens,completionTokens:response.usage?.completion_tokens}});
         const modelOutput=jsonContent(completion(response).content);
-        try{entry=validateQualityReview(raw,ids,sources,modelOutput,state.memoryControls);}
+        try{entry=validateQualityReview(reviewRecords,ids,sources,modelOutput,state.memoryControls);}
         catch(error){
           // Providers sometimes produce one unusable evidence quote alongside
           // otherwise valid corrections. Salvage the independently valid
           // rows; only those rows remain applied, while rejected rows stay
           // eligible for the next retry.
           if(error?.code!=='QUALITY_RESPONSE_INVALID')throw error;
-          entry=validateQualityReviewPartial(raw,ids,sources,modelOutput,state.memoryControls);
+          entry=validateQualityReviewPartial(reviewRecords,ids,sources,modelOutput,state.memoryControls);
           runtimeLog.record({run,task:'quality',phase:'partial_repair',level:'warning',details:{requestId,accepted:entry.updates.length+entry.additions.length,rejected:entry.rejected?.length??0,qualityRejections:entry.rejected}});
         }
-        await core.readQualitySources(targets);op.check();
+        // The validator reads the same accepted projection as the model.
+        // Persistence still anchors each accepted row to its original version.
+        entry.anchors=Object.fromEntries(Object.keys(entry.anchors).map(id=>[id,anchors[id]]));
+        await core.readQualitySources(plan.targets.filter(r=>ids.includes(r.id)));op.check();
         corrected++;unresolved+=entry.issues.length+(entry.rejected?.length??0);
         runtimeLog.record({run,task:'quality',phase:'validate',level:entry.issues.length||entry.rejected?.length?'warning':'success',details:{received:entry.updates.length+entry.additions.length,invalidRows:entry.issues.length,rejectedRows:entry.rejected?.length??0}});
       }catch(error){
@@ -801,21 +838,26 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         failed++;paused=shouldPauseProviderBatch(error);entry={status:'failed',anchors,at:Date.now(),error:failureText(error)};
         runtimeLog.record({run,task:'quality',phase:'failed',level:'error',details:errorDiagnostics(error)});
       }
-      await refresh();op.check();
-      if(qualityFingerprint(state.rawRecords)!==stamp)throw Object.assign(new Error('校对期间记忆已变化，结果未应用'),{code:'SOURCE_INVALIDATED'});
-      try{await op.workspace.update(QUALITY_STORE_KEY,value=>({...value,[key]:entry}),{});op.check();}
+      const current=await core.readMemoryView();op.check();
+      if(qualityFingerprint(current.records??{})!==plan.baseline)throw Object.assign(new Error('校对期间记忆已变化，结果未应用'),{code:'SOURCE_INVALIDATED'});
+      try{qualitySaved=await op.workspace.update(QUALITY_STORE_KEY,value=>{
+        if(entry.status==='failed')return {...value,[`${key}-retry`]:entry};
+        const next={...value,[key]:mergeQualityEntry(value[key],entry)};delete next[`${key}-retry`];return next;
+      },{});op.check();}
       catch(error){runtimeLog.record({run,task:'quality',phase:'failed',level:'error',details:{...errorDiagnostics(error),requestId}});throw error;}
       runtimeLog.record({run,task:'quality',phase:'commit',level:'success',details:{requestId}});
       runtimeLog.record({run,task:'quality',phase:'complete',level:entry.status==='failed'||entry.issues?.length||entry.rejected?.length?'warning':'success'});
-      if(paused){pending=groups.length-groups.indexOf(ids)-1;runtimeLog.record({run,task:'quality',phase:'service_paused',level:'warning',details:{pendingItems:pending}});break;}
+      state.quality=qualityStatus(raw,qualitySaved);notify();
+      if(paused){pending=groups.length-groups.indexOf(job)-1;runtimeLog.record({run,task:'quality',phase:'service_paused',level:'warning',details:{pendingItems:pending}});break;}
     }
     state.qualityProgress='';await refresh();op.check();await runtimeLog.flush();
-    return {corrected,failed,unresolved,paused,pending,level:failed||unresolved?'warning':'success'};
+    const remaining=state.quality?.items?.length??0;
+    return {corrected,failed,unresolved,remaining,paused,pending,blocked:plan.blocked.length,level:failed||unresolved||remaining||plan.blocked.length?'warning':'success'};
   }
-  async function reviewMemory(){
+  async function reviewMemory({planId=null,recordIds=null}={}){
     await prepareSummaryChat();const op=begin();
-    try{const result=await processQuality(op);const text=`已校对 ${result.corrected} 组，${result.failed} 组未完成，${result.unresolved} 处需确认。${result.paused?`接口异常，本次队列已暂停，另有 ${result.pending} 组尚未请求。`:''}原总结保留；再次点击只处理未完成或已变化的记录。`;state.feedback={id:++feedbackSequence,level:result.level,text};setMessage(text);return result;}
-    finally{state.qualityProgress='';op.finish();}
+    try{const result=await processQuality(op,{planId,recordIds});const text=`AI 校对返回 ${result.corrected} 组，${result.failed} 组未完成；当前 ${result.remaining} 条记忆仍待核对。${result.blocked?`${result.blocked} 项超过预算或缺少来源，未请求，可逐条人工修改。`:''}${result.paused?`接口异常，本次队列已暂停，另有 ${result.pending} 组尚未请求。`:''}原总结保留；可重新预览剩余问题。`;state.feedback={id:++feedbackSequence,level:result.level,text};setMessage(text);return result;}
+    finally{state.qualityProgress='';state.qualityPlan=null;preparedQuality=null;op.finish();if(workspace?.isCurrent())await refresh();}
   }
   async function undoQuality(){
     const op=begin();
@@ -1334,7 +1376,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function stop(){clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;automaticPaused=true;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
   const application={saveCharacterKeepsake,editPersonProfile,inspectAutomaticProgress,setAutoStartFloor,setAutomatic,processAutomatic:()=>autoSummary({force:true}),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
-    startChatTracking,followCurrentChat,reviewMemory,undoQuality,readViewState,
+    startChatTracking,followCurrentChat,reviewMemory,previewQuality,inspectQualityRecord,saveQualityRecord,undoQuality,readViewState,
     reportError,loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.export();},clearRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.clear();},
     async exportInjectionLog(options){assertCurrent();return injectionLog.export(options);},
     async clearInjectionLog(){assertCurrent();await injectionLog.clear();},

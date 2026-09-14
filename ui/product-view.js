@@ -22,6 +22,7 @@ import { summaryPresetsHTML, mountSummaryPresets } from './product-summary-prese
 import { recallSectionsHTML, mountRecallView, RECALL_PAGES } from './product-recall-view.js';
 import { ASSISTANT_SKILL_VERSION, ASSISTANT_SKILLS, RECOMMENDED_MEMORY_SETTINGS } from '../src/product-assistant-skills.js';
 import { customModulesHTML,mountCustomModules,moduleProposalHTML } from './product-custom-modules.js';
+import {qualityPanelHTML,mountQualityView} from './product-quality-view.js';
 
 const ID='shiyi-product-shell';
 const NAV=['memory','recording','recall','assistant','api','modules'];
@@ -35,7 +36,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  <section data-view="memory"><div class="sy-top"><h3>故事记忆</h3>${button('refresh','刷新')}</div>
  <p class="sy-help">查看已保存的故事细节，或直接补充一件事。</p>
  <div class="sy-actions"><button type="button" data-page="dialogue">关键对话</button><button type="button" data-page="diary">角色心迹</button></div>
- <details class="sy-card" data-quality-panel><summary>内容校对 <small data-quality-count></small></summary><p class="sy-help">只核对缺项与矛盾，不重做总结；人工确认保留。</p><div class="sy-actions">${button('review-memory','校对／重试未完成',true)}${button('undo-quality','撤销自动校对')}${button('stop','停止')}</div><div data-quality-status role="status"></div></details>
+ ${qualityPanelHTML()}
  ${memoryEditorHTML()}
  ${customModulesHTML()}
  <div class="sy-filters"><input data-search aria-label="搜索记忆" placeholder="搜索人物、事件、地点…"><select data-category aria-label="记忆类别"><option value="all">全部类别</option>${categoryOptions()}</select></div><div data-cards><p class="sy-empty">这里还没有记忆。整理一段聊天，或记一件事。</p></div>
@@ -57,7 +58,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  function resetModels(kind){const pending=modelRequests.get(kind);pending?.abort();modelRequests.delete(kind);if(pending)feedback('模型列表请求已取消，请按当前配置重新拉取。');const list=$(`[data-model-list="${kind}"]`);if(list){list.innerHTML='<option value="">先拉取模型列表，也可以在下方直接输入</option>';list.disabled=true;}const b=$(`[data-action="models-${kind}"]`);if(b){b.disabled=false;b.textContent='拉取模型列表';}if($(`[data-model-status="${kind}"]`))$(`[data-model-status="${kind}"]`).textContent='';floating?.setBusy(Boolean(app?.state.busy)||modelRequests.size>0);}
  function resetAllModels(){for(const kind of Object.keys(API_INFO))resetModels(kind);}
  function syncInherited(){for(const kind of ['assistant','supplement']){const follow=$(`[data-setting="${kind}FollowSummary"]`)?.checked;if($(`[data-api-fields="${kind}"]`))$(`[data-api-fields="${kind}"]`).hidden=kind==='assistant'&&follow;if(kind==='supplement'){const connection=$('[data-api-connection="supplement"]');if(connection)connection.hidden=follow;const advanced=$('[data-api-card="supplement"] .sy-advanced');if(advanced)advanced.hidden=follow;}const notice=$(`[data-inherited="${kind}"]`);if(notice){const model=$('[data-setting="providerModel"]')?.value||'请先设置总结模型';notice.textContent=follow?(kind==='supplement'?'共用总结地址和 Key；模型以下方选择为准。':`正在沿用：${model}`):'';}}}
- let cardStamp='';
+ let cardStamp='',qualityView=null;
  function paintCards(){
     if(!snapshot||!$('[data-cards]'))return;
     if(floating?.window.hidden||currentPage!=='memory')return;
@@ -95,8 +96,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
     if(currentPage==='dictionary')dictionaryView?.paint(s);
     if(RECALL_PAGES.includes(currentPage))recallView?.paint(s);
     if(memory){
-   if($('[data-quality-count]'))$('[data-quality-count]').textContent=s.chatReady?`已核对 ${s.quality?.reviewed??0}/${s.quality?.groups??0} 组`:'';
-   if($('[data-quality-status]')){const q=s.quality??{},items=[...new Set([...(q.issues??[]),...(q.unresolved??[])].map(i=>i.description))];$('[data-quality-status]').innerHTML=`<p class="sy-help">${esc(s.qualityProgress||`${q.failed??0} 组未完成。规则候选不代表已确认错误，核对完成也不保证没有遗漏。`)}</p>${items.length?`<details><summary>${items.length} 条核对线索</summary>${items.map(t=>`<p class="sy-help">${esc(t)}</p>`).join('')}</details>`:''}`;}
+   qualityView?.paint(s);
     }
     if(recording&&recordTab==='automatic'&&$('[data-auto-progress]')&&s.automatic){$('[data-auto-progress]').textContent=autoSummaryText(s.automatic);const scope=JSON.stringify(s.core?.scope);if(autoScope!==scope){autoScope=scope;autoStartDirty=false;}if(!autoStartDirty)$('[data-auto-start]').value=s.automatic.startFloor;}
    if($('[data-setting="autoSummaryEnabled"]'))$('[data-setting="autoSummaryEnabled"]').checked=s.settings.autoSummaryEnabled;
@@ -148,7 +148,8 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  async function download(data,name){const result=await exportProductJson(data,name,{host,documentRef});host.toastr?.success?.(result.mode==='mobile-native'?'已保存到手机 Downloads':'已提交导出');return result;}
  const actions={open:async()=>{await app.open();fill();},disable:()=>app.disable(),refresh:()=>app.refresh(),summarize:()=>summarize(false),'focus-summary':()=>summarize(true),stop:()=>app.stop(),'assistant-stop':()=>app.stop(),remember:async()=>{await app.remember($('[data-note]')?.value??'',$('[data-people]')?.value??'',{category:$('[data-note-category]')?.value??'events',subject:$('[data-note-subject]')?.value??'',target:$('[data-note-target]')?.value??'',field:$('[data-note-field]')?.value??'',eventRef:$('[data-note-event]')?.value??''});if($('[data-note]'))$('[data-note]').value='';},preview:()=>app.preview($('[data-query]')?.value??''),'preview-online':()=>app.preview($('[data-query]')?.value??'',{online:true}),'vector-status':()=>app.refreshVectorStatus(),'save-settings':()=>app.saveSettings(collect()),'test-summary':()=>app.testConnection('summary'),'test-assistant':()=>app.testConnection('assistant'),'test-embedding':()=>app.testConnection('embedding'),'test-rerank':()=>app.testConnection('rerank'),import:async()=>{for(const f of Array.from($('[data-files]')?.files??[]))await app.addDocument({name:f.name,text:await f.text(),purpose:$('[data-purpose]')?.value});},analyze:()=>app.analyzeDocuments(),assistant:async()=>{await app.assistant($('[data-input]')?.value??'');if($('[data-input]'))$('[data-input]').value='';},beginner:async()=>{await app.analyzeDocuments();await app.assistant('按我导入的配置规则一次性生成完整设置方案，只有必要信息缺失才询问，不需要逐项问卷。');},'new-conversation':async()=>{await app.newConversation();fill();},'delete-conversation':async()=>{if(host.confirm?.('删除当前助手对话？已应用设置和记忆不会删除。')){await app.deleteConversation();fill();}},'restore-hidden':()=>app.restoreHidden(),vectors:()=>app.buildVectors(),undo:async()=>{await app.undoSettings();fill();},'export-config':()=>download(app.exportSettings(),'拾忆-配置.json'),'export-global':async()=>download(await app.exportGlobalBackup(),'拾忆-全局备份.json'),'export-backup':async()=>download(await app.exportBackup(),'拾忆-聊天备份.json')};
  actions.remember=()=>management?.remember();
- actions['review-memory']=()=>app.reviewMemory();
+ qualityView=mountQualityView({panel,app,run});
+ actions['review-memory']=()=>app.previewQuality();
  actions['undo-quality']=async()=>{if(host.confirm?.('撤销此聊天的自动校对？恢复原总结；校对补入的属性和知情项将撤下，人工修改的原记录保留。'))await app.undoQuality();};
  actions['builtin-beginner']=()=>app.assistant('按内置新手配置规则帮助我配置拾忆。先查看当前设置和相关规则，保留已经填好的模型连接。只有卡类型、变量系统或记录偏好等必要信息缺失时才询问；生成可确认应用的方案。');
  $('[data-auto-start]')?.addEventListener('input',()=>{autoStartDirty=true;});

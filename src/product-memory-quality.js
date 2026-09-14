@@ -1,7 +1,7 @@
 import { clone,sha256,stableStringify,isPlainObject } from './utils.js';
 import { enrichRetrievalMetadata } from './product-dictionary.js';
 import { storyTimeRange } from './temporal.js';
-import { sourceFloors } from './product-narrative.js';
+import { sourceFloors,recordTitle } from './product-narrative.js';
 import { AWARENESS_STATUSES,AWARENESS_VIA,EPISTEMIC_STATUSES,EVENT_STATES } from './contracts.js';
 import { factValidity } from './memory-evidence.js';
 import { normalizeInnerLife } from './character-journal.js';
@@ -23,7 +23,8 @@ const address=s=>[...String(s).matchAll(/[一二三四五六七八九十\d]+番�
 export function qualityFingerprint(records){return sha256(list(records).map(({category,record})=>({category,record})));}
 export function memoryQualityIssues(records={}){
   const rows=list(records),issues=[];
-  const add=(kind,ids,description)=>issues.push({id:`quality-${sha256([kind,ids,description]).slice(0,24)}`,kind,recordIds:[...new Set(ids)],description});
+  const checked=new Set(rows.filter(x=>x.record.manualQualityChecked).map(x=>x.record.id));
+  const add=(kind,ids,description)=>{const remaining=[...new Set(ids)].filter(id=>!checked.has(id));if(remaining.length)issues.push({id:`quality-${sha256([kind,remaining,description]).slice(0,24)}`,kind,recordIds:remaining,description});};
   for(const r of records.commitmentChanges??[])if(r.state==='unknown')add('commitment_state',[r.id],'约定状态尚待核对，暂不自动注入；请依据原文纠正状态，不需要重新总结整批。');
   for(const r of records.personaChanges??[])if(r.innerLife===undefined)add('journal_missing',[r.id],'人设变化尚未归入角色心迹；核对原文后补入阶段观察或明确内心独白，不编造日记。');
   for(const r of records.awarenessChanges??[])if(r.knowledgeReview?.status==='pending')add('knowledge_evidence',[r.id],'获知依据尚未对应原文中的获知者，暂不注入；请核对人物、渠道及具体命题。');
@@ -187,10 +188,11 @@ export function projectQualityRecords(records,saved={},controls={}){
   const result=clone(records),raw=new Map(list(records).map(x=>[x.record.id,x.record]));
   const byId=new Map(list(result).map(x=>[x.record.id,x.record]));
   for(const entry of Object.values(saved)){
-    if(entry?.status!=='reviewed'||!Object.keys(entry.anchors??{}).length||Object.entries(entry.anchors).some(([id,hash])=>!raw.has(id)||sha256(raw.get(id))!==hash))continue;
-    for(const u of entry.updates??[]){const target=byId.get(u.id);if(target&&!controls.edits?.[u.id])Object.assign(target,clone(u.fields));}
-    for(const a of entry.additions??[]){if(!raw.has(a.anchorId)||controls.deletedRecords?.[a.record.id])continue;const r={...clone(a.record),...clone(controls.edits?.[a.record.id]??{})};if(!byId.has(r.id)){(result[a.category]??=[]).push(r);byId.set(r.id,r);}}
-    for(const issue of entry.issues??[])for(const id of issue.recordIds??[]){const r=byId.get(id);if(r)r.continuityWarnings=[...new Set([...(r.continuityWarnings??[]),issue.description])];}
+    if(entry?.status!=='reviewed')continue;
+    const current=new Set(Object.entries(entry.anchors??{}).filter(([id,hash])=>raw.has(id)&&sha256(raw.get(id))===hash).map(([id])=>id));
+    for(const u of entry.updates??[]){const target=byId.get(u.id);if(current.has(u.id)&&target&&!controls.edits?.[u.id]&&!knowledgeLinks(target).some(id=>Object.hasOwn(entry.anchors,id)&&!current.has(id)))Object.assign(target,clone(u.fields));}
+    for(const a of entry.additions??[]){if(!current.has(a.anchorId)||controls.deletedRecords?.[a.record.id]||knowledgeLinks(a.record).some(id=>Object.hasOwn(entry.anchors,id)&&!current.has(id)))continue;const r={...clone(a.record),...clone(controls.edits?.[a.record.id]??{})};if(!byId.has(r.id)){(result[a.category]??=[]).push(r);byId.set(r.id,r);}}
+    for(const issue of entry.issues??[])for(const id of issue.recordIds??[]){const r=byId.get(id);if(current.has(id)&&r&&!r.manualQualityChecked)r.continuityWarnings=[...new Set([...(r.continuityWarnings??[]),issue.description])];}
   }
   for(const issue of memoryQualityIssues(result).filter(i=>i.kind==='fact_conflict'))for(const id of issue.recordIds){const r=byId.get(id);if(r)r.continuityWarnings=[...new Set([...(r.continuityWarnings??[]),issue.description])];}
   return result;
@@ -215,7 +217,7 @@ export function qualityGroups(records,batchSize=10){
 
 export function qualityEntryCurrent(entry,records){
   const raw=new Map(list(records).map(x=>[x.record.id,x.record]));
-  return Boolean(entry?.anchors&&Object.keys(entry.anchors).length&&Object.entries(entry.anchors).every(([id,hash])=>raw.has(id)&&sha256(raw.get(id))===hash));
+  return Boolean(entry?.anchors&&Object.entries(entry.anchors).some(([id,hash])=>raw.has(id)&&sha256(raw.get(id))===hash));
 }
 
 export function qualityReviewedIds(entry,records){
@@ -224,13 +226,37 @@ export function qualityReviewedIds(entry,records){
   const unresolved=new Set([...(entry.issues??[]).flatMap(i=>i.recordIds??[]),...(entry.rejected??[]).map(i=>i.id)]);
   return Object.keys(entry.anchors).filter(id=>{
     if(unresolved.has(id))return false;
+    if(!byId.has(id)||sha256(byId.get(id).record)!==entry.anchors[id])return false;
+    if(knowledgeLinks(byId.get(id).record).some(ref=>Object.hasOwn(entry.anchors,ref)&&(!byId.has(ref)||sha256(byId.get(ref).record)!==entry.anchors[ref])))return false;
     const {category,record}=byId.get(id),fields=entry.updates?.find(u=>u.id===id)?.fields??{},effective={...record,...fields};
     return !(category==='commitmentChanges'&&effective.state==='unknown')&&effective.knowledgeReview?.status!=='pending'&&!(category==='personaChanges'&&effective.innerLife===undefined);
   });
 }
 
 export function qualityStatus(records,saved){
-  const groups=qualityGroups(records),entries=Object.values(saved??{}).filter(e=>qualityEntryCurrent(e,records));
-  const reviewed=new Set(entries.flatMap(e=>qualityReviewedIds(e,records)));
-  return {groups:groups.length,reviewed:groups.filter(ids=>ids.every(id=>reviewed.has(id))).length,failed:entries.filter(e=>e.status==='failed'&&Object.keys(e.anchors).some(id=>!reviewed.has(id))).length,issues:memoryQualityIssues(records).filter(i=>i.recordIds.some(id=>!reviewed.has(id))),unresolved:entries.flatMap(e=>e.issues??[])};
+  const entries=Object.values(saved??{}).filter(e=>qualityEntryCurrent(e,records));
+  const manual=list(records).filter(x=>x.record.manualQualityChecked).map(x=>x.record.id);
+  const reviewed=new Set([...manual,...entries.flatMap(e=>qualityReviewedIds(e,records))]);
+  const issues=memoryQualityIssues(records).filter(i=>i.recordIds.some(id=>!reviewed.has(id)));
+  const unresolved=entries.flatMap(e=>[...(e.issues??[]),...(e.rejected??[]).filter(r=>r.id).map(r=>({recordIds:[r.id],description:r.reason}))]).filter(i=>i.recordIds.some(id=>!reviewed.has(id)));
+  const required=new Set([...manual,...entries.flatMap(e=>Object.keys(e.anchors)),...issues.flatMap(i=>i.recordIds),...unresolved.flatMap(i=>i.recordIds)]);
+  const groups=qualityGroups(records).map(ids=>ids.filter(id=>required.has(id))).filter(ids=>ids.length);
+  const problems=new Map();
+  for(const i of [...issues,...unresolved])for(const id of i.recordIds??[]){const texts=problems.get(id)??new Set();texts.add(i.description);problems.set(id,texts);}
+  const items=list(records).filter(x=>problems.has(x.record.id)&&!reviewed.has(x.record.id)).map(({category,record})=>({id:record.id,category,title:recordTitle(record),floors:sourceFloors(record),descriptions:[...problems.get(record.id)]}));
+  return {groups:groups.length,reviewed:groups.filter(ids=>ids.every(id=>reviewed.has(id))).length,failed:entries.filter(e=>e.status==='failed'&&Object.keys(e.anchors).some(id=>!reviewed.has(id))).length,issues,unresolved,items};
+}
+
+export function manualQualityFields(record,fields={}){
+  if(!isPlainObject(fields)||Object.keys(fields).some(k=>!allowed.has(k)&&!['person','entity'].includes(k)))throw new Error('修改包含不支持的字段');
+  const next={...record,...fields};
+  if(Object.values(fields).some(v=>stableStringify(v)?.length>24000))throw new Error('单项内容过长，请精简后保存');
+  if(record.category==='awarenessChanges'){
+    if(typeof next.person!=='string'||!next.person.trim()||typeof next.knowledge!=='string'||!next.knowledge.trim()||!statuses.has(next.status)||!vias.has(next.via))throw new Error('请填写获知人物、具体内容、知情状态和渠道');
+  }
+  if(record.category==='commitmentChanges'&&!EVENT_STATES.includes(next.state))throw new Error('请先选择约定状态');
+  // Preserve accepted sidecar fields when the existing manual-edit overlay
+  // takes precedence. Source identities and batch ownership cannot be edited.
+  const patch=Object.fromEntries([...allowed,'person','entity'].filter(k=>Object.hasOwn(next,k)).map(k=>[k,clone(next[k])]));
+  return {...patch,manualQualityChecked:true,...(record.category==='awarenessChanges'?{knowledgeReview:null}:{}),...(record.category==='commitmentChanges'?{stateReview:null}:{}),...(['description','text','knowledge','content','to'].some(k=>Object.hasOwn(fields,k))?{recallSummary:null}:{})};
 }

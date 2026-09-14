@@ -206,3 +206,8 @@
 .sy-root [data-keepsake] input,.sy-root [data-keepsake] select,.sy-root [data-keepsake] textarea{width:100%;min-width:0;box-sizing:border-box}
 #shiyi-product-shell [data-keepsake-add]{white-space:nowrap;flex-shrink:0}
 #shiyi-product-shell [data-keepsake-search]{flex:1;min-width:0}
+/* Keep source reading local to its issue; progress ticks never rebuild editors. */
+.sy-quality-item{border-top:1px solid var(--sy-border,#596360);padding:12px 0;min-width:0}
+.sy-quality-item h4{font-size:1em;margin:4px 0;overflow-wrap:anywhere}
+.sy-quality-source{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;padding:8px;font-size:.9em;contain:content}
+.sy-quality-plan{border:1px solid var(--sy-border,#596360);border-radius:8px;padding:10px;margin:8px 0}
