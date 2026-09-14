@@ -3,7 +3,8 @@ import { bindOriginalSource } from './source-recall-evidence.js';
 import { validationDetails, valueType } from './validation-diagnostics.js';
 import { normalizeTerms, normalizeTags,enrichRetrievalMetadata } from './product-dictionary.js';
 import { bindCharacterDetails } from './event-consolidation.js';
-import { normalizeFactValidity } from './memory-evidence.js';
+import { normalizeFactValidity,bindKnowledgeEvidence } from './memory-evidence.js';
+import { completeInnerLife } from './character-journal.js';
 import {
   asArray,
   asString,
@@ -523,7 +524,8 @@ export function bindDraftBundle(modelOutput, {
     if(next.tags!==undefined)next.tags=normalizeTags(next.tags);
     delete next.journalOnly;
     if(next.innerLife!==undefined&&!['personaChanges','performanceHints'].includes(category))delete next.innerLife;
-    return bindOriginalSource(bindCharacterDetails(enrichRetrievalMetadata(next,evidence),evidence),category,sourceTexts);
+    const checked=category==='awarenessChanges'?bindKnowledgeEvidence(next,evidence):next;
+    return bindOriginalSource(bindCharacterDetails(completeInnerLife(enrichRetrievalMetadata(checked,evidence),evidence,category),evidence),category,sourceTexts);
   };
   const bindCategory = category => normalizedCategory(source[category],category).map((record,index)=>bindEvidence(record,category,index));
   const bundle = {
@@ -740,7 +742,7 @@ function validateCommitments(records, eventIds, knownRecordIds, invalidEventIds,
     if (!id) errors.push(`${field}.id must be a non-empty string`); else if (ids.has(id)) errors.push(`${field}.id is duplicated`); else ids.add(id);
     checkEventRef(record, field, eventIds, knownRecordIds, invalidEventIds, errors);
     validateSourceRefs(record, field, allowedSourceIds, errors);
-    validEnum(record.state ?? record.status, EVENT_STATES, `${field}.state`, errors, { optional: false });
+    validEnum(record.state ?? record.status, [...EVENT_STATES,'unknown'], `${field}.state`, errors, { optional: false });
     if (!record.participants && !record.subject) errors.push(`${field} needs participants`);
     if (!record.content && !record.description) errors.push(`${field} needs commitment content`);
     validEnum(record.epistemicStatus, EPISTEMIC_STATUSES, `${field}.epistemicStatus`, errors, { optional: false });

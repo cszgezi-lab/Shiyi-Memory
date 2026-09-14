@@ -19,6 +19,12 @@ export function defaultSummaryPreset() {
 }
 export function validateSummaryPreset(value) {
   if(!isPlainObject(value)||Object.keys(value).some(k=>!['id','name','instructions','rules'].includes(k)))throw new Error('总结预设格式不正确');
+  // Add only the newly introduced rules to old DIY libraries. Existing user
+  // rules, including deliberately empty ones, must never be overwritten.
+  if(isPlainObject(value.rules)){
+    value=clone(value);
+    for(const key of ['evidenceBoundaryRules','promiseBoundaryRules','journalCoverageRules'])if(!Object.hasOwn(value.rules,key))value.rules[key]=SUMMARY_PRESET_RULES[key];
+  }
   if(typeof value.id!=='string'||!/^[a-zA-Z0-9_-]{1,80}$/.test(value.id))throw new Error('预设编号无效');
   if(typeof value.name!=='string'||!value.name.trim()||value.name.length>80)throw new Error('请填写 1–80 字的预设名称');
   if(typeof value.instructions!=='string'||!value.instructions.trim()||value.instructions.length>24000)throw new Error('总提示词不能为空，最多 24000 字');

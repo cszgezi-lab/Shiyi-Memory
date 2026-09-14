@@ -38,7 +38,7 @@ export function sourceLabel(card) {
 export function fullSearchText(card,body) {
   return [...new Set([card.title,body,card.recallSummary,card.innerLife?.text,card.innerLife?.stage,card.innerLife?.cause,narrativeText(card.participants),narrativeText(card.location),narrativeText(card.temporal),...(card.keyDialogues??[]).map(q=>[q.speaker,q.to,q.text,q.context,q.meaning].filter(Boolean).join(' ')),...(card.viewpoints??[]).map(v=>[v.holder,v.target,v.content,v.context].filter(Boolean).join(' ')),...normalizeTerms(card.entities).flatMap(t=>[t.name,...t.aliases,...t.indexWords]),...normalizeTags(card.tags)].filter(v=>typeof v==='string'&&v.trim()))].join('\n');
 }
-export const stateLabel=value=>({proposed:'提出',attempted:'尝试',accepted:'接受',completed:'完成',declined:'拒绝',canceled:'取消',resolved:'已解决',active:'有效'})[value]??value;
+export const stateLabel=value=>({proposed:'提出',attempted:'尝试',accepted:'接受',completed:'完成',declined:'拒绝',canceled:'取消',resolved:'已解决',active:'有效',unknown:'待核对'})[value]??value;
 export const awarenessLabel=value=>({known:'知道',heard:'听说',suspected:'怀疑',mistaken:'误以为',explicitly_unaware:'明确不知情'})[value]??value;
 export const viaLabel=value=>({witnessed:'亲眼见证',heard_in_scene:'现场听见',read:'阅读获知',told:'被告知',background:'背景已知',user_confirmed:'用户确认',special_ability:'特殊能力获知',unknown:'渠道未注明'})[value]??value??'渠道未注明';
 

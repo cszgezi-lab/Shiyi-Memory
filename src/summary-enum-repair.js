@@ -116,6 +116,24 @@ export function repairableEnumTargets(bundle,validation) {
   return targets.every(Boolean)&&new Set(targets.map(t=>t.path)).size===targets.length?targets:[];
 }
 
+// Unknown commitment state is a quarantined observation, NOT an accepted
+// promise. Keep the sourced text for targeted review instead of losing a
+// whole batch. Every other validator, including source and coverage, still runs.
+export function deferCommitmentStates(bundle,validation){
+  const value=clone(bundle),paths=[];
+  for(const issue of validation.validationIssues??[]){
+    const m=/^commitmentChanges\[(\d+)\]\.state$/.exec(issue.path??'');
+    if(!m||!['invalid_enum','required'].includes(issue.reason))continue;
+    const row=value.commitmentChanges?.[Number(m[1])];if(!row)continue;
+    const original=row.state??row.status;
+    row.state='unknown';
+    row.stateReview={status:'pending',reason:issue.reason,originalType:typeof original,
+      ...(typeof original==='string'&&original.length<=160?{originalValue:original}:{})};
+    paths.push(issue.path);
+  }
+  return {output:value,paths};
+}
+
 export function createEnumRepairRequest(bundle,targets,originalRequest) {
   const eventIds=new Set(targets.flatMap(t=>[t.record.eventRef,...(t.record.eventRefs??[])].filter(Boolean)));
   const events=[...(bundle.events??[]),...(originalRequest.relevantRecords?.events??[])].filter(e=>eventIds.has(e.id));
@@ -132,19 +150,22 @@ export function createEnumRepairRequest(bundle,targets,originalRequest) {
   };
 }
 
-export function applyEnumCorrections(bundle,targets,response) {
-  if(!response||Object.keys(response).length!==1||!Array.isArray(response.corrections)||response.corrections.length!==targets.length)return null;
+export function applyEnumCorrections(bundle,targets,response,{onRejected=()=>{}}={}) {
+  const reject=reason=>{onRejected(reason);return null;};
+  if(!response||Object.keys(response).length!==1||!Array.isArray(response.corrections)||response.corrections.length!==targets.length)return reject('response_shape');
   const expected=new Map(targets.map(t=>[t.path,t])),seen=new Set(),updates=[];
   for(const correction of response.corrections) {
-    if(!correction||typeof correction!=='object')return null;
+    if(!correction||typeof correction!=='object')return reject('response_shape');
     const target=expected.get(correction.path);
-    if(!target||seen.has(correction.path))return null;
+    if(!target||seen.has(correction.path))return reject('unexpected_path');
     seen.add(correction.path);
-    if(Object.keys(correction).some(k=>!['path','value','sourceRefs'].includes(k))||!enums[target.type].includes(correction.value))return null;
-    if(!Array.isArray(correction.sourceRefs)||!correction.sourceRefs.length)return null;
+    if(correction.unresolved===true)return reject('model_unresolved');
+    if(Object.keys(correction).some(k=>!['path','value','sourceRefs'].includes(k)))return reject('unexpected_fields');
+    if(!enums[target.type].includes(correction.value))return reject('invalid_value');
+    if(!Array.isArray(correction.sourceRefs)||!correction.sourceRefs.length)return reject('missing_evidence');
     for(const ref of correction.sourceRefs){
-      if(!ref||typeof ref!=='object'||Object.keys(ref).some(k=>!['sourceId','fragmentId'].includes(k)))return null;
-      if(!(target.record.sourceRefs??[]).some(r=>r.sourceId===ref.sourceId&&r.fragmentId===ref.fragmentId))return null;
+      if(!ref||typeof ref!=='object'||Object.keys(ref).some(k=>!['sourceId','fragmentId'].includes(k)))return reject('invalid_evidence_shape');
+      if(!(target.record.sourceRefs??[]).some(r=>r.sourceId===ref.sourceId&&r.fragmentId===ref.fragmentId))return reject('evidence_mismatch');
     }
     updates.push({target,value:correction.value});
   }

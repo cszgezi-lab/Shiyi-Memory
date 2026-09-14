@@ -13,7 +13,7 @@ import { safeLogDetails } from './product-runtime-log.js';
 import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType } from './diagnostics.js';
 import { resolveEventMerges } from './event-consolidation.js';
 import { tokenizeChinese } from './retrieval.js';
-import { normalizeSummaryEnums, normalizePersonaValidity, repairableEnumTargets, createEnumRepairRequest, applyEnumCorrections } from './summary-enum-repair.js';
+import { normalizeSummaryEnums, normalizePersonaValidity, repairableEnumTargets, createEnumRepairRequest, applyEnumCorrections, deferCommitmentStates } from './summary-enum-repair.js';
 import {transientSummaryError,recoveryAttemptLimit,recoveryDelay,repairCategories,categoryRepairRequest,applyCategoryRepair,missingFloorRequest} from './summary-recovery.js';
 import { selectSummaryContext, summarySources } from './summary-context.js';
 import { runSummaryStages, isolateDraftIds } from './summary-stages.js';
@@ -896,6 +896,8 @@ export class SummaryEngine {
           correctionAuthorizations,
         });
         let bundle=bindOutput(output);
+        const detailRows=DRAFT_CATEGORIES.flatMap(k=>Array.isArray(bundle[k])?bundle[k]:[]);
+        emit('character_details',{...baseDetails,journalCount:detailRows.filter(r=>r.innerLife?.text).length,stageObservations:detailRows.filter(r=>r.innerLife?.origin==='stage_observation').length,rejectedDialogues:detailRows.reduce((n,r)=>n+(r.detailWarnings?.rejectedDialogues??0),0)},detailRows.some(r=>r.detailWarnings?.rejectedDialogues)?'warning':'info');
         resolveEventMerges(bundle,request.relevantRecords,{deferUnresolved:true,stageCrossBatch:this.stageCrossBatchMerges,onDeferred:({eventIndex,reason})=>emit('merge_deferred',{...baseDetails,validationIssueCount:1,validationIssues:[{path:`events[${eventIndex}].mergeInto`,reason}]},'info')});
         if(this.requireFloorSummaries){
           phase='floors';
@@ -942,6 +944,15 @@ export class SummaryEngine {
           newSourceIds: child.sourceMessages.map((message) => message.id),
         };
         let validation = validateDraftBundle(bundle,validationOptions);
+        const deferred=deferCommitmentStates(bundle,validation);
+        if(deferred.paths.length){
+          bundle=deferred.output;validation=validateDraftBundle(bundle,validationOptions);
+          await keepResponse(bundle);
+        }
+        const deferredCommitments=(bundle.commitmentChanges??[]).filter(r=>r.state==='unknown').length;
+        const deferredKnowledge=(bundle.awarenessChanges??[]).filter(r=>r.knowledgeReview?.status==='pending').length;
+        const deferredCount=deferredCommitments+deferredKnowledge;
+        if(deferredCount)emit('records_deferred',{...baseDetails,deferredRecords:deferredCount,deferredCommitments,deferredKnowledge},'warning');
         if(!validation.valid&&this.recoveryEnabled&&!this.verified){
           const repairRequest=referenceRepairRequest(request,bundle,validation);
           if(repairRequest){
@@ -969,7 +980,7 @@ export class SummaryEngine {
             throwIfAborted(signal);
             phase='repair_response';
             const correction=await parseModelResponse(repairRaw,{onMetadata:metadata=>emit('repair_response',{...baseDetails,...metadata,elapsedMs:this.now()-repairStarted})});
-            const corrected=applyEnumCorrections(bundle,repairTargets,correction);
+            const corrected=applyEnumCorrections(bundle,repairTargets,correction,{onRejected:repairRejection=>emit('repair_failed',{...baseDetails,repairRejection},'warning')});
             if(corrected){
               const checked=validateDraftBundle(corrected,validationOptions);
               if(checked.valid){bundle=corrected;validation=checked;await keepResponse(bundle);emit('repair_complete',{...baseDetails,repairFields:repairTargets.length,elapsedMs:this.now()-repairStarted},'success');}

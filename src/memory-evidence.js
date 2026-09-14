@@ -1,5 +1,20 @@
 import { tokenizeChinese } from './retrieval.js';
 
+// Only narrative is speech evidence. Planning and variable patches may quote
+// things that were never said, or contain a character's private thoughts.
+export function evidenceWithoutPlanning(value) {
+  let text=String(value??'');
+  text=text.replace(/<(?:think|thinking|analysis|konatan_planning~)>[\s\S]*?<\/(?:think|thinking|analysis|konatan_planning~)>/gi,'');
+  const orphan=/<\/(?:think|thinking|konatan_planning~)>/i.exec(text);
+  if(orphan)text=text.slice(orphan.index+orphan[0].length);
+  return text;
+}
+export function narrativeEvidence(value) {
+  const text=evidenceWithoutPlanning(value).replace(/<UpdateVariable>[\s\S]*?<\/UpdateVariable>/gi,'');
+  const body=/^\s*<content>\s*\r?\n([\s\S]*?)<\/content>/mi.exec(text);
+  return body?body[1]:text;
+}
+
 // Read-time compatibility: an explicit top-level null still means unknown.
 export function factValidity(record, field) {
   return Object.hasOwn(record, field) ? record[field] : record.temporal?.[field];
@@ -21,13 +36,28 @@ export function hasQuotedEvidence(evidence, quote) {
 }
 
 export function hasSpeechEvidence(evidence,quote,speaker){
+  evidence=narrativeEvidence(evidence);
   if(!String(evidence).includes(speaker)||!String(evidence).includes(quote))return false;
+  // GAL pairs have an explicitly attributed Japanese line AND a Chinese
+  // translation. Neither unrelated speakers nor narrator brackets qualify.
+  const gal=/^\s*([^\r\n「〔【]{1,160}?)\s*(?:【[^】\r\n]*】\s*)?「[^」]{1,12000}」\s*〔([^〕]{1,12000})〕/gmu;
+  const pairs=[...String(evidence).matchAll(gal)];
+  if(pairs.some(m=>m[2].includes(quote)))return pairs.some(m=>m[1].trim()===speaker&&m[2].includes(quote));
   if(hasQuotedEvidence(evidence,quote))return true;
   // No narrator-substring promotion: unquoted dialogue must have an explicit
   // same-line speaker and speech marker. Newline continuations need quotes.
   const escaped=speaker.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
   const start=new RegExp(`^\\s*${escaped}(?:\\s*(?:对|向)[^：:\\n]{1,80})?\\s*(?:说(?:道)?|说道|回答|答道|问道|问|喊道|喊|回应)?\\s*[：:]\\s*(.+)$`,'u');
   return String(evidence).split(/\r?\n/).some(line=>{const m=start.exec(line);return m&&m[1]===quote;});
+}
+
+export function bindKnowledgeEvidence(record,evidence){
+  if(record.acquisitionEvidence===undefined)return record; // legacy records remain readable
+  const quote=record.acquisitionEvidence?.quote,person=record.person??record.actorId??record.personId;
+  const text=narrativeEvidence(evidence);
+  const valid=typeof quote==='string'&&quote.trim().length>=2&&quote.length<=4000&&text.includes(quote)&&typeof person==='string'&&quote.includes(person);
+  return {...record,acquisitionEvidence:valid?{quote}:null,
+    knowledgeReview:valid?null:{status:'pending',reason:'acquisition_evidence_missing'}};
 }
 
 const generic = /^(知道|不知|知情|得知|已经|此前|之前|当时|位置|信息|事情|内容|消息|他们|她们|没有|不能|明确|现在|相关|带来|来了|带了)$/;

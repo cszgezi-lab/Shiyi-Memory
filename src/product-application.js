@@ -33,7 +33,7 @@ import { buildDictionary, normalizeTerms, KNOWLEDGE_ANALYSIS_PROMPT, parseKnowle
 import { fullSearchText } from './product-narrative.js';
 import { sceneRecallQuery } from './product-recall-packing.js';
 import { sceneClockFromMessages } from './temporal.js';
-import { QUALITY_STORE_KEY,QUALITY_PROMPT,memoryQualityIssues,qualityGroups,qualityStatus,qualityEntryCurrent,qualityFingerprint,validateQualityReview,validateQualityReviewPartial,projectQualityRecords } from './product-memory-quality.js';
+import { QUALITY_STORE_KEY,QUALITY_PROMPT,memoryQualityIssues,qualityGroups,qualityStatus,qualityEntryCurrent,qualityReviewedIds,qualityFingerprint,validateQualityReview,validateQualityReviewPartial,projectQualityRecords } from './product-memory-quality.js';
 import { createInjectionLog } from './product-injection-log.js';
 import { ASSISTANT_SKILLS, assistantSkillCatalog, readAssistantSkill, assistantSettings,assistantBootstrap } from './product-assistant-skills.js';
 import { MERGE_STORE_KEY, MERGE_JUDGE_PROMPT, mergeJobs, mergeDecision, mergeJudgeInput, validateMergeVote, projectMergedCards, sameMergeSnapshot, eventFingerprint } from './product-event-merge.js';
@@ -606,7 +606,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     if(!workspace)throw Object.assign(new Error('当前聊天尚未读取'),{code:'CHAT_REF_UNAVAILABLE'});
     batchSize??=core.settings.summaryBatchSize;
-    const op=begin();let saved=0,currentBatch=null,bookkeepingWarning=false,automaticQualityIds=[],usedVerification=core.settings.summaryReviewEnabled;
+    const op=begin();let saved=0,currentBatch=null,bookkeepingWarning=false,deferredRecords=0,automaticQualityIds=[],usedVerification=core.settings.summaryReviewEnabled;
     summaryFeedback('running','正在读取总结范围…',trigger);
     try{
       // Read current source again only inside the same bound chat.
@@ -651,6 +651,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
             const action=event.details.purpose==='summary_verification'?'正在对照原文补漏纠错':repairing?(event.details.purpose==='enum_repair'?'正在自动纠正字段':'正在补全缺失内容'):'正在总结';
             summaryFeedback('running',`${action} · 第 ${i+1}/${planned.length} 批 · #${event.details.startIndex}–${event.details.endIndex} · 本批第 ${event.details.requestNumber} 次请求${event.details.recoveryCalls?'（恢复重试）':''}${repairing?'，无需重做整批总结':''}`,trigger);
           }
+          if(event.phase==='records_deferred'){deferredRecords+=event.details.deferredRecords??0;summaryFeedback('warning','个别记忆待核对，暂不注入；其余内容正常保存，稍后可在内容校对中单独处理。',trigger);}
           if(event.phase==='repair_request')summaryFeedback('running',`正在自动纠正 ${event.details.repairFields} 个字段 · #${item.startIndex}–${item.endIndex}，无需重做整批总结`,trigger);
           if(event.phase==='repair_complete')summaryFeedback('running',`字段纠错通过，正在保存 #${item.startIndex}–${item.endIndex}`,trigger);
           if(event.phase==='partial_repair')summaryFeedback(event.details.purpose==='summary_verification'?'warning':'running',event.details.purpose==='summary_verification'?`已缓存 ${event.details.accepted??0} 项复核改动，${event.details.rejected??0} 项待修复；本批尚未发布到记忆`:`正在补齐缺失内容 · #${item.startIndex}–${item.endIndex}，不重做整批总结`,trigger);
@@ -683,8 +684,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const awaiting=(state.merges??[]).filter(j=>['pending','failed','uncertain','missing'].includes(j.status)).length;
       mergeWarning ||= (state.merges??[]).some(j=>['failed','uncertain','missing'].includes(j.status));
       if(automaticQualityIds.length)queueAutomaticQuality(automaticQualityIds);
-      if(op.token===epoch)summaryFeedback(mergeWarning||bookkeepingWarning?'warning':'success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${bookkeepingWarning?'批次进度资料待恢复，记忆正文已确认保存，无需重新生成。':''}${awaiting||mergeWarning?'合并尚未全部完成，可在记录 → 事件合并中单独处理；无需重做总结。':''}`,trigger);
-      return {status:'saved',batches:saved,level:mergeWarning||bookkeepingWarning?'warning':'success',timings:{prepareMs:(firstRequestAt??Date.now())-taskStarted,modelMs,publishMs}};
+      if(op.token===epoch)summaryFeedback(mergeWarning||bookkeepingWarning||deferredRecords?'warning':'success',`总结成功并已保存：#${ranges[0].startIndex}–${ranges.at(-1).endIndex}，共 ${saved} 批。${deferredRecords?`${deferredRecords} 条记忆待核对，暂不注入；可在记忆 → 内容校对中单独修正。`:''}${bookkeepingWarning?'批次进度资料待恢复，记忆正文已确认保存，无需重新生成。':''}${awaiting||mergeWarning?'合并尚未全部完成，可在记录 → 事件合并中单独处理；无需重做总结。':''}`,trigger);
+      return {status:'saved',batches:saved,level:mergeWarning||bookkeepingWarning||deferredRecords?'warning':'success',timings:{prepareMs:(firstRequestAt??Date.now())-taskStarted,modelMs,publishMs}};
     }catch(error){
       // Report the API failure before potentially slow native bookkeeping.
       // The final log also carries the durable logical-batch count, not just
@@ -749,7 +750,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     await refresh();op.check();
     const rows=r=>MEMORY_CATEGORIES.flatMap(k=>(r[k]??[]).map(record=>({category:k,...record})));
     const initial=clone(state.rawRecords),findings=memoryQualityIssues(initial);
-    const reviewed=new Set(Object.values(qualitySaved).filter(e=>e.status==='reviewed'&&qualityEntryCurrent(e,initial)).flatMap(e=>Object.keys(e.anchors)));
+    const reviewed=new Set(Object.values(qualitySaved).flatMap(e=>qualityReviewedIds(e,initial)));
     const groups=qualityGroups(initial).map(ids=>ids.filter(id=>!reviewed.has(id))).filter(ids=>ids.length&&(!recordIds||ids.some(id=>recordIds.includes(id)))&&(!automatic||findings.some(i=>i.recordIds.some(id=>ids.includes(id)))));
     let corrected=0,failed=0,unresolved=0,paused=false,pending=0;
     for(const ids of groups){

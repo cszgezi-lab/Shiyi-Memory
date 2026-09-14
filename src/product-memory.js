@@ -49,10 +49,10 @@ export function memoryCards(records = {}, { hidden = [], knowledge = [], include
   const links=r=>[r.eventRef,r.eventId,r.sourceEventId,r.recordRef,...(r.eventRefs??[]),...(r.eventIds??[])].filter(Boolean);
   const events=(records.events??[]).filter(visible),eventById=new Map(events.map(e=>[e.id,e]));
   const eventsBySource=dependencyIndex(events,e=>(e.sourceRefs??[]).map(r=>r.sourceId));
-  const knowledgeRows=(records.awarenessChanges??[]).filter(visible);
+  const knowledgeRows=(records.awarenessChanges??[]).filter(r=>visible(r)&&r.knowledgeReview?.status!=='pending');
   const awarenessFor = dependencyIndex(knowledgeRows,links);
   const unlinkedBySource=dependencyIndex(knowledgeRows.filter(a=>!links(a).length),a=>(a.sourceRefs??[]).map(r=>r.sourceId));
-  const followUpsFor = dependencyIndex(records.commitmentChanges ?? [], a => [a.eventRef, a.completionOf, a.correctionOf, ...(a.eventRefs ?? [])]);
+  const followUpsFor = dependencyIndex((records.commitmentChanges ?? []).filter(r=>r.state!=='unknown'), a => [a.eventRef, a.completionOf, a.correctionOf, ...(a.eventRefs ?? [])]);
   for (const category of Object.keys(CATEGORY_LABELS)) {
     if (category==='knowledge'||category==='awarenessChanges'&&!includeAwareness)continue;
     for (const record of records[category] ?? []) {
@@ -130,6 +130,8 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
     })].join('\n\n');
   }
   const lines = metadataOnly?[]:[`[${CATEGORY_LABELS[card.category] ?? '记忆'}] ${body}`];
+  if(card.category==='commitmentChanges'&&card.state==='unknown')lines.push('约定状态待核对：正文已保留，暂不自动注入。可在内容校对中单独修正，无需重新总结。');
+  if(card.knowledgeReview?.status==='pending')lines.push('获知依据待核对：暂不把这条作为角色已知信息注入，可在内容校对中单独修正。');
   if(card.category==='conflicts')lines.push('核对参考：保留分歧及原文结论；未解决不作事实，已否认不再当真。不由召回决定谁知情。');
   for(const warning of card.continuityWarnings??[])lines.push(`待确认：${warning}`);
   if(detail&&!full)for(const e of card.qualityEvidence??[])lines.push(`校对依据${Number.isInteger(e.floor)?` · 第 ${e.floor} 楼`:''}：「${e.quote}」`);
@@ -218,6 +220,8 @@ export function relevantPassage(body,brief,query){
   return sentences.slice(Math.max(0,n-1),n+2).join('');
 }
 export function selectRecallCards(cards, settings, {includeAwareness=false}={}) {
+  cards=cards.filter(c=>!(c.category==='commitmentChanges'&&c.state==='unknown'));
+  cards=cards.filter(c=>c.knowledgeReview?.status!=='pending');
   cards=cards.filter(c=>!c.journalOnly||(settings.journalEnabled!==false&&c.innerLife?.text&&!c.innerLife.disabled));
   return cards.filter(c => c.customInject !== false && (includeAwareness||c.category !== 'awarenessChanges'||c.standaloneRecall===true) && !['retracted', 'superseded'].includes(c.lifecycleState) && (c.category !== 'conflicts'||c.sourceRefs?.length>0) && (settings.personaEnabled || !['entityFactChanges','personaChanges','relationshipChanges','awarenessChanges'].includes(c.category)) && (settings.performanceEnabled || c.category !== 'performanceHints') && (settings.knowledgeEnabled || c.category !== 'knowledge'));
 }

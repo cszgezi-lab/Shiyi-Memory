@@ -2,6 +2,7 @@ import { clone, stableStringify, sha256 } from './utils.js';
 import { sourceFloors, narrativeText,awarenessLabel,viaLabel } from './product-narrative.js';
 import { dictionaryQuery } from './product-dictionary.js';
 import { hasStoryTime } from './temporal.js';
+import { narrativeEvidence,evidenceWithoutPlanning } from './memory-evidence.js';
 
 // These are views of sourced records, not additional memory tables. A diary is
 // an interpretation aid, never proof that a physical diary exists in-world.
@@ -11,11 +12,43 @@ export function normalizeInnerLife(value,{manual=false}={}){
   if(!value||typeof value!=='object'||Array.isArray(value))return null;
   const text=clean(value.text),stage=clean(value.stage,160);
   if(!text||!stage)return null;
-  return {stage,text,cause:clean(value.cause,4000),basis:manual?'user_asserted':['observed','character_claim','inferred'].includes(value.basis)?value.basis:'inferred',status:value.status==='historical'?'historical':'current',private:true,representation:'role_reference'};
+  return {stage,text,cause:clean(value.cause,4000),basis:manual?'user_asserted':['observed','character_claim','inferred'].includes(value.basis)?value.basis:'inferred',status:value.status==='historical'?'historical':'current',private:true,representation:'role_reference',...(['source_monologue','stage_observation'].includes(value.origin)?{origin:value.origin}:{})};
+}
+// Recover only an explicitly named private monologue. Variable updates are
+// valid private-role material, never spoken dialogue or another person's knowledge.
+export function explicitMonologues(evidence,subject){
+  const found=[];
+  for(const patch of evidenceWithoutPlanning(evidence).matchAll(/<JSONPatch>\s*([\s\S]*?)\s*<\/JSONPatch>/gi)){
+    let rows;try{rows=JSON.parse(patch[1]);}catch{continue;}
+    if(!Array.isArray(rows))continue;
+    for(const row of rows){
+      if(!['insert','replace','add'].includes(row?.op)||typeof row.path!=='string')continue;
+      const parts=row.path.split('/').slice(1).map(s=>s.replace(/~1/g,'/').replace(/~0/g,'~'));
+      if(parts.length===3&&parts[0]==='角色'&&parts[1]===subject&&parts[2]==='内心独白'&&clean(row.value))found.push(clean(row.value));
+      if(parts.length===2&&parts[0]==='角色'&&parts[1]===subject&&clean(row.value?.内心独白))found.push(clean(row.value.内心独白));
+    }
+  }
+  const name=subject.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const pattern=new RegExp(`${name}[：:，,\\s]*(?:(?:在心里|默默地?|暗自|不由得|忍不住)[，,\\s]*)?(?:心想|心里想|暗想|内心独白)[：:，,\\s]*[“「]([^”」]{1,2000})[”」]`,'gu');
+  for(const m of narrativeEvidence(evidence).matchAll(pattern))found.push(m[1]);
+  return [...new Set(found)];
+}
+export function completeInnerLife(record,evidence,category){
+  if(!['personaChanges','performanceHints'].includes(category)||record.innerLife!==undefined)return record;
+  const subject=record.subject??record.person??record.entity;
+  if(typeof subject!=='string'||!subject.trim()||!evidence.includes(subject)||!record.sourceRefs?.length)return record;
+  const monologues=explicitMonologues(evidence,subject);
+  const observation=category==='personaChanges'?clean(record.description):'';
+  const text=monologues.length?monologues.join('\n'):observation;
+  if(!text||text.length>12000)return record;
+  const innerLife=normalizeInnerLife({stage:clean(record.aspect??record.field??record.key,160)||(monologues.length?'本阶段心声':'阶段观察'),text,
+    cause:record.context??'',basis:monologues.length?'observed':(['observed','character_claim'].includes(record.epistemicStatus)?record.epistemicStatus:'inferred'),
+    origin:monologues.length?'source_monologue':'stage_observation'});
+  return {...record,innerLife};
 }
 export function innerLifeText(card){
   const d=card.innerLife;if(!d?.text||d.disabled)return '';
-  const basis={observed:'依据正文明确描写',character_claim:'依据角色自述',user_asserted:'用户编写',inferred:'可选演绎推测，不是事实'}[d.basis]??'来源性质未确认';
+  const basis=(d.origin==='stage_observation'?'阶段观察，非角色逐字心声；':d.origin==='source_monologue'?'原文明确内心独白；':'')+({observed:'依据正文明确描写',character_claim:'依据角色自述',user_asserted:'用户编写',inferred:'可选演绎推测，不是事实'}[d.basis]??'来源性质未确认');
   return `[角色心迹 · ${d.stage} · ${d.status==='historical'?'过去阶段，非当前状态':'按本条时间与情境适用'} · ${basis}]\n人物：${card.subject??card.person??card.entity??'未注明'}${card.object?`；涉及对象：${card.object}`:''}${hasStoryTime(card.temporal)?`；时间：${narrativeText(card.temporal)}`:''}${sourceFloors(card).length?`；来源：第${sourceFloors(card).join('、')}楼`:''}\n${d.text}${d.cause?`\n变化缘由：${d.cause}`:''}\n仅供${card.subject??card.person??card.entity??'所属角色'}演绎参考，不代表实际写过日记；私密想法不赋予其他角色知情权。`;
 }
 export function markDiaryHistory(cards){
