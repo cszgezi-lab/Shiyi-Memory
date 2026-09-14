@@ -2,12 +2,12 @@ import {esc,field} from '../src/product-settings-ui.js';
 import {CATEGORY_LABELS,recordDescription} from '../src/product-memory.js';
 import {AWARENESS_STATUSES,AWARENESS_VIA} from '../src/contracts.js';
 
-export const qualityPanelHTML=()=>`<details class="sy-card" data-quality-panel><summary>内容校对 <small data-quality-count></small></summary><p class="sy-help">逐条查看原文、修改和确认不调用模型。AI 校对只处理待核对内容，先预览请求计划。</p><div class="sy-actions"><button type="button" data-action="review-memory">预览 AI 校对计划</button><button type="button" data-action="undo-quality">撤销自动校对</button><button type="button" data-action="stop">停止</button></div><div data-quality-plan></div><p data-quality-status role="status"></p><div data-quality-items></div><button type="button" data-quality-more hidden>显示更多问题</button></details>`;
+export const qualityPanelHTML=()=>`<details class="sy-card" data-quality-panel><summary>内容校对 <small data-quality-count></small></summary><p class="sy-help">逐条查看原文、修改和确认不调用模型。AI 默认只处理风险，不补齐所有模块；先预览请求计划。</p><div class="sy-actions"><button type="button" data-action="review-memory">预览 AI 校对计划</button><button type="button" data-action="undo-quality">撤销自动校对</button><button type="button" data-action="stop">停止</button></div><div data-quality-plan></div><p data-quality-status role="status"></p><div data-quality-items></div><button type="button" data-quality-more hidden>显示更多问题</button><details data-quality-optional><summary>可选补充 <small data-quality-optional-count></small></summary><p class="sy-help">这些不是已确认错误，不进入默认 AI 校对队列。可按需要查看原文、编辑，或单独预览本条 AI 校对。</p><div data-quality-suggestions></div><button type="button" data-quality-suggestions-more hidden>显示更多建议</button></details></details>`;
 const choices=(key,label,values,value)=>field(label,`<select data-q-field="${key}">${values.map(([id,text])=>`<option value="${esc(id)}" ${id===value?'selected':''}>${esc(text)}</option>`).join('')}</select>`);
 const statusLabels={known:'知道',heard:'听说',suspected:'怀疑',mistaken:'误解',explicitly_unaware:'明确不知道'};
 const viaLabels={witnessed:'亲眼见到',heard_in_scene:'当场听见',read:'阅读得知',told:'他人转告',background:'既有背景',user_confirmed:'用户确认',special_ability:'特殊能力',unknown:'无法确定'};
 export function mountQualityView({panel,app,run}){
-  const $=s=>panel.querySelector(s),container=$('[data-quality-items]');let limit=10,last=null,scope=null,planStamp='';
+  const $=s=>panel.querySelector(s),container=$('[data-quality-items]');let limit=10,suggestionLimit=10,last=null,scope=null,planStamp='';
   function editorHTML(r){
     const bodyKey=r.category==='awarenessChanges'?'knowledge':r.category==='entityFactChanges'?'to':r.description!==undefined?'description':r.text!==undefined?'text':'content';
     const value=r[bodyKey]??recordDescription(r),json=typeof value!=='string';
@@ -34,23 +34,32 @@ export function mountQualityView({panel,app,run}){
     }));
   }
   function paint(s){
-    last=s;const nextScope=JSON.stringify(s.core?.scope);if(nextScope!==scope){scope=nextScope;container.replaceChildren();limit=10;planStamp='';}
+    last=s;const nextScope=JSON.stringify(s.core?.scope);if(nextScope!==scope){scope=nextScope;container.replaceChildren();$('[data-quality-suggestions]').replaceChildren();limit=10;suggestionLimit=10;planStamp='';}
     const q=s.quality??{},items=q.items??[];
     $('[data-quality-count]').textContent=s.chatReady?`待核对 ${items.length} 条`:'';
-    $('[data-quality-status]').textContent=s.qualityProgress||`${items.length} 条待核对；${q.failed??0} 组请求未完成。已保存的总结保留。`;
+    $('[data-quality-status]').textContent=s.qualityProgress||`当前 ${items.length} 条风险待核对 · 已校对 ${q.reviewedRecords??0} 条。${q.failed?`${q.failed} 组请求未完成。`:''}${q.rejectedSuggestions?`${q.rejectedSuggestions} 项修改建议未采用，原因见条目或日志，不等于原记忆有同样数量的错误。`:''}已保存的总结保留。`;
     const stamp=JSON.stringify(s.qualityPlan??null);
     if(stamp!==planStamp){planStamp=stamp;const p=s.qualityPlan;$('[data-quality-plan]').innerHTML=p?`<div class="sy-quality-plan"><p>预计 ${p.requests} 次模型请求 · ${p.records} 条记忆 · ${p.sources} 楼原文</p>${p.blocked?.map(b=>`<p class="sy-help">${esc(b.reason)}</p>`).join('')??''}${p.requests?'<button type="button" data-quality-start>开始 AI 校对</button>':'<p>没有可执行的模型请求。</p>'}</div>`:'';$('[data-quality-start]')?.addEventListener('click',()=>run(()=>app.reviewMemory({planId:p.id})));}
-    const visible=items.slice(0,limit),ids=new Set(visible.map(i=>i.id));
+    function paintRows(container,visible){const ids=new Set(visible.map(i=>i.id));
     for(const child of [...container.children])if(!ids.has(child.dataset.qualityRecord))child.remove();
     for(const item of visible){
       let row=[...container.children].find(n=>n.dataset.qualityRecord===item.id);
-      if(!row){row=container.ownerDocument.createElement('article');row.className='sy-quality-item';row.dataset.qualityRecord=item.id;row.innerHTML='<h4></h4><div data-q-reasons></div><button type="button" data-q-inspect>查看原文／人工校对</button><div data-q-editor hidden></div>';container.append(row);row.querySelector('[data-q-inspect]').addEventListener('click',()=>run(()=>inspect(row,item)));}
-      const content=JSON.stringify(item);if(row.dataset.stamp!==content){row.dataset.stamp=content;row.querySelector('h4').textContent=`${CATEGORY_LABELS[item.category]??'记忆'} · ${item.title}`;row.querySelector('[data-q-reasons]').innerHTML=item.descriptions.map(t=>`<p class="sy-help">${esc(t)}</p>`).join('');}
+      if(!row){row=container.ownerDocument.createElement('article');row.className='sy-quality-item';row.dataset.qualityRecord=item.id;row.innerHTML='<h4></h4><div data-q-reasons></div><button type="button" data-q-inspect>查看原文／人工校对</button><button type="button" data-q-plan>只校对本条 · 预览</button><div data-q-editor hidden></div>';container.append(row);row.querySelector('[data-q-inspect]').addEventListener('click',()=>run(()=>inspect(row,item)));row.querySelector('[data-q-plan]').addEventListener('click',()=>run(()=>app.previewQuality([item.id])));}
+      row.querySelector('[data-q-plan]').disabled=Boolean(s.busy);
+      const content=JSON.stringify(item);if(row.dataset.stamp!==content){row.dataset.stamp=content;row.querySelector('h4').textContent=`${CATEGORY_LABELS[item.category]??'记忆'} · ${item.title}`;row.querySelector('[data-q-reasons]').innerHTML=item.descriptions.map(t=>`<p class="sy-help">${esc(t)}</p>`).join('')+(item.attempts?.length?`<details><summary>未采用的修改建议</summary>${item.attempts.map(a=>`<p class="sy-help">${esc(a.description)}</p>`).join('')}</details>`:'');}
     }
+    }
+    paintRows(container,items.slice(0,limit));
+    const suggestions=q.suggestionItems??[];
+    $('[data-quality-optional-count]').textContent=`${suggestions.length} 条`;
+    if($('[data-quality-optional]').open)paintRows($('[data-quality-suggestions]'),suggestions.slice(0,suggestionLimit));
+    $('[data-quality-suggestions-more]').hidden=suggestions.length<=suggestionLimit;
     $('[data-quality-more]').hidden=items.length<=limit;
     $('[data-quality-start]')?.toggleAttribute('disabled',Boolean(s.busy));
     $('[data-action="review-memory"]')?.toggleAttribute('disabled',Boolean(s.busy));
   }
   $('[data-quality-more]').addEventListener('click',()=>{limit+=10;if(last)paint(last);});
+  $('[data-quality-optional]').addEventListener('toggle',()=>{if(last)paint(last);});
+  $('[data-quality-suggestions-more]').addEventListener('click',()=>{suggestionLimit+=10;if(last)paint(last);});
   return {paint};
 }

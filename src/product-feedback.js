@@ -53,6 +53,9 @@ export function productFailure(error) {
   const rawStatus=Number(error?.details?.status);
   const status=Number.isInteger(rawStatus)&&rawStatus>=400&&rawStatus<=599?rawStatus:null;
   let message=HTTP[status]??NETWORK[code]??CODES[code];
+  if(['TIMEOUT','network.timeout'].includes(code)&&error?.details?.timerLagMs>=5000){
+    message=error.details.backgroundSeen?'请求超时，期间页面曾切到后台，超时计时也明显延迟；这段等待不能当作模型计算时间。已保存批次保留，回到前台后只重试未完成项，不必全部重新总结。':'请求超时，页面计时器明显延迟，可能发生后台暂停或界面阻塞，具体原因未确认。已保存批次保留，只需重试未完成项；不能把全部等待当作模型计算时间。';
+  }
   if(error?.details?.upstreamCode==='insufficient_quota')message='模型服务额度已用尽，已停止自动重试。请恢复额度或在 API 中选择可用服务；已保存记忆保留。';
   else if(status===524)message='服务网关等待模型超时（HTTP 524），不是本机回复上限不足。已返回的结果保留；等待服务恢复后可继续未完成任务，不必重做已完成阶段。';
   else if(status===429)message=error?.details?.retryAfterMs>0?'服务限流，请按接口提示等待后重试；已保存记忆保留。':'服务限流，未提供恢复时间，已停止自动重试。请稍后重试或检查服务额度；已保存记忆保留。';

@@ -1,16 +1,13 @@
 import {clone,estimateModelInputUnits,sha256,yieldLocalWork} from './utils.js';
-import {QUALITY_PROMPT,qualityGroups,qualityStatus,qualityReviewedIds} from './product-memory-quality.js';
+import {QUALITY_PROMPT,qualityGroups,qualityStatus,qualityEditableFields} from './product-memory-quality.js';
 import {summaryRecord,selectSummaryContext} from './summary-context.js';
 import {MEMORY_CATEGORIES} from './product-batches.js';
 
 export const qualityRows=records=>MEMORY_CATEGORIES.flatMap(category=>(records[category]??[]).map(r=>({...r,category})));
 export function qualityTargets(records,saved={},recordIds=null){
   const status=qualityStatus(records,saved);
-  const completed=new Set(Object.values(saved).flatMap(entry=>qualityReviewedIds(entry,records)));
-  const current=new Map(qualityRows(records).map(({category,...r})=>[r.id,r]));
   const ids=new Set([...status.issues,...status.unresolved].flatMap(i=>i.recordIds??[]));
-  for(const entry of Object.values(saved))if(entry.status==='failed')for(const [id,hash] of Object.entries(entry.anchors??{}))if(current.has(id)&&sha256(current.get(id))===hash)ids.add(id);
-  return qualityRows(records).filter(r=>ids.has(r.id)&&!completed.has(r.id)&&!r.manualQualityChecked&&(!recordIds||recordIds.includes(r.id)));
+  return qualityRows(records).filter(r=>(recordIds?recordIds.includes(r.id):ids.has(r.id))&&!r.manualQualityChecked);
 }
 
 /** Pure preflight: source loading is outside this loop, no model or storage
@@ -21,7 +18,13 @@ export async function planQuality({records,effectiveRecords=records,saved={},sou
   // records. A retry must not teach the model the superseded version again.
   const effectiveById=new Map(qualityRows(effectiveRecords).map(r=>[r.id,r]));
   const byId=new Map(targets.map(r=>[r.id,effectiveById.get(r.id)??r]));
-  const pending=qualityGroups(records).map(ids=>ids.filter(id=>byId.has(id))).filter(ids=>ids.length);
+  const ordered=qualityGroups(records).map(ids=>ids.filter(id=>byId.has(id))).filter(ids=>ids.length);
+  const grouped=new Set(ordered.flat());
+  const remaining=targets.filter(r=>!grouped.has(r.id)).map(r=>r.id);
+  // Batch provenance guards writes, not the number of paid review requests.
+  // Share sources across old batches, then split only if the complete request
+  // actually exceeds the user's budget. Freeze the resulting plan before send.
+  const orderedIds=[...ordered.flat(),...remaining],pending=orderedIds.length?[orderedIds]:[];
   const sourceMap=new Map(sources.map(m=>[m.id,m])),jobs=[],blocked=[];
   const limit=settings.inputBudgetUnits;
   while(pending.length){
@@ -31,7 +34,8 @@ export async function planQuality({records,effectiveRecords=records,saved={},sou
     const evidence=[...refs].map(id=>sourceMap.get(id)).filter(Boolean);
     if(evidence.length!==refs.size){blocked.push({ids,reason:'来源缺失，请查看原文后人工校对'});continue;}
     const related=selectSummaryContext(effectiveRecords,evidence,{budgetUnits:4000,maxRecords:24});
-    const input={sources:evidence.map(({id,index,text})=>({id,index,text})),records:rows.map(summaryRecord),referenceRecords:qualityRows(related.records).filter(r=>!byId.has(r.id)).map(summaryRecord),issues:[...status.issues,...status.unresolved].filter(i=>i.recordIds.some(id=>ids.includes(id)))};
+    const input={sources:evidence.map(({id,index,text})=>({id,index,text})),records:rows.map(r=>({...summaryRecord(r),editableFields:qualityEditableFields(r.category)})),referenceRecords:qualityRows(related.records).filter(r=>!byId.has(r.id)).map(summaryRecord),issues:[...status.issues,...status.unresolved].filter(i=>i.recordIds.some(id=>ids.includes(id)))};
+    if(recordIds&&!input.issues.length)input.issues=[{recordIds:ids,description:'用户主动选择校对这些条目；只作有原文依据的必要修正，不强求新增内容。'}];
     const payload=()=>({model,messages:[{role:'system',content:QUALITY_PROMPT},{role:'user',content:JSON.stringify(input)}],stream:false,...(settings.outputBudgetUnits>0?{max_tokens:settings.outputBudgetUnits}:{})});
     let wire=payload(),inputUnits=estimateModelInputUnits(wire);
     while(inputUnits>limit&&input.referenceRecords.length){input.referenceRecords.pop();wire=payload();inputUnits=estimateModelInputUnits(wire);}

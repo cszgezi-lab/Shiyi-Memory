@@ -43,7 +43,9 @@ function detailsHTML(entry){
   for(const [key,label]of [['vectorStatus','向量召回'],['rerankStatus','重排']])if(d[key])lines.push([label,({passed:'成功',disabled:'未启用',fallback:'未完成，使用回退结果',skipped:'未调用'})[d[key]]??'状态未知']);
   if(d.qualityReason)lines.push(['校对校验',d.qualityReason]);
   for(const [key,label]of [['accepted','通过校验的修改/新增'],['rejected','未通过的校对项'],['rejectedRows','未通过的校对项']])if(d[key]!==undefined)lines.push([label,d[key]]);
-  for(const r of d.qualityRejections??[])lines.push([`${({update:'修改',addition:'新增',issue:'疑点'})[r.kind]}第 ${r.index+1} 项`,r.reason]);
+  for(const r of d.qualityRejections??[])lines.push([`${({update:'修改',addition:'新增',issue:'疑点'})[r.kind]}第 ${r.index+1} 项`,`${r.reason}${r.fields?.length?`；字段：${r.fields.join('、')}`:''}`]);
+  if(d.backgroundSeen!==undefined)lines.push(['请求期间切到后台',d.backgroundSeen?'已观察到':'未观察到（不能排除宿主暂停）']);
+  if(d.timerLagMs>=5000)lines.push(['等待时间说明','页面计时器明显延迟，不能将全部等待当作模型计算耗时；已保存批次保留。']);
   if(d.upstreamCode)lines.push(['服务错误分类',UPSTREAM_CODES[d.upstreamCode]]);
   if(d.upstreamHint)lines.push(['服务报文提示',UPSTREAM_HINTS[d.upstreamHint]]);
   if(d.requestChars!==undefined)lines.push(['请求 JSON 字符数（不是 Token）',d.requestChars]);

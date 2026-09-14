@@ -169,9 +169,9 @@ export class ProviderClient {
     const effectiveTimeout = timeoutMs ?? this.profile.timeoutMs;
     let timer = null;
     let timedOut = false;
-    let timerLagMs = 0;
+    let timerLagMs = 0,backgroundSeen=false;
     if (Number.isFinite(effectiveTimeout) && effectiveTimeout > 0) {
-      timer = scheduleDeadline(effectiveTimeout, timing => { timedOut = true; timerLagMs=Math.round(timing.timerLagMs); controller.abort('provider request timeout'); });
+      timer = scheduleDeadline(effectiveTimeout, timing => { timedOut = true; timerLagMs=Math.round(timing.timerLagMs); backgroundSeen=timing.backgroundSeen===true;controller.abort('provider request timeout'); });
     }
     const init = {
       method,
@@ -195,7 +195,7 @@ export class ProviderClient {
       return result;
     } catch (error) {
       if (timedOut) {
-        const timeoutError = new ShiyiError(`${resource} request timed out`, 'TIMEOUT', { timeoutMs: effectiveTimeout,timerLagMs,stage:'request',reason:'timeout',causeError:error });
+        const timeoutError = new ShiyiError(`${resource} request timed out`, 'TIMEOUT', { timeoutMs: effectiveTimeout,timerLagMs,backgroundSeen,stage:'request',reason:'timeout',causeError:error });
         throw timeoutError;
       }
       if(error?.code||error?.name==='AbortError'){if(error?.code==='CANCELED'||error?.name==='AbortError')error.details={...error.details,stage:'request',reason:'canceled'};throw error;}

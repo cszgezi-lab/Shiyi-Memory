@@ -480,7 +480,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     state.rawRecords=filtered;state.memoryControls=view.controls??{};
     qualitySaved=await bound.read(QUALITY_STORE_KEY,{});assertCurrent(token);
     state.records=projectQualityRecords(filtered,qualitySaved,view.controls);
-    state.quality=qualityStatus(filtered,qualitySaved);
+    state.quality=qualityStatus(filtered,qualitySaved,view.controls,state.records);
     const qualityDeleted=Object.values(qualitySaved).filter(e=>qualityEntryCurrent(e,filtered)).flatMap(e=>(e.additions??[]).map(a=>a.record)).filter(r=>view.controls?.deletedRecords?.[r.id]);
     state.deletedRecords.push(...qualityDeleted);
     mergeDecisions=await bound.read(MERGE_STORE_KEY,{});assertCurrent(token);
@@ -672,7 +672,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         publishMs+=Date.now()-publishingAt;
         if(core.settings.autoQualityEnabled&&!usedVerification&&!core.settings.summaryReviewEnabled){
           const batch=state.batches.find(b=>b.operationId===operationId),ids=MEMORY_CATEGORIES.flatMap(k=>batch?.records?.[k]??[]).map(r=>r.id);
-          automaticQualityIds.push(...ids);
+          const risks=new Set(qualityTargets(state.rawRecords,qualitySaved).map(r=>r.id));
+          automaticQualityIds.push(...ids.filter(id=>risks.has(id)));
         }
       }
       // All source-valid summaries are already durable. Merge is a separate
@@ -817,14 +818,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         const response=await c.chatCompletions(payload,{signal:op.signal,timeoutMs:core.settings.deadlineMs,requestId,onDiagnostic:e=>runtimeLog.record({run,task:'quality',...e})});op.check();
         runtimeLog.record({run,task:'quality',phase:'response',details:{finishReason:response.choices?.[0]?.finish_reason??'unknown',promptTokens:response.usage?.prompt_tokens,completionTokens:response.usage?.completion_tokens}});
         const modelOutput=jsonContent(completion(response).content);
-        try{entry=validateQualityReview(reviewRecords,ids,sources,modelOutput,state.memoryControls);}
-        catch(error){
-          // Providers sometimes produce one unusable evidence quote alongside
-          // otherwise valid corrections. Salvage the independently valid
-          // rows; only those rows remain applied, while rejected rows stay
-          // eligible for the next retry.
-          if(error?.code!=='QUALITY_RESPONSE_INVALID')throw error;
-          entry=validateQualityReviewPartial(reviewRecords,ids,sources,modelOutput,state.memoryControls);
+        entry=validateQualityReviewPartial(reviewRecords,ids,sources,modelOutput,state.memoryControls);
+        if(entry.rejected?.length){
           runtimeLog.record({run,task:'quality',phase:'partial_repair',level:'warning',details:{requestId,accepted:entry.updates.length+entry.additions.length,rejected:entry.rejected?.length??0,qualityRejections:entry.rejected}});
         }
         // The validator reads the same accepted projection as the model.
@@ -847,7 +842,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       catch(error){runtimeLog.record({run,task:'quality',phase:'failed',level:'error',details:{...errorDiagnostics(error),requestId}});throw error;}
       runtimeLog.record({run,task:'quality',phase:'commit',level:'success',details:{requestId}});
       runtimeLog.record({run,task:'quality',phase:'complete',level:entry.status==='failed'||entry.issues?.length||entry.rejected?.length?'warning':'success'});
-      state.quality=qualityStatus(raw,qualitySaved);notify();
+      state.quality=qualityStatus(raw,qualitySaved,state.memoryControls);notify();
       if(paused){pending=groups.length-groups.indexOf(job)-1;runtimeLog.record({run,task:'quality',phase:'service_paused',level:'warning',details:{pendingItems:pending}});break;}
     }
     state.qualityProgress='';await refresh();op.check();await runtimeLog.flush();
