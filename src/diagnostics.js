@@ -54,7 +54,7 @@ files.add('provider-stream.js');
 const verificationCodes=new Set(['invalid_shape','missing_evidence','quote_not_in_source','protected_or_unknown_field','source_mismatch','source_removal','unknown_or_duplicate_target','unknown_category','missing_sources','duplicate_id']);
 const verificationPath=/^(?:verification|reviewedSourceIds|reviews|checks|updates|repartitions|(?:edits|splitEvents|updates|additions|repartition)\[\d{1,6}\](?:\.events\[\d{1,6}\])?(?:\.(?:value|sources)|\.evidence\[\d{1,6}\]\.(?:sourceId|quote))?)$/;
 let sequence=0;
-export const QUALITY_REASONS=Object.freeze(['获知证据未对应人物与原文','约定状态不正确','知情状态不正确','知情途径不正确','角色心迹字段不正确','关键台词字段不正确','台词不属于原文发言','返回格式或条数不正确','缺少原文依据','依据不能对应原文','含不允许修改的字段','事实性质不正确','文字字段不正确','列表字段不正确','更新对象不在本批或重复','更新依据不属于原记录','新增区块或来源锚点不正确','新增记录不正确','新增依据不属于来源锚点','新增依据不属于本次校对来源','新增记录过长','新增记录含未知字段','知情字段缺失或事件不存在','知情字段缺失或关联事件/属性不存在','人物属性缺失或越权确认','疑点没有关联原记录','没有一项校对结果通过验证','校对项未通过原文与字段校验']);
+export const QUALITY_REASONS=Object.freeze(['证据片段不存在或已变化','获知证据未对应人物与原文','约定状态不正确','知情状态不正确','知情途径不正确','角色心迹字段不正确','关键台词字段不正确','台词不属于原文发言','返回格式或条数不正确','缺少原文依据','依据不能对应原文','含不允许修改的字段','事实性质不正确','文字字段不正确','列表字段不正确','更新对象不在本批或重复','更新依据不属于原记录','新增区块或来源锚点不正确','新增记录不正确','新增依据不属于来源锚点','新增依据不属于本次校对来源','新增记录过长','新增记录含未知字段','知情字段缺失或事件不存在','知情字段缺失或关联事件/属性不存在','人物属性缺失或越权确认','疑点没有关联原记录','没有一项校对结果通过验证','校对项未通过原文与字段校验']);
 export function diagnosticRequestId(){return `req-${Date.now().toString(36)}-${(++sequence).toString(36)}`;}
 export function safeDiagnosticFields(value={}){
   const result={};

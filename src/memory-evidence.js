@@ -51,14 +51,14 @@ export function hasSpeechEvidence(evidence,quote,speaker){
   return String(evidence).split(/\r?\n/).some(line=>{const m=start.exec(line);return m&&m[1]===quote;});
 }
 
-export function bindKnowledgeEvidence(record,evidence){
+export function bindKnowledgeEvidence(record,evidence,{actorNames=[],narrativeText=null}={}){
   if(record.acquisitionEvidence===undefined)return record; // legacy records remain readable
   const quote=record.acquisitionEvidence?.quote,person=record.person??record.actorId??record.personId;
-  const text=narrativeEvidence(evidence);
+  const text=typeof narrativeText==='string'?narrativeText:narrativeEvidence(evidence);
   // Accept only explicitly declared, unambiguous aliases from this source.
   // No suffix guessing, pronoun resolution, or unverified dictionary aliases.
   const declarations=[...text.matchAll(/([\p{L}\p{N}·]{1,40})的(?:昵称|别名|别称|简称|小名)是[“「"]?([\p{L}\p{N}·]{1,20})[”」"]?(?=[，。；\s]|$)/gu)];
-  const names=typeof person==='string'?[person,...declarations.filter(m=>m[1]===person&&!declarations.some(other=>other[2]===m[2]&&other[1]!==person)).map(m=>m[2])]:[];
+  const names=typeof person==='string'?[person,...actorNames,...declarations.filter(m=>m[1]===person&&!declarations.some(other=>other[2]===m[2]&&other[1]!==person)).map(m=>m[2])]:[];
   const valid=typeof quote==='string'&&quote.trim().length>=2&&quote.length<=4000&&text.includes(quote)&&names.some(name=>quote.includes(name));
   return {...record,acquisitionEvidence:valid?{quote}:null,
     knowledgeReview:valid?null:{status:'pending',reason:'acquisition_evidence_missing'}};

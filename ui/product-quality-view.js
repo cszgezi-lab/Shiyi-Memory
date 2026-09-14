@@ -7,7 +7,8 @@ const choices=(key,label,values,value)=>field(label,`<select data-q-field="${key
 const statusLabels={known:'知道',heard:'听说',suspected:'怀疑',mistaken:'误解',explicitly_unaware:'明确不知道'};
 const viaLabels={witnessed:'亲眼见到',heard_in_scene:'当场听见',read:'阅读得知',told:'他人转告',background:'既有背景',user_confirmed:'用户确认',special_ability:'特殊能力',unknown:'无法确定'};
 export function mountQualityView({panel,app,run}){
-  const $=s=>panel.querySelector(s),container=$('[data-quality-items]');let limit=10,suggestionLimit=10,last=null,scope=null,planStamp='';
+  const $=s=>panel.querySelector(s),container=$('[data-quality-items]');let limit=10,suggestionLimit=10,deferredLimit=10,last=null,scope=null,planStamp='';
+  const deferredPanel=panel.ownerDocument.createElement('details');deferredPanel.dataset.qualityDeferred='';deferredPanel.innerHTML='<summary>已尝试，仍需确认 <small data-quality-deferred-count></small></summary><p class="sy-help">这些条目尚未修好，仍保留知情保护；不会默认重复请求。可人工确认或主动重试。</p><button type="button" data-quality-retry>重试待确认条目 · 预览</button><div data-quality-deferred-items></div><button type="button" data-quality-deferred-more hidden>显示更多待确认</button>';$('[data-quality-optional]').before(deferredPanel);
   function editorHTML(r){
     const bodyKey=r.category==='awarenessChanges'?'knowledge':r.category==='entityFactChanges'?'to':r.description!==undefined?'description':r.text!==undefined?'text':'content';
     const value=r[bodyKey]??recordDescription(r),json=typeof value!=='string';
@@ -34,12 +35,12 @@ export function mountQualityView({panel,app,run}){
     }));
   }
   function paint(s){
-    last=s;const nextScope=JSON.stringify(s.core?.scope);if(nextScope!==scope){scope=nextScope;container.replaceChildren();$('[data-quality-suggestions]').replaceChildren();limit=10;suggestionLimit=10;planStamp='';}
-    const q=s.quality??{},items=q.items??[];
-    $('[data-quality-count]').textContent=s.chatReady?`待核对 ${items.length} 条`:'';
-    $('[data-quality-status]').textContent=s.qualityProgress||`当前 ${items.length} 条风险待核对 · 已校对 ${q.reviewedRecords??0} 条。${q.failed?`${q.failed} 组请求未完成。`:''}${q.rejectedSuggestions?`${q.rejectedSuggestions} 项修改建议未采用，原因见条目或日志，不等于原记忆有同样数量的错误。`:''}已保存的总结保留。`;
+    last=s;const nextScope=JSON.stringify(s.core?.scope);if(nextScope!==scope){scope=nextScope;container.replaceChildren();$('[data-quality-suggestions]').replaceChildren();$('[data-quality-deferred-items]').replaceChildren();limit=10;suggestionLimit=10;deferredLimit=10;planStamp='';}
+    const q=s.quality??{},items=q.pendingItems??q.items??[],deferred=q.deferredItems??[];
+    $('[data-quality-count]').textContent=s.chatReady?`待处理 ${items.length} · 待确认 ${deferred.length}`:'';
+    $('[data-quality-status]').textContent=s.qualityProgress||`待处理 ${items.length} 条 · 已校对 ${q.reviewedRecords??0} 条。${deferred.length?`${deferred.length} 条已尝试仍需确认，见下方。`:''}${q.failed?`${q.failed} 次请求未完成。`:''}已保存的总结保留。`;
     const stamp=JSON.stringify(s.qualityPlan??null);
-    if(stamp!==planStamp){planStamp=stamp;const p=s.qualityPlan;$('[data-quality-plan]').innerHTML=p?`<div class="sy-quality-plan"><p>预计 ${p.requests} 次模型请求 · ${p.records} 条记忆 · ${p.sources} 楼原文</p>${p.blocked?.map(b=>`<p class="sy-help">${esc(b.reason)}</p>`).join('')??''}${p.requests?'<button type="button" data-quality-start>开始 AI 校对</button>':'<p>没有可执行的模型请求。</p>'}</div>`:'';$('[data-quality-start]')?.addEventListener('click',()=>run(()=>app.reviewMemory({planId:p.id})));}
+    if(stamp!==planStamp){planStamp=stamp;const p=s.qualityPlan;$('[data-quality-plan]').innerHTML=p?`<div class="sy-quality-plan"><p>预计 ${p.requests} 次模型请求 · ${p.records} 条记忆 · ${p.sources} 楼原文</p>${p.inputChars?`<p class="sy-help">请求合计 ${Number(p.inputChars).toLocaleString('zh-CN')} 字符</p>`:''}${p.requestChars?.length>1?`<details><summary>每次请求大小</summary>${p.requestChars.map((n,i)=>`<p class="sy-help">第 ${i+1} 次：${Number(n).toLocaleString('zh-CN')} 字符</p>`).join('')}</details>`:''}${p.blocked?.map(b=>`<p class="sy-help">${esc(b.reason)}</p>`).join('')??''}${p.requests?'<button type="button" data-quality-start>开始 AI 校对</button>':'<p>没有可执行的模型请求。</p>'}</div>`:'';$('[data-quality-start]')?.addEventListener('click',()=>run(()=>app.reviewMemory({planId:p.id})));}
     function paintRows(container,visible){const ids=new Set(visible.map(i=>i.id));
     for(const child of [...container.children])if(!ids.has(child.dataset.qualityRecord))child.remove();
     for(const item of visible){
@@ -50,6 +51,10 @@ export function mountQualityView({panel,app,run}){
     }
     }
     paintRows(container,items.slice(0,limit));
+    $('[data-quality-deferred-count]').textContent=`${deferred.length} 条`;deferredPanel.hidden=!deferred.length;
+    if(deferredPanel.open)paintRows($('[data-quality-deferred-items]'),deferred.slice(0,deferredLimit));
+    $('[data-quality-deferred-more]').hidden=deferred.length<=deferredLimit;
+    $('[data-quality-retry]').disabled=Boolean(s.busy)||!deferred.length;
     const suggestions=q.suggestionItems??[];
     $('[data-quality-optional-count]').textContent=`${suggestions.length} 条`;
     if($('[data-quality-optional]').open)paintRows($('[data-quality-suggestions]'),suggestions.slice(0,suggestionLimit));
@@ -61,5 +66,8 @@ export function mountQualityView({panel,app,run}){
   $('[data-quality-more]').addEventListener('click',()=>{limit+=10;if(last)paint(last);});
   $('[data-quality-optional]').addEventListener('toggle',()=>{if(last)paint(last);});
   $('[data-quality-suggestions-more]').addEventListener('click',()=>{suggestionLimit+=10;if(last)paint(last);});
+  deferredPanel.addEventListener('toggle',()=>{if(last)paint(last);});
+  $('[data-quality-deferred-more]').addEventListener('click',()=>{deferredLimit+=10;if(last)paint(last);});
+  $('[data-quality-retry]').addEventListener('click',()=>run(()=>app.previewQuality((last?.quality?.deferredItems??[]).map(i=>i.id))));
   return {paint};
 }
