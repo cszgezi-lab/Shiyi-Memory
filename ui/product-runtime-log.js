@@ -56,6 +56,10 @@ function detailsHTML(entry){
   for(const [key,label]of [['plannedRequests','本批预计总结请求（不含重试）'],['totalChildren','本批处理片段数'],['completedChildren','已保存片段数'],['actualWaitMs','实际等待（毫秒）'],['timerLagMs','计时器延迟（毫秒）']])if(d[key]!==undefined)lines.push([label,d[key]]);
   for(const [key,label]of [['sourceInputUnits','正文输入估算'],['historyInputUnits','相关旧记忆估算'],['schemaInputUnits','结构约束估算'],['bridgeInputUnits','衔接上下文估算']])if(d[key]!==undefined)lines.push([label,d[key]]);
   if(d.reason)lines.push(['具体原因',DIAGNOSTIC_REASONS[d.reason]]);
+  if(d.personaField)lines.push(['人设检查字段',({name:'人物姓名',text:'档案正文',sourceFloors:'原文楼号'})[d.personaField]]);
+  if(Number.isSafeInteger(d.profileIndex))lines.push(['回答中第几份档案',d.profileIndex+1]);
+  if(Number.isSafeInteger(d.personaProfiles))lines.push(['通过检查的人物档案',d.personaProfiles]);
+  if(Number.isSafeInteger(d.personaBindings))lines.push(['程序确认的原设定片段',d.personaBindings]);
   if(d.streaming!==undefined)lines.push(['流式接收',d.streaming?'是':'否']);
   if(d.streamChunks!==undefined)lines.push(['流式片段数',d.streamChunks]);
   if(d.degraded!==undefined)lines.push(['召回结果',d.degraded?'已使用回退结果；在线召回未全部成功':'未使用故障回退']);

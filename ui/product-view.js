@@ -60,7 +60,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  function resetModels(kind){const pending=modelRequests.get(kind);pending?.abort();modelRequests.delete(kind);if(pending)feedback('模型列表请求已取消，请按当前配置重新拉取。');const list=$(`[data-model-list="${kind}"]`);if(list){list.innerHTML='<option value="">先拉取模型列表，也可以在下方直接输入</option>';list.disabled=true;}const b=$(`[data-action="models-${kind}"]`);if(b){b.disabled=false;b.textContent='拉取模型列表';}if($(`[data-model-status="${kind}"]`))$(`[data-model-status="${kind}"]`).textContent='';floating?.setBusy(Boolean(app?.state.busy)||modelRequests.size>0);}
  function resetAllModels(){for(const kind of Object.keys(API_INFO))resetModels(kind);}
  function syncInherited(){for(const kind of ['assistant','supplement']){const follow=$(`[data-setting="${kind}FollowSummary"]`)?.checked;if($(`[data-api-fields="${kind}"]`))$(`[data-api-fields="${kind}"]`).hidden=kind==='assistant'&&follow;if(kind==='supplement'){const connection=$('[data-api-connection="supplement"]');if(connection)connection.hidden=follow;const advanced=$('[data-api-card="supplement"] .sy-advanced');if(advanced)advanced.hidden=follow;}const notice=$(`[data-inherited="${kind}"]`);if(notice){const model=$('[data-setting="providerModel"]')?.value||'请先设置总结模型';notice.textContent=follow?(kind==='supplement'?'共用总结地址和 Key；模型以下方选择为准。':`正在沿用：${model}`):'';}}}
- let cardStamp='',qualityView=null,dynamicPersonaView=null;
+ let cardStamp='',qualityView=null,dynamicPersonaView=null,personaNotice='';
  function paintCards(){
     if(!snapshot||!$('[data-cards]'))return;
     if(floating?.window.hidden||currentPage!=='memory')return;
@@ -90,7 +90,11 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
     floating?.setBusy(s.busy||modelRequests.size>0);
     if(floating?.window.hidden)return;
     journalView?.paint(s,currentPage);
-    if(currentPage==='dynamic-persona')dynamicPersonaView?.paint(s);
+    if(currentPage==='dynamic-persona'){
+      dynamicPersonaView?.paint(s);
+      const d=s.dynamicPersona,key=JSON.stringify([s.core?.scope,d?.status,d?.message]);
+      if(personaNotice!==key){personaNotice=key;if(d?.message&&['running','saved','failed','paused'].includes(d.status))feedback(d.message,({running:'info',saved:'success',failed:'error',paused:'info'})[d.status]);}
+    }
     const memory=currentPage==='memory',recording=currentPage==='recording',recordTab=$('[data-record-tab].active')?.dataset.recordTab;
     if(memory){paintCards();customManagement?.paint(s);}
     if(memory||recording&&recordTab==='batches')management?.paint(s,{memory,batches:recording&&recordTab==='batches'});
@@ -137,7 +141,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
 const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'}连接测试`:name.startsWith('save-')?'保存设置':({'dynamic-persona':'动态人设操作','journal-write':'更新角色记录','custom-save-module':'保存区块','custom-save-module-value':'保存记录','custom-read-mvu':'读取 MVU','custom-import-modules':'导入区块',open:'启用自动任务',assistant:'配置助手',beginner:'规则配置',summarize:'总结','focus-summary':'总结',analyze:'分析资料',vectors:'建立向量索引',import:'导入文件',remember:'保存记事'})[name];
    const isSummary=['summarize','focus-summary'].includes(name),isModels=name.startsWith('models-'),before=lastFeedbackId;
    const oldLabel=control?.textContent;if(label){feedback(`${label}中…`,'running');if(control){control.disabled=true;control.textContent=`${label}中…`;}}
-   try{const result=await fn();painting.request();if(name.startsWith('test-')&&result?.message)feedback(`${API_INFO[name.slice(5)]?.title??'模型'}：${result.message}`,result.level??'info',true);else if(name==='vectors'&&result?.message)feedback(result.message,result.pending?'warning':'success',true);else if(result?.message&&result?.level&&!isSummary)feedback(result.message,result.level,true);else if(label&&!isSummary&&!isModels)feedback(`${label}完成`,'success',true);}
+   try{const result=await fn();painting.request();if(name.startsWith('test-')&&result?.message)feedback(`${API_INFO[name.slice(5)]?.title??'模型'}：${result.message}`,result.level??'info',true);else if(name==='vectors'&&result?.message)feedback(result.message,result.pending?'warning':'success',true);else if(result?.message&&result?.level&&!isSummary)feedback(result.message,result.level,true);else if(name==='dynamic-persona')feedback(result?.message??'操作已处理；人物生成状态与进度见动态人设页。','info');else if(label&&!isSummary&&!isModels)feedback(`${label}完成`,'success',true);}
    catch(e){void app.reportError?.(e,{stage:'ui'});const text=`${label??'操作'}未完成：${failureText(e)}`;if($('[data-status]'))$('[data-status]').textContent=text;if(!isSummary||before===lastFeedbackId)feedback(text,['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(e?.code)?'info':'error',!['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(e?.code));}
    finally{if(control&&label){control.disabled=false;control.textContent=oldLabel;}floating?.setBusy(Boolean(readViewState(app).busy)||modelRequests.size>0);}
  }

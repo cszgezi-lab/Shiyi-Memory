@@ -57,7 +57,7 @@ export function mountDynamicPersona({panel,app,run,host=globalThis}){
     const preview=await app.previewDynamicPersonaManual(options);if(JSON.stringify(manualOptions())!==JSON.stringify(options))return;
     previewStamp=JSON.stringify(options);$('[data-persona-manual-preview-text]').textContent=`#${preview.startIndex}–${preview.endIndex} · 每批 ${preview.batchSize} 楼 · 共 ${preview.plannedRequests} 批，正常 ${preview.plannedRequests} 次人设请求。${preview.replaces?'完成后替换 '+preview.replaces+' 个旧人设批次。':''}失败只重试未完成部分；主总结保留。`;$('[data-persona-manual-start-run]').disabled=false;
   });
-  bind('[data-persona-manual-start-run]',async()=>{if(!previewStamp||previewStamp!==JSON.stringify(manualOptions()))throw Error('请先预览当前范围');await app.startDynamicPersonaManual(manualOptions());clearPreview();});
+  bind('[data-persona-manual-start-run]',async()=>{if(!previewStamp||previewStamp!==JSON.stringify(manualOptions()))throw Error('请先预览当前范围');const result=await app.startDynamicPersonaManual(manualOptions());clearPreview();$('[data-persona-manual-preview-text]').textContent='计划已保存，后台进度见下方；无需重复新建。';return result;});
   bind('[data-persona-manual-pause]',()=>app.pauseDynamicPersonaManual());bind('[data-persona-manual-continue]',()=>app.continueDynamicPersonaManual());
   bind('[data-persona-manual-discard]',async()=>{if(await host.confirm?.('放弃本次补建候选？原人物档案、主总结保留；候选会归档。'))await app.discardDynamicPersonaManual();});
   bind('[data-persona-manual-prev]',()=>{manualPage=Math.max(0,manualPage-1);manualStamp='';paint(app.state);});
@@ -84,7 +84,7 @@ export function mountDynamicPersona({panel,app,run,host=globalThis}){
     const nextManualStamp=JSON.stringify([manual?.id,manual?.status,items.slice(manualPage*10,manualPage*10+10),manualPage]);
     if(manualStamp!==nextManualStamp){manualStamp=nextManualStamp;$('[data-persona-manual-items]').innerHTML=items.slice(manualPage*10,manualPage*10+10).map(b=>`<p>#${b.startIndex}–${b.endIndex} · ${b.status==='saved'?(manual.status==='completed'?'已应用':'候选已保存'):b.status==='failed'?'未完成：'+esc(b.message??'可继续重试'):'等待处理'}</p>`).join('');}
     const wb=d.worldbook;$('[data-persona-worldbook-read]').textContent=wb?wb.status==='unavailable'?'当前宿主未提供世界书读取接口；可以保存补充档案，但不能替换原条目。':`已读取 ${wb.books.length} 本世界书、${wb.entries} 个条目，${wb.safeFragments} 个可安全读取的文字片段（不等于全是人物条目）。来源：${wb.books.join('、')||'当前角色未绑定世界书'}`:'可以检查当前角色卡和聊天绑定的世界书。';
-    $('[data-persona-worldbook]').textContent=d.mirror?.status==='saved'?`世界书镜像：${d.mirror.name}（存档查看用，不重复绑定注入）`:d.mirror?.status==='failed'?'档案已保存，世界书镜像未同步；可单独重试同步，无需重新补建。':'世界书镜像尚未生成；需要宿主提供酒馆助手世界书接口。';
+    $('[data-persona-worldbook]').textContent=d.mirror?.status==='saved'?`世界书镜像：${d.mirror.name}（存档查看用，不重复绑定注入）。${(d.profiles??[]).some(p=>!p.deleted)?'人物是否生成成功以已应用档案为准。':'目前没有已应用的人物档案；空镜像不代表补建完成。'}`:d.mirror?.status==='failed'?'档案已保存，世界书镜像未同步；可单独重试同步，无需重新补建。':'世界书镜像尚未生成；需要宿主提供酒馆助手世界书接口。';
     $('[data-persona-injected-info]').textContent=d.lastInjection?`替换 ${d.lastInjection.replaced} 份当前人设，补充 ${d.lastInjection.supplemental} 份；只是加入待发请求，不代表模型一定采纳。`:'还没有本轮注入记录。';
     $('[data-persona-injected-text]').textContent=d.lastInjection?.text??'';
     const visible=currentPersonaProfiles((d.profiles??[]).filter(p=>!p.deleted),s.settings.dynamicPersonaMvuMode),pages=Math.max(1,Math.ceil(visible.length/6));profilePage=Math.min(profilePage,pages-1);$('[data-persona-profile-page]').textContent=`${profilePage+1}/${pages} · ${visible.length} 份档案`;

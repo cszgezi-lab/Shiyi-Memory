@@ -90,6 +90,8 @@ export function productFailure(error) {
     message+= ' 故事记忆已保存的部分不受影响；请在批次或召回页补建未完成索引，只调用向量模型，不重新总结。';
   }
   if(error?.details?.modelRole==='dynamicPersona'&&message){
+    const field=({name:'姓名无法唯一对应本批人物',text:'正文为空或含脚本标记',sourceFloors:'来源楼号缺失或不在本批原文中'})[error.details.personaField];
+    if(code==='PERSONA_RESPONSE_INVALID'&&field)message=`第${Number.isSafeInteger(error.details.profileIndex)?error.details.profileIndex+1:'?'}份人设：${field}。旧档案与后续队列保留；请在手动补建中继续未完成，自动更新可重试下一批。`;
     message=message.replace('在批次管理中继续未完成任务即可，不必重新总结成功批次。','手动补建请点“继续未完成”；自动更新可重试下一批。无需重做主总结。').replace('提高总结输入预算','调整人设输入预算');
   }
   if(!message&&error instanceof TypeError)message='网络请求或浏览器跨域访问失败，请检查网络与服务地址。';
