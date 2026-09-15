@@ -512,6 +512,7 @@ export function createProductShellController({
         providerAuthMode: state.settings.providerAuthMode,
         deadlineMs: state.settings.summaryDeadlineMs??state.settings.deadlineMs,
         summaryStreaming:state.settings.summaryStreaming,
+        summaryRequestMode:state.settings.summaryRequestMode,
         outputBudgetUnits: state.settings.outputBudgetUnits,
       };
       transport = transportFactory(profile, { sessionApiKey: state.sessionApiKey ?? '', fetchImpl });

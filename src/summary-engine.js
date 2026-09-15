@@ -15,6 +15,7 @@ import { resolveEventMerges } from './event-consolidation.js';
 import { tokenizeChinese } from './retrieval.js';
 import { normalizeSummaryEnums, normalizePersonaValidity, repairableEnumTargets, createEnumRepairRequest, applyEnumCorrections, deferCommitmentStates } from './summary-enum-repair.js';
 import {transientSummaryError,recoveryAttemptLimit,recoveryDelay,repairCategories,categoryRepairRequest,applyCategoryRepair,missingFloorRequest} from './summary-recovery.js';
+import {summaryTransportOptions} from './summary-transport.js';
 import { selectSummaryContext, summarySources } from './summary-context.js';
 import { runSummaryStages, isolateDraftIds } from './summary-stages.js';
 import { referenceRepairRequest, applyReferenceRepair } from './summary-reference-repair.js';
@@ -139,7 +140,7 @@ function modelInvoker(model) {
     // second, independently estimated request.
     invoke.providerPayload = (request) => ({
       model: model.profile?.model,
-      ...(model.profile?.summaryStreaming?{stream:true,stream_options:{include_usage:true}}:{}),
+      ...summaryTransportOptions(model.profile),
       ...(Number.isSafeInteger(request?.effectiveMaxTokens) && request.effectiveMaxTokens > 0
         ? { max_tokens: request.effectiveMaxTokens }
         : model.profile?.maxTokens > 0 ? { max_tokens: model.profile.maxTokens } : {}),
@@ -147,7 +148,6 @@ function modelInvoker(model) {
         { role: 'system', content: request.kind==='ShiyiSummaryRequest'&&!request.summaryStage ? (summaryPresetFromRules(request.extractionContext?.rules)?`${PRESET_TRANSPORT_GUARD}\n${summaryPresetFromRules(request.extractionContext.rules).instructions}`:moduleSummaryInstructions) : request.instructions },
         { role: 'user', content: JSON.stringify(modelEnvelope(request)) },
       ],
-      response_format: { type: 'json_object' },
     });
     return invoke;
   }

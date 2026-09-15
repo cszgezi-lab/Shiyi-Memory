@@ -27,8 +27,17 @@ export const DIAGNOSTIC_STAGES=Object.freeze({queue:'等待共享请求队列',p
 export const UPSTREAM_CODES=Object.freeze({invalid_api_key:'密钥无效',api_key_missing:'服务要求密钥',context_length_exceeded:'超出模型上下文',insufficient_quota:'额度不足',rate_limit_exceeded:'服务限流',model_not_found:'模型不存在',server_error:'服务内部错误',invalid_request_error:'服务拒绝请求格式',outbound_host_denied:'出站地址被服务拒绝'});
 // Providers may put a vendor-specific code beside a standard error type.
 // An unrecognized code must not hide a recognized quota/authentication cause.
+function errorLayers(value){
+  const layers=[],queue=[value],seen=new Set();
+  while(queue.length&&layers.length<12){
+    const row=queue.shift();if(!row||typeof row!=='object'||Array.isArray(row)||seen.has(row))continue;
+    seen.add(row);layers.push(row);
+    for(const key of ['error','details','cause','upstream','upstream_error'])if(row[key]&&typeof row[key]==='object')queue.push(row[key]);
+  }
+  return layers;
+}
 export function upstreamErrorCode(value){
-  const candidates=[value?.error?.code,value?.error?.type,value?.code];
+  const candidates=errorLayers(value).flatMap(row=>[row.code,row.type]);
   const recognized=candidates.map(code=>code==='quota_exceeded'?'insufficient_quota':code).filter(code=>typeof code==='string'&&Object.hasOwn(UPSTREAM_CODES,code));
   return recognized.includes('insufficient_quota')?'insufficient_quota':recognized[0];
 }
@@ -37,7 +46,7 @@ export function upstreamErrorCode(value){
 // These are reported causes, not proof inferred from HTTP 502 or elapsed time.
 export const UPSTREAM_HINTS=Object.freeze({timeout:'服务报文提到上游等待超时',overloaded:'服务报文提到模型繁忙',connection_reset:'服务报文提到上游连接断开',context_limit:'服务报文提到输入上下文超限',content_blocked:'服务错误报文明确提到内容过滤',unknown:'服务未提供可识别的原因'});
 export function upstreamErrorHint(value){
-  const fields=[value?.error?.message,value?.error?.code,value?.error?.type,typeof value?.error==='string'?value.error:null,value?.message,value?.code];
+  const fields=errorLayers(value).flatMap(row=>[row.message,row.code,row.type,typeof row.error==='string'?row.error:null]);
   const text=fields.filter(v=>typeof v==='string').map(v=>v.slice(0,4096)).join(' ');
   if(/\b(?:content_filter|content_policy_violation|safety_blocked|blocked by safety|blocked due to safety)\b|(?:内容|安全策略)(?:审查|过滤|拦截|违规)|因安全.{0,6}(?:拦截|阻止)/i.test(text))return 'content_blocked';
   if(/context_length_exceeded|maximum context length|context (?:window|length|limit).{0,40}(?:exceed|limit)|上下文.{0,12}(?:超限|超过)/i.test(text))return 'context_limit';
@@ -73,6 +82,9 @@ export function safeDiagnosticFields(value={}){
   if(errorTypes.has(value?.errorType))result.errorType=value.errorType;
   if(Object.hasOwn(UPSTREAM_CODES,value?.upstreamCode))result.upstreamCode=value.upstreamCode;
   if(Object.hasOwn(UPSTREAM_HINTS,value?.upstreamHint))result.upstreamHint=value.upstreamHint;
+  for(const key of ['firstBodyMs','responseHeadersMs','messageCount'])if(Number.isSafeInteger(value?.[key])&&value[key]>=0)result[key]=value[key];
+  for(const key of ['jsonMode','bufferedBody'])if(typeof value?.[key]==='boolean')result[key]=value[key];
+  if(typeof value?.providerFingerprint==='string'&&/^[a-f0-9]{64}$/.test(value.providerFingerprint))result.providerFingerprint=value.providerFingerprint;
   if(Object.hasOwn(DIAGNOSTIC_ACTIONS,value?.action))result.action=value.action;
   for(const key of ['bodyChars','jsonPosition','jsonLine','jsonColumn','choicesCount','toolCallsCount','attempt','repairCategoriesCount','timeoutMs','retryAfterMs','validationIssuesOmitted','stackFramesOmitted','causeCount'])if(Number.isSafeInteger(value?.[key])&&value[key]>=0)result[key]=value[key];
   for(const key of ['statusKnown','upstreamDetailsProvided','backgroundSeen'])if(typeof value?.[key]==='boolean')result[key]=value[key];

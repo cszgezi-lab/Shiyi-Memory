@@ -81,7 +81,7 @@ export function productFailure(error) {
   }
   if(code==='INPUT_BUDGET_EXCEEDED'&&Number.isSafeInteger(error?.details?.inputUnits)&&Number.isSafeInteger(error?.details?.inputLimit))message=`本次模型输入估算 ${error.details.inputUnits}，超过设置的 ${error.details.inputLimit}；该请求尚未发送。已返回的结果保留，可调整输入预算后继续。`;
   if(error?.details?.reason==='stream_incomplete')message='模型流式传输中断，未收到完整结束标记；半份结果没有保存。已完成阶段保留，可继续未完成任务。';
-  if(error?.details?.reason==='stream_invalid')message='服务返回的流式格式不兼容，本次结果未保存。可在 API 请求设置关闭流式接收后重试；不会自动追加一次收费请求。';
+  if(error?.details?.reason==='stream_invalid')message='服务返回的流式格式不兼容，本次结果未保存。可在 API → 请求设置选择“兼容非流式”后重试；不会自动追加一次收费请求。';
   if(error?.details?.reason==='stream_error'&&!status&&error?.details?.upstreamCode!=='insufficient_quota')message='模型服务在流式返回途中报错，本批未保存。已完成阶段保留；具体服务错误分类见运行日志。';
   if(!message&&error instanceof TypeError)message='网络请求或浏览器跨域访问失败，请检查网络与服务地址。';
   // Local validation errors contain actionable Chinese text. Never echo remote

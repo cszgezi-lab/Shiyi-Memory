@@ -5,6 +5,7 @@ export const button = (action, label, primary = false) => `<button type="button"
 export const field = (label, input) => `<label class="sy-field"><span>${label}</span>${input}</label>`;
 const names = { base:'自动补接口路径', exact:'完整地址（不补路径）', none:'无需 Key', bearer:'标准 Key（默认）', 'api-key':'x-api-key（服务商要求时）', inherit:'沿用记录偏好', ask_manual:'手动总结时填写', ask_every:'每次总结前填写', disabled:'关闭', broadcast:'各类别均衡召回', leader_only:'仅指定通道', original:'原创', fanfiction:'同人', system:'系统', user:'用户', start:'请求开头', before_last:'最后一条消息前' };
 const copy = {
+  summaryRequestMode:['总结请求方式','推荐方式不强制服务端 JSON 模式；仍按预设输出、完整校验后保存。不支持流式的接口可选兼容非流式。'],
   summaryReviewEnabled:['完整总结＋查漏纠错（候选）','先完整记录全部模块，再对照原文只补漏、纠错。一批最多两次，后台进行，不阻塞聊天；失败保留已返回结果。'],
   summaryStaged:['两阶段分工（可选）','关闭时一次请求整理全部模块；开启后每个内部片段通常两次请求，可分配不同模型。失败按已有结果续跑。'],
   supplementFollowSummary:['沿用总结连接','共用地址和 Key；下方仍可单独选择辅助模型，留空时也沿用总结模型。'],
@@ -54,13 +55,14 @@ const copy = {
   storyDate:['故事日期参照（兼容设置）','未知留空，不使用现实日期代替剧情日期。'],
   deadlineMs:['模型请求超时（毫秒）','120000 即 2 分钟。'],
   summaryDeadlineMs:['后台总结与复核超时（毫秒）','300000 即单次最多等待 5 分钟，可修改；不延长召回的等待时间。'],
-  summaryStreaming:['总结流式接收','边生成边接收，完整校验后才保存。服务不支持流式时可关闭；不额外调用模型。'],
+  summaryStreaming:['旧版模式使用流式','仅“旧版 JSON 模式”读取此项；其他方式由上方选项决定。'],
   chatRequestsPerMinute:['同一接口每分钟聊天请求上限','填服务商的 RPM；0 不猜测固定配额。总结、合并与助手按相同接口和 Key 共用队列，异常后自动等待；向量和重排不受此项限制。'],
   assistantBudgetUnits:['助手输入预算','估算对话、文件和工具说明的输入长度；不是回复上限。'],
   assistantOutputTokens:['助手回复上限（Token）','0 表示沿用服务商默认值。'],
   summaryBatchSize:['每多少楼记录一次','10 楼一批：1–300 楼会分成 30 批。'],
   assistantFollowSummary:['沿用总结模型','共用地址、模型和已保存的 Key，无需再填一遍。'],
 };
+Object.assign(names,{'chat-stream':'酒馆兼容 · 流式（推荐）','chat-buffered':'兼容非流式','legacy-json':'旧版 JSON 模式'});
 
 export function setting(key, label, help, placeholder = '') {
   if(key==='summaryPresets')return '<p class="sy-help">总提示词和各模块填写规则，可到“记录 → 总结预设”修改。</p>';
@@ -118,7 +120,7 @@ export function apiSettingsHTML() {
     ${setting(`${prefix}Model`, '模型名称', '', kind==='supplement'?'留空沿用总结模型；也可选择快速模型':'选择列表中的模型，或手动填写')}
     <p class="sy-help" role="status" data-model-status="${kind}"></p></div>
     <details class="sy-advanced"><summary>高级连接选项（通常不用改）</summary>${setting(`${prefix}EndpointMode`, '地址如何使用', `默认只补 ${resource}，绝不补 /v1。填完整接口地址时可选“不补路径”。`)}${setting(`${prefix}AuthMode`, 'Key 发送方式', '一般保持“标准 Key”；不需要 Key 可留空或选“无需 Key”。只有服务商明确要求时才改用 x-api-key。')}${field('模型列表地址（可选）', `<input data-models-url="${kind}" placeholder="留空时按 API 地址推导 /models" autocomplete="off">`)}</details>
-    </div><div class="sy-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></section>`).join('') + card('请求设置', setting('chatRequestsPerMinute') + setting('summaryStreaming') + setting('summaryDeadlineMs') + setting('deadlineMs') + setting('assistantBudgetUnits') + setting('assistantOutputTokens'));
+    </div><div class="sy-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></section>`).join('') + card('请求设置', setting('summaryRequestMode') + advanced('旧版请求兼容选项',['summaryStreaming']) + setting('chatRequestsPerMinute') + setting('summaryDeadlineMs') + setting('deadlineMs') + setting('assistantBudgetUnits') + setting('assistantOutputTokens'));
 }
 
 // Upgrade opt-in: never replace a custom endpoint, model, or a deliberate zero/false.

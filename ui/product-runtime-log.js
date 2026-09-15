@@ -9,6 +9,11 @@ export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help"
 const fields={requestNumber:'向量请求序号',requestItems:'输入片段数',receivedVectors:'返回向量数',inputChars:'本次输入字符数',longestInputChars:'最长片段字符数',vectorDimensions:'向量维度',indexedItems:'已保存索引条数',pendingItems:'未完成索引条数',failedItems:'失败索引条数',batchNumber:'总结批次',childIndex:'内部子批（从 0 计）',sourceCount:'读取消息数',inputLimit:'输入预算',inputUnits:'实际输入估算',elapsedMs:'耗时（毫秒）',status:'HTTP 状态',expected:'应有逐楼摘要',received:'收到摘要条数',covered:'完整对应楼数',invalidRows:'来源无效或多楼合并',duplicateCount:'重复摘要条数',promptTokens:'服务报告输入 Token',completionTokens:'服务报告输出 Token',totalTokens:'服务报告总 Token',reasoningTokens:'其中推理 Token',responseChars:'回复文本字符数',savedBatches:'保存批数'};
 function detailsHTML(entry){
   const d=entry.details,lines=[];
+  if(d.jsonMode!==undefined)lines.push(['强制服务端 JSON 模式',d.jsonMode?'是':'否']);
+  if(d.messageCount!==undefined)lines.push(['请求消息数（不是调用次数）',d.messageCount]);
+  if(d.responseHeadersMs!==undefined)lines.push(['收到响应头（毫秒）',d.responseHeadersMs]);
+  if(d.firstBodyMs!==undefined)lines.push([d.bufferedBody?'宿主交回完整正文（毫秒）':'收到首段传输数据（毫秒，不代表总结完成）',d.firstBodyMs]);
+  if(d.providerFingerprint)lines.push(['接口与模型指纹',d.providerFingerprint.slice(0,16)]);
   if(d.requestBytes!==undefined)lines.push(['请求体字节数（UTF-8，不是 Token）',d.requestBytes]);
   for(const [key,label]of [['prepareMs','首次请求前准备（毫秒）'],['modelMs','总结模型等待合计（毫秒）'],['publishMs','发布已保存记忆（毫秒）'],['historyPages','读取历史页数'],['fetchedMessages','宿主返回楼数'],['normalizedMessages','实际处理正文楼数']])if(d[key]!==undefined)lines.push([label,d[key]]);
   fields.requestNumber='本任务请求序号';
