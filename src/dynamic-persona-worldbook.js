@@ -2,7 +2,7 @@ import {clone,sha256,stableStringify} from './utils.js';
 import {mvuContext,readMvu} from './product-custom-modules.js';
 import {personaSpans,replacePersonaSpans} from './dynamic-persona-stage.js';
 
-export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=>null}={}){
+export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=>null,stageMode=()=> 'narrative'}={}){
   const markers=new Map();let sequence=0;
   const contextKey=()=>stableStringify(context());
   const markerPattern=()=>/\[\[SHIYI_PERSONA:([a-f0-9]+):([a-f0-9]+):([a-f0-9]+)\]\]/g;
@@ -11,7 +11,7 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=
     return (payload?.messages??[]).some(m=>typeof m.content==='string'&&[...m.content.matchAll(markerPattern())].some(match=>markers.get(match[1])?.context!==current));
   }
   const api=()=>host.TavernHelper??host;
-  async function stageData(){if(!host.Mvu?.getMvuData)return {};const result=await readMvu(host,check);return result.data??{};}
+  async function stageData({foreground=false}={}){if(!host.Mvu?.getMvuData)return {};const result=await readMvu(host,check,foreground?{maxFloors:8,totalMs:80}:{});return result.data??{};}
   async function read(){
     check();const h=api(),context=mvuContext(host)??{},card=context.characters?.[context.characterId];
     const cardName=card?.name??context.name2??'当前角色卡';
@@ -21,7 +21,7 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=
     const names=[...new Set([binding?.primary,...(binding?.additional??[]),chat].filter(Boolean))];
     const entries=[];
     for(const book of names){const rows=await h.getWorldbook(book);check();for(const row of rows){if(row.extra?.shiyiDynamicPersona)continue;entries.push({book,uid:row.uid,name:row.name??'',enabled:row.enabled!==false,content:String(row.content??'')});}}
-    const data=await stageData();check();
+    const data=entries.some(e=>e.enabled&&e.content.includes('<%'))?await stageData():{};check();
     return {cardName,entries,spans:entries.filter(e=>e.enabled).flatMap(e=>personaSpans(e,data)),status:'ready'};
   }
   // A separate, disabled mirror is inspectable in the world's editor, but is
@@ -39,15 +39,20 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=
   }
   async function applyLoaded(payload,profiles){
     if(!payload||typeof payload!=='object'||!profiles.length)return;
-    const binding=contextKey(),data=await stageData();check();if(binding!==contextKey())return;
-    const token=sha256([binding,++sequence,Date.now()]).slice(0,24),prepared={context:binding,originals:new Map(),profiles:new Map(profiles.map(p=>[p.id,sha256(p)]))};
+    const binding=contextKey(),mode=stageMode(),narrative=mode!=='strict';
+    const dynamic=!narrative&&profiles.some(p=>p.bindings?.some(b=>b.stage!=='static'));
+    let data={};if(dynamic){try{data=await stageData({foreground:true});}catch{return;}}check();if(binding!==contextKey()||mode!==stageMode())return;
+    const token=sha256([binding,++sequence,Date.now()]).slice(0,24),prepared={context:binding,mode,originals:new Map(),profiles:new Map(profiles.map(p=>[p.id,sha256(p)]))};
+    const owned=new Map();for(const p of profiles)for(const b of p.bindings??[]){const key=stableStringify([b.book,b.uid]);if(!owned.has(key))owned.set(key,[]);if(!owned.get(key).includes(p))owned.get(key).push(p);}
     for(const key of ['globalLore','characterLore','chatLore','personaLore']){
       if(!Array.isArray(payload[key]))continue;
       // Never mutate the host's cached entry objects.
       const entries=payload[key],updated=entries.map(entry=>{
         const book=entry.world??entry.book,uid=entry.uid;
-        const spans=personaSpans({book,uid,name:entry.comment??entry.name,content:entry.content},data),replacements={};
-        for(const p of profiles)for(const span of spans)if(p.bindings?.some(b=>b.id===span.id&&b.hash===span.hash&&b.stage===span.stage)){
+        const candidates=owned.get(stableStringify([book,uid]));if(!candidates?.length)return entry;
+        const spans=personaSpans({book,uid,name:entry.comment??entry.name,content:entry.content},data,{allBranches:narrative}),replacements={};
+        for(const span of spans){const owners=candidates.filter(p=>p.bindings?.some(b=>b.book===book&&b.uid===uid&&b.hash===span.hash&&(narrative||b.id===span.id&&b.stage===span.stage)));
+          if(owners.length!==1)continue;const p=owners[0];
           const key=`${p.id}:${span.id}`;prepared.originals.set(key,span.text);replacements[span.id]=`\n[[SHIYI_PERSONA:${token}:${key}]]\n`;
         }
         return Object.keys(replacements).length?{...clone(entry),content:replacePersonaSpans(entry.content,spans,replacements)}:entry;
@@ -63,12 +68,12 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=
   async function finalize(payload,profiles){
     if(!Array.isArray(payload?.messages))return;
     if(!payload.messages.some(m=>typeof m.content==='string'&&m.content.includes('[[SHIYI_PERSONA:')))return {injected:[]};
-    let data;try{data=await stageData();check();}catch{data=null;}
-    const valid=profiles.filter(p=>p.bindings?.length&&p.bindings.every(b=>b.stage==='static'||data&&personaSpans({book:b.book,uid:b.uid,name:b.name,content:b.entryContent},data).some(s=>s.id===b.id))),byId=new Map(valid.map(p=>[p.id,p])),used=new Set();
+    const mode=stageMode();let data={};if(mode==='strict'&&profiles.some(p=>p.bindings?.some(b=>b.stage!=='static')))try{data=await stageData({foreground:true});check();}catch{data=null;}
+    const valid=profiles.filter(p=>p.bindings?.length&&(mode!=='strict'||p.bindings.every(b=>b.stage==='static'||data&&personaSpans({book:b.book,uid:b.uid,name:b.name,content:b.entryContent},data).some(s=>s.id===b.id)))),byId=new Map(valid.map(p=>[p.id,p])),used=new Set();
     for(const m of payload.messages)if(typeof m.content==='string')m.content=m.content.replace(markerPattern(),(_all,token,id,spanId)=>{
       const prepared=markers.get(token),p=byId.get(id),frozen=prepared?.profiles.get(id),key=`${id}:${spanId}`;
-      if(prepared?.context!==contextKey()||!p||!frozen||sha256(p)!==frozen)return prepared?.originals.get(key)??'';
-      if(used.has(id))return '';used.add(id);return `【${p.name}·当前阶段人设，依据至 #${p.through}；更新楼层后的正文优先】\n${p.text}`;
+      if(prepared?.context!==contextKey()||prepared?.mode!==mode||!p||!frozen||sha256(p)!==frozen)return prepared?.originals.get(key)??'';
+      if(used.has(id))return '';used.add(id);return `【${p.name}·当前动态人设，依据至 #${p.through}；更新楼层后的正文优先${mode==='strict'?'':'；剧情主导，MVU仅作参考'}】\n${p.text}`;
     });
     return {injected:[...used]};
   }

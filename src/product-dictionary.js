@@ -1,7 +1,8 @@
 // Derived from the active chat and explicitly enabled reference documents.
 // Dictionary equivalence is an aid to retrieval, never proof of an event or knowledge.
+import {foldName,nameMentionAt} from './name-fold.js';
 const clean = v => typeof v === 'string' ? v.trim() : '';
-const key = v => clean(v).toLocaleLowerCase();
+const key = v => foldName(clean(v));
 const generic = /^(我|你|他|她|它|的|地|得|了|是|有|在|和|与|及|我们|你们|他们|她们|对方|主角|角色|某人|同学|老师|朋友|i|you|he|she|they)$/i;
 export const termKinds = Object.freeze(['人物','地点','组织','物品','术语']);
 export const validTerm = v => clean(v).length >= 1 && clean(v).length <= 80 && /\p{L}/u.test(clean(v)) && !generic.test(clean(v));
@@ -111,7 +112,7 @@ export function buildDictionary(cards=[],{aliases='',automatic=true}={}) {
     const card=enrichRetrievalMetadata(raw,[raw.description,raw.text,...(raw.keyDialogues??[]).flatMap(q=>[q.text,q.to,q.speaker])].filter(Boolean).join('\n'),names);
     if(automatic)for(const term of normalizeTerms(card.entities)){
       const id=key(term.name),previous=words.get(id)??{...term,aliases:[],sources:[],manual:false,disabled:false};
-      previous.aliases=[...new Set([...previous.aliases,...term.aliases])].slice(0,32);
+      previous.aliases=[...new Set([...previous.aliases,...term.aliases,...(term.name!==previous.name?[term.name]:[])])].slice(0,32);
       previous.indexWords=[...new Set([...(previous.indexWords??[]),...term.indexWords])].slice(0,16);
       if(previous.sources.length<12&&!previous.sources.some(s=>s.id===card.id))previous.sources.push({id:card.id,title:card.documentName??card.title??'聊天记忆',kind:card.category==='knowledge'?'资料':'聊天',floors:card.sourceFloors??[]});
       words.set(id,previous);
@@ -128,8 +129,8 @@ export function dictionaryQuery(query,dictionary,{entityLimit=12,expandTopics=tr
   const original=String(query??''),text=key(original),hits=[];
   for(const entry of dictionary.entries??[])if(!entry.disabled)for(const name of [entry.name,...entry.aliases]){
     if(entry.ambiguous?.some(a=>key(a)===key(name)))continue;
-    let at=text.indexOf(key(name));
-    while(at>=0){if(!/^[a-z\d_ -]+$/i.test(name)||(!/[a-z\d_]/i.test(text[at-1]??'')&&!/[a-z\d_]/i.test(text[at+name.length]??'')))hits.push({entry,name,start:at,end:at+name.length});at=text.indexOf(key(name),at+name.length);}
+    const needle=key(name);let at=text.indexOf(needle);
+    while(at>=0){if(entry.kind!=='人物'&&/^[\p{Script=Han}]$/u.test(needle)||nameMentionAt(text,needle,at))hits.push({entry,name,start:at,end:at+needle.length});at=text.indexOf(needle,at+needle.length);}
   }
   // A shorter name embedded in another full name must not activate a different person.
   hits.sort((a,b)=>(b.end-b.start)-(a.end-a.start));const accepted=[];
@@ -138,7 +139,7 @@ export function dictionaryQuery(query,dictionary,{entityLimit=12,expandTopics=tr
   const related=(dictionary.entries??[]).filter(e=>!e.disabled&&(e.indexWords??[]).some(word=>text.includes(key(word)))).slice(0,8);
   // Topic->name expansion is search-only. It must not assert that this person
   // is present, nor enter the forced identity lane.
-  const expansion=[...new Set([...matched,...related].flatMap(e=>[e.name,...e.aliases.filter(a=>!e.ambiguous.includes(a)),...(e.indexWords??[]).filter(w=>expandTopics||text.includes(key(w)))]))].slice(0,32);
+  const expansion=[...new Set([...matched,...related].flatMap(e=>[e.name,...e.aliases.filter(a=>!(e.ambiguous??[]).includes(a)),...(e.indexWords??[]).filter(w=>expandTopics||text.includes(key(w)))]))].slice(0,32);
   const expanded=[original,...expansion].join(' ');
   const ambiguousNames=[...new Set((dictionary.entries??[]).filter(e=>!e.disabled).flatMap(e=>e.ambiguous??[]))].filter(n=>text.includes(key(n)));
   const ambiguities=ambiguousNames.map(name=>({name,owners:(dictionary.entries??[]).filter(e=>!e.disabled&&[e.name,...e.aliases].some(n=>key(n)===key(name))).map(e=>e.name)}));

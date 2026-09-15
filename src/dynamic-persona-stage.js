@@ -7,19 +7,23 @@ function pathValue(data,path){
   for(const p of parts){if(['__proto__','prototype','constructor'].includes(p)||!value||typeof value!=='object'||!Object.hasOwn(value,p))return undefined;value=value[p];}
   return Array.isArray(value)&&value.length===2?value[0]:value;
 }
-export function stageCondition(expression,data){
+function condition(expression){
   const source=expression.trim().replace(/;$/,'');
   const m=source.match(/^getvar\(\s*(['"])([^'"]+)\1\s*\)\s*(===|!==|==|!=|>=|<=|>|<)\s*("(?:[^"\\]|\\.)*"|'[^']*'|-?\d+(?:\.\d+)?|true|false)\s*$/);
   if(!m||!m[2].startsWith('stat_data.'))return null;
-  const left=pathValue(data,m[2]);if(left===undefined)return null;
   const raw=m[4];let right;
   if(raw.startsWith("'")&&raw.includes('\\'))return null;
   try{right=raw.startsWith("'")?raw.slice(1,-1):JSON.parse(raw);}catch{return null;}
-  if(['==','!='].includes(m[3])&&typeof left!==typeof right)return null;
-  if(['>','<','>=','<='].includes(m[3])&&(typeof left!=='number'||typeof right!=='number'))return null;
-  return ({'===':()=>left===right,'==':()=>left===right,'!==':()=>left!==right,'!=':()=>left!==right,'>':()=>left>right,'<':()=>left<right,'>=':()=>left>=right,'<=':()=>left<=right})[m[3]]();
+  return {path:m[2],operator:m[3],right};
 }
-export function personaSpans(entry,data={}){
+export function stageCondition(expression,data){
+  const parsed=condition(expression);if(!parsed)return null;
+  const {path,operator,right}=parsed,left=pathValue(data,path);if(left===undefined)return null;
+  if(['==','!='].includes(operator)&&typeof left!==typeof right)return null;
+  if(['>','<','>=','<='].includes(operator)&&(typeof left!=='number'||typeof right!=='number'))return null;
+  return ({'===':()=>left===right,'==':()=>left===right,'!==':()=>left!==right,'!=':()=>left!==right,'>':()=>left>right,'<':()=>left<right,'>=':()=>left>=right,'<=':()=>left<=right})[operator]();
+}
+export function personaSpans(entry,data={}, {allBranches=false}={}){
   const content=String(entry.content??''),identity=`${entry.book}:${entry.uid}`,hash=sha256(content);
   // Preserve code-bearing and malformed templates rather than classifying them
   // as plain prose. Only the fully recognized branch grammar is replaceable.
@@ -27,12 +31,16 @@ export function personaSpans(entry,data={}){
   if(!/<%|\{\{|@@/.test(content))return [{id:sha256([identity,hash,0]).slice(0,24),book:entry.book,uid:entry.uid,name:entry.name,start:0,end:content.length,text:content,hash,stage:'static'}];
   if(/\{\{|@@/.test(content))return [];
   let cursor=0,valid=true;const stack=[],spans=[];
-  const add=end=>{const text=content.slice(cursor,end);if(text.trim()&&stack.every(x=>x.active)){const stage=stack.length?sha256(stack.map(x=>[x.expression,x.branch])).slice(0,20):'static';spans.push({id:sha256([identity,hash,cursor]).slice(0,24),book:entry.book,uid:entry.uid,name:entry.name,start:cursor,end,text,hash,stage});}};
+  // allBranches is for local request substitution only, never model input.
+  // Replace prose in every recognized branch; the host still runs its original
+  // conditions. This keeps narrative dossiers independent of the MVU stage.
+  const test=expression=>allBranches?(condition(expression)?true:null):stageCondition(expression,data);
+  const add=end=>{const text=content.slice(cursor,end);if(text.trim()&&(allBranches||stack.every(x=>x.active))){const stage=stack.length?sha256(stack.map(x=>[x.expression,x.branch])).slice(0,20):'static';spans.push({id:sha256([identity,hash,cursor]).slice(0,24),book:entry.book,uid:entry.uid,name:entry.name,start:cursor,end,text,hash,stage});}};
   for(const tag of content.matchAll(/<%([\s\S]*?)%>/g)){
     add(tag.index);const code=tag[1].trim();let m;
-    if((m=code.match(/^if\s*\(([\s\S]*)\)\s*\{$/))){const active=stageCondition(m[1],data);if(active===null){valid=false;break;}stack.push({expression:m[1],active,matched:active,branch:0});}
-    else if((m=code.match(/^}\s*else\s+if\s*\(([\s\S]*)\)\s*\{$/))){const top=stack.at(-1),test=stageCondition(m[1],data);if(!top||test===null){valid=false;break;}top.active=!top.matched&&test;top.matched||=test;top.expression+=`|${m[1]}`;top.branch++;}
-    else if(/^}\s*else\s*{$/.test(code)){const top=stack.at(-1);if(!top){valid=false;break;}top.active=!top.matched;top.matched=true;top.branch++;}
+    if((m=code.match(/^if\s*\(([\s\S]*)\)\s*\{$/))){const active=test(m[1]);if(active===null){valid=false;break;}stack.push({expression:m[1],active,matched:active,branch:0});}
+    else if((m=code.match(/^}\s*else\s+if\s*\(([\s\S]*)\)\s*\{$/))){const top=stack.at(-1),active=test(m[1]);if(!top||top.ended||active===null){valid=false;break;}top.active=!top.matched&&active;top.matched||=active;top.expression+=`|${m[1]}`;top.branch++;}
+    else if(/^}\s*else\s*{$/.test(code)){const top=stack.at(-1);if(!top||top.ended){valid=false;break;}top.active=!top.matched;top.matched=true;top.ended=true;top.branch++;}
     else if(code==='}'){if(!stack.pop()){valid=false;break;}}
     else {valid=false;break;}
     cursor=tag.index+tag[0].length;

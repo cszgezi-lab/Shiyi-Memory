@@ -104,21 +104,23 @@ export function valueAt(data,path) {
   return leafValue(value);
 }
 /** Read-only, current-message scope only. No chat/global variable fallback. */
-export async function readMvu(host,check=()=>{}) {
+export async function readMvu(host,check=()=>{},{maxFloors=Infinity,totalMs=Infinity}={}) {
   check();const context=mvuContext(host),messages=context?.chat;
   if (!Array.isArray(messages)||!messages.length) return {status:'no_chat',paths:[]};
   let api=host.Mvu;
   if (!api?.getMvuData) return {status:'unavailable',paths:[]};
+  const deadline=Date.now()+totalMs;
   // MVU exposes getMvuData only after its initialization. Do not wait on a
   // missing global in the send hook: a later MVU event/refresh retries it.
-  for (let floor=messages.length-1;floor>=0;floor--) {
+  for (let floor=messages.length-1;floor>=Math.max(0,messages.length-maxFloors);floor--) {
+    if(Date.now()>=deadline)return {status:'pending',paths:[]};
     const fingerprint=messageFingerprint(messages[floor]);
     let timer;
     try {
-      const raw=await Promise.race([Promise.resolve(api.getMvuData({type:'message',message_id:floor})),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('MVU 读取超时')),1200);})]);
+      const raw=await Promise.race([Promise.resolve(api.getMvuData({type:'message',message_id:floor})),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('MVU 读取超时')),Math.max(1,Math.min(1200,deadline-Date.now())));})]);
       check();if (fingerprint!==messageFingerprint(mvuContext(host)?.chat?.[floor])) throw new Error('读取期间聊天来源已变化');
       if (raw?.stat_data && Object.keys(raw.stat_data).length) return {status:'ready',floor,fingerprint,data:clone(raw.stat_data),paths:variablePaths(raw.stat_data)};
-    } catch {check();throw new Error('MVU 读取未完成，请确认变量框架已初始化并重新读取');} finally {clearTimeout(timer);}
+    } catch {check();if(Date.now()>=deadline)return {status:'pending',paths:[]};throw new Error('MVU 读取未完成，请确认变量框架已初始化并重新读取');} finally {clearTimeout(timer);}
   }
   return {status:'empty',paths:[]};
 }

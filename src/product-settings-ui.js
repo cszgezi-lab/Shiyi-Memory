@@ -5,6 +5,7 @@ export const button = (action, label, primary = false) => `<button type="button"
 export const field = (label, input) => `<label class="sy-field"><span>${label}</span>${input}</label>`;
 const names = { base:'自动补接口路径', exact:'完整地址（不补路径）', none:'无需 Key', bearer:'标准 Key（默认）', 'api-key':'x-api-key（服务商要求时）', inherit:'沿用记录偏好', ask_manual:'手动总结时填写', ask_every:'每次总结前填写', disabled:'关闭', broadcast:'各类别均衡召回', leader_only:'仅指定通道', original:'原创', fanfiction:'同人', system:'系统', user:'用户', start:'请求开头', before_last:'最后一条消息前' };
 const copy = {
+  dynamicPersonaMvuMode:['人物演绎主次','推荐剧情主导：MVU 数值只作参考，不把人物锁在固定阶段。不会改写变量、阈值或脚本；旧卡也可选择严格阶段兼容。'],
   summaryRequestMode:['总结请求方式','推荐方式不强制服务端 JSON 模式；仍按预设输出、完整校验后保存。不支持流式的接口可选兼容非流式。'],
   summaryReviewEnabled:['完整总结＋查漏纠错（候选）','先完整记录全部模块，再对照原文只补漏、纠错。一批最多两次，后台进行，不阻塞聊天；失败保留已返回结果。'],
   summaryStaged:['两阶段分工（可选）','关闭时一次请求整理全部模块；开启后每个内部片段通常两次请求，可分配不同模型。失败按已有结果续跑。'],
@@ -63,6 +64,7 @@ const copy = {
   assistantFollowSummary:['沿用总结模型','共用地址、模型和已保存的 Key，无需再填一遍。'],
 };
 Object.assign(names,{'chat-stream':'酒馆兼容 · 流式（推荐）','chat-buffered':'兼容非流式','legacy-json':'旧版 JSON 模式'});
+Object.assign(names,{narrative:'剧情主导 · MVU作参考（推荐）',strict:'严格遵守 MVU 阶段（兼容）'});
 
 export function setting(key, label, help, placeholder = '') {
   if(key==='summaryPresets')return '<p class="sy-help">总提示词和各模块填写规则，可到“记录 → 总结预设”修改。</p>';

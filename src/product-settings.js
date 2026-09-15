@@ -23,6 +23,7 @@ const DEFINITIONS = [
   {key:'dynamicPersonaEndpointMode',label:'动态人设地址模式',defaultValue:'base',type:'enum',values:['base','exact'],consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaAuthMode',label:'动态人设认证方式',defaultValue:'bearer',type:'enum',values:['none','bearer','api-key'],consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaPrompt',label:'动态人设预设',defaultValue:'',type:'string',maxLength:60000,consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaMvuMode',label:'人物演绎主次',defaultValue:'narrative',type:'enum',values:['narrative','strict'],consumers:['DynamicPersonaController']},
   {key:'summaryPresets',label:'总结预设库',defaultValue:'',type:'string',maxLength:600000,consumers:['SummaryEngine','ProductShellController.createBatch']},
   { key:'summaryStaged', label:'分工总结', defaultValue:false, type:'boolean', consumers:['SummaryEngine'] },
   { key:'summaryReviewEnabled', label:'主总结＋原文复核（两次）', defaultValue:false, type:'boolean', consumers:['SummaryEngine'] },
