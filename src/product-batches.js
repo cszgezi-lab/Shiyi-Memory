@@ -5,6 +5,15 @@ export const batchOperationIds=b=>[...new Set([b.operationId,b.previousOperation
 export const savedBatchOperation=b=>b.savedOperationId??(b.status==='saved'||b.status==='deleted'&&!b.error?b.operationId:b.previousOperation)??null;
 export const sameBatchRange=(a,b)=>Number.isInteger(a.startIndex)&&Number.isInteger(a.endIndex)&&a.startIndex===b.startIndex&&a.endIndex===b.endIndex;
 
+// Associate derived recall cards with their contributing batch, including a
+// merged event whose surviving ID belongs to an earlier batch. Do not infer
+// membership from a title or send unrelated/global knowledge to a batch retry.
+export function batchVectorCards(batch,cards){
+  const records=Object.values(batch.records??{}).flat(),ids=new Set(records.map(r=>r.id));
+  const sources=new Set(records.flatMap(r=>r.sourceRefs??[]).map(r=>r.sourceId));
+  return cards.filter(c=>ids.has(c.id)||(c.sourceRefs??[]).some(r=>sources.has(r.sourceId)));
+}
+
 // Display order is not a persistence/attempt ID. Deleting or retrying a batch
 // must not consume a visible ordinal or change its durable identity.
 export function numberedSummaryBatches(batches){

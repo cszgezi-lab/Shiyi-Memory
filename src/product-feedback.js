@@ -1,4 +1,4 @@
-import { validationIssueText } from './validation-diagnostics.js';
+import { humanValidationIssueText } from './validation-diagnostics.js';
 import { upstreamErrorCode,upstreamErrorHint } from './diagnostics.js';
 
 const NETWORK = {
@@ -71,8 +71,8 @@ export function productFailure(error) {
   if(error?.details?.upstreamHint==='content_blocked')message='服务错误报文明确提到内容过滤；这不是 JSON 填写或回复上限问题。请检查服务规则与输入内容，已保存的记忆保留。';
   if(error?.details?.upstreamHint==='context_limit')message='服务报文明确提到上下文超限；请核对该接口实际支持的上下文及日志中的输入体积。增大回复上限不能解决输入超限。已保存批次保留。';
   if(code==='VALIDATION_ERROR'){
-    const issue=validationIssueText(error?.details?.validationIssues?.[0]);
-    if(issue)message=`${error?.details?.repairAttempted?'已自动纠错一次，但仍未通过：':''}${issue}。本次结果未保存；完整校验信息见运行日志。`;
+    const issue=humanValidationIssueText(error?.details?.validationIssues?.[0]);
+    if(issue)message=`${error?.details?.repairAttempted?'已自动纠错一次，但仍未通过：':''}${issue}。本批未保存，其他已保存批次保留；可继续未完成任务。`;
     if(error?.details?.reason==='quality_validation'&&Number.isSafeInteger(error.details.accepted)&&Number.isSafeInteger(error.details.rejected)&&error.details.rejected>0)
       message=`已缓存 ${error.details.accepted} 项复核改动，${error.details.rejected} 项仍需修复。本批尚未进入正式记忆；点击继续未完成任务，仅重试复核，不重做主总结。`;
   }
@@ -83,6 +83,10 @@ export function productFailure(error) {
   if(error?.details?.reason==='stream_incomplete')message='模型流式传输中断，未收到完整结束标记；半份结果没有保存。已完成阶段保留，可继续未完成任务。';
   if(error?.details?.reason==='stream_invalid')message='服务返回的流式格式不兼容，本次结果未保存。可在 API → 请求设置选择“兼容非流式”后重试；不会自动追加一次收费请求。';
   if(error?.details?.reason==='stream_error'&&!status&&error?.details?.upstreamCode!=='insufficient_quota')message='模型服务在流式返回途中报错，本批未保存。已完成阶段保留；具体服务错误分类见运行日志。';
+  if((error?.details?.purpose==='embeddings'||error?.details?.modelRole==='embedding')&&message){
+    message=message.replace('在批次管理中继续未完成任务即可，不必重新总结成功批次。','').replace('已保存批次保留，','');
+    message+= ' 故事记忆已保存的部分不受影响；请在批次或召回页补建未完成索引，只调用向量模型，不重新总结。';
+  }
   if(!message&&error instanceof TypeError)message='网络请求或浏览器跨域访问失败，请检查网络与服务地址。';
   // Local validation errors contain actionable Chinese text. Never echo remote
   // bodies or raw provider errors (they may contain the request and credentials).

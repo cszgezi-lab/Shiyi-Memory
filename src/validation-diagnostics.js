@@ -89,3 +89,12 @@ export function validationIssueText(value) {
   if(issue.candidateCount!==undefined)text+=`；候选来源 ${issue.candidateCount} 个`;
   return text;
 }
+
+export function humanValidationIssueText(value){
+  const issue=safeValidationIssues([value])[0];if(!issue)return '';
+  const match=/^(\w+)(?:\[(\d+)\])?(?:\.(\w+))?/.exec(issue.path);
+  const module={events:'事件',awarenessChanges:'知情',entityFactChanges:'人物信息',relationshipChanges:'关系',personaChanges:'人设变化',commitmentChanges:'约定',performanceHints:'演绎参考',summaryView:'楼层摘要',conflicts:'疑点',coverage:'楼层覆盖',bundle:'总结内容'}[match?.[1]]??'总结内容';
+  const field={sourceId:'原文引用',sourceRefs:'原文引用',eventRef:'关联事件',eventRefs:'关联事件',status:'状态',via:'获知途径',learnedAt:'获知时间',knowledge:'知情内容',field:'属性名称',value:'属性值',floorIndex:'楼号'}[match?.[3]];
+  const reason=issue.reason==='source_mismatch'?'未能对应本批提供的原文；并不表示你修改了聊天':VALIDATION_ISSUE_LABELS[issue.reason];
+  return `${module}${match?.[2]!==undefined?`中的第 ${Number(match[2])+1} 条`:''}${field?`的${field}`:''}：${reason}`;
+}

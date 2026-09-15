@@ -1,4 +1,5 @@
 import { HostAdapter } from './host-adapter.js';
+import { batchVectorCards } from './product-batches.js';
 import { editKeepsakePatch } from './character-journal.js';
 import { lazyViewState } from './product-view-scheduling.js';
 import { createProductShellController } from './product-shell-controller.js';
@@ -198,6 +199,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     clearTimeout(vectorTimer);vectorTimer=null;vectorCheckVersion++;
     vectorJob?.cancel();
     state.vectorIndex={status:workspace?.isCurrent()?'not_checked':'no_chat'};
+    state.batchVectors={};
     if(!disposed&&workspace?.isCurrent())vectorTimer=setTimeout(()=>{vectorTimer=null;void refreshVectorStatus({schedule:scheduleVectors});},250);
   }
   function vectorCards({all=false}={}){return selectRecallCards([...state.cards,...knowledgeCache.filter(c=>!state.hidden.includes(c.id))],core.settings).filter(c=>c.vectorEligible!==false&&(all||!vectorExcluded.includes(c.id)));}
@@ -225,7 +227,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const issue=vectorFailure(card,jobs);
       const status=vectorExcluded.includes(card.id)?'excluded':entries.get(card.id)?.hash===vectorCache.hash(card)?'indexed':issue?'failed':entries.has(card.id)?'stale':'missing';
       return {id:card.id,title:card.title??card.recallSummary??card.description?.slice(0,80)??'记忆',category:card.category,status,
-        ...(status==='failed'?{error:failureText({code:issue.code,details:{status:issue.status}}),attempts:issue.attempts}:{}),
+        ...(status==='failed'?{error:failureText({code:issue.code,details:{status:issue.status,upstreamHint:issue.upstreamHint,purpose:'embeddings'}}),attempts:issue.attempts}:{}),
         segments:entries.get(card.id)?.segments?.length??(entries.has(card.id)?1:0)};
     }).filter(row=>(status==='all'||row.status===status||status==='unfinished'&&['failed','missing','stale'].includes(row.status))&&row.title.toLocaleLowerCase().includes(q));
     const pages=Math.max(1,Math.ceil(rows.length/20)),current=Math.min(pages,Math.max(1,Math.floor(Number(page)||1)));
@@ -246,7 +248,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const stopped=state.vectorIndex?.status==='stopped';
       const status=vectorJob?'updating':storageFailure?'error':!coverage.total?'empty':coverage.mixed?'mixed':!coverage.pending?'ready':failure.blocked||failure.failed?'error':stopped?'stopped':'pending';
       const issue=storageFailure??failure.blocked??cards.map(c=>vectorFailure(c,jobs)).find(Boolean);
-      state.vectorIndex={...coverage,...failure,rebuilding:jobs.rebuilding,status,model:c.profile.model,checkedAt:Date.now(),...(status==='error'&&issue?{message:failureText({code:issue.code,details:issue.details??{status:issue.status}})}:{})};
+      state.vectorIndex={...coverage,...failure,rebuilding:jobs.rebuilding,status,model:c.profile.model,checkedAt:Date.now(),...(status==='error'&&issue?{message:failureText({code:issue.code,details:issue.details??{status:issue.status,upstreamHint:issue.upstreamHint,purpose:'embeddings'}})}:{})};
+      state.batchVectors=Object.fromEntries(state.batches.filter(b=>b.status!=='deleted').map(b=>{
+        const own=batchVectorCards(b,cards),covered=vectorIndexCoverage(own,entries,card=>vectorCache.hash(card)),failed=vectorFailureCounts(own,entries,jobs).failed;
+        return [b.id,{...covered,failed,status:!covered.total?'empty':!covered.pending?'ready':vectorJob?'updating':failed||jobs.blocked||storageFailure?'error':'pending'}];
+      }));
       notify();
       if(schedule&&core.settings.vectorEnabled&&core.settings.vectorAutoUpdate&&coverage.pending>failure.failed&&!failure.blocked&&!storageFailure&&!vectorJob&&!disposed&&!active&&!recallBusy){
         vectorTimer=setTimeout(()=>{vectorTimer=null;if(!disposed&&token===epoch&&revision===recallRevision&&!active&&!recallBusy)void logged('vectors',run=>buildVectors({background:true,diagnosticRun:run})).catch(()=>{});},500);
@@ -575,8 +581,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     state.batches=list.map(item=>{
       const mode=view.controls?.operations?.[item.operationId];
       const records=batchRecords(view.records?.history,item.operationId);
-      const status=mode==='active'?'saved':mode==='deleted'?'deleted':item.status==='running'&&!active?'interrupted':item.status;
-      return {...item,status,...(mode==='active'?{error:null,savedOperationId:item.operationId}:{}),records,counts:Object.fromEntries(MEMORY_CATEGORIES.map(k=>[k,records[k].length]))};
+      const scheduled=item.status==='queued'&&item.freshStart;
+      const status=scheduled?'queued':mode==='active'?'saved':mode==='deleted'?'deleted':item.status==='running'&&!active?'interrupted':item.status;
+      return {...item,status,...(!scheduled&&mode==='active'?{error:null,savedOperationId:item.operationId}:{}),records,counts:Object.fromEntries(MEMORY_CATEGORIES.map(k=>[k,records[k].length]))};
     });
     // Reconcile UI bookkeeping against the committed view after a restart.
     // This never activates pending content or changes memory evidence.
@@ -609,27 +616,35 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     if(!workspace)throw Object.assign(new Error('当前聊天尚未读取'),{code:'CHAT_REF_UNAVAILABLE'});
     batchSize??=core.settings.summaryBatchSize;
-    const op=begin();let saved=0,currentBatch=null,bookkeepingWarning=false,deferredRecords=0,automaticQualityIds=[],usedVerification=core.settings.summaryReviewEnabled;
+    const op=begin();let saved=0,currentBatch=null,remainingPlanned=0,bookkeepingWarning=false,deferredRecords=0,automaticQualityIds=[],usedVerification=core.settings.summaryReviewEnabled;
     summaryFeedback('running','正在读取总结范围…',trigger);
     try{
       // Read current source again only inside the same bound chat.
       if(state.stale){const probe=await core.readRange({count:1});if(probe.status!=='ready')throw new Error('请重新打开当前聊天');workspace=createWorkspace(core.workspace());}
       op.check();const lastIndex=await core.historyTail();op.check();
       const ranges=planSummaryRanges({count:count??core.settings.messageCount,startIndex,endIndex,lastIndex,batchSize});
-      const groupId=makeId('summary-group');
+      let groupId=makeId('summary-group');
       const list=await workspace.read('summary-batches',[]);
       let previous=replaceBatchId?list.find(b=>b.id===replaceBatchId):null;
       if(replaceBatchId&&!previous)throw new Error('总结批次不存在');
       if(previous&&ranges.length!==1)throw new Error('重生保留原批次范围');
+      if(resume&&previous?.groupId)groupId=previous.groupId;
+      const plan=resume&&previous?.plan?previous.plan:{startIndex:ranges[0].startIndex,endIndex:ranges.at(-1).endIndex,batchSize};
       const planned=ranges.map((range,i)=>{
         const prior=previous??list.find(b=>sameBatchRange(b,range));
-        return {...prior,id:prior?.id??makeId('summary-batch'),number:prior?.number??Math.max(0,...list.map(b=>b.number??0))+i+1,groupId,...range,focus,trigger,status:prior?.status??'queued',operationId:prior?.operationId??null,createdAt:prior?.createdAt??Date.now(),attempts:prior?.attempts??[]};
+        return {...prior,id:prior?.id??makeId('summary-batch'),number:prior?.number??Math.max(0,...list.map(b=>b.number??0))+i+1,groupId,plan,...range,focus,trigger,status:'queued',freshStart:resume?prior?.freshStart??!prior?.operationId:true,operationId:prior?.operationId??null,createdAt:prior?.createdAt??Date.now(),attempts:prior?.attempts??[]};
       });
-      await workspace.write('summary-batches',[...list,...planned.filter(p=>!list.some(b=>b.id===p.id))]);
+      // Persist the whole user's selection BEFORE its first paid request,
+      // replacing bookkeeping for reused ranges as well as inserting new ones.
+      // Old successful generations remain active until replacements commit.
+      const planById=new Map(planned.map(p=>[p.id,p]));
+      await workspace.write('summary-batches',[...list.map(b=>planById.get(b.id)??b),...planned.filter(p=>!list.some(b=>b.id===p.id))]);op.check();
+      runtimeLog.record({run:diagnosticRun,task:'summary',phase:'queue_plan',details:{startIndex:plan.startIndex,endIndex:plan.endIndex,batchSize:plan.batchSize,plannedBatches:planned.length}});
       for(let i=0;i<planned.length;i++){
-        op.check();const item=planned[i],continuing=resume&&Boolean(item.operationId),operationId=continuing?item.operationId:makeId('product-summary');
+        remainingPlanned=planned.length-i-1;
+        op.check();const item=planned[i],continuing=resume&&!item.freshStart&&Boolean(item.operationId),operationId=continuing?item.operationId:makeId('product-summary');
         const oldOperation=item.status==='deleted'?null:savedBatchOperation(item);
-        currentBatch={...item,status:'running',error:null,operationId,previousOperation:oldOperation??null,attempts:batchOperationIds(item).filter(id=>id!==operationId),updatedAt:Date.now()};
+        currentBatch={...item,status:'running',freshStart:false,error:null,operationId,previousOperation:oldOperation??null,attempts:batchOperationIds(item).filter(id=>id!==operationId),updatedAt:Date.now()};
         await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
         // Staged generations survive crashes but are never available for recall.
         if(!continuing)await core.updateMemoryControls({operations:{[operationId]:'pending'}});op.check();
@@ -694,7 +709,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       // Report the API failure before potentially slow native bookkeeping.
       // The final log also carries the durable logical-batch count, not just
       // a model/validation success or a commit-start marker.
-      error.details={...error.details,savedBatches:saved,modelMs,publishMs,
+      error.details={...error.details,savedBatches:saved,pendingBatches:remainingPlanned,modelMs,publishMs,
         ...(currentBatch?{startIndex:currentBatch.startIndex,endIndex:currentBatch.endIndex}:{})};
       if(op.token===epoch)summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批。${failureText(error)}`,trigger);
       if(currentBatch&&workspace?.isCurrent()&&op.token===epoch){
@@ -702,7 +717,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         await workspace.update('summary-batches',rows=>rows.map(b=>b.id===failed.id?failed:b),[]).catch(()=>{});
         await refresh().catch(()=>{});
       }
-      if(op.token===epoch)summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批。${failureText(error)}`,trigger);
+      runtimeLog.record({run:diagnosticRun,task:'summary',phase:'queue_remaining',details:{savedBatches:saved,pendingBatches:remainingPlanned}});
+      if(op.token===epoch)summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批${remainingPlanned?`，另有 ${remainingPlanned} 批排队保留` :''}。${failureText(error)}`,trigger);
       throw error;
     }finally{op.finish();}
   }
@@ -899,13 +915,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     assertCurrent();await refresh();const row=state.batches.find(b=>b.id===id);
     if(active||opening)return {status:'running',requests:0,level:'warning'};
     if(!row)throw new Error('批次不存在');
-    if(row.status==='saved')return {status:'saved',requests:0};
+    if(row.status==='saved'){summaryFeedback('info','该批总结已保存，无需重复总结；索引未完成时可单独补建。','manual');return {status:'saved',requests:0};}
     if(!['failed','interrupted','queued'].includes(row.status))throw new Error('此批次当前不能续跑');
     return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id,resume:true,trigger:row.trigger??'manual'});
   }
   async function retryIncompleteBatches(){
     await prepareSummaryChat();await refresh();const ids=state.batches.filter(b=>['failed','interrupted','queued'].includes(b.status)).map(b=>b.id);
-    if(!ids.length){setMessage('没有未完成的总结批次');return;}
+    if(!ids.length){const message='没有未完成的总结批次；如需补建向量，请点击“补建全部未完成索引”，不会重新总结。';summaryFeedback('info',message,'manual');return {status:'idle',processed:0,failed:0,message,level:'info'};}
     return manageBatches(ids,'retry');
   }
   async function manageBatches(ids,action){
@@ -1217,6 +1233,14 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       if(token===epoch&&revision===recallRevision)await refreshVectorStatus();
     }
   }
+  async function retryBatchVectors(id){
+    await prepareSummaryChat();await refresh();assertCurrent();
+    const batch=state.batches.find(b=>b.id===id&&b.status!=='deleted');
+    if(!batch)throw new Error('批次不存在或已删除');
+    const ids=batchVectorCards(batch,vectorCards()).map(c=>c.id);
+    if(!ids.length)return {requests:0,level:'info',message:'该批当前没有需要向量化的有效记忆；尚未保存、已删除或被排除的内容不会建索引。'};
+    return logged('vectors',run=>buildVectors({ids,diagnosticRun:run}));
+  }
   async function addDocument(input) { await loadApiSettings();const op=beginApi();try{const doc=await importTextDocument(globalWorkspace,input);op.check();state.documents=await globalWorkspace.read('documents',[]);await loadKnowledge();setMessage('文件已解析为文字，保存在全局资料库；尚未发送给模型');return doc;}finally{op.finish();} }
   async function removeDocument(id) {
     if(knowledgeJob)throw new Error('请先停止或等待资料任务结束');
@@ -1393,7 +1417,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     updateDocument,documentPreview,buildKnowledgeVectors:ids=>logged('knowledge-vectors',run=>buildKnowledgeVectors(ids,run)),
     analyzeDocuments:ids=>logged('knowledge',()=>analyzeDocuments(ids)),
     buildVectors:(options)=>logged('vectors',run=>buildVectors({...options,diagnosticRun:run})),
-    retryVectors:(ids=null)=>logged('vectors',run=>buildVectors({ids,diagnosticRun:run})),
+    retryVectors:(ids=null)=>logged('vectors',run=>buildVectors({ids,diagnosticRun:run})),retryBatchVectors,
     refreshVectorStatus,
     listVectorEntries,
     excludeVector,

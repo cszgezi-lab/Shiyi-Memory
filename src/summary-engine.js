@@ -774,7 +774,11 @@ export class SummaryEngine {
               const refs=Array.isArray(row?.sourceRefs)?row.sourceRefs.flatMap(r=>r&&Object.keys(r).length===1&&Array.isArray(r.sourceRefs)?r.sourceRefs:[r]):[];
               return refs.some(r=>typeof r?.sourceId==='string'&&!allowed.has(r.sourceId));
             }));
-          }catch{/* Existing parse/shape recovery remains authoritative. */}
+            // A known floor with a wrong fragment, or a missing single-floor
+            // locator, also cannot become valid by replaying the same answer.
+            const expanded=expandModuleSummary(expandCompactSummary(cached,child.sourceMessages),child.sourceMessages);
+            bindDraftBundle(expanded,{scope:child.scope,operationId:child.operationId,expectedRevision:child.expectedRevision,sourceRefs:evidenceRefsFor(child)});
+          }catch(error){if(error?.details?.validationIssues?.some(i=>['source_mismatch','unknown_source','missing_source','source_ambiguous'].includes(i.reason)))cachedForeignSource=true;/* Other parse/shape recovery remains authoritative. */}
           if(cachedForeignSource)emit('resume_rejected_source',baseDetails,'warning');
         }
         if(prior?.raw!==undefined&&!prior.retryModel&&!cachedForeignSource){raw=prior.raw;emit('resume_response',baseDetails,'success');}

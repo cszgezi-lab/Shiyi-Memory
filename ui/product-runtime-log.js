@@ -1,12 +1,24 @@
 import { readViewState } from '../src/product-view-scheduling.js';
 import { LOG_TASKS, LOG_PHASES } from '../src/product-runtime-log.js';
 import { esc } from '../src/product-settings-ui.js';
-import { failureText } from '../src/product-feedback.js';
+import { failureText,productFailure } from '../src/product-feedback.js';
 import { safeValidationIssues, validationIssueText } from '../src/validation-diagnostics.js';
 import {DIAGNOSTIC_REASONS,DIAGNOSTIC_PURPOSES,DIAGNOSTIC_STAGES,DIAGNOSTIC_ACTIONS,UPSTREAM_CODES,UPSTREAM_HINTS} from '../src/diagnostics.js';
 
 export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help">保留最近 2000 条，最多 2 MB。记录请求、解析、校验与保存过程；不包含 Key、聊天正文或模型原文。导出包含全部保留记录，不受筛选和分页影响。</p><div class="sy-actions"><button type="button" data-log-export>导出日志</button><button type="button" data-log-clear>清空日志</button></div><label class="sy-field"><span>显示</span><select data-log-filter><option value="all">全部记录</option><option value="issues">失败与警告</option><option value="vectors">向量索引</option><option value="summary">总结</option><option value="merge">事件合并</option><option value="api">API 与助手</option></select></label><p data-log-storage class="sy-help" role="status"></p><div data-log-list></div><div class="sy-batch-pagination"><button type="button" data-log-prev>上一页</button><span data-log-page></span><button type="button" data-log-next>下一页</button></div>`;}
 const fields={requestNumber:'向量请求序号',requestItems:'输入片段数',receivedVectors:'返回向量数',inputChars:'本次输入字符数',longestInputChars:'最长片段字符数',vectorDimensions:'向量维度',indexedItems:'已保存索引条数',pendingItems:'未完成索引条数',failedItems:'失败索引条数',batchNumber:'总结批次',childIndex:'内部子批（从 0 计）',sourceCount:'读取消息数',inputLimit:'输入预算',inputUnits:'实际输入估算',elapsedMs:'耗时（毫秒）',status:'HTTP 状态',expected:'应有逐楼摘要',received:'收到摘要条数',covered:'完整对应楼数',invalidRows:'来源无效或多楼合并',duplicateCount:'重复摘要条数',promptTokens:'服务报告输入 Token',completionTokens:'服务报告输出 Token',totalTokens:'服务报告总 Token',reasoningTokens:'其中推理 Token',responseChars:'回复文本字符数',savedBatches:'保存批数'};
+export function runtimeLogSummary(entry){
+  const d=entry.details??{},parts=[];
+  if(d.startIndex!==undefined)parts.push(`第 ${d.startIndex}–${d.endIndex??d.startIndex} 楼`);
+  if(d.code)parts.push(productFailure({code:d.code,details:{...d,...(['vectors','knowledge-vectors'].includes(entry.task)?{purpose:'embeddings'}:{})}}).message);
+  else parts.push(LOG_PHASES[entry.phase]??'操作记录');
+  if(d.savedBatches!==undefined)parts.push(`本次已保存 ${d.savedBatches} 批`);
+  if(d.pendingBatches!==undefined)parts.push(`另有 ${d.pendingBatches} 批待处理`);
+  if(d.plannedBatches!==undefined)parts.push(`计划 ${d.plannedBatches} 批，每批 ${d.batchSize} 楼`);
+  if(d.indexedItems!==undefined)parts.push(`索引已建 ${d.indexedItems} 条，待建 ${d.pendingItems??0} 条${d.failedItems?`（其中 ${d.failedItems} 条失败）`:''}`);
+  if(d.elapsedMs!==undefined){const seconds=Math.round(d.elapsedMs/1000);parts.push(`${entry.task==='summary'&&['failed','complete'].includes(entry.phase)?'整轮累计（非单次请求）':'耗时'}：${seconds>=60?`${Math.floor(seconds/60)} 分 ${seconds%60} 秒`:`${seconds} 秒`}`);}
+  return parts.map(p=>p.replace(/[。；]+$/u,'')).join('。');
+}
 function detailsHTML(entry){
   const d=entry.details,lines=[];
   if(d.jsonMode!==undefined)lines.push(['强制服务端 JSON 模式',d.jsonMode?'是':'否']);
@@ -102,7 +114,7 @@ function detailsHTML(entry){
     for(const issue of issues)lines.push(['校验字段',validationIssueText(issue)]);
   }
   if(d.code)lines.push(['错误',failureText({code:d.code,details:d})]);
-  return lines.map(([label,value])=>`<div class="sy-log-detail${['错误','校验问题','校验字段'].includes(label)?' sy-log-wide':''}"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('');
+  return `<p class="sy-log-summary">${esc(runtimeLogSummary(entry))}</p><details class="sy-log-technical"><summary>技术详情（排错用，可导出）</summary>${lines.map(([label,value])=>`<div class="sy-log-detail${['错误','校验问题','校验字段'].includes(label)?' sy-log-wide':''}"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('')}</details>`;
 }
 export function mountRuntimeLog({panel,app,run,host,download}){
   const $=s=>panel.querySelector(s);let page=1,state=null,signature='';const opened=new Set();

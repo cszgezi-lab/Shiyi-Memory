@@ -70,7 +70,7 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
   const saveJobs=()=>persist(vectorJobKey(key),jobs);
   const recordFailure=(card,error)=>{
     const f=productFailure(error),previous=jobs.failures[card.id];
-    jobs.failures[card.id]={hash:hashes.get(card.id),code:f.code,...(f.status?{status:f.status}:{}),attempts:(previous?.attempts??0)+1,at:Date.now()};
+    jobs.failures[card.id]={hash:hashes.get(card.id),code:f.code,...(f.status?{status:f.status}:{}),...(error?.details?.upstreamHint?{upstreamHint:error.details.upstreamHint}:{}),attempts:(previous?.attempts??0)+1,at:Date.now()};
   };
   const work=[],plans=new Map();
   const response=await workspace.read(vectorResponseKey(key),null);check();
@@ -136,7 +136,7 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
       }
       for(const card of new Map(batch.map(x=>[x.card.id,x.card])).values())recordFailure(card,error);
       if([400,413,422].includes(f.status))consecutiveInputFailures++;
-      if(![400,413,422].includes(f.status)||consecutiveInputFailures>=3){jobs.blocked={code:f.code,...(f.status?{status:f.status}:{}),at:Date.now()};fatal=error;}
+      if(![400,413,422].includes(f.status)||consecutiveInputFailures>=3){jobs.blocked={code:f.code,...(f.status?{status:f.status}:{}),...(error?.details?.upstreamHint?{upstreamHint:error.details.upstreamHint}:{}),at:Date.now()};fatal=error;}
       await saveJobs();progress(snapshot());return;
     }
     consecutiveInputFailures=0;

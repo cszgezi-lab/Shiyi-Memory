@@ -138,11 +138,21 @@ export function expandModuleSummary(output,sourceMessages=[]) {
         if(row.sourceRefs!==undefined)fail(`${category}[${i}].sourceRefs`,'invalid_shape');
         const requestedFragment=normalizeWholeSourceRef({sourceId:row.sourceId,fragmentId:row.fragmentId},sourceMessages).fragmentId??null;
         const matches=sourceMessages.filter(m=>m.id===row.sourceId&&(m.fragmentId??null)===requestedFragment);
-        if(matches.length!==1)fail(`${category}[${i}].sourceId`,'source_mismatch');
+        if(matches.length!==1)fail(`${category}[${i}].sourceId`,sourceMessages.some(m=>m.id===row.sourceId)?'source_mismatch':'unknown_source');
         const m=matches[0];row.sourceRefs=[{sourceId:m.id,...(m.fragmentId?{fragmentId:m.fragmentId}:{})}];
         if(category==='summaryView')row.floorIndex=m.index;
         delete row.sourceId;delete row.fragmentId;
-      }else if(category==='summaryView')fail(`summaryView[${i}].sourceId`,'source_mismatch');
+      }else if(category==='summaryView'){
+        // A single explicit sourceRefs locator is the legacy spelling of the
+        // same floor. Keep its hashes/versions for binding checks; never infer
+        // from array position, prose similarity, or a bare floor number.
+        if(!Array.isArray(row.sourceRefs)||row.sourceRefs.length!==1||!isPlainObject(row.sourceRefs[0]))fail(`summaryView[${i}].sourceId`,'missing_source');
+        const ref=normalizeWholeSourceRef(row.sourceRefs[0],sourceMessages);
+        const matches=sourceMessages.filter(m=>m.id===ref.sourceId&&(m.fragmentId??null)===(ref.fragmentId??null));
+        if(matches.length!==1)fail(`summaryView[${i}].sourceId`,sourceMessages.some(m=>m.id===ref.sourceId)?'source_mismatch':'unknown_source');
+        if(row.floorIndex!==undefined&&row.floorIndex!==matches[0].index)fail(`summaryView[${i}].floorIndex`,'source_mismatch');
+        row.floorIndex=matches[0].index;
+      }
       if(Array.isArray(row.sourceRefs))row.sourceRefs=row.sourceRefs.flatMap(ref=>isPlainObject(ref)&&Object.keys(ref).length===1&&Array.isArray(ref.sourceRefs)&&ref.sourceRefs.length?ref.sourceRefs:[ref])
         .map(ref=>normalizeWholeSourceRef(ref,sourceMessages,{confirmedWholeEvent:category==='events'&&wholeFloors.has(ref?.sourceId),confirmedWholeRecord:category!=='summaryView'&&wholeFloors.has(ref?.sourceId)}));
       if(!Object.hasOwn(row,'id')&&category!=='events')row.id=`module-${category}-${i}`;
