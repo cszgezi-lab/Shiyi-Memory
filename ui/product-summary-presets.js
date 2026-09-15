@@ -3,18 +3,20 @@ import { clone } from '../src/utils.js';
 import { esc } from '../src/product-settings-ui.js';
 
 const groups=[
-  ['shared','共同规则',['extractionWorkflow','narrativeRules.language','narrativeRules.facts','narrativeRules.completeness','timeRules','temporalShape','stateTransitionRules','detailRules']],
+  ['shared','共同规则',['extractionWorkflow','narrativeRules.language','narrativeRules.facts','narrativeRules.completeness','timeRules','sceneTimeRules','temporalShape','stateTransitionRules','detailRules']],
   ['events','事件',['narrativeRules.eventBody','narrativeRules.eventMetadata','narrativeRules.brief','consolidationRules']],
-  ['awarenessChanges','知情',['knowledgeRules']],
+  ['awarenessChanges','知情',['knowledgeRules','evidenceBoundaryRules']],
   ['entityFactChanges','人物与事实',['profileRules','archiveRules']],
-  ['relationshipChanges','关系',['relationshipEndpointRules']],
-  ['personaChanges','人设变化',['interpretationRules']],
-  ['commitmentChanges','约定',['commitmentRules','planStateRules','schedulePrecisionRules']],
+  ['relationshipChanges','关系',['relationshipEndpointRules','dialogueSourceRules']],
+  ['personaChanges','人设变化',['interpretationRules','journalCoverageRules']],
+  ['commitmentChanges','约定',['commitmentRules','planStateRules','schedulePrecisionRules','promiseBoundaryRules']],
   ['performanceHints','演绎参考',[]],
   ['summaryView','楼层摘要',['floorContentRules','floorMetadataRules','floorKnowledgeRules']],
   ['conflicts','冲突与疑点',[]],
 ];
+const addedLabels={sceneTimeRules:'正文日期与场景时间',dialogueSourceRules:'关键台词的原文来源',evidenceBoundaryRules:'知情证据边界',promiseBoundaryRules:'承诺与预测的区别',journalCoverageRules:'角色心迹的依据与范围'};
 const labels={extractionWorkflow:'整理顺序','narrativeRules.language':'输出语言','narrativeRules.facts':'事实与推测','narrativeRules.completeness':'记录范围',timeRules:'时间与有效期',temporalShape:'时间填写方式',stateTransitionRules:'动态变化',detailRules:'字典、标签、关键台词与观念','narrativeRules.eventBody':'完整事件纪要','narrativeRules.eventMetadata':'人物、地点与时间','narrativeRules.brief':'召回速览',consolidationRules:'同一事件的合并',knowledgeRules:'具体知情与事件关联',profileRules:'动态属性填写',archiveRules:'主体归档',relationshipEndpointRules:'关系双方与互动',interpretationRules:'态度、演绎与疑点的共同边界',commitmentRules:'承诺与兑现',planStateRules:'计划状态',schedulePrecisionRules:'不同日程的时间',floorContentRules:'每楼经过',floorMetadataRules:'每楼人物与时间',floorKnowledgeRules:'楼层与知情关联'};
+Object.assign(labels,addedLabels);
 // Illustrative, not hidden instructions. IDs must be replaced with input IDs.
 const examples={
   events:{id:'event-key',sourceRefs:[{sourceId:'来源编号'}],perspective:'third_person',title:'乙为避雨将钥匙交给丙保管',description:'6月4日18点，乙因临时去避雨，不方便继续携带工作室钥匙，在车站把钥匙交给丙，并约定雨停后取回。丙答应代管，将钥匙收进蓝色背包；甲在旁亲眼看见交接。原文没有写雨停后是否已归还。',recallSummary:'乙在车站把工作室钥匙交丙代管，约定雨停后取回；甲目睹交接，尚无归还记录。',participants:['乙','丙','甲'],location:'车站',temporal:{occurredAt:'2021-06-04 18:00'},state:'completed',epistemicStatus:'observed',tags:['钥匙交接','代为保管']},
