@@ -13,6 +13,13 @@ export function batchVectorCards(batch,cards){
   const sources=new Set(records.flatMap(r=>r.sourceRefs??[]).map(r=>r.sourceId));
   return cards.filter(c=>ids.has(c.id)||(c.sourceRefs??[]).some(r=>sources.has(r.sourceId)));
 }
+export function batchVectorGroups(batches,cards){
+  const ids=new Map(),sources=new Map(),groups=new Map();
+  const add=(map,key,id)=>{if(!key)return;if(!map.has(key))map.set(key,new Set());map.get(key).add(id);};
+  for(const b of batches){groups.set(b.id,[]);for(const r of Object.values(b.records??{}).flat()){add(ids,r.id,b.id);for(const ref of r.sourceRefs??[])add(sources,ref.sourceId,b.id);}}
+  for(const c of cards){const linked=new Set(ids.get(c.id));for(const ref of c.sourceRefs??[])for(const id of sources.get(ref.sourceId)??[])linked.add(id);for(const id of linked)groups.get(id).push(c);}
+  return groups;
+}
 
 // Display order is not a persistence/attempt ID. Deleting or retrying a batch
 // must not consume a visible ordinal or change its durable identity.

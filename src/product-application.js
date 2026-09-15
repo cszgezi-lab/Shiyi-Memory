@@ -1,5 +1,5 @@
 import { HostAdapter } from './host-adapter.js';
-import { batchVectorCards } from './product-batches.js';
+import { batchVectorCards,batchVectorGroups } from './product-batches.js';
 import { editKeepsakePatch } from './character-journal.js';
 import { lazyViewState } from './product-view-scheduling.js';
 import { createProductShellController } from './product-shell-controller.js';
@@ -15,7 +15,7 @@ import { SummaryResponseError } from './errors.js';
 import { memoryCards, recallMemory, readable, recordDescription, selectRecallCards, prepareRecallIndex, relevantPassage } from './product-memory.js';
 import { RecallIndexCache } from './recall-cache.js';
 import { ProductVectorCache, vectorNorm, vectorIndexCoverage } from './product-vector-cache.js';
-import { buildVectorIndex, embeddingVectors, normalizeVectorJobs, vectorJobKey, vectorStagingKey, vectorFailure, vectorFailureCounts } from './product-vector-indexer.js';
+import { buildVectorIndex, embeddingVectors, normalizeVectorJobs, vectorJobKey, vectorStagingKey, vectorFailure, vectorFailureCounts,vectorRetryDelay } from './product-vector-indexer.js';
 import { clone, sha256, makeId, estimateUnits, stableStringify } from './utils.js';
 import { createProductFetch } from './product-network.js';
 import { productApiProfile, fetchProductModels } from './product-model-list.js';
@@ -80,6 +80,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let dictionaryRevision=-1, dictionaryCache=null;
   let recallBusy = 0, moduleSourceBaseline=null;
   let vectorTimer=null,vectorJob=null,vectorCheckVersion=0,vectorStorageFailure=null;
+  let vectorStopped=false,recallReaders=0;
   let injectionLog=null,vectorExcluded=[],mergeDecisions={},qualitySaved={},preparedQuality=null;
   let tracking=false,trackingStart=null,disposed=false,followPending=false,followTimer=null,following=null,followVersion=0;
   let qualityJob=null,automaticQualityQueue=[],qualityOperation=null;
@@ -135,7 +136,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }catch(error){
       const canceled=['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error?.code)||error?.name==='AbortError';
       if(error&&typeof error==='object')recordedErrors.add(error);
-      runtimeLog.record({run,task,phase:canceled?'canceled':'failed',level:canceled?'warning':'error',details:{...details,...errorDiagnostics(error),elapsedMs:Date.now()-started}});
+      const autoRetry=task==='vectors'&&!canceled&&state.vectorIndex?.automatic;
+      runtimeLog.record({run,task,phase:canceled?'canceled':autoRetry?'retry_wait':'failed',level:canceled||autoRetry?'warning':'error',details:{...details,...errorDiagnostics(error),...(autoRetry?{retryDelayMs:Math.max(0,state.vectorIndex.retryAt-Date.now())}:{}),elapsedMs:Date.now()-started}});
       throw error;
     }finally{await flushDiagnostics();}
   }
@@ -153,7 +155,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   function readViewState(){
     const readers=Object.fromEntries(Object.entries(state).map(([key,value])=>[key,()=>clone(value)]));
     const cardRevision=viewIdentity(state.cards);
-    return lazyViewState({...readers,cardRevision:()=>cardRevision,automatic:automaticPlan,autoRunning:()=>autoRunning,
+    return lazyViewState({...readers,cardRevision:()=>cardRevision,batchRevision:()=>viewIdentity(state.batches),automatic:automaticPlan,autoRunning:()=>autoRunning,
       merges:()=>workspace?.isCurrent()&&!state.stale?clone(state.merges??[]):[],injectionLog:()=>workspace?.isCurrent()?injectionLog?.state:null,
       dictionary:()=>clone(activeDictionary()),runtimeLog:()=>runtimeLog.state,enabled:()=>enabled,chatReady:()=>Boolean(workspace?.isCurrent())&&!state.stale,
       settings:()=>core.settings,core:()=>core.state,busy:()=>Boolean(active)||apiOperations.size>0,
@@ -168,7 +170,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     operations.add(controller); if (exclusive) active = controller;
     return { signal: controller.signal, workspace: bound, token, abort:()=>controller.abort(),
       check() { if (controller.signal.aborted || version !== cancelVersion) throw Object.assign(new Error('已停止'),{code:'CANCELED'}); assertCurrent(token); },
-      finish() { operations.delete(controller); if (active === controller) active = null; notify(); wakeChatFollower(); wakeAutomaticSummary(); } };
+      finish() { operations.delete(controller); if (active === controller) active = null; notify(); wakeChatFollower(); wakeAutomaticSummary(); wakeVectors(); } };
   }
   function abortAll() { cancelVersion++;autoPending=false;clearTimeout(autoTimer);autoTimer=null;for (const op of operations) op.abort(); }
   function beginApi() {
@@ -228,11 +230,19 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const status=vectorExcluded.includes(card.id)?'excluded':entries.get(card.id)?.hash===vectorCache.hash(card)?'indexed':issue?'failed':entries.has(card.id)?'stale':'missing';
       return {id:card.id,title:card.title??card.recallSummary??card.description?.slice(0,80)??'记忆',category:card.category,status,
         ...(status==='failed'?{error:failureText({code:issue.code,details:{status:issue.status,upstreamHint:issue.upstreamHint,purpose:'embeddings'}}),attempts:issue.attempts}:{}),
-        segments:entries.get(card.id)?.segments?.length??(entries.has(card.id)?1:0)};
+        segments:entries.get(card.id)?.parts?.length??entries.get(card.id)?.segments?.length??(entries.has(card.id)?1:0)};
     }).filter(row=>(status==='all'||row.status===status||status==='unfinished'&&['failed','missing','stale'].includes(row.status))&&row.title.toLocaleLowerCase().includes(q));
     const pages=Math.max(1,Math.ceil(rows.length/20)),current=Math.min(pages,Math.max(1,Math.floor(Number(page)||1)));
     return {rows:rows.slice((current-1)*20,current*20),total:rows.length,page:current,pages};
   }
+  function canMaintainVectors(){return !disposed&&enabled&&!vectorStopped&&!recallReaders&&workspace?.isCurrent()&&!state.stale&&core.settings.vectorEnabled&&core.settings.vectorAutoUpdate&&host.document?.visibilityState!=='hidden'&&host.navigator?.onLine!==false;}
+  function wakeVectors(){
+    if(!canMaintainVectors()||vectorTimer||vectorJob||active||recallBusy)return;
+    vectorTimer=setTimeout(()=>{vectorTimer=null;void refreshVectorStatus({schedule:true});},500);vectorTimer.unref?.();
+  }
+  const resumeVectorMaintenance=()=>{if(host.document?.visibilityState==='hidden'||host.navigator?.onLine===false){clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();}else wakeVectors();};
+  host.document?.addEventListener?.('visibilitychange',resumeVectorMaintenance);
+  host.addEventListener?.('online',resumeVectorMaintenance);host.addEventListener?.('offline',resumeVectorMaintenance);
   async function refreshVectorStatus({schedule=false,cached=false}={}){
     // Page navigation can reuse a recent completed check. Explicit refresh and
     // invalidation/build paths still read the store and verify every entry.
@@ -242,20 +252,29 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try{
       const c=client('embedding'),fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model}),key=`vectors-${fingerprint.slice(0,20)}`;
       const jobs=normalizeVectorJobs(await bound.read(vectorJobKey(key),null)),cards=vectorCards(),entries=await combinedVectorEntries(bound,jobs.rebuilding?vectorStagingKey(key):key,{globalKey:key}),coverage=vectorIndexCoverage(cards,entries,card=>vectorCache.hash(card));
-      const failure=vectorFailureCounts(cards,entries,jobs);
+      const hash=card=>vectorCache.hash(card),failure=vectorFailureCounts(cards,entries,jobs,hash);
       const storageFailure=vectorStorageFailure?.workspace===bound&&vectorStorageFailure.key===key?vectorStorageFailure.error:null;
       if(version!==vectorCheckVersion||token!==epoch||revision!==recallRevision||!bound.isCurrent())return;
       const stopped=state.vectorIndex?.status==='stopped';
       const status=vectorJob?'updating':storageFailure?'error':!coverage.total?'empty':coverage.mixed?'mixed':!coverage.pending?'ready':failure.blocked||failure.failed?'error':stopped?'stopped':'pending';
-      const issue=storageFailure??failure.blocked??cards.map(c=>vectorFailure(c,jobs)).find(Boolean);
+      const issue=storageFailure??failure.blocked??cards.map(c=>vectorFailure(c,jobs,hash)).find(Boolean);
       state.vectorIndex={...coverage,...failure,rebuilding:jobs.rebuilding,status,model:c.profile.model,checkedAt:Date.now(),...(status==='error'&&issue?{message:failureText({code:issue.code,details:issue.details??{status:issue.status,upstreamHint:issue.upstreamHint,purpose:'embeddings'}})}:{})};
-      state.batchVectors=Object.fromEntries(state.batches.filter(b=>b.status!=='deleted').map(b=>{
-        const own=batchVectorCards(b,cards),covered=vectorIndexCoverage(own,entries,card=>vectorCache.hash(card)),failed=vectorFailureCounts(own,entries,jobs).failed;
+      const batches=state.batches.filter(b=>b.status!=='deleted'),groups=batchVectorGroups(batches,cards);
+      state.batchVectors=Object.fromEntries(batches.map(b=>{
+        const own=groups.get(b.id),covered=vectorIndexCoverage(own,entries,hash),failed=vectorFailureCounts(own,entries,jobs,hash).failed;
         return [b.id,{...covered,failed,status:!covered.total?'empty':!covered.pending?'ready':vectorJob?'updating':failed||jobs.blocked||storageFailure?'error':'pending'}];
       }));
       notify();
-      if(schedule&&core.settings.vectorEnabled&&core.settings.vectorAutoUpdate&&coverage.pending>failure.failed&&!failure.blocked&&!storageFailure&&!vectorJob&&!disposed&&!active&&!recallBusy){
-        vectorTimer=setTimeout(()=>{vectorTimer=null;if(!disposed&&token===epoch&&revision===recallRevision&&!active&&!recallBusy)void logged('vectors',run=>buildVectors({background:true,diagnosticRun:run})).catch(()=>{});},500);
+      const retryDelay=vectorRetryDelay(failure.blocked),retryable=cards.filter(c=>entries.get(c.id)?.hash!==hash(c)).map(c=>vectorFailure(c,jobs,hash)).filter(f=>!f||vectorRetryDelay(f)!==null);
+      if(canMaintainVectors()&&coverage.pending&&!storageFailure&&retryDelay!==null&&retryable.length){
+        const wait=Math.max(1500,retryDelay||Math.min(...retryable.map(f=>vectorRetryDelay(f))));
+        state.vectorIndex.automatic=true;state.vectorIndex.retryAt=Date.now()+wait;
+        if(failure.blocked)state.vectorIndex.message=`向量服务暂不可用；约 ${Math.ceil(wait/1000)} 秒后自动续建。已有记忆保留，无需重新总结。`;
+        notify();
+        if(schedule&&!vectorJob&&!active&&!recallBusy){
+          clearTimeout(vectorTimer);
+          vectorTimer=setTimeout(()=>{vectorTimer=null;if(canMaintainVectors()&&token===epoch&&revision===recallRevision&&!active&&!recallBusy)void logged('vectors',run=>buildVectors({background:true,diagnosticRun:run})).catch(()=>{});},wait);vectorTimer.unref?.();
+        }
       }
       return clone(state.vectorIndex);
     }catch(error){if(version===vectorCheckVersion&&token===epoch){void reportError(error,{task:'vectors',stage:'background'});state.vectorIndex={status:'unavailable',message:failureText(error)};notify();}}
@@ -390,7 +409,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function open({enable = true, expectedRef, passive=false} = {}) {
     if (active || opening) throw new Error('请先停止当前任务');
-    opening = true;
+    opening = true;vectorStopped=false;
     const opener=new AbortController(), version=cancelVersion;
     operations.add(opener); active=opener;
     const checkOpen=()=>{if(opener.signal.aborted||version!==cancelVersion)throw Object.assign(new Error('聊天加载已取消'),{code:'CANCELED'});};
@@ -1105,8 +1124,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function preview(query, { online = false, context='',characterContext=context,clock=null,snapshot=null } = {}) {
     assertCurrent(); if(state.stale) throw new Error('正文已修改，先重新整理');
     if (recallBusy&&!snapshot) throw new Error('记忆正在更新，请稍后检索');
-    const op=begin(false);
+    const op=begin(false);recallReaders++;
     try {
+    // Foreground recall owns the cache snapshot. Drain one canceled background
+    // checkpoint before loading it; maintenance must not clear a live query.
+    if(online&&vectorJob){const pending=vectorJob;pending.cancel();await pending.done;op.check();}
     const revision = snapshot?.revision??recallRevision;
     const safetyRevision=snapshot?.safetyRevision??recallSafetyRevision;
     const settings=snapshot?.settings??core.settings;
@@ -1118,7 +1140,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     result.sceneClock=clock;
     op.check(); if (snapshot?safetyRevision!==recallSafetyRevision:revision!==recallRevision) throw new Error('记忆或设置已更新，请重新检索');
     state.preview = result; notify(); return result;
-    } finally { op.finish(); }
+    } finally { recallReaders--;op.finish(); }
   }
   async function inject(payload) {
     if (!payload || !Array.isArray(payload.messages) || injectedPayloads.has(payload)) return;
@@ -1177,7 +1199,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           return embeddingVectors(response,1)[0];
         }, signal);
         const result = await vectorCache.search(index, searchCards, q, {limit, fingerprint, signal,tagLanes,categoryLanes});
-        result.coverage = { indexed: searchCards.filter(card => { const entry = index.get(card.id); return entry?.hash === vectorCache.hash(card) && entry.vector.length === q.vector.length; }).length, total: searchCards.length };
+        result.coverage = { indexed: searchCards.filter(card => { const entry = index.get(card.id); return entry?.hash === vectorCache.hash(card) && (entry.dimension??entry.vector.length) === q.vector.length; }).length, total: searchCards.length };
         return result;
       }};
     }
@@ -1206,10 +1228,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function buildVectors({background=false,rebuild=false,ids=null,diagnosticRun}={}) {
     assertCurrent();if(vectorJob)throw new Error('向量索引正在更新');
-    if(!background)vectorStorageFailure=null;
+    if(recallReaders){if(background)return {level:'info',paused:true};throw new Error('正在准备本轮记忆，请稍后更新索引');}
+    if(!background){vectorStorageFailure=null;vectorStopped=false;}
+    vectorCache.clear();
     let storageKey;
     const op=begin(!background),token=epoch,signal=op.signal,revision=recallRevision,bound=workspace;
-    const cancellation=new AbortController(),job={cancel:()=>cancellation.abort()};vectorJob=job;
+    let finishJob;const done=new Promise(resolve=>{finishJob=resolve;});
+    const cancellation=new AbortController(),job={cancel:()=>cancellation.abort(),done};vectorJob=job;
     clearTimeout(vectorTimer);vectorTimer=null;
     const check=()=>{op.check();if(cancellation.signal.aborted||revision!==recallRevision)throw Object.assign(new Error('记忆已更新，本次索引任务停止'),{code:'CANCELED'});};
     const combined=new AbortController(),cancelRequest=()=>combined.abort();
@@ -1217,7 +1242,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try {
       const c=client('embedding'),fingerprint=sha256({endpoint:c.profile.url,model:c.profile.model}),key=`vectors-${fingerprint.slice(0,20)}`;
       storageKey=key;
-      const report=await buildVectorIndex({cards:vectorCards(),workspace:bound,key,client:c,check,signal:combined.signal,background,rebuild,ids,
+      const report=await buildVectorIndex({cards:vectorCards(),workspace:bound,key,client:c,check,signal:combined.signal,background,rebuild,ids,maxRequests:background?2:Infinity,
         diagnostic:(phase,details,level='info')=>runtimeLog.record({run:diagnosticRun,task:'vectors',phase,level,details:{transport:'browser_direct',...details}}),
         progress:stats=>{check();state.vectorIndex={...stats,status:'updating',model:c.profile.model};notify();}
       });
@@ -1230,7 +1255,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }finally{
       signal.removeEventListener('abort',cancelRequest);cancellation.signal.removeEventListener('abort',cancelRequest);
       if(vectorJob===job)vectorJob=null;vectorCache.clear();op.finish();
-      if(token===epoch&&revision===recallRevision)await refreshVectorStatus();
+      try{if(token===epoch&&revision===recallRevision)await refreshVectorStatus({schedule:true});}finally{finishJob();}
     }
   }
   async function retryBatchVectors(id){
@@ -1293,7 +1318,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const report=await buildVectorIndex({cards,workspace:globalWorkspace,key,client:c,check:op.check,signal:op.signal,ids:selected,
         progress:p=>{state.progress=`资料向量：${p.indexed??0} 条已建立`;notify();},
         diagnostic:(phase,details,level='info')=>runtimeLog.record({run:diagnosticRun,task:'knowledge-vectors',phase,level,details})});
-      const entries=new Map(Object.entries(await globalWorkspace.read(key,{})));
+      knowledgeVectorCache.clear();const entries=await knowledgeVectorCache.load(globalWorkspace,key,op.signal);
       state.documents=await globalWorkspace.update('documents',list=>list.map(d=>{
         if(d.purpose!=='knowledge'||ids&&!ids.includes(d.id))return d;
         const own=cards.filter(card=>card.documentId===d.id),indexed=own.filter(card=>entries.get(card.id)?.hash===knowledgeVectorCache.hash(card)).length;
@@ -1400,7 +1425,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function deleteConversation(){await loadApiSettings();if(assistantActive)throw new Error('请先停止助手');await globalWorkspace.remove(`assistant-${state.conversationId}`);state.history=[];state.conversations=await globalWorkspace.update('conversations',list=>list.filter(c=>c.id!==state.conversationId),[]);await newConversation();setMessage('助手对话已删除，已应用设置和记忆未改变');}
   async function hideRecord(id){assertCurrent();const ids=state.cards.find(c=>c.id===id)?.mergedIds??[id];recallBusy++;recallChanged();try{state.hidden=await workspace.update('hidden',list=>[...new Set([...list,...ids])],[]);await refresh();}finally{recallBusy--;}}
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
-  async function stop(){clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
+  async function stop(){vectorStopped=true;clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;automaticPaused=true;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
   const application={saveCharacterKeepsake,editPersonProfile,inspectAutomaticProgress,setAutoStartFloor,setAutomatic,processAutomatic:()=>autoSummary({force:true}),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
     startChatTracking,followCurrentChat,reviewMemory,previewQuality,inspectQualityRecord,saveQualityRecord,undoQuality,readViewState,
@@ -1430,7 +1455,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     setKey(kind,value,endpoint){if(!Object.hasOwn(keys,kind))throw new Error('未知连接');keyEdited.add(kind);keyVersions[kind]=(keyVersions[kind]??0)+1;keys[kind]=String(value??'');keyOrigins[kind]=credentialOrigin(endpoint??core.settings[`${prefixFor(kind)}Endpoint`]);if(kind==='summary')core.setSessionCredential(effectiveKeys().summary);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true,scheduleVectors:false});},
     exportSettings(){return {kind:'shiyi-config',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings)};},
     async exportBackup(){assertCurrent();return {kind:'shiyi-backup',version:1,scope:boundScope,modules:clone(state.modules),moduleSnapshots:clone(state.moduleSnapshots),eventMergeDecisions:clone(mergeDecisions),settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`)))}))),assistant:state.history};},
-    async dispose(){disposed=true;tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of chatListeners.splice(0)){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();stopRequestScheduler();stopTransportDiagnostics();stopErrorBoundary();for(const resolve of followWaiters.splice(0))resolve(publicState());await flushDiagnostics();},
+    async dispose(){disposed=true;host.document?.removeEventListener?.('visibilitychange',resumeVectorMaintenance);host.removeEventListener?.('online',resumeVectorMaintenance);host.removeEventListener?.('offline',resumeVectorMaintenance);tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of chatListeners.splice(0)){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();stopRequestScheduler();stopTransportDiagnostics();stopErrorBoundary();for(const resolve of followWaiters.splice(0))resolve(publicState());await flushDiagnostics();},
   };
   const exportRawBackup=application.exportBackup;
   application.exportBackup=async()=>{const token=epoch,backup=await exportRawBackup();assertCurrent(token);return {...backup,qualityReview:clone(qualitySaved),effectiveRecords:clone(state.records)};};

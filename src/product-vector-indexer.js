@@ -1,9 +1,9 @@
-import { sha256 } from './utils.js';
+import { sha256,yieldLocalWork } from './utils.js';
 import { splitDocument } from './product-workspace.js';
 import { vectorNorm, validVectorEntry } from './product-vector-cache.js';
 import { ShiyiError, PersistenceError } from './errors.js';
 import { providerEnvelopeFailure, productFailure } from './product-feedback.js';
-import { vectorStorageArtifact } from './product-vector-storage.js';
+import { vectorStorageArtifact,openVectorCollection } from './product-vector-storage.js';
 import {diagnosticRequestId,errorDiagnostics} from './diagnostics.js';
 
 const fail = (code, details) => new ShiyiError('向量索引未完成', code, details);
@@ -13,10 +13,16 @@ export const vectorResponseKey = key => `${key}-response-jobs-v1`;
 export function normalizeVectorJobs(raw) {
   return raw?.version === 1 ? {version:1, failures:raw.failures??{}, parts:raw.parts??{}, blocked:raw.blocked??null,rebuilding:raw.rebuilding===true} : {version:1,failures:{},parts:{},blocked:null,rebuilding:false};
 }
-export function vectorFailure(card, jobs) { const entry=jobs.failures?.[card.id];return entry?.hash===sha256(card.text)?entry:null; }
-export function vectorFailureCounts(cards, entries, jobs) {
-  const pending=cards.filter(c=>entries.get(c.id)?.hash!==sha256(c.text));
-  return {failed:pending.filter(c=>vectorFailure(c,jobs)).length,blocked:jobs.blocked};
+export function vectorFailure(card, jobs, hash=c=>sha256(c.text)) { const entry=jobs.failures?.[card.id];return entry?.hash===hash(card)?entry:null; }
+export function vectorFailureCounts(cards, entries, jobs, hash=c=>sha256(c.text)) {
+  const pending=cards.filter(c=>entries.get(c.id)?.hash!==hash(c));
+  return {failed:pending.filter(c=>vectorFailure(c,jobs,hash)).length,blocked:jobs.blocked};
+}
+export function vectorRetryDelay(issue,now=Date.now()) {
+  if(!issue)return 0;
+  if(![408,425,429,500,502,503,504].includes(issue.status)&&!['TIMEOUT','network.request_failed','NETWORK_ERROR'].includes(issue.code))return null;
+  const delay=Math.min(900000,30000*2**Math.min(5,Math.max(0,(issue.attempts??1)-1)));
+  return Math.max(0,(issue.retryAt??((issue.at??now)+delay))-now);
 }
 
 /** A missing index is unambiguous only for a single input. Never guess which
@@ -35,26 +41,33 @@ export function embeddingVectors(response, expected) {
 /** Derived index checkpoint, independent of summary commits. Source text is
  * never shortened or rewritten. Long cards retain every segment for max-cosine
  * recall; the first vector also keeps older index readers compatible. */
-export async function buildVectorIndex({cards, workspace, key, client, check=()=>{}, signal, background=false, rebuild=false, ids=null, diagnostic=()=>{}, progress=()=>{}}) {
+export async function buildVectorIndex({cards, workspace, key, client, check=()=>{}, signal, background=false, rebuild=false, ids=null, diagnostic=()=>{}, progress=()=>{},maxRequests=Infinity,now=()=>Date.now()}) {
   const jobs=normalizeVectorJobs(await workspace.read(vectorJobKey(key),null));check();
   const startRebuild=rebuild&&!jobs.rebuilding;
   if(startRebuild){jobs.rebuilding=true;jobs.parts={};jobs.failures={};}
   // Publish a rebuilt space only when it is complete; interruption leaves the
   // previous coherent space available for recall and the staging space resumable.
   const writeKey=jobs.rebuilding?vectorStagingKey(key):key;
-  let index=startRebuild?{}:await workspace.read(writeKey,{});check();
+  const collection=await openVectorCollection(workspace,writeKey,{check,empty:startRebuild,persist:(name,value)=>persist(name,value)});check();
+  let index=collection.entries;
   const hashes=new Map(cards.map(c=>[c.id,sha256(c.text)]));
-  const validIds=new Set(cards.filter(c=>index[c.id]?.hash===hashes.get(c.id)&&validVectorEntry(index[c.id])).map(c=>c.id));
+  const validIds=new Set();const dimensions=new Set();
+  for(const [i,card]of cards.entries()){
+    const entry=index[card.id],valid=collection.paged?entry?.dimension>0&&entry.parts?.length:validVectorEntry(entry);
+    if(entry?.hash===hashes.get(card.id)&&valid){validIds.add(card.id);dimensions.add(entry.dimension??entry.vector.length);}
+    if(i%32===31){await yieldLocalWork();check();}
+  }
   const complete=c=>validIds.has(c.id);
   const selected=c=>!ids||ids.includes(c.id);
   let requests=0,splitRequests=0;
   const selectedCards=cards.filter(c=>selected(c)&&!complete(c));
   if(!selectedCards.length&&!jobs.rebuilding)return {total:cards.length,indexed:validIds.size,pending:cards.length-validIds.size,failed:0,requests:0,level:'success'};
-  if(background&&jobs.blocked)return {level:'warning',blocked:true};
-  if(!background)jobs.blocked=null;
+  const previousBlock=jobs.blocked;
+  if(background&&jobs.blocked&&vectorRetryDelay(jobs.blocked,now())!==0)return {level:'warning',blocked:true};
+  jobs.blocked=null;
   for(const [id,f]of Object.entries(jobs.failures))if(!hashes.has(id)||hashes.get(id)!==f.hash)delete jobs.failures[id];
   for(const [id,p]of Object.entries(jobs.parts))if(!hashes.has(id)||hashes.get(id)!==p.hash)delete jobs.parts[id];
-  const todo=selectedCards.filter(c=>!background||!vectorFailure(c,jobs));
+  const todo=selectedCards.filter(c=>!background||!vectorFailure(c,jobs)||vectorRetryDelay(vectorFailure(c,jobs),now())===0);
   const snapshot=()=>({total:cards.length,indexed:validIds.size,pending:cards.length-validIds.size,failed:cards.filter(c=>!complete(c)&&jobs.failures[c.id]?.hash===hashes.get(c.id)).length,requests,blocked:jobs.blocked,rebuilding:jobs.rebuilding});
   const persist=async(name,value)=>{
     check();
@@ -70,7 +83,7 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
   const saveJobs=()=>persist(vectorJobKey(key),jobs);
   const recordFailure=(card,error)=>{
     const f=productFailure(error),previous=jobs.failures[card.id];
-    jobs.failures[card.id]={hash:hashes.get(card.id),code:f.code,...(f.status?{status:f.status}:{}),...(error?.details?.upstreamHint?{upstreamHint:error.details.upstreamHint}:{}),attempts:(previous?.attempts??0)+1,at:Date.now()};
+    jobs.failures[card.id]={hash:hashes.get(card.id),code:f.code,...(f.status?{status:f.status}:{}),...(error?.details?.upstreamHint?{upstreamHint:error.details.upstreamHint}:{}),attempts:(previous?.attempts??0)+1,at:now()};
   };
   const work=[],plans=new Map();
   const response=await workspace.read(vectorResponseKey(key),null);check();
@@ -78,7 +91,8 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
   // Character chunks are deliberately conservative, not advertised as exact
   // tokenizer limits. Smaller embedding models may still reject an input.
   const maxChars=/bge-large-(?:zh|en)-v1\.5|bce-embedding-base_v1/i.test(client.profile.model)?240:1800;
-  for(const card of todo){
+  for(const [cardIndex,card]of todo.entries()){
+    if(cardIndex%16===15){await yieldLocalWork();check();}
     const chunks=splitDocument(String(card.text??''),{maxChars});
     if(!card.text?.trim()||chunks.length>256){recordFailure(card,fail(card.text?.trim()?'VECTOR_INPUT_TOO_LARGE':'VECTOR_INPUT_EMPTY'));continue;}
     const inputs=chunks.map(p=>({text:p.text,hash:sha256(p.text)}));
@@ -97,16 +111,16 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
   await saveJobs();progress(snapshot());
   const publishReady=async()=>{
     const changed=[];
-    const next={...index};
+    const changes={};
     for(const card of todo){
       const parts=jobs.parts[card.id]?.inputs,plan=plans.get(card.id);
       if(!plan||parts?.length!==plan.length||!parts.every((p,i)=>p.hash===plan[i].hash&&vectorNorm(p.vector)))continue;
       const vectors=parts.map(p=>p.vector),dimension=vectors[0].length;
-      if(vectors.some(v=>v.length!==dimension)||Object.values(next).some(e=>validVectorEntry(e)&&e.vector.length!==dimension))throw fail('VECTOR_DIMENSION_MISMATCH',{vectorDimensions:dimension});
-      next[card.id]={hash:hashes.get(card.id),vector:vectors[0],...(vectors.length>1?{segments:vectors}:{})};changed.push(card.id);
+      if(vectors.some(v=>v.length!==dimension)||[...dimensions].some(d=>d!==dimension))throw fail('VECTOR_DIMENSION_MISMATCH',{vectorDimensions:dimension});
+      changes[card.id]={hash:hashes.get(card.id),vector:vectors[0],...(vectors.length>1?{segments:vectors}:{})};changed.push(card.id);dimensions.add(dimension);
     }
     if(changed.length){
-      await persist(writeKey,next);index=next;
+      await collection.commit(changes);index=collection.entries;
       for(const id of changed)validIds.add(id);
       for(const card of todo)if(complete(card)){delete jobs.parts[card.id];delete jobs.failures[card.id];plans.delete(card.id);}
       await saveJobs();
@@ -122,9 +136,8 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
       diagnostic('response',{...details,receivedVectors:Array.isArray(response?.data)?response.data.length:0,elapsedMs:Date.now()-started});
       vectors=embeddingVectors(response,batch.length);
       const dimension=vectors[0].length;
-      const retained=cards.filter(complete);
       const staged=Object.values(jobs.parts).flatMap(p=>p.inputs??[]).filter(p=>vectorNorm(p.vector));
-      if(retained.some(c=>index[c.id].vector.length!==dimension)||staged.some(p=>p.vector.length!==dimension))throw fail('VECTOR_DIMENSION_MISMATCH',{vectorDimensions:dimension});
+      if([...dimensions].some(d=>d!==dimension)||staged.some(p=>p.vector.length!==dimension))throw fail('VECTOR_DIMENSION_MISMATCH',{vectorDimensions:dimension});
     }catch(error){
       check();const f=productFailure(error);
       diagnostic('vector_failed',{...details,...errorDiagnostics(error),code:f.code,...(f.status?{status:f.status}:{}),elapsedMs:Date.now()-started},'warning');
@@ -136,7 +149,10 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
       }
       for(const card of new Map(batch.map(x=>[x.card.id,x.card])).values())recordFailure(card,error);
       if([400,413,422].includes(f.status))consecutiveInputFailures++;
-      if(![400,413,422].includes(f.status)||consecutiveInputFailures>=3){jobs.blocked={code:f.code,...(f.status?{status:f.status}:{}),...(error?.details?.upstreamHint?{upstreamHint:error.details.upstreamHint}:{}),at:Date.now()};fatal=error;}
+      if(![400,413,422].includes(f.status)||consecutiveInputFailures>=3){
+        const attempts=(previousBlock?.attempts??0)+1;
+        jobs.blocked={code:f.code,...(f.status?{status:f.status}:{}),...(error?.details?.upstreamHint?{upstreamHint:error.details.upstreamHint}:{}),at:now(),attempts,retryAt:now()+Math.max(Math.min(900000,30000*2**Math.min(5,attempts-1)),Number(error?.details?.retryAfterMs)||0)};fatal=error;
+      }
       await saveJobs();progress(snapshot());return;
     }
     consecutiveInputFailures=0;
@@ -152,15 +168,15 @@ export async function buildVectorIndex({cards, workspace, key, client, check=()=
     await new Promise(resolve=>setTimeout(resolve,0));check();
   }
   await publishReady();
-  for(let offset=0;offset<work.length&&!fatal;){
+  for(let offset=0;offset<work.length&&!fatal&&requests<maxRequests;){
     const batch=[];let chars=0;
     while(offset<work.length&&batch.length<16&&(batch.length===0||chars+work[offset].text.length<=6000)){const item=work[offset++];batch.push(item);chars+=item.text.length;}
     await send(batch);
   }
   const result=snapshot();progress(result);
   if(fatal)throw Object.assign(fatal,{details:{...fatal.details,indexedItems:result.indexed,pendingItems:result.pending,failedItems:result.failed}});
-  if(todo.some(c=>!complete(c)))throw fail('VECTOR_INDEX_INCOMPLETE',{indexedItems:result.indexed,pendingItems:result.pending,failedItems:result.failed});
-  if(jobs.rebuilding&&cards.every(complete)){await persist(key,index);jobs.rebuilding=false;await saveJobs();}
+  if(todo.some(c=>!complete(c))&&requests<maxRequests)throw fail('VECTOR_INDEX_INCOMPLETE',{indexedItems:result.indexed,pendingItems:result.pending,failedItems:result.failed});
+  if(jobs.rebuilding&&cards.every(complete)){await persist(key,collection.document);jobs.rebuilding=false;await saveJobs();}
   await workspace.remove?.(vectorResponseKey(key)).catch(()=>{});
-  return {...result,level:'success'};
+  return {...result,level:result.pending?'info':'success'};
 }
