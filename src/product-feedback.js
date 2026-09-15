@@ -89,6 +89,9 @@ export function productFailure(error) {
     message=message.replace('在批次管理中继续未完成任务即可，不必重新总结成功批次。','').replace('已保存批次保留，','');
     message+= ' 故事记忆已保存的部分不受影响；请在批次或召回页补建未完成索引，只调用向量模型，不重新总结。';
   }
+  if(error?.details?.modelRole==='dynamicPersona'&&message){
+    message=message.replace('在批次管理中继续未完成任务即可，不必重新总结成功批次。','手动补建请点“继续未完成”；自动更新可重试下一批。无需重做主总结。').replace('提高总结输入预算','调整人设输入预算');
+  }
   if(!message&&error instanceof TypeError)message='网络请求或浏览器跨域访问失败，请检查网络与服务地址。';
   // Local validation errors contain actionable Chinese text. Never echo remote
   // bodies or raw provider errors (they may contain the request and credentials).
