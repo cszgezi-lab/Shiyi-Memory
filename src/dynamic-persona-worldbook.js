@@ -20,7 +20,7 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=
     const chat=await h.getChatWorldbookName?.('current');check();
     const names=[...new Set([binding?.primary,...(binding?.additional??[]),chat].filter(Boolean))];
     const entries=[];
-    for(const book of names){const rows=await h.getWorldbook(book);check();for(const row of rows){if(row.extra?.shiyiDynamicPersona)continue;entries.push({book,uid:row.uid,name:row.name??'',enabled:row.enabled!==false,content:String(row.content??'')});}}
+    for(const book of names){const rows=await h.getWorldbook(book);check();for(const row of rows){if(row.extra?.shiyiDynamicPersona)continue;entries.push({book,uid:row.uid,name:row.name??row.comment??'',keys:Array.isArray(row.strategy?.keys)?row.strategy.keys:Array.isArray(row.key)?row.key:[],enabled:row.enabled!==false&&row.disable!==true,content:String(row.content??'')});}}
     const data=entries.some(e=>e.enabled&&e.content.includes('<%'))?await stageData():{};check();
     return {cardName,entries,spans:entries.filter(e=>e.enabled).flatMap(e=>personaSpans(e,data)),status:'ready'};
   }
