@@ -4,7 +4,7 @@ import { moduleSummaryContract, moduleSummaryInstructions } from './summary-wire
 
 // Defaults come from the actual transport prompt, not a second example prompt.
 const contract = moduleSummaryContract(SUMMARY_OUTPUT_CONTRACT);
-const structural = new Set(['format','root','fields','sourceRules','enums','dialogueShape']);
+const structural = new Set(['format','root','fields','sourceRules','enums','dialogueShape','knowledgeEvidenceTransport']);
 const paths = Object.entries(contract).filter(([key])=>!structural.has(key)).flatMap(([key,value])=>
   typeof value==='string'?[key]:Object.keys(value).map(child=>`${key}.${child}`));
 const at = (object,path)=>path.split('.').reduce((value,key)=>value?.[key],object);

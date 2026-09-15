@@ -29,7 +29,10 @@ export function memoryQualityIssues(records={}){
   const add=(kind,ids,description)=>{const remaining=[...new Set(ids)].filter(id=>!checked.has(id));if(remaining.length)issues.push({id:`quality-${sha256([kind,remaining,description]).slice(0,24)}`,kind,severity:['journal_missing','awareness_coverage','time_unparsed','interpretation'].includes(kind)?'suggestion':'risk',recordIds:remaining,description});};
   for(const r of records.commitmentChanges??[])if(r.state==='unknown')add('commitment_state',[r.id],'约定状态尚待核对，暂不自动注入；请依据原文纠正状态，不需要重新总结整批。');
   for(const r of records.personaChanges??[])if(r.innerLife===undefined)add('journal_missing',[r.id],'人设变化尚未归入角色心迹；核对原文后补入阶段观察或明确内心独白，不编造日记。');
-  for(const r of records.awarenessChanges??[])if(r.knowledgeReview?.status==='pending')add('knowledge_evidence',[r.id],'获知依据尚未对应原文中的获知者，暂不注入；请核对人物、渠道及具体命题。');
+  for(const r of records.awarenessChanges??[])if(r.knowledgeReview?.status==='pending'){
+    const reason={acquisition_access_missing:'获知范围说明缺失',acquisition_reference_invalid:'引用的原文段号无效或缺失',acquisition_source_mismatch:'证据不属于本条记忆的来源'}[r.knowledgeReview.reason];
+    add('knowledge_evidence',[r.id],reason?`${reason}，暂不作为角色已知信息注入；可只修正本条，不用重做总结。`:'获知依据尚未对应原文中的获知者，暂不注入；请核对人物、渠道及具体命题。');
+  }
   for(const e of records.events??[]){
     const knowledge=(records.awarenessChanges??[]).filter(a=>links(a).includes(e.id));
     const missing=(e.participants??[]).filter(p=>!knowledge.some(a=>actor(a)===p));

@@ -5,6 +5,9 @@ import { tokenizeChinese } from './retrieval.js';
 // meaningful fields and source locators, not repeated hashes and old revisions.
 export function summaryRecord(record) {
   const result = clone(record);
+  // Keep knowledge scope, not repeated full source proof, in future summary
+  // context. Original citations remain in storage and the quality UI.
+  if(result.acquisitionEvidence?.method==='summary-source-parts-v1')result.acquisitionEvidence={access:result.acquisitionEvidence.access};
   for (const key of ['history','qualityEvidence','originalSource','localSearchText','sourceFloors','hash','contentHash','bundleHash','operationId','scopeKey','committedRevision','expectedRevision','createdAt','updatedAt']) delete result[key];
   if (Array.isArray(result.sourceRefs)) result.sourceRefs = result.sourceRefs.map(ref => typeof ref === 'string' ? {sourceId:ref} : {sourceId:ref.sourceId, ...(ref.fragmentId ? {fragmentId:ref.fragmentId} : {})});
   return result;

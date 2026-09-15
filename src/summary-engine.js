@@ -23,6 +23,7 @@ import { planSummaryRequests } from './summary-planner.js';
 import { moduleSummaryContract, moduleSummaryInstructions, expandModuleSummary, expandCompactSummary, normalizedModuleSourceRefs, moduleLinkNormalization, unwrapModuleSummaryResponse } from './summary-wire.js';
 import { applySummaryPreset, summaryPresetFromRules, PRESET_TRANSPORT_GUARD } from './summary-presets.js';
 import {parseSummaryJson} from './summary-json.js';
+import {summaryKnowledgeSources,SUMMARY_KNOWLEDGE_EVIDENCE_RULE} from './summary-knowledge-evidence.js';
 
 function responseStatus(response) {
   return Number(response?.status ?? response?.statusCode ?? 200);
@@ -115,6 +116,11 @@ function modelEnvelope(request) {
   }
   if (request.kind==='ShiyiSummaryRequest' && !request.summaryStage && value.extractionContext?.outputContract) {
     value.extractionContext = { ...value.extractionContext, outputContract: applySummaryPreset(moduleSummaryContract(value.extractionContext.outputContract),preset) };
+    value.extractionContext.outputContract.knowledgeEvidenceTransport=SUMMARY_KNOWLEDGE_EVIDENCE_RULE;
+    value.extractionContext.outputContract.partialKnowledgeExample='部分获知示例（不是剧情）：人物只看到桌上已有成品菜，没看见烹饪。应有known“桌上已有成品菜”，access“只见成品，未见烹饪、配料和制作者”；若原文明说不知道制作者，可另有explicitly_unaware。不能只写不知道谁做菜，而遗漏此人确实看到的成品。把这个原则用于本批实际原文，不复制示例事实。';
+    value.extractionContext.outputContract.knowledgeCueRules='段号p1不是宿主fragmentId，不填入sourceRefs或summaryView.fragmentId；它仅填在acquisitionEvidence的part字段。knowledgeCues只标出原文中可能含获知/明确未知/感知限制的段号，不是判断或完整清单。按原文顺序检查：谁获得了哪项具体信息、哪些内容仍未获知，后来是否出现新的告知或亲见。对只获得部分信息的人，保留已获得的具体部分及access中的限制，不能只写其不知情而抹掉实际获知。明确不知情到后来获知分别记录各自时间/来源，不覆盖历史；没提及者不推定状态。不要因关键词给所有在场者补知情，也不要为减少校对省略有效记录。';
+    value.sourceMessages=summaryKnowledgeSources(value.sourceMessages);
+    value.bridgeMessages=summaryKnowledgeSources(value.bridgeMessages);
   }
   // Keep the frozen preset locally for checkpoint identity, but transmit its
   // system prompt and writing rules once, not the entire library a second time.
@@ -889,6 +895,7 @@ export class SummaryEngine {
           sourceRefs: evidenceRefsFor(child),
           sourceFloorIndices: [...child.sourceMessages,...child.bridgeMessages].map(m=>({sourceId:m.id,fragmentId:m.fragmentId,index:m.index})),
           sourceTexts: [...child.sourceMessages,...child.bridgeMessages].map(m=>({sourceId:m.id,fragmentId:m.fragmentId,text:m.text})),
+          requireKnowledgeEvidence:typeof this.model.providerPayload==='function'&&!this.staged&&!this.verified,
           sourceRevision: child.sourceRevision,
           configVersion: child.configVersion,
           rulesVersion: child.rulesVersion,

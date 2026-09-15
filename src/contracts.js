@@ -4,6 +4,7 @@ import { validationDetails, valueType } from './validation-diagnostics.js';
 import { normalizeTerms, normalizeTags,enrichRetrievalMetadata } from './product-dictionary.js';
 import { bindCharacterDetails } from './event-consolidation.js';
 import { normalizeFactValidity,bindKnowledgeEvidence } from './memory-evidence.js';
+import {bindSummaryKnowledge} from './summary-knowledge-evidence.js';
 import { completeInnerLife } from './character-journal.js';
 import {
   asArray,
@@ -479,6 +480,7 @@ export function bindDraftBundle(modelOutput, {
   sourceRefs = [],
   sourceFloorIndices = [],
   sourceTexts = [],
+  requireKnowledgeEvidence = false,
   sourceRevision = null,
   configVersion = '1',
   rulesVersion = '1',
@@ -524,7 +526,8 @@ export function bindDraftBundle(modelOutput, {
     if(next.tags!==undefined)next.tags=normalizeTags(next.tags);
     delete next.journalOnly;
     if(next.innerLife!==undefined&&!['personaChanges','performanceHints'].includes(category))delete next.innerLife;
-    const checked=category==='awarenessChanges'?bindKnowledgeEvidence(next,evidence):next;
+    const knowledge=category==='awarenessChanges'&&requireKnowledgeEvidence&&next.acquisitionEvidence===undefined?{...next,acquisitionEvidence:null}:next;
+    const checked=category==='awarenessChanges'?bindSummaryKnowledge(knowledge,sourceTexts.filter(m=>next.sourceRefs.some(r=>r.sourceId===m.sourceId&&r.fragmentId===m.fragmentId)),bindKnowledgeEvidence):next;
     return bindOriginalSource(bindCharacterDetails(completeInnerLife(enrichRetrievalMetadata(checked,evidence),evidence,category),evidence),category,sourceTexts);
   };
   const bindCategory = category => normalizedCategory(source[category],category).map((record,index)=>bindEvidence(record,category,index));
