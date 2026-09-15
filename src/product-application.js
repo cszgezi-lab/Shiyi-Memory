@@ -144,7 +144,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }finally{await flushDiagnostics();}
   }
   const modules=createModuleController({host,core,state,load:loadApiSettings,getGlobal:()=>globalWorkspace,getChat:()=>workspace,check:assertCurrent,notify,refresh,changed:()=>recallChanged({vectors:true})});
-  const personaWorldbook=createPersonaWorldbook({host,check:assertCurrent});
+  const personaWorldbook=createPersonaWorldbook({host,check:assertCurrent,context:()=>({scope:boundScope,epoch})});
   const dynamicPersona=createDynamicPersona({settings:()=>core.settings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:()=>core.historyTail(),worldbook:personaWorldbook,client:()=>client('dynamicPersona'),log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>enabled&&!opening&&!state.stale&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
   const resumeAutomaticTasks=()=>{if(host.document?.visibilityState==='hidden')return;queueAutomaticSummary();dynamicPersona.wake();};
   host.document?.addEventListener?.('visibilitychange',resumeAutomaticTasks);host.addEventListener?.('online',resumeAutomaticTasks);
@@ -455,7 +455,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try{await dynamicPersona.load();}catch(error){void reportError(error,{task:'persona',stage:'storage'});state.dynamicPersona={status:'failed',message:failureText(error),profiles:[],batches:[]};}checkOpen();
     await loadKnowledge(); await checkTarget(); enabled = enable;if(enable)automaticPaused=false;
     try {
-      bindings.push(hostAdapter.subscribe('CHAT_COMPLETION_SETTINGS_READY', async payload => {await inject(payload);try{await dynamicPersona.inject(payload,{enabled});}catch(error){void reportError(error,{task:'persona',stage:'prepare'});}}));
+      bindings.push(hostAdapter.subscribe('CHAT_COMPLETION_SETTINGS_READY', async payload => {
+        // The host can still hold a request prepared before a chat switch. Do
+        // not put either the new chat's recall or persona in that old payload.
+        if(personaWorldbook.foreignRequest(payload)){await personaWorldbook.finalize(payload,[]);return;}
+        const requestEpoch=epoch;
+        await inject(payload);
+        if(requestEpoch!==epoch){await personaWorldbook.finalize(payload,[]);return;}
+        try{await dynamicPersona.inject(payload,{enabled});}catch(error){void reportError(error,{task:'persona',stage:'prepare'});}
+      }));
       try{bindings.push(hostAdapter.subscribe('WORLDINFO_ENTRIES_LOADED',payload=>enabled?personaWorldbook.applyLoaded(payload,dynamicPersona.profiles()).catch(error=>{void reportError(error,{task:'persona',stage:'prepare'});}):undefined));}catch{/* Optional capability must not disable automatic summary. */}
       // TT awaits event listeners. Never attach the model's lifetime to the
       // reply-render/save event; coalesce notifications into one background job.

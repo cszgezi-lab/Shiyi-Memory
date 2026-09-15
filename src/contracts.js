@@ -2,7 +2,8 @@ import { ValidationError } from './errors.js';
 import { bindOriginalSource } from './source-recall-evidence.js';
 import { validationDetails, valueType } from './validation-diagnostics.js';
 import { normalizeTerms, normalizeTags,enrichRetrievalMetadata } from './product-dictionary.js';
-import { bindCharacterDetails } from './event-consolidation.js';
+import { bindCharacterDetails,bindDialogueSources } from './event-consolidation.js';
+import {sourceTimeline,reconcileSourceTimes} from './source-consistency.js';
 import { normalizeFactValidity,bindKnowledgeEvidence } from './memory-evidence.js';
 import {bindSummaryKnowledge} from './summary-knowledge-evidence.js';
 import { completeInnerLife } from './character-journal.js';
@@ -40,6 +41,7 @@ export const DRAFT_CATEGORIES = Object.freeze([
 export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
   crossModuleQualityRules:'提交前对照本批原文：事件中明确谁听见/看见什么，awarenessChanges 是否遗漏；人物明确的学校、家人、任意新属性不能只存在于别人的知情摘要而不进入其档案。同一人物复用稳定姓名和已有属性含义，补充可兼容的信息，不重复复述整份档案。新信息若与既有学校/住址/数值矛盾且原文未确认更正，保留冲突，禁止按最后一楼覆盖。关系变化区分角色自述、当场反应和双方明确确认；感谢、害羞或旁人起哄不自动等于恋爱关系，不把一次表现概括为永久人设。有原文依据的简称写入 entities.aliases，主题和字段检索词写入 entities.indexWords 与 tags，不以空数组代替检查。首遇时间、相处时长以明确故事时间和经历为准，不因片段密集而夸大亲密程度。',
   schemaVersion: 1,
+  sceneTimeRule: 'sourceMessages 的 sceneTime 是程序从连续楼层正文开头的日期和时刻提取的场景参照，不是现实日期，也不覆盖本楼讲述的往事或未来计划。事件发生、实际完成及逐楼时间应对照实际行动那一楼，不能混用最后一楼的日期；回忆、获知和预约分别保留自身含义。',
   kind: 'DraftBundle',
   categories: DRAFT_CATEGORIES,
   requiredCategories: DRAFT_CATEGORIES,
@@ -88,7 +90,7 @@ export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
   }),
   retrievalMetadataRules: '每类记录可附 entities:[{name:"正式名称",aliases:["本条来源中明确同指的别称"],kind:"人物|地点|组织|物品|术语之一"}] 和 tags:["具体中文主题"]，不另建无来源的全局词典。自动随总结生成，名称与别称必须出现在该记录 sourceRefs 指向的文字内；不凭原作常识合并，不把“他/她/老师”等泛称当别名。tags 通常 2–5 个具体主题（例如借书归还、转校手续），不用“重要、普通、事件”等无区分度标签。标签只帮助检索，不决定知情或人物身份。summaryView 也可有 recallSummary 速览，但 text 仍保留逐楼完整经过。',
   consolidationRules: '同一件事跨楼延续或被再次谈起，只输出一条 events，串起起因、经过、转折、结果，合并 sourceRefs；同一天同地点也可能是不同事件，不能只因人物/标签/类型相同而合并。与 relevantRecords.events 中既有事件确为同一次经历时，增加 mergeInto:该事件的精确 id；description 记录本批有来源的经过，明确人物、发生时间和动作，单独阅读也能理解；recallSummary 概括本条，不挪用其他事件的内容。mergeInto 是合并建议，系统会先保存有来源的总结，再独立核对跨批合并；不要因目标不确定而省略本批事实。不得编造 mergeInto 或复用别件事的 identityKey。同批链接只能指向前面已输出的事件 id。不同日期的再次相似经历、不同学校/人物、回忆与当前讲述分别记录。观念改变需保留前后与原因，不抹掉旧态度。summaryView 仍逐楼独立，不因事件合并而省略楼层。',
-  characterDetailRules: 'events、relationshipChanges、personaChanges、performanceHints 可附 viewpoints:[{holder:"持有观念的人",target:"针对谁或什么",content:"具体观念或态度变化",context:"适用语境",basis:"原文明示/角色自述/推测"}] 和 keyDialogues:[{speaker:"说话人",to:"对谁说",text:"原文逐字台词",context:"何时何事下说出",meaning:"体现的观念、关系边界或改变"}]。记录有辨识度的观念、价值取向、称呼转变、拒绝/接受和重要台词，不把每句闲聊都摘抄。没有原文明示则留空，不虚构内心；推测必须标注。引语必须逐字来自该条 sourceRefs，不可把转述改成原话。时间用本事件 temporal，知情者仍输出 awarenessChanges，不能把被谈论的人或全部在场者直接视为知道全部。演绎参考是有语境的行为倾向，不是要求每轮重说名台词或固定人设。',
+  characterDetailRules: 'events、relationshipChanges、personaChanges、performanceHints 可附 viewpoints:[{holder:"持有观念的人",target:"针对谁或什么",content:"具体观念或态度变化",context:"适用语境",basis:"原文明示/角色自述/推测"}] 和 keyDialogues:[{speaker:"说话人",to:"对谁说",text:"原文逐字台词",context:"何时何事下说出",meaning:"体现的观念、关系边界或改变",sourceRefs:[{sourceId:"实际说出这句台词的来源ID"}]}]。记录有辨识度的观念、价值取向、称呼转变、拒绝/接受和重要台词，不把每句闲聊都摘抄。没有原文明示则留空，不虚构内心；推测必须标注。引语必须逐字来自这句台词自己的 sourceRefs，不可把转述改成原话；关系跨多楼，不等于每句台词都出自关系的起止楼层。时间用本事件 temporal，知情者仍输出 awarenessChanges，不能把被谈论的人或全部在场者直接视为知道全部。演绎参考是有语境的行为倾向，不是要求每轮重说名台词或固定人设。',
   enums: Object.freeze({
     eventState: Object.freeze(['proposed', 'attempted', 'accepted', 'completed', 'declined', 'canceled']),
     epistemicStatus: Object.freeze(['observed', 'user_asserted', 'character_claim', 'inferred', 'unknown']),
@@ -493,6 +495,7 @@ export function bindDraftBundle(modelOutput, {
   const source = isPlainObject(modelOutput) ? modelOutput : {};
   validateRawBundleShape(source);
   const boundEvidenceRefs = normalizeSourceRefs(sourceRefs);
+  const timeline=sourceTimeline(sourceTexts,sourceFloorIndices);
   const evidenceBySource = new Map();
   for (const ref of boundEvidenceRefs) {
     const list = evidenceBySource.get(ref.sourceId) ?? [];
@@ -500,7 +503,7 @@ export function bindDraftBundle(modelOutput, {
     evidenceBySource.set(ref.sourceId, list);
   }
   const bindEvidence = (record, category, recordIndex) => {
-    const next = category === 'entityFactChanges' ? normalizeFactValidity(clone(record)) : clone(record);
+    let next = category === 'entityFactChanges' ? normalizeFactValidity(clone(record)) : clone(record);
     const raw = normalizeSourceRefs(record?.sourceRefs ?? record?.sources ?? []);
     next.sourceRefs = raw.map((ref, index) => {
       const candidates = evidenceBySource.get(ref.sourceId) ?? [];
@@ -510,6 +513,8 @@ export function bindDraftBundle(modelOutput, {
       return matched ?? clone(ref);
     });
     delete next.sources;
+    if(['events','relationshipChanges','personaChanges','performanceHints'].includes(category))next=bindDialogueSources(next,{sources:sourceTexts,sourceRefs:boundEvidenceRefs,sourceFloorIndices});
+    next=reconcileSourceTimes(next,category,timeline);
     // Display floors are host-derived metadata, never supplied by the model.
     delete next.sourceFloors;
     const floors=sourceFloorIndices.filter(m=>Number.isSafeInteger(m.index)&&m.index>=0&&next.sourceRefs.some(ref=>ref.sourceId===m.sourceId&&ref.fragmentId===m.fragmentId)).map(m=>m.index);

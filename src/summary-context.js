@@ -1,5 +1,6 @@
 import { clone, estimateUnits, stableStringify } from './utils.js';
 import { tokenizeChinese } from './retrieval.js';
+import { sourceTimeline } from './source-consistency.js';
 
 // Storage proofs stay in the repository. Model context needs exact identifiers,
 // meaningful fields and source locators, not repeated hashes and old revisions.
@@ -8,13 +9,17 @@ export function summaryRecord(record) {
   // Keep knowledge scope, not repeated full source proof, in future summary
   // context. Original citations remain in storage and the quality UI.
   if(result.acquisitionEvidence?.method==='summary-source-parts-v1')result.acquisitionEvidence={access:result.acquisitionEvidence.access};
-  for (const key of ['history','qualityEvidence','originalSource','localSearchText','sourceFloors','hash','contentHash','bundleHash','operationId','scopeKey','committedRevision','expectedRevision','createdAt','updatedAt']) delete result[key];
+  for (const key of ['history','qualityEvidence','originalSource','timeCorrections','localSearchText','sourceFloors','hash','contentHash','bundleHash','operationId','scopeKey','committedRevision','expectedRevision','createdAt','updatedAt']) delete result[key];
   if (Array.isArray(result.sourceRefs)) result.sourceRefs = result.sourceRefs.map(ref => typeof ref === 'string' ? {sourceId:ref} : {sourceId:ref.sourceId, ...(ref.fragmentId ? {fragmentId:ref.fragmentId} : {})});
   return result;
 }
 
 export function summarySources(messages = []) {
-  return messages.map(({id,index,text,fragmentId,role,name,isUser}) => ({id,index,text,...(fragmentId ? {fragmentId} : {}),role,name,isUser}));
+  const timeline=sourceTimeline(messages.map(m=>({...m,sourceId:m.id})),messages.map(m=>({...m,sourceId:m.id})));
+  return messages.map(({id,index,text,fragmentId,role,name,isUser}) => {
+    const scene=timeline.find(s=>s.sourceId===id&&s.fragmentId===fragmentId);
+    return {id,index,text,...(fragmentId ? {fragmentId} : {}),role,name,isUser,...(scene?{sceneTime:scene.stamp}:{})};
+  });
 }
 
 export function selectSummaryContext(records, messages, {budgetUnits=6000, maxRecords=48, categories=null}={}) {

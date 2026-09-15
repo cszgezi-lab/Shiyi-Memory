@@ -13,6 +13,8 @@ const categories = { knowledge: 'awarenessChanges', facts: 'entityFactChanges', 
 export function moduleSummaryContract(legacy) {
   return {
     format:MODULE_SUMMARY_FORMAT,
+    sceneTimeRules:legacy.sceneTimeRule,
+    dialogueSourceRules:'keyDialogues 中每句可附 sourceRefs:[{sourceId,fragmentId?}]，定位实际说出这句话的原文楼层；跨楼关系的来源不能代替台词自己的来源。不把重复出现的原话认作仅在最后一楼说过。',
     knowledgeEvidenceTransport:SUMMARY_KNOWLEDGE_EVIDENCE_RULE,
     relationshipEndpointRules:'注意不同模块的from/to含义不同：entityFactChanges是属性旧值/新值；relationshipChanges始终是人名/人名，禁止填“合作伙伴→恋人”或“陌生→熟人”。关系的旧状态、新状态、单向态度与双方确认写在description，有原话时保留keyDialogues；不把同场旁观者认作关系对象。',
     schedulePrecisionRules:'同一安排含集合、出发、预约等不同时间时，content和temporal完整区分各动作及时间，不以集合时间冒充检查/演出开始时间。后来收紧的限制（例如从允许慢练变成禁止练习）是新状态，旧许可必须留在旧时间内，不能汇集多个来源后继续宣称旧许可有效。',

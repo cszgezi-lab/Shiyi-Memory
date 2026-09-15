@@ -1,9 +1,15 @@
-import {clone,sha256} from './utils.js';
+import {clone,sha256,stableStringify} from './utils.js';
 import {mvuContext,readMvu} from './product-custom-modules.js';
 import {personaSpans,replacePersonaSpans} from './dynamic-persona-stage.js';
 
-export function createPersonaWorldbook({host=globalThis,check=()=>{}}={}){
-  const markers=new Map();
+export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=>null}={}){
+  const markers=new Map();let sequence=0;
+  const contextKey=()=>stableStringify(context());
+  const markerPattern=()=>/\[\[SHIYI_PERSONA:([a-f0-9]+):([a-f0-9]+):([a-f0-9]+)\]\]/g;
+  function foreignRequest(payload){
+    const current=contextKey();
+    return (payload?.messages??[]).some(m=>typeof m.content==='string'&&[...m.content.matchAll(markerPattern())].some(match=>markers.get(match[1])?.context!==current));
+  }
   const api=()=>host.TavernHelper??host;
   async function stageData(){if(!host.Mvu?.getMvuData)return {};const result=await readMvu(host,check);return result.data??{};}
   async function read(){
@@ -33,7 +39,8 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{}}={}){
   }
   async function applyLoaded(payload,profiles){
     if(!payload||typeof payload!=='object'||!profiles.length)return;
-    const data=await stageData();check();
+    const binding=contextKey(),data=await stageData();check();if(binding!==contextKey())return;
+    const token=sha256([binding,++sequence,Date.now()]).slice(0,24),prepared={context:binding,originals:new Map(),profiles:new Map(profiles.map(p=>[p.id,sha256(p)]))};
     for(const key of ['globalLore','characterLore','chatLore','personaLore']){
       if(!Array.isArray(payload[key]))continue;
       // Never mutate the host's cached entry objects.
@@ -41,7 +48,7 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{}}={}){
         const book=entry.world??entry.book,uid=entry.uid;
         const spans=personaSpans({book,uid,name:entry.comment??entry.name,content:entry.content},data),replacements={};
         for(const p of profiles)for(const span of spans)if(p.bindings?.some(b=>b.id===span.id&&b.hash===span.hash&&b.stage===span.stage)){
-          const key=`${p.id}:${span.id}`;markers.set(key,span.text);replacements[span.id]=`\n[[SHIYI_PERSONA:${key}]]\n`;
+          const key=`${p.id}:${span.id}`;prepared.originals.set(key,span.text);replacements[span.id]=`\n[[SHIYI_PERSONA:${token}:${key}]]\n`;
         }
         return Object.keys(replacements).length?{...clone(entry),content:replacePersonaSpans(entry.content,spans,replacements)}:entry;
       });
@@ -49,17 +56,21 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{}}={}){
       // Replace elements, not payload properties; entry objects remain cloned.
       for(let i=0;i<entries.length;i++)entries[i]=updated[i];
     }
+    if(prepared.originals.size)markers.set(token,prepared);
+    // Bound retained request contexts; never grow with the entire chat archive.
+    while(markers.size>128)markers.delete(markers.keys().next().value);
   }
   async function finalize(payload,profiles){
     if(!Array.isArray(payload?.messages))return;
     if(!payload.messages.some(m=>typeof m.content==='string'&&m.content.includes('[[SHIYI_PERSONA:')))return {injected:[]};
     let data;try{data=await stageData();check();}catch{data=null;}
     const valid=profiles.filter(p=>p.bindings?.length&&p.bindings.every(b=>b.stage==='static'||data&&personaSpans({book:b.book,uid:b.uid,name:b.name,content:b.entryContent},data).some(s=>s.id===b.id))),byId=new Map(valid.map(p=>[p.id,p])),used=new Set();
-    for(const m of payload.messages)if(typeof m.content==='string')m.content=m.content.replace(/\[\[SHIYI_PERSONA:([a-f0-9]+):([a-f0-9]+)\]\]/g,(_all,id,spanId)=>{
-      const p=byId.get(id),key=`${id}:${spanId}`;if(!p)return markers.get(key)??'';if(used.has(id))return '';used.add(id);return `【${p.name}·当前阶段人设，依据至 #${p.through}；更新楼层后的正文优先】\n${p.text}`;
+    for(const m of payload.messages)if(typeof m.content==='string')m.content=m.content.replace(markerPattern(),(_all,token,id,spanId)=>{
+      const prepared=markers.get(token),p=byId.get(id),frozen=prepared?.profiles.get(id),key=`${id}:${spanId}`;
+      if(prepared?.context!==contextKey()||!p||!frozen||sha256(p)!==frozen)return prepared?.originals.get(key)??'';
+      if(used.has(id))return '';used.add(id);return `【${p.name}·当前阶段人设，依据至 #${p.through}；更新楼层后的正文优先】\n${p.text}`;
     });
-    if(markers.size>1000)markers.clear();
     return {injected:[...used]};
   }
-  return {read,mirror,applyLoaded,stageData,finalize};
+  return {read,mirror,applyLoaded,stageData,finalize,foreignRequest};
 }

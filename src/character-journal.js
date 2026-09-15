@@ -78,7 +78,8 @@ export function characterKeepsakes(cards=[],{withExpected=true}={}){
     const expected=withExpected?sha256(r):null;
     for(const [index,q]of (r.keyDialogues??[]).entries()){
       if(!q?.speaker||!q.text)continue;
-      const row={kind:'dialogue',id:`${r.id}:${index}`,recordId:r.id,index,expected,subject:q.speaker,target:q.to??'',data:clone(q),record:r,refs:refs(r),origins:[{recordId:r.id,index,expected}]};
+      const occurrence=q.sourceRefs?.length?{...r,sourceRefs:q.sourceRefs,sourceFloors:q.sourceFloors??r.sourceFloors}:r;
+      const row={kind:'dialogue',id:`${r.id}:${index}`,recordId:r.id,index,expected,subject:q.speaker,target:q.to??'',data:clone(q),record:occurrence,refs:refs(occurrence),origins:[{recordId:r.id,index,expected}]};
       // Repetition is coalesced only with shared original evidence. Identical
       // words on different dates must remain separately editable occurrences.
       const previous=dialogues.find(p=>quoteKey(p.data)===quoteKey(q)&&p.refs.some(s=>row.refs.includes(s))&&p.data.status===q.status&&Boolean(p.data.disabled)===Boolean(q.disabled));
@@ -112,7 +113,8 @@ export function editKeepsakePatch(record,{kind,index,data,remove=false}){
   if(remove){if(index===null)throw new Error('尚未选择台词');list.splice(index,1);return {keyDialogues:list};}
   if(!clean(data?.speaker,160)||!clean(data?.text))throw new Error('请填写说话人和台词');
   const q={speaker:clean(data.speaker,160),to:clean(data.to,160),text:clean(data.text),context:clean(data.context,4000),meaning:clean(data.meaning,4000),status:data.status==='historical'?'historical':'active',disabled:data.disabled===true,provenance:'user_authored'};
-  if(index!==null&&['speaker','to','text','context','meaning'].every(k=>(list[index][k]??'')===(q[k]??''))){if(list[index].provenance)q.provenance=list[index].provenance;else delete q.provenance;}
+    if(index!==null&&['speaker','to','text','context','meaning'].every(k=>(list[index][k]??'')===(q[k]??''))){if(list[index].provenance)q.provenance=list[index].provenance;else delete q.provenance;}
+    if(index!==null&&['speaker','text'].every(k=>list[index][k]===q[k]))for(const k of ['sourceRefs','sourceFloors'])if(list[index][k])q[k]=clone(list[index][k]);
   if(index===null)list.push(q);else list[index]=q;
   return {keyDialogues:list};
 }

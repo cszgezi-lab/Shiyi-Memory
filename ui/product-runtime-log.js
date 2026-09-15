@@ -13,6 +13,7 @@ export function runtimeLogSummary(entry){
   if(entry.task==='vectors'&&entry.phase==='retry_wait')parts.push(`向量服务暂不可用，约 ${Math.max(1,Math.ceil((d.retryDelayMs??0)/1000))} 秒后自动续建；无需重新总结`);
   else if(d.code)parts.push(productFailure({code:d.code,details:{...d,...(['vectors','knowledge-vectors'].includes(entry.task)?{purpose:'embeddings'}:{})}}).message);
   else parts.push(LOG_PHASES[entry.phase]??'操作记录');
+  if(d.sourceTimeCorrections)parts.push(`对照原文场景修正 ${d.sourceTimeCorrections} 处日期错位；未调用校对模型`);
   if(d.savedBatches!==undefined)parts.push(`本次已保存 ${d.savedBatches} 批`);
   if(d.pendingBatches!==undefined)parts.push(`另有 ${d.pendingBatches} 批待处理`);
   if(d.plannedBatches!==undefined)parts.push(`计划 ${d.plannedBatches} 批，每批 ${d.batchSize} 楼`);

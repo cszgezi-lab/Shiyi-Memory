@@ -908,6 +908,8 @@ export class SummaryEngine {
         });
         let bundle=bindOutput(output);
         const detailRows=DRAFT_CATEGORIES.flatMap(k=>Array.isArray(bundle[k])?bundle[k]:[]);
+        const timeCorrections=detailRows.flatMap(r=>(r.timeCorrections??[]).map(c=>({recordId:r.id,path:c.path,sourceId:c.sourceId,method:c.method})));
+        if(timeCorrections.length)emit('validate',{...baseDetails,sourceTimeCorrections:timeCorrections.length},'info');
         emit('character_details',{...baseDetails,journalCount:detailRows.filter(r=>r.innerLife?.text).length,stageObservations:detailRows.filter(r=>r.innerLife?.origin==='stage_observation').length,rejectedDialogues:detailRows.reduce((n,r)=>n+(r.detailWarnings?.rejectedDialogues??0),0)},detailRows.some(r=>r.detailWarnings?.rejectedDialogues)?'warning':'info');
         resolveEventMerges(bundle,request.relevantRecords,{deferUnresolved:true,stageCrossBatch:this.stageCrossBatchMerges,onDeferred:({eventIndex,reason})=>emit('merge_deferred',{...baseDetails,validationIssueCount:1,validationIssues:[{path:`events[${eventIndex}].mergeInto`,reason}]},'info')});
         if(this.requireFloorSummaries){

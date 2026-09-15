@@ -1,7 +1,7 @@
 import { LocalBM25Index, retrieveMemories, tokenizeChinese } from './retrieval.js';
 import { estimateUnits, clone, stableStringify } from './utils.js';
 import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './product-dictionary.js';
-import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel } from './product-narrative.js';
+import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel,scopeLabel } from './product-narrative.js';
 import { hasStoryTime, storyDateOf } from './temporal.js';
 import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts } from './product-recall-packing.js';
 import { factValue, fullCharacterGroups, awarenessSubjectLabel } from './product-person-profiles.js';
@@ -139,15 +139,16 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
   }
   if(detail&&!full)for(const e of card.qualityEvidence??[])lines.push(`校对依据${Number.isInteger(e.floor)?` · 第 ${e.floor} 楼`:''}：「${e.quote}」`);
   if (Array.isArray(card.participants)&&card.participants.length)lines.push(`参与人物：${narrativeText(card.participants)}`);
-  if (card.location)lines.push(`地点：${narrativeText(card.location)}`);
+  if (card.location&&!/^(null|undefined|unknown)$/i.test(String(card.location).trim()))lines.push(`地点：${narrativeText(card.location)}`);
   const names=[...(card.participants??[]),...(card.entities??[]).flatMap(e=>typeof e==='string'?[e]:[e.name,...(e.aliases??[])])].filter(n=>typeof n==='string');
   const topics=query===null?[]:tokenizeChinese(query).filter(t=>t.length>1&&!names.some(n=>n.includes(t))&&!/^(什么|怎么|为什么|这次|那个|这个|现在|是否|一下|告诉|关于|他们|她们)$/.test(t));
   const relevant=text=>full||detail||query===null||topics.some(t=>String(text).toLocaleLowerCase().includes(t));
   const viewpoints=(card.viewpoints??[]).filter(v=>relevant(`${v.content} ${v.context??''} ${v.target??''}`)).slice(0,full?Infinity:detail?8:2);
   const dialogues=(detail&&!full||settings.dialogueEnabled!==false?card.keyDialogues??[]:[]).filter(q=>(detail||!q.disabled)&&(relevant(`${q.text} ${q.context??''} ${q.meaning??''}`)||query!==null&&/原话|台词|说过什么/.test(query))).slice(0,full||detail?Infinity:2);
-  for(const v of viewpoints)lines.push(`观念 / 态度：${v.holder}${v.target?` 对 ${v.target}`:''}：${v.content}${v.context?`〔${v.context}〕`:''}${v.basis?`（${v.basis}）`:''}`);
+  for(const v of viewpoints)lines.push(`观念 / 态度：${v.holder}${v.target?` 对 ${v.target}`:''}：${v.content}${v.context?`〔${v.context}〕`:''}${v.basis?`（${epistemicLabel(v.basis)}）`:''}`);
   for(const q of dialogues)if(!full||!q.disabled)lines.push(`关键台词：${q.speaker}${q.to?` 对 ${q.to}`:''}：「${q.text}」${q.context?`〔${q.context}〕`:''}${q.meaning?`；体现：${q.meaning}`:''}${q.status==='historical'?'〔过去阶段，不作当前承诺〕':''}${q.disabled?'〔不再注入〕':''}${q.provenance==='user_authored'?'〔用户编写〕':''}`);
   if(dialogues.length)lines.push('原话仅作当时语境的证据，不要求复读；说过不等于仍持相同态度。');
+  if(card.category==='performanceHints')lines.push('演绎范围：本条仅证明来源情境中的表现，不凭一次经历推定每次必然如此；与本轮正文及当前阶段不符时不沿用。');
   if(full&&(card.innerLifeHistorical||card.innerLife?.status==='historical'))lines.push(`心迹历程：${card.innerLife.stage}（过去阶段，完整心迹按相关往事召回；不作当前状态）`);
   else if((detail&&!full||settings.journalEnabled!==false)&&innerLifeText(card))lines.push(innerLifeText(card));
   if(detail&&card.detailWarnings?.rejectedDialogues)lines.push(`提取提示：${card.detailWarnings.rejectedDialogues} 句台词未通过原话或说话人校验，未作为逐字引语保存。可在关键对话中人工补充。`);
@@ -194,12 +195,12 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
   if(card.category==='personaChanges'){
     if(Object.hasOwn(card,'before')||Object.hasOwn(card,'after'))lines.push(`变化前：${narrativeText(card.before)}；变化后：${narrativeText(card.after)}`);
     lines.push(`变化人物：${narrativeText(card.subject??card.person??card.entity)}；针对对象：${narrativeText(card.object??card.objectRef)}`);
-    lines.push(`适用情境与范围：${narrativeText(card.context)}；${narrativeText(card.scope)}`);
+    lines.push(`适用情境与范围：${narrativeText(card.context)}；${narrativeText(scopeLabel(card.scope))}`);
     const validity=card.expiresAt??card.validUntil??card.term??card.duration;
     lines.push(validity?`有效期：${narrativeText(validity)}`:'有效期未确认；仅用于上述对象、情境与范围，不推定永久变化。');
   }else if (card.context || card.validUntil || card.term) lines.push(`适用范围：${narrativeText(card.context)} ${narrativeText(card.validUntil ?? card.term)}`);
   if(full){
-    if(card.scope)lines.push(`记录范围：${narrativeText(card.scope)}`);
+    if(card.scope)lines.push(`记录范围：${narrativeText(scopeLabel(card.scope))}`);
     if(card.perspective)lines.push(`叙述视角：${narrativeText({perspective:card.perspective})}`);
     if(card.customModuleId)lines.push(`扩展模块：${card.customModuleId}${card.readonly?'（只读）':''}`);
   }

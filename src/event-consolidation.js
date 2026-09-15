@@ -96,11 +96,32 @@ export function resolveEventMerges(bundle,relevantRecords={}, {deferUnresolved=f
   return bundle;
 }
 
+// Attach exact speaking occurrences from this frozen request. Repeated words
+// within the supplied event range retain all proven sources, not a guessed date.
+// A relationship may span many floors; its quoted words need their own source.
+export function bindDialogueSources(record,{sources=[],sourceRefs=[],sourceFloorIndices=[]}={}){
+  if(!Array.isArray(record.keyDialogues))return record;
+  const same=(a,b)=>a.sourceId===b.sourceId&&a.fragmentId===b.fragmentId;
+  const quotes=record.keyDialogues.map(q=>{
+    if(!q||typeof q.text!=='string'||!q.text||typeof q.speaker!=='string')return q;
+    const explicit=q.sourceRefs??(q.sourceId?[{sourceId:q.sourceId,...(q.fragmentId?{fragmentId:q.fragmentId}:{})}]:null);
+    const pool=explicit? sources.filter(s=>Array.isArray(explicit)&&explicit.some(r=>same(r,s)&&['hash','contentHash','version','swipeId'].every(k=>r[k]===undefined||sourceRefs.some(b=>same(b,r)&&b[k]===r[k])))) : sources;
+    const found=pool.filter(s=>hasSpeechEvidence(s.text,q.text,q.speaker));
+    const inParent=found.filter(s=>(record.sourceRefs??[]).some(r=>same(r,s)));
+    const chosen=explicit?found:inParent.length?inParent:found;
+    if(!chosen.length||chosen.length>1&&!explicit&&!inParent.length)return {...q,sourceRefs:[],sourceFloors:[],sourceBinding:'unresolved'};
+    const canonical=chosen.map(src=>sourceRefs.filter(r=>same(r,src)));
+    if(canonical.some(refs=>refs.length!==1))return {...q,sourceRefs:[],sourceFloors:[],sourceBinding:'unresolved'};
+    return {...q,sourceRefs:clone(canonical.flat()),sourceFloors:sourceFloorIndices.filter(r=>chosen.some(src=>same(r,src))).map(r=>r.index),sourceBinding:'exact-speech-v1'};
+  });
+  return {...record,keyDialogues:quotes,sourceRefs:unique([...(record.sourceRefs??[]),...quotes.flatMap(q=>q?.sourceBinding==='exact-speech-v1'?q.sourceRefs:[])])};
+}
+
 export function bindCharacterDetails(record,evidence){
   const result={...record};
   if(record.keyDialogues!==undefined){
     const rows=Array.isArray(record.keyDialogues)?record.keyDialogues:[];
-    result.keyDialogues=rows.filter(q=>q&&typeof q.text==='string'&&q.text.length>0&&q.text.length<=12000&&typeof q.speaker==='string'&&q.speaker.length<=160&&hasSpeechEvidence(evidence,q.text,q.speaker)).map(q=>({speaker:q.speaker,text:q.text,...Object.fromEntries(['to','context','meaning'].filter(k=>typeof q[k]==='string'&&q[k].length<=4000&&(k!=='to'||evidence.includes(q[k]))).map(k=>[k,q[k]])),status:q.status==='historical'?'historical':'active'}));
+    result.keyDialogues=rows.filter(q=>q&&q.sourceBinding!=='unresolved'&&typeof q.text==='string'&&q.text.length>0&&q.text.length<=12000&&typeof q.speaker==='string'&&q.speaker.length<=160&&hasSpeechEvidence(evidence,q.text,q.speaker)).map(q=>({speaker:q.speaker,text:q.text,...Object.fromEntries(['to','context','meaning'].filter(k=>typeof q[k]==='string'&&q[k].length<=4000&&(k!=='to'||evidence.includes(q[k]))).map(k=>[k,q[k]])),...(q.sourceBinding==='exact-speech-v1'?{sourceRefs:clone(q.sourceRefs),sourceFloors:clone(q.sourceFloors)}:{}),status:q.status==='historical'?'historical':'active'}));
     if(result.keyDialogues.length!==rows.length)result.detailWarnings={...result.detailWarnings,rejectedDialogues:rows.length-result.keyDialogues.length};
   }
   if(record.innerLife!==undefined){

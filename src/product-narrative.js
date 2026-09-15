@@ -1,6 +1,7 @@
 import { normalizeTerms, normalizeTags } from './product-dictionary.js';
 export const relationLabel = value => ({expression:'单方表达',response:'对方回应',mutual_confirmation:'双方确认',boundary:'相处边界',shared_experience:'共同经历',habit:'相处习惯',background:'背景关系'})[value] ?? value ?? '关系变化';
 export const epistemicLabel = value => ({observed:'正文明确',user_asserted:'用户确认',character_claim:'角色自述',inferred:'推测而非事实',unknown:'未确认'})[value] ?? value;
+export const scopeLabel = value => typeof value==='string'?({temporary:'临时表现',stable:'稳定表现',situational:'特定情境',permanent:'长期',unknown:'未确认'})[value]??value:value;
 // Display aliases only, not a schema/field whitelist or a stored-key rewrite.
 // Arbitrary DIY names remain intact and can still be edited by the user.
 export const fieldLabel = value => ({identity:'身份',background:'背景',age:'年龄',occupation:'职业',profession:'职业',aliases:'别称',nickname:'昵称',address:'住址',residence:'居所',school:'学校',hobby:'兴趣爱好',hobbies:'兴趣爱好',interests:'兴趣爱好',level:'等级',strength:'力量',agility:'敏捷',skills:'技能',beverage_preference:'饮品偏好',action_habit:'动作习惯',energy_status:'能量状态',usage_limitation:'使用限制',skill_limitation:'技能限制',inspection_status:'检验状态',operating_mode:'运行模式'})[value] ?? value;
