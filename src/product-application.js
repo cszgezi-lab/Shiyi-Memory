@@ -36,6 +36,7 @@ import { sceneClockFromMessages } from './temporal.js';
 import { QUALITY_STORE_KEY,QUALITY_PROMPT,memoryQualityIssues,qualityGroups,qualityStatus,qualityEntryCurrent,qualityReviewedIds,qualityFingerprint,validateQualityReview,validateQualityReviewPartial,projectQualityRecords,finishQualityAttempt } from './product-memory-quality.js';
 import {planQuality,qualityTargets,qualityRows,mergeQualityEntry} from './product-quality-plan.js';
 import {manualQualityFields} from './product-memory-quality.js';
+import {validateKnowledgeReview} from './product-knowledge-review.js';
 import { createInjectionLog } from './product-injection-log.js';
 import { ASSISTANT_SKILLS, assistantSkillCatalog, readAssistantSkill, assistantSettings,assistantBootstrap } from './product-assistant-skills.js';
 import { MERGE_STORE_KEY, MERGE_JUDGE_PROMPT, mergeJobs, mergeDecision, mergeJudgeInput, validateMergeVote, projectMergedCards, sameMergeSnapshot, eventFingerprint } from './product-event-merge.js';
@@ -815,11 +816,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         const sources=job.sourceIds.map(id=>sourceMap.get(id));
         const payload=job.payload,input=JSON.parse(payload.messages[1].content),inputUnits=job.inputUnits,qualityLimit=plan.inputLimit;
         const c=client('supplement');
-        runtimeLog.record({run,task:'quality',phase:'request',details:{requestId,modelRole:'supplement',inputUnits,inputLimit:qualityLimit,sourceInputUnits:estimateUnits(JSON.stringify(input.sources)),historyInputUnits:estimateUnits(JSON.stringify(input.referenceRecords)),maxTokens:core.settings.outputBudgetUnits,sourceCount:sources.length,expected:ids.length}});
-        const response=await c.chatCompletions(payload,{signal:op.signal,timeoutMs:core.settings.deadlineMs,requestId,onDiagnostic:e=>runtimeLog.record({run,task:'quality',...e})});op.check();
+        runtimeLog.record({run,task:'quality',phase:'request',details:{requestId,modelRole:'supplement',inputUnits,inputLimit:qualityLimit,sourceInputUnits:estimateUnits(JSON.stringify(input.cases?.map(c=>c.sources)??input.sources)),historyInputUnits:estimateUnits(JSON.stringify(input.referenceRecords??[])),maxTokens:core.settings.outputBudgetUnits,sourceCount:sources.length,expected:ids.length}});
+        const response=await c.chatCompletions(payload,{signal:op.signal,timeoutMs:core.settings.summaryDeadlineMs??core.settings.deadlineMs,requestId,onDiagnostic:e=>runtimeLog.record({run,task:'quality',...e})});op.check();
         runtimeLog.record({run,task:'quality',phase:'response',details:{finishReason:response.choices?.[0]?.finish_reason??'unknown',promptTokens:response.usage?.prompt_tokens,completionTokens:response.usage?.completion_tokens}});
         const modelOutput=jsonContent(completion(response).content);
-        entry=validateQualityReviewPartial(reviewRecords,ids,sources,modelOutput,{...state.memoryControls,evidenceCatalog:job.evidenceCatalog});
+        entry=job.knowledgeReviewContext?validateKnowledgeReview(reviewRecords,ids,sources,modelOutput,{...state.memoryControls,context:job.knowledgeReviewContext}):validateQualityReviewPartial(reviewRecords,ids,sources,modelOutput,{...state.memoryControls,evidenceCatalog:job.evidenceCatalog});
+        if(entry.normalizedFields)runtimeLog.record({run,task:'quality',phase:'normalize',details:{requestId,normalizedFields:entry.normalizedFields}});
         if(entry.rejected?.length){
           runtimeLog.record({run,task:'quality',phase:'partial_repair',level:'warning',details:{requestId,accepted:entry.updates.length+entry.additions.length,rejected:entry.rejected?.length??0,qualityRejections:entry.rejected}});
         }

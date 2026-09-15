@@ -3,6 +3,7 @@ import {QUALITY_PROMPT,qualityGroups,qualityStatus,qualityEditableFields} from '
 import {summaryRecord,selectSummaryContext} from './summary-context.js';
 import {MEMORY_CATEGORIES} from './product-batches.js';
 import {qualityEvidenceCatalog} from './product-quality-evidence.js';
+import {knowledgeReviewWire} from './product-knowledge-review.js';
 
 export const qualityRows=records=>MEMORY_CATEGORIES.flatMap(category=>(records[category]??[]).map(r=>({...r,category})));
 export function qualityTargets(records,saved={},recordIds=null,preparedStatus=null,automatic=false){
@@ -22,10 +23,12 @@ export async function planQuality({records,effectiveRecords=records,saved={},sou
   const ordered=qualityGroups(records).map(ids=>ids.filter(id=>byId.has(id))).filter(ids=>ids.length);
   const grouped=new Set(ordered.flat());
   const remaining=targets.filter(r=>!grouped.has(r.id)).map(r=>r.id);
-  // Batch provenance guards writes, not the number of paid review requests.
-  // Share sources across old batches, then split only if the complete request
-  // actually exceeds the user's budget. Freeze the resulting plan before send.
-  const orderedIds=[...ordered.flat(),...remaining],pending=orderedIds.length?[orderedIds]:[];
+  // Provenance guards writes. A visible, user-adjustable review count bounds
+  // simultaneous judgments; it is not a hidden input-token or summary limit.
+  // Freeze all groups in the preview, never grow them after dispatch.
+  const orderedIds=[...ordered.flat(),...remaining],pending=[];
+  const batchSize=Math.max(1,Math.min(100,Math.trunc(Number(settings.qualityBatchRecords)||6)));
+  for(let i=0;i<orderedIds.length;i+=batchSize)pending.push(orderedIds.slice(i,i+batchSize));
   const sourceMap=new Map(sources.map(m=>[m.id,m])),jobs=[],blocked=[];
   const catalog=qualityEvidenceCatalog(sources,[...byId.values()]);
   const limit=settings.inputBudgetUnits;
@@ -39,15 +42,16 @@ export async function planQuality({records,effectiveRecords=records,saved={},sou
     const offered=catalog.filter(s=>refs.has(s.sourceId));
     const input={sources:evidence.map(({id,index})=>({id,index,text:offered.filter(s=>s.sourceId===id).map(s=>`【${s.segmentId}】\n${s.text}`).join('\n')})),records:rows.map(r=>({...summaryRecord(r),editableFields:qualityEditableFields(r.category)})),referenceRecords:qualityRows(related.records).filter(r=>!byId.has(r.id)).map(summaryRecord),issues:[...status.issues,...status.unresolved].filter(i=>i.recordIds.some(id=>ids.includes(id)))};
     if(recordIds&&!input.issues.length)input.issues=[{recordIds:ids,description:'用户主动选择校对这些条目；只作有原文依据的必要修正，不强求新增内容。'}];
-    const payload=()=>({model,messages:[{role:'system',content:QUALITY_PROMPT},{role:'user',content:JSON.stringify(input)}],stream:false,...(settings.outputBudgetUnits>0?{max_tokens:settings.outputBudgetUnits}:{})});
+    const knowledge=rows.every(r=>r.category==='awarenessChanges')?knowledgeReviewWire(rows,offered,evidence):null;
+    const payload=()=>({model,messages:[{role:'system',content:knowledge?.prompt??QUALITY_PROMPT},{role:'user',content:JSON.stringify(knowledge?.input??input)}],stream:false,...(settings.outputBudgetUnits>0?{max_tokens:settings.outputBudgetUnits}:{})});
     let wire=payload(),inputUnits=estimateModelInputUnits(wire);
-    while(inputUnits>limit&&input.referenceRecords.length){input.referenceRecords.pop();wire=payload();inputUnits=estimateModelInputUnits(wire);}
+    while(!knowledge&&inputUnits>limit&&input.referenceRecords.length){input.referenceRecords.pop();wire=payload();inputUnits=estimateModelInputUnits(wire);}
     if(inputUnits>limit){
       if(ids.length>1){const middle=Math.ceil(ids.length/2);pending.unshift(ids.slice(0,middle),ids.slice(middle));}
       else blocked.push({ids,inputUnits,reason:`完整来源超过设置的输入预算 ${limit}；可人工校对或调整输入预算后重新预览`});
       continue;
     }
-    jobs.push({ids,payload:wire,inputUnits,evidenceCatalog:offered,sourceIds:[...refs],anchors:Object.fromEntries(ids.map(id=>{const {category,...r}=rawById.get(id);return [id,sha256(r)];}))});
+    jobs.push({ids,payload:wire,inputUnits,evidenceCatalog:offered,...(knowledge?{knowledgeReviewContext:knowledge.context}:{}),sourceIds:[...refs],anchors:Object.fromEntries(ids.map(id=>{const {category,...r}=rawById.get(id);return [id,sha256(r)];}))});
   }
   return {jobs,blocked,targetCount:targets.length,sourceCount:sources.length,inputLimit:limit};
 }

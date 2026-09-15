@@ -9,6 +9,7 @@ const copy = {
   summaryStaged:['两阶段分工（可选）','关闭时一次请求整理全部模块；开启后每个内部片段通常两次请求，可分配不同模型。失败按已有结果续跑。'],
   supplementFollowSummary:['沿用总结连接','共用地址和 Key；下方仍可单独选择辅助模型，留空时也沿用总结模型。'],
   autoQualityEnabled:['自动追加内容校对','每组疑点会额外调用一次模型。关闭时保留疑点，可手动校对。'],
+  qualityBatchRecords:['每次校对条数','仅影响后台内容校对，推荐 6；每组一次请求，预览后固定，不拆主总结。'],
   messageCount:['默认总结楼数','手动总结的初始值；本次以范围选择中的输入为准。'],
   autoSummaryEnabled:['自动总结状态','启用和暂停只影响自动总结。'],
   autoKeepRecent:['保留最近多少楼不总结','给重生成和修改留出空间；只影响自动总结。'],
@@ -79,7 +80,7 @@ const advanced = (title, keys) => `<details class="sy-advanced"><summary>${title
 const card = (title, body) => `<div class="sy-card"><h4>${title}</h4>${body}</div>`;
 
 export const SETTING_GROUPS = Object.freeze({
-  recording: ['messageCount','summaryReviewEnabled','summaryStaged','recordingRules','focusMode','autoMergeEnabled','autoQualityEnabled','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
+  recording: ['messageCount','summaryReviewEnabled','summaryStaged','recordingRules','focusMode','autoMergeEnabled','autoQualityEnabled','qualityBatchRecords','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
   automatic: ['autoSummaryEnabled','autoSummaryEvery','autoKeepRecent'],
   injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','dialogueEnabled','journalEnabled','injectionPosition','injectionRole','injectionLogEnabled'],
   vectors: ['vectorEnabled','vectorAutoUpdate'],
@@ -88,7 +89,7 @@ export const SETTING_GROUPS = Object.freeze({
 });
 export function settingsSection(kind) {
   const keys = SETTING_GROUPS[kind];
-  if (kind === 'recording') return card('共同记录偏好',fields(['recordingRules','focusMode','summaryReviewEnabled'])+advanced('其他调用方式',['summaryStaged','autoMergeEnabled','autoQualityEnabled'])+button('per-call-mode','切回单次主总结')+'<p class="sy-help">双次复核关闭时才使用其他调用方式。双次模式超过输入预算会提示调整，不暗中拆成多批。</p>'+advanced('总结高级设置',['messageCount','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize']));
+  if (kind === 'recording') return card('共同记录偏好',fields(['recordingRules','focusMode','summaryReviewEnabled'])+advanced('其他调用方式',['summaryStaged','autoMergeEnabled','autoQualityEnabled','qualityBatchRecords'])+button('per-call-mode','切回单次主总结')+'<p class="sy-help">双次复核关闭时才使用其他调用方式。双次模式超过输入预算会提示调整，不暗中拆成多批。</p>'+advanced('总结高级设置',['messageCount','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize']));
   if (kind === 'automatic') return card('自动总结',setting('autoSummaryEnabled').replace('<input','<input disabled')+fields(['autoSummaryEvery','autoKeepRecent'])+field('当前聊天从哪楼起算','<input data-auto-start type="number" min="0" value="1">')+'<p class="sy-help">新聊天默认从 #1；需要包含开场白可填 #0。老聊天会接着已连续总结的楼层处理。改起点只改变后续处理范围，不伪造此前的总结。</p><div class="sy-packet" data-auto-progress role="status"></div><div class="sy-actions"><button type="button" data-action="auto-save">保存自动设置</button><button type="button" data-action="auto-inspect">检查进度</button></div><div class="sy-actions"><button type="button" data-action="auto-start">启用自动</button><button type="button" data-action="auto-pause">暂停自动</button><button type="button" data-action="auto-process">处理下一批</button></div>');
   if (kind === 'injection') return card('把记忆交给 AI', fields(keys.slice(0,6)) + advanced('注入位置', keys.slice(6)));
   if (kind === 'vectors') return card('向量索引',fields(keys));

@@ -42,6 +42,7 @@ function detailsHTML(entry){
   if(d.degraded!==undefined)lines.push(['召回结果',d.degraded?'已使用回退结果；在线召回未全部成功':'未使用故障回退']);
   for(const [key,label]of [['vectorStatus','向量召回'],['rerankStatus','重排']])if(d[key])lines.push([label,({passed:'成功',disabled:'未启用',fallback:'未完成，使用回退结果',skipped:'未调用'})[d[key]]??'状态未知']);
   if(d.qualityReason)lines.push(['校对校验',d.qualityReason]);
+  for(const r of d.qualityShape??[])lines.push([`返回结构 · ${({root:'最外层',updates:'原位修改',additions:'新增',issues:'待确认',reviews:'知情判断'})[r.field]}`,`${({missing:'未返回',null:'空值',array:'列表',object:'对象',string:'文本',number:'数字',boolean:'布尔值'})[r.type]}${r.count!==undefined?`，${r.count} 项`:''}`]);
   for(const [key,label]of [['accepted','通过校验的修改/新增'],['rejected','未通过的校对项'],['rejectedRows','未通过的校对项']])if(d[key]!==undefined)lines.push([label,d[key]]);
   for(const r of d.qualityRejections??[])lines.push([`${({update:'修改',addition:'新增',issue:'疑点'})[r.kind]}第 ${r.index+1} 项`,`${r.reason}${r.fields?.length?`；字段：${r.fields.join('、')}`:''}`]);
   if(d.backgroundSeen!==undefined)lines.push(['请求期间切到后台',d.backgroundSeen?'已观察到':'未观察到（不能排除宿主暂停）']);

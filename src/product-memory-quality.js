@@ -7,6 +7,7 @@ import { factValidity,bindKnowledgeEvidence } from './memory-evidence.js';
 import { normalizeInnerLife } from './character-journal.js';
 import { bindCharacterDetails } from './event-consolidation.js';
 import {resolveQualityProposal,qualityActorNames,qualityEvidenceText} from './product-quality-evidence.js';
+import {normalizeQualityResponse} from './quality-response.js';
 
 // A reversible, evidence-bound sidecar, not a second authoritative memory DB.
 // Record IDs and original batch ownership stay intact. Changed/deleted sources
@@ -91,7 +92,7 @@ const epistemics=new Set(EPISTEMIC_STATUSES);
 function invalid(reason,details={}){return Object.assign(new Error(`记忆校对未通过：${reason}；原记忆保留`),{code:'QUALITY_RESPONSE_INVALID',details:{stage:'validate',reason:'quality_validation',qualityReason:reason,...details}});}
 
 export function validateQualityReview(records,targets,sources,output,{edits={},evidenceCatalog=null,evidenceTextById=null,evidenceIdentities=null}={}){
-  if(!output||!['updates','additions','issues'].every(k=>Array.isArray(output[k]))||output.updates.length+output.additions.length>200||output.issues.length>100)throw invalid('返回格式或条数不正确');
+  output=normalizeQualityResponse(output).output;
   const byId=new Map(list(records).map(x=>[x.record.id,x])),targetSet=new Set(targets),sourceMap=new Map(sources.map(m=>[m.id,m]));
   if(evidenceCatalog){evidenceTextById??=new Map(sources.map(s=>[s.id,qualityEvidenceText(evidenceCatalog.filter(p=>p.sourceId===s.id),[s])]));evidenceIdentities??=new Map();}
   const identityFor=(record,proof)=>{
@@ -193,7 +194,7 @@ export function validateQualityReview(records,targets,sources,output,{edits={},e
 // intentionally cover accepted rows only, so a later retry can revisit rows
 // whose proposals were rejected.
 export function validateQualityReviewPartial(records,targets,sources,output,options={}){
-  if(!output||!['updates','additions','issues'].every(k=>Array.isArray(output[k]))||output.updates.length+output.additions.length>200||output.issues.length>100)throw invalid('返回格式或条数不正确');
+  const normalized=normalizeQualityResponse(output);output=normalized.output;
   // This response is validated field-by-field and once again before commit.
   // Reuse local source/identity projections; never repeat a model request.
   if(options.evidenceCatalog)options={...options,evidenceTextById:new Map(sources.map(s=>[s.id,qualityEvidenceText(options.evidenceCatalog.filter(p=>p.sourceId===s.id),[s])])),evidenceIdentities:new Map()};
@@ -255,6 +256,7 @@ export function validateQualityReviewPartial(records,targets,sources,output,opti
   }
   for(const [index,item]of output.issues.entries())tryOne('issue',item,index);
   const entry=validateQualityReview(records,targets,sources,accepted,options);
+  if(normalized.normalizedFields)entry.normalizedFields=normalized.normalizedFields;
   const acceptedAnchors=new Set([
     ...entry.updates.map(row=>row.id),
     ...entry.additions.map(row=>row.anchorId),
@@ -270,7 +272,9 @@ export function validateQualityReviewPartial(records,targets,sources,output,opti
 }
 
 export function projectQualityRecords(records,saved={},controls={}){
-  const result=clone(records),raw=new Map(list(records).map(x=>[x.record.id,x.record]));
+  // Separate category snapshots even when an in-memory host shares objects
+  // with history. Projection must never rewrite the original batch record.
+  const result=Object.fromEntries(Object.entries(records).map(([k,v])=>[k,clone(v)])),raw=new Map(list(records).map(x=>[x.record.id,x.record]));
   const byId=new Map(list(result).map(x=>[x.record.id,x.record]));
   for(const entry of Object.values(saved).sort((a,b)=>(Number.isFinite(a?.at)?a.at:0)-(Number.isFinite(b?.at)?b.at:0))){
     if(entry?.status!=='reviewed')continue;

@@ -21,6 +21,7 @@ const DEFINITIONS = [
   { key:'supplementEndpointMode', label:'辅助整理地址模式', defaultValue:'base', type:'enum', values:['base','exact'], consumers:['ProductApplication.supplement'] },
   { key:'supplementAuthMode', label:'辅助整理认证方式', defaultValue:'bearer', type:'enum', values:['none','bearer','api-key'], consumers:['ProductApplication.supplement'] },
   { key: 'autoQualityEnabled', label: '总结后校对缺项与矛盾', defaultValue: false, type: 'boolean', consumers: ['ProductApplication.processQuality'] },
+  { key: 'qualityBatchRecords', label: '每次校对条数', defaultValue: 6, type: 'integer', min: 1, max: 100, consumers: ['ProductApplication.processQuality','planQuality'] },
   { key: 'messageCount', label: '最近消息数', defaultValue: 8, type: 'integer', min: 1, max: 200, consumers: ['ProductShellController.readRange'] },
   { key: 'autoMergeEnabled', label: '总结后自动核对合并', defaultValue: false, type: 'boolean', consumers: ['ProductApplication.processMergeQueue'] },
   { key: 'inputBudgetUnits', label: '总结输入预算', defaultValue: 24000, type: 'integer', min: 256, max: 1000000, consumers: ['ProductShellController.createBatch', 'SummaryEngine'] },

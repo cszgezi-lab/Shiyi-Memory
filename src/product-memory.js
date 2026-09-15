@@ -112,7 +112,7 @@ function timeLines(time,settings){
   return lines;
 }
 function awarenessText(rows){
-  return rows.map(a=>`${awarenessSubjectLabel(a)}：${narrativeText(a.knowledge??a.fact??a.content)}〔${awarenessLabel(a.status??a.knowledgeStatus)}；${viaLabel(a.via)}${hasStoryTime(a.learnedAt)?`；获知时间：${narrativeText(a.learnedAt)}`:''}〕`).join('；');
+  return rows.map(a=>`${awarenessSubjectLabel(a)}：${narrativeText(a.knowledge??a.fact??a.content)}〔${awarenessLabel(a.status??a.knowledgeStatus)}；${viaLabel(a.via)}${hasStoryTime(a.learnedAt)?`；获知时间：${narrativeText(a.learnedAt)}`:''}${a.acquisitionEvidence?.method==='context-review-v1'&&a.acquisitionEvidence.access?`；获知范围（不可超出）：${narrativeText(a.acquisitionEvidence.access)}`:''}〕`).join('；');
 }
 export function renderMemoryCard(card, settings = {}, { body=card.description, metadataOnly=false, detail=false, full=false, query=null }={}) {
   if(card.mergedParts?.length){
@@ -134,6 +134,9 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
   if(card.knowledgeReview?.status==='pending')lines.push('获知依据待核对：暂不把这条作为角色已知信息注入，可在内容校对中单独修正。');
   if(card.category==='conflicts')lines.push('核对参考：保留分歧及原文结论；未解决不作事实，已否认不再当真。不由召回决定谁知情。');
   for(const warning of card.continuityWarnings??[])lines.push(`待确认：${warning}`);
+  if(detail&&!full&&card.acquisitionEvidence?.method==='context-review-v1'){
+    lines.push(`校对结论：${card.acquisitionEvidence.reason}`);
+  }
   if(detail&&!full)for(const e of card.qualityEvidence??[])lines.push(`校对依据${Number.isInteger(e.floor)?` · 第 ${e.floor} 楼`:''}：「${e.quote}」`);
   if (Array.isArray(card.participants)&&card.participants.length)lines.push(`参与人物：${narrativeText(card.participants)}`);
   if (card.location)lines.push(`地点：${narrativeText(card.location)}`);

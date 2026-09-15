@@ -7,13 +7,17 @@ import {enrichRetrievalMetadata} from './product-dictionary.js';
 // narrative HTML. Never offer reasoning, executable styling or variable edits.
 export function qualitySourceSegments(source){
   const text=String(source.text??''),excluded=[];
+  // An inline-code example such as `<think>` is not a real opening marker.
+  // Preserve offsets while ignoring examples during control-tag recognition;
+  // otherwise an orphan closer would leave the preceding planning exposed.
+  const controlText=text.replace(/`+[^`\r\n]*`+/g,m=>' '.repeat(m.length));
   const blocks=/<(think|thinking|analysis|konatan_planning~|UpdateVariable|JSONPatch|script|style)(?:\s[^>]*)?>[\s\S]*?<\/\1\s*>/gi;
-  for(const m of text.matchAll(blocks))excluded.push([m.index,m.index+m[0].length]);
+  for(const m of controlText.matchAll(blocks))excluded.push([m.index,m.index+m[0].length]);
   // An unclosed planning block is not evidence; do not expose its tail.
-  for(const m of text.matchAll(/<(think|thinking|analysis|konatan_planning~|UpdateVariable|JSONPatch|script|style)(?:\s[^>]*)?>/gi))if(!excluded.some(([a,b])=>m.index>=a&&m.index<b))excluded.push([m.index,text.length]);
+  for(const m of controlText.matchAll(/<(think|thinking|analysis|konatan_planning~|UpdateVariable|JSONPatch|script|style)(?:\s[^>]*)?>/gi))if(!excluded.some(([a,b])=>m.index>=a&&m.index<b))excluded.push([m.index,text.length]);
   // Some hosts retain a closing reasoning marker but omit the opener. Keep
   // the same conservative prefix exclusion used by narrativeEvidence.
-  for(const m of text.matchAll(/<\/(think|thinking|analysis|konatan_planning~|UpdateVariable|JSONPatch|script|style)\s*>/gi))if(!excluded.some(([a,b])=>m.index>=a&&m.index<b))excluded.push([0,m.index+m[0].length]);
+  for(const m of controlText.matchAll(/<\/(think|thinking|analysis|konatan_planning~|UpdateVariable|JSONPatch|script|style)\s*>/gi))if(!excluded.some(([a,b])=>m.index>=a&&m.index<b))excluded.push([0,m.index+m[0].length]);
   excluded.sort((a,b)=>a[0]-b[0]);const ranges=[];let cursor=0;
   for(const [a,b]of excluded){if(a>cursor)ranges.push([cursor,a]);cursor=Math.max(cursor,b);}if(cursor<text.length)ranges.push([cursor,text.length]);
   const prefix=sha256([source.id,text]).slice(0,8),segments=[];

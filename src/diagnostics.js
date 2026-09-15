@@ -51,6 +51,10 @@ const files=new Set(['provider-scheduler.js','summary-planner.js','request-deadl
 const errorTypes=new Set(['Error','TypeError','SyntaxError','RangeError','AbortError','DOMException','ShiyiError','SummaryResponseError','ValidationError','PersistenceError','ScopeConflictError','RevisionConflictError']);
 files.add('summary-verification.js');
 files.add('provider-stream.js');
+files.add('quality-response.js');
+files.add('product-memory-quality.js');
+files.add('product-quality-evidence.js');
+files.add('product-knowledge-review.js');
 const verificationCodes=new Set(['invalid_shape','missing_evidence','quote_not_in_source','protected_or_unknown_field','source_mismatch','source_removal','unknown_or_duplicate_target','unknown_category','missing_sources','duplicate_id']);
 const verificationPath=/^(?:verification|reviewedSourceIds|reviews|checks|updates|repartitions|(?:edits|splitEvents|updates|additions|repartition)\[\d{1,6}\](?:\.events\[\d{1,6}\])?(?:\.(?:value|sources)|\.evidence\[\d{1,6}\]\.(?:sourceId|quote))?)$/;
 let sequence=0;
@@ -58,10 +62,11 @@ export const QUALITY_REASONS=Object.freeze(['证据片段不存在或已变化',
 export function diagnosticRequestId(){return `req-${Date.now().toString(36)}-${(++sequence).toString(36)}`;}
 export function safeDiagnosticFields(value={}){
   const result={};
-  const qualityReasons=new Set(QUALITY_REASONS);
+  const qualityReasons=new Set([...QUALITY_REASONS,'获知者与校对目标不一致','知情状态或渠道不正确']);
   const qualityFields=new Set(['description','text','knowledge','content','recallSummary','entities','tags','temporal','learnedAt','epistemicStatus','before','after','context','scope','object','field','to','validFrom','validUntil','participants','location','state','status','via','innerLife','keyDialogues','acquisitionEvidence','id','category','unknown']);
   if(Array.isArray(value?.verificationIssues))result.verificationIssues=value.verificationIssues.slice(0,100).flatMap(r=>typeof r?.path==='string'&&verificationPath.test(r.path)&&verificationCodes.has(r.code)?[{path:r.path,code:r.code,...(Number.isSafeInteger(r.sourceFloor)&&r.sourceFloor>=0?{sourceFloor:r.sourceFloor}:{})}]:[]);
   if(qualityReasons.has(value?.qualityReason))result.qualityReason=value.qualityReason;
+  if(Array.isArray(value?.qualityShape))result.qualityShape=value.qualityShape.slice(0,6).flatMap(r=>['root','updates','additions','issues','reviews'].includes(r?.field)&&['missing','null','array','object','string','number','boolean'].includes(r.type)?[{field:r.field,type:r.type,...(Number.isSafeInteger(r.count)&&r.count>=0?{count:r.count}:{})}]:[]);
   if(Array.isArray(value?.qualityRejections))result.qualityRejections=value.qualityRejections.slice(0,100).flatMap(r=>['update','addition','issue'].includes(r?.kind)&&Number.isSafeInteger(r.index)&&r.index>=0?[{kind:r.kind,index:r.index,reason:qualityReasons.has(r.reason)?r.reason:'校对项未通过原文与字段校验',...(Array.isArray(r.fields)?{fields:r.fields.slice(0,40).map(k=>qualityFields.has(k)?k:'unknown')}: {})}]:[]);
   for(const [key,labels]of [['reason',DIAGNOSTIC_REASONS],['purpose',DIAGNOSTIC_PURPOSES],['stage',DIAGNOSTIC_STAGES]])if(Object.hasOwn(labels,value?.[key]))result[key]=value[key];
   if(typeof value?.requestId==='string'&&/^req-[a-z0-9]{1,16}-[a-z0-9]{1,10}$/.test(value.requestId))result.requestId=value.requestId;

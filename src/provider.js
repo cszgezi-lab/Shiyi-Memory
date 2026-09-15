@@ -154,7 +154,7 @@ export class ProviderClient {
       emit('request',{stage:'request',...requestMeta,queueWaitMs:lease?.queueWaitMs??0,maxTokens:payload?.max_tokens??0,timeoutMs:timeoutMs??this.profile.timeoutMs});
       return await this.performRequest(resource,payload,{signal,timeoutMs,headers,method,emit});
     }
-    catch(thrown){const error=thrown instanceof Error?thrown:new ShiyiError('provider threw a non-Error value','PROVIDER_REQUEST_FAILED');error.details={stage:'prepare',...requestMeta,...error.details,...lease?.finish(error),queueWaitMs:lease?.queueWaitMs??Math.max(0,Date.now()-started),requestElapsedMs:networkStarted===undefined?0:Math.max(0,Date.now()-networkStarted),requestId,purpose:purpose??resource};emit(error.code==='CANCELED'?'canceled':'failed',errorDiagnostics(error),error.code==='CANCELED'?'warning':'error');throw error;}
+    catch(thrown){const error=thrown instanceof Error?thrown:new ShiyiError('provider threw a non-Error value','PROVIDER_REQUEST_FAILED');error.details={stage:'prepare',...requestMeta,...error.details,...lease?.finish(error),queueWaitMs:lease?.queueWaitMs??(networkStarted===undefined?Math.max(0,Date.now()-started):0),requestElapsedMs:networkStarted===undefined?0:Math.max(0,Date.now()-networkStarted),requestId,purpose:purpose??resource};emit(error.code==='CANCELED'?'canceled':'failed',errorDiagnostics(error),error.code==='CANCELED'?'warning':'error');throw error;}
     finally{lease?.finish();finished=true;}
   }
 
