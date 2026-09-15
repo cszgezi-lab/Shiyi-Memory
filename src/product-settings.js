@@ -12,6 +12,17 @@ import { readSummaryPresets } from './summary-presets.js';
 export const PRODUCT_SETTINGS_VERSION = 1;
 
 const DEFINITIONS = [
+  {key:'dynamicPersonaEnabled',label:'启用动态人设',defaultValue:false,type:'boolean',consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaEvery',label:'人设每多少楼更新',defaultValue:10,type:'integer',min:1,max:200,consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaKeepRecent',label:'人设保留最近楼数',defaultValue:0,type:'integer',min:0,max:1000,consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaInputUnits',label:'人设输入预算（估算）',defaultValue:24000,type:'integer',min:1000,max:1000000,consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaOutputTokens',label:'人设回复上限（Token）',defaultValue:8192,type:'integer',min:0,max:131072,consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaDeadlineMs',label:'人设请求超时（毫秒）',defaultValue:180000,type:'integer',min:1000,max:600000,consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaEndpoint',label:'动态人设 API 地址',defaultValue:'',type:'string',maxLength:2048,consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaModel',label:'动态人设模型',defaultValue:'',type:'string',maxLength:240,consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaEndpointMode',label:'动态人设地址模式',defaultValue:'base',type:'enum',values:['base','exact'],consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaAuthMode',label:'动态人设认证方式',defaultValue:'bearer',type:'enum',values:['none','bearer','api-key'],consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaPrompt',label:'动态人设预设',defaultValue:'',type:'string',maxLength:60000,consumers:['DynamicPersonaController']},
   {key:'summaryPresets',label:'总结预设库',defaultValue:'',type:'string',maxLength:600000,consumers:['SummaryEngine','ProductShellController.createBatch']},
   { key:'summaryStaged', label:'分工总结', defaultValue:false, type:'boolean', consumers:['SummaryEngine'] },
   { key:'summaryReviewEnabled', label:'主总结＋原文复核（两次）', defaultValue:false, type:'boolean', consumers:['SummaryEngine'] },
@@ -199,7 +210,7 @@ export const PRODUCT_PERSISTED_SETTING_KEYS = PERSISTED_KEYS;
 // Connection settings belong to this TT installation, not a story or chat.
 // Credentials remain runtime-only and are deliberately absent from this list.
 export const PRODUCT_API_SETTING_KEYS = Object.freeze([
-  ...['provider','assistant','supplement','embedding','rerank'].flatMap(prefix => ['Endpoint','EndpointMode','Model','AuthMode'].map(suffix => prefix + suffix)),
+  ...['provider','assistant','supplement','embedding','rerank','dynamicPersona'].flatMap(prefix => ['Endpoint','EndpointMode','Model','AuthMode'].map(suffix => prefix + suffix)),
   'assistantFollowSummary','supplementFollowSummary','deadlineMs','summaryDeadlineMs','summaryStreaming','summaryRequestMode','chatRequestsPerMinute','assistantBudgetUnits','assistantOutputTokens',
 ]);
 export function splitProductSettings(patch) {

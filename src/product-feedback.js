@@ -11,6 +11,8 @@ const NETWORK = {
   'network.request_failed':'网络请求失败，请检查服务是否可访问。',
 };
 const CODES = {
+  PERSONA_RESPONSE_INVALID:'人设回答的格式、人物或来源未通过检查；旧档案保留，可在动态人设页重试。具体原因见运行日志。',
+  PERSONA_STAGE_CHANGED:'MVU阶段或原设定已改变，本批旧阶段回答未覆盖档案；可在动态人设页重试，不需重新总结。',
   QUALITY_RESPONSE_INVALID:'校对结果的格式、对象或原文证据未通过验证；原总结保留，可在内容校对中单独重试。',
   RECOVERY_LIMIT:'本批自动恢复已达到 2 次，已返回的结果暂存保留。可继续未完成任务；不会无上限调用模型。',
   RESUME_UNAVAILABLE:'本批没有可续跑的暂存任务（旧版本或已过保留期），请点击重新生成；旧记忆不会提前删除。',

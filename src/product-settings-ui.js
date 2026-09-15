@@ -101,6 +101,7 @@ export function settingsSection(kind) {
 
 export const API_INFO = Object.freeze({
   summary: { prefix:'provider', title:'总结模型', help:'整理你选择的聊天楼层，提取事件、人物、关系与知情者。不会替代主聊天模型。', resource:'/chat/completions' },
+  dynamicPersona: {prefix:'dynamicPersona',title:'动态人设模型',help:'独立后台任务，有自己的开关和楼层周期，不沿用总结 API。可选择你服务商提供的 Flash 模型。',resource:'/chat/completions'},
   supplement: { prefix:'supplement', title:'辅助整理模型', help:'分工总结的第二阶段：人物属性、知情、关系与演绎；同时负责合并核对、缺项校对和引用纠错。可选择服务商提供的 Flash 等快速模型。', resource:'/chat/completions' },
   assistant: { prefix:'assistant', title:'配置助手', help:'理解你的要求和配置文件，生成可确认、可应用的设置方案。', resource:'/chat/completions' },
   embedding: { prefix:'embedding', title:'向量模型', help:'按意思寻找相关记忆。已预填硅基流动推荐配置，可更换服务商。', resource:'/embeddings' },

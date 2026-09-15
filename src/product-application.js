@@ -1,4 +1,6 @@
 import { HostAdapter } from './host-adapter.js';
+import {createDynamicPersona} from './dynamic-persona.js';
+import {createPersonaWorldbook} from './dynamic-persona-worldbook.js';
 import { batchVectorCards,batchVectorGroups } from './product-batches.js';
 import { editKeepsakePatch } from './character-journal.js';
 import { lazyViewState } from './product-view-scheduling.js';
@@ -88,7 +90,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache(),knowledgeVectorCache=new ProductVectorCache();
   let knowledgeJob=false,automaticPaused=false,autoInvalidSources=new Set();
   const operations = new Set(), apiOperations = new Set(), injectedPayloads = new WeakSet();
-  const keys = { summary: '', supplement:'', assistant: '', embedding: '', rerank: '' };
+  const keys = { summary: '', supplement:'', assistant: '', embedding: '', rerank: '',dynamicPersona:'' };
   const keyOrigins={},keyVersions={},keyEdited=new Set();let credentialsLoaded=false;
   const prefixFor=k=>k==='summary'?'provider':k;
   function effectiveKeys(patch={}){const s={...core.settings,...patch};return Object.fromEntries(Object.entries(keys).map(([k,v])=>[k,keyOrigins[k]&&keyOrigins[k]!==credentialOrigin(s[`${prefixFor(k)}Endpoint`])?'':v]));}
@@ -118,7 +120,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(event.phase==='queued')queuedRequests.set(id,event.details);
     else if(['request','complete','failed','canceled'].includes(event.phase))queuedRequests.delete(id);
     const waiting=queuedRequests.values().next().value;
-    const notice=waiting?`${({summary:'总结',supplement:'辅助整理',assistant:'助手'})[waiting.modelRole]??'聊天请求'}：${waiting.reason==='queue_busy'?'等待同一接口上一条请求完成':`接口${waiting.reason==='queue_rpm'?'每分钟限额已满':'异常后冷却'}，本次等待约 ${Math.max(1,Math.ceil(waiting.retryDelayMs/1000))} 秒`}；可停止等待`:'';
+    const notice=waiting?`${({summary:'总结',supplement:'辅助整理',assistant:'助手',dynamicPersona:'动态人设'})[waiting.modelRole]??'聊天请求'}：${waiting.reason==='queue_busy'?'等待同一接口上一条请求完成':`接口${waiting.reason==='queue_rpm'?'每分钟限额已满':'异常后冷却'}，本次等待约 ${Math.max(1,Math.ceil(waiting.retryDelayMs/1000))} 秒`}；可停止等待`:'';
     if(state.requestQueueNotice!==notice){state.requestQueueNotice=notice;notify();}
     let run=transportRuns.get(id);
     if(!run){run=runtimeLog.start('transport',{requestId:id,purpose:event.details.purpose});transportRuns.set(id,run);}
@@ -142,6 +144,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }finally{await flushDiagnostics();}
   }
   const modules=createModuleController({host,core,state,load:loadApiSettings,getGlobal:()=>globalWorkspace,getChat:()=>workspace,check:assertCurrent,notify,refresh,changed:()=>recallChanged({vectors:true})});
+  const personaWorldbook=createPersonaWorldbook({host,check:assertCurrent});
+  const dynamicPersona=createDynamicPersona({settings:()=>core.settings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:()=>core.historyTail(),worldbook:personaWorldbook,client:()=>client('dynamicPersona'),log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>enabled&&!opening&&!state.stale&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
+  const resumeAutomaticTasks=()=>{if(host.document?.visibilityState==='hidden')return;queueAutomaticSummary();dynamicPersona.wake();};
+  host.document?.addEventListener?.('visibilitychange',resumeAutomaticTasks);host.addEventListener?.('online',resumeAutomaticTasks);
   function activeDictionary(){
     if(dictionaryRevision!==recallRevision||!dictionaryCache){dictionaryCache=buildDictionary([...(state.stale?[]:state.cards.filter(c=>c.category!=='conflicts')),...(core.settings.knowledgeEnabled?knowledgeCache.filter(c=>!state.hidden.includes(c.id)):[])],{aliases:core.settings.aliases,automatic:core.settings.dictionaryEnabled});dictionaryRevision=recallRevision;}
     return dictionaryCache;
@@ -332,6 +338,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function clearPrompt() { try { await hostAdapter?.setExtensionPrompt?.(PROMPT_KEY, '', 1, 1, false, 0); } catch { /* capability reported at enable */ } }
   async function stopListeners() { for (const off of bindings.splice(0)) { try { await off(); } catch { /* tracked by host */ } } }
   function emptyChatView(status='loading'){
+    dynamicPersona.clear();
     workspace=null;boundScope=null;boundRefKey=null;moduleSourceBaseline=null;modules.clear();
     qualitySaved={};preparedQuality=null;Object.assign(state,{rawRecords:{},memoryControls:{},quality:null,qualityPlan:null,qualityProgress:'',cards:[],records:{},batches:[],deletedRecords:[],hidden:[],savedThrough:-1,autoStartFloor:1,autoLastIndex:null,sourceStatus:null,progress:'',preview:null,actual:null,status,stale:status==='loading'});
     recallChanged({clear:true});
@@ -402,6 +409,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     return Array.isArray(chat)&&chat.length>=moduleSourceBaseline.length&&moduleSourceBaseline.every((old,i)=>{const next=moduleStamp(chat[i]);return Object.keys(old).every(k=>old[k]===next[k]);});
   }
   function invalidate(reason) {
+    dynamicPersona.clear();
     epoch++; abortAll(); moduleSourceBaseline=null;modules.clear();state.cards=state.cards.filter(c=>!c.readonly);state.stale = true; state.preview = null; state.actual = null;
     recallChanged({ clear: true });
     if(tracking){emptyChatView();state.feedback={id:++feedbackSequence,level:'info',text:'正在加载当前聊天的记忆和总结批次…'};}
@@ -444,16 +452,18 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       try { bindings.push(hostAdapter.subscribe(name, async () => {if(tracking)return;if(name==='MESSAGE_UPDATED'&&moduleMetadataOnly()){await syncModulesQuietly();return;}invalidate(name);})); } catch { /* no automatic activation without final hook */ }
     }
     state.status = 'ready';rememberModuleSources(); await refresh({boundOnly:true}); checkOpen();
+    try{await dynamicPersona.load();}catch(error){void reportError(error,{task:'persona',stage:'storage'});state.dynamicPersona={status:'failed',message:failureText(error),profiles:[],batches:[]};}checkOpen();
     await loadKnowledge(); await checkTarget(); enabled = enable;if(enable)automaticPaused=false;
     try {
-      bindings.push(hostAdapter.subscribe('CHAT_COMPLETION_SETTINGS_READY', payload => inject(payload)));
+      bindings.push(hostAdapter.subscribe('CHAT_COMPLETION_SETTINGS_READY', async payload => {await inject(payload);try{await dynamicPersona.inject(payload,{enabled});}catch(error){void reportError(error,{task:'persona',stage:'prepare'});}}));
+      try{bindings.push(hostAdapter.subscribe('WORLDINFO_ENTRIES_LOADED',payload=>enabled?personaWorldbook.applyLoaded(payload,dynamicPersona.profiles()).catch(error=>{void reportError(error,{task:'persona',stage:'prepare'});}):undefined));}catch{/* Optional capability must not disable automatic summary. */}
       // TT awaits event listeners. Never attach the model's lifetime to the
       // reply-render/save event; coalesce notifications into one background job.
-      bindings.push(hostAdapter.subscribe('MESSAGE_RECEIVED', queueAutomaticSummary));
+      bindings.push(hostAdapter.subscribe('MESSAGE_RECEIVED',()=>{void Promise.resolve().then(syncModulesQuietly);queueAutomaticSummary();dynamicPersona.wake();}));
       const events=host.Mvu?.events;
       for(const name of [events?.VARIABLE_INITIALIZED??'mag_variable_initiailized',events?.VARIABLE_UPDATE_ENDED??'mag_variable_update_ended']){
         const eventOn=host.eventOn??host.TavernHelper?.eventOn,eventRemove=host.eventRemoveListener??host.TavernHelper?.eventRemoveListener;
-        const callback=()=>{Promise.resolve().then(syncModulesQuietly);};
+        const callback=()=>{Promise.resolve().then(syncModulesQuietly);dynamicPersona.wake();};
         if(typeof eventOn==='function'){const listener=eventOn(name,callback);bindings.push(()=>{if(typeof listener?.stop==='function')listener.stop();else eventRemove?.(name,callback);});}
         else {try{bindings.push(hostAdapter.subscribe(name,callback));}catch{ /* explicit refresh still available */ }}
       }
@@ -462,7 +472,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(passive){state.feedback={id:++feedbackSequence,level:'info',text:state.message};notify();}
     return publicState();
     } catch(error){workspace=null;boundScope=null;boundRefKey=null;state.cards=[];state.records={};state.batches=[];state.deletedRecords=[];state.progress='';modules.clear();state.status='unavailable';recallChanged({clear:true});await stopListeners();await clearPrompt();setMessage(`聊天读取未完成：${failureText(error)}`);throw error;
-    } finally { opening = false; operations.delete(opener);if(active===opener)active=null;notify();wakeChatFollower(); }
+    } finally { opening = false; operations.delete(opener);if(active===opener)active=null;notify();wakeChatFollower();queueAutomaticSummary();dynamicPersona.wake(); }
   }
   async function saveUi() {
     await loadApiSettings();
@@ -536,6 +546,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function saveSettings(patch) {
     await loadApiSettings();await apiSettings.save(validateProductPatch(patch));
     if(!core.settings.injectionEnabled)await clearPrompt();
+    if(patch.dynamicPersonaEnabled===false)dynamicPersona.stop();
     setMessage('全局设置已保存，所有聊天共用');return {status:'saved',settings:core.settings};
   }
   async function saveApi(kind,patch,{keyValue}={}){
@@ -1067,14 +1078,14 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(!enabledNow&&autoRunning){active?.abort();await core.cancelSummary();}
     if(enabledNow&&(!workspace?.isCurrent()||!bindings.length))await open({enable:enabled});
     setMessage(enabledNow?'自动总结已启用；按连续进度等待下一批楼层。':'自动总结已暂停；手动总结与记忆注入不受影响');
-    if(enabledNow)await inspectAutomaticProgress();
+    if(enabledNow){await inspectAutomaticProgress();queueAutomaticSummary();}
   }
   function queueAutomaticSummary(){
     if(disposed)return;
     autoPending=true;wakeAutomaticSummary();
   }
   function wakeAutomaticSummary(){
-    if(!autoPending||autoTimer!==null||autoTask||active||opening||disposed||state.stale||!workspace?.isCurrent())return;
+    if(!autoPending||autoTimer!==null||autoTask||active||opening||disposed||state.stale||automaticPaused||!enabled||!core.settings.autoSummaryEnabled||host.document?.visibilityState==='hidden'||!workspace?.isCurrent())return;
     const token=epoch,version=cancelVersion;
     autoTimer=setTimeout(()=>{
       autoTimer=null;
@@ -1097,6 +1108,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       if(core.settings.focusMode==='ask_every'&&!force){setMessage('自动总结等待侧重点，可在手动总结中处理下一批');return;}
       op.finish();
       await summarize({startIndex:plan.nextStart,endIndex:plan.nextEnd,batchSize:plan.batchSize,trigger:'auto'});
+      if(!force)queueAutomaticSummary();
     }catch(error){if(!op.signal.aborted&&op.token===epoch&&feedbackSequence===feedbackAtStart)summaryFeedback('error',`自动总结未完成：${failureText(error)}`,'auto');if(force)throw error;}
     finally{autoRunning=false;op.finish();}
   }
@@ -1425,9 +1437,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function deleteConversation(){await loadApiSettings();if(assistantActive)throw new Error('请先停止助手');await globalWorkspace.remove(`assistant-${state.conversationId}`);state.history=[];state.conversations=await globalWorkspace.update('conversations',list=>list.filter(c=>c.id!==state.conversationId),[]);await newConversation();setMessage('助手对话已删除，已应用设置和记忆未改变');}
   async function hideRecord(id){assertCurrent();const ids=state.cards.find(c=>c.id===id)?.mergedIds??[id];recallBusy++;recallChanged();try{state.hidden=await workspace.update('hidden',list=>[...new Set([...list,...ids])],[]);await refresh();}finally{recallBusy--;}}
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
-  async function stop(){vectorStopped=true;clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
+  async function stop(){dynamicPersona.stop();vectorStopped=true;clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;automaticPaused=true;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
   const application={saveCharacterKeepsake,editPersonProfile,inspectAutomaticProgress,setAutoStartFloor,setAutomatic,processAutomatic:()=>autoSummary({force:true}),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
+    inspectDynamicPersona:()=>dynamicPersona.inspect(),processDynamicPersona:async()=>{await dynamicPersona.load();return dynamicPersona.process({force:true,retry:true});},pauseDynamicPersona:()=>dynamicPersona.pause(),setDynamicPersonaStart:floor=>dynamicPersona.setStart(floor),editDynamicPersona:(id,patch)=>dynamicPersona.edit(id,patch),undoDynamicPersona:id=>dynamicPersona.undo(id),addDynamicPersona:(name,text)=>dynamicPersona.add(name,text),
+    async setDynamicPersona(enabledNow){await saveSettings({dynamicPersonaEnabled:enabledNow});if(!enabledNow)dynamicPersona.stop();else {if(!workspace?.isCurrent())await open({enable:enabled});await dynamicPersona.load();await dynamicPersona.resume();}},
     startChatTracking,followCurrentChat,reviewMemory,previewQuality,inspectQualityRecord,saveQualityRecord,undoQuality,readViewState,
     reportError,loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.export();},clearRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.clear();},
     async exportInjectionLog(options){assertCurrent();return injectionLog.export(options);},
@@ -1455,10 +1469,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     setKey(kind,value,endpoint){if(!Object.hasOwn(keys,kind))throw new Error('未知连接');keyEdited.add(kind);keyVersions[kind]=(keyVersions[kind]??0)+1;keys[kind]=String(value??'');keyOrigins[kind]=credentialOrigin(endpoint??core.settings[`${prefixFor(kind)}Endpoint`]);if(kind==='summary')core.setSessionCredential(effectiveKeys().summary);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true,scheduleVectors:false});},
     exportSettings(){return {kind:'shiyi-config',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings)};},
     async exportBackup(){assertCurrent();return {kind:'shiyi-backup',version:1,scope:boundScope,modules:clone(state.modules),moduleSnapshots:clone(state.moduleSnapshots),eventMergeDecisions:clone(mergeDecisions),settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(`${d.id}-${i}`)))}))),assistant:state.history};},
-    async dispose(){disposed=true;host.document?.removeEventListener?.('visibilitychange',resumeVectorMaintenance);host.removeEventListener?.('online',resumeVectorMaintenance);host.removeEventListener?.('offline',resumeVectorMaintenance);tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of chatListeners.splice(0)){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();stopRequestScheduler();stopTransportDiagnostics();stopErrorBoundary();for(const resolve of followWaiters.splice(0))resolve(publicState());await flushDiagnostics();},
+    async dispose(){disposed=true;host.document?.removeEventListener?.('visibilitychange',resumeAutomaticTasks);host.removeEventListener?.('online',resumeAutomaticTasks);await dynamicPersona.dispose();host.document?.removeEventListener?.('visibilitychange',resumeVectorMaintenance);host.removeEventListener?.('online',resumeVectorMaintenance);host.removeEventListener?.('offline',resumeVectorMaintenance);tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of chatListeners.splice(0)){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();stopRequestScheduler();stopTransportDiagnostics();stopErrorBoundary();for(const resolve of followWaiters.splice(0))resolve(publicState());await flushDiagnostics();},
   };
   const exportRawBackup=application.exportBackup;
-  application.exportBackup=async()=>{const token=epoch,backup=await exportRawBackup();assertCurrent(token);return {...backup,qualityReview:clone(qualitySaved),effectiveRecords:clone(state.records)};};
+  application.exportBackup=async()=>{const token=epoch,backup=await exportRawBackup();assertCurrent(token);return {...backup,dynamicPersona:dynamicPersona.export(),qualityReview:clone(qualitySaved),effectiveRecords:clone(state.records)};};
   // One failure boundary for all public actions, including manual edits, DIY,
   // import/export and settings; keep their sync/async return contracts intact.
   for(const [name,descriptor]of Object.entries(Object.getOwnPropertyDescriptors(application))){

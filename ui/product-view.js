@@ -1,4 +1,5 @@
 import { createProductApplication } from '../src/product-application.js';
+import {dynamicPersonaHTML,mountDynamicPersona} from './product-dynamic-persona.js';
 import { characterJournalHTML,mountCharacterJournal } from './product-character-journal.js';
 import { frameScheduler, readViewState, reconcileMemoryList } from '../src/product-view-scheduling.js';
 import { memoryListHTML } from './product-management.js';
@@ -35,7 +36,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  <nav class="sy-nav" aria-label="拾忆导航">${['记忆','记录','召回','助手','API','设置'].map((v,i)=>`<button type="button" data-page="${NAV[i]}" ${i===0?'class="active"':''}>${v}</button>`).join('')}</nav>
  <section data-view="memory"><div class="sy-top"><h3>故事记忆</h3>${button('refresh','刷新')}</div>
  <p class="sy-help">查看已保存的故事细节，或直接补充一件事。</p>
- <div class="sy-actions"><button type="button" data-page="dialogue">关键对话</button><button type="button" data-page="diary">角色心迹</button></div>
+ <div class="sy-actions"><button type="button" data-page="dialogue">关键对话</button><button type="button" data-page="diary">角色心迹</button><button type="button" data-page="dynamic-persona">动态人设</button></div>
  ${qualityPanelHTML()}
  ${memoryEditorHTML()}
  ${customModulesHTML()}
@@ -47,6 +48,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  <section data-view="api" hidden><h3>API 与模型</h3><p class="sy-help">所有聊天共用，无需打开聊天即可配置、拉取模型和测试连接。</p>${apiSettingsHTML()}${button('save-settings','保存 API 设置',true)}</section>
  ${recallSectionsHTML()}
  ${characterJournalHTML()}
+ ${dynamicPersonaHTML()}
  <section data-view="modules" hidden><h3>模块</h3><div class="sy-module-grid">${[['injection','注入','调整发给 AI 的记忆'],['retrieval','检索','关键词、向量与重排'],['world','世界与知识库','原作、规则文件与别名'],['settings','设置与备份','配置、数据与版本']].map(([key,title,help])=>`<button type="button" data-page="${key}"><strong>${title}</strong><small>${help}</small></button>`).join('')}</div></section>
  <section data-view="injection" hidden><h3>注入</h3>${settingsSection('injection')}${button('save-settings','保存注入设置',true)}<button type="button" data-page="current">查看本轮记忆与召回预览</button></section>
  <section data-view="retrieval" hidden><h3>检索</h3>${field('筛选档位','<select data-recall-level><option value="24">通用均衡 · 24 条候选</option><option value="48">更细筛选 · 48 条候选</option></select>')}${button('save-recall-preset','应用分类策略')}<p class="sy-help">字典扩展别称与主题 → BM25 精确词匹配、向量找语义近似 → 分类候选合并 → 重排比较相关性 → 去重并按注入预算选取。重排不负责事件合并。扩大候选不增加最终注入上限，但可能增加接口耗时。通用策略是本项目九类记忆的初始配置，并非复制 ANIMA 的特定角色参数，也不是实测最优值；不改变 API、注入上限或向量开关。</p>${settingsSection('retrieval')}<div class="sy-actions">${button('save-settings','保存检索设置',true)}</div></section>
@@ -58,7 +60,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  function resetModels(kind){const pending=modelRequests.get(kind);pending?.abort();modelRequests.delete(kind);if(pending)feedback('模型列表请求已取消，请按当前配置重新拉取。');const list=$(`[data-model-list="${kind}"]`);if(list){list.innerHTML='<option value="">先拉取模型列表，也可以在下方直接输入</option>';list.disabled=true;}const b=$(`[data-action="models-${kind}"]`);if(b){b.disabled=false;b.textContent='拉取模型列表';}if($(`[data-model-status="${kind}"]`))$(`[data-model-status="${kind}"]`).textContent='';floating?.setBusy(Boolean(app?.state.busy)||modelRequests.size>0);}
  function resetAllModels(){for(const kind of Object.keys(API_INFO))resetModels(kind);}
  function syncInherited(){for(const kind of ['assistant','supplement']){const follow=$(`[data-setting="${kind}FollowSummary"]`)?.checked;if($(`[data-api-fields="${kind}"]`))$(`[data-api-fields="${kind}"]`).hidden=kind==='assistant'&&follow;if(kind==='supplement'){const connection=$('[data-api-connection="supplement"]');if(connection)connection.hidden=follow;const advanced=$('[data-api-card="supplement"] .sy-advanced');if(advanced)advanced.hidden=follow;}const notice=$(`[data-inherited="${kind}"]`);if(notice){const model=$('[data-setting="providerModel"]')?.value||'请先设置总结模型';notice.textContent=follow?(kind==='supplement'?'共用总结地址和 Key；模型以下方选择为准。':`正在沿用：${model}`):'';}}}
- let cardStamp='',qualityView=null;
+ let cardStamp='',qualityView=null,dynamicPersonaView=null;
  function paintCards(){
     if(!snapshot||!$('[data-cards]'))return;
     if(floating?.window.hidden||currentPage!=='memory')return;
@@ -88,6 +90,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
     floating?.setBusy(s.busy||modelRequests.size>0);
     if(floating?.window.hidden)return;
     journalView?.paint(s,currentPage);
+    if(currentPage==='dynamic-persona')dynamicPersonaView?.paint(s);
     const memory=currentPage==='memory',recording=currentPage==='recording',recordTab=$('[data-record-tab].active')?.dataset.recordTab;
     if(memory){paintCards();customManagement?.paint(s);}
     if(memory||recording&&recordTab==='batches')management?.paint(s,{memory,batches:recording&&recordTab==='batches'});
@@ -115,6 +118,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
   }
   const painting=frameScheduler(documentRef.defaultView??host,()=>paint(readViewState(app)));
   app??=createProductApplication({host,controller,...controllerOptions,onChange:paint,onInvalidate:()=>painting.request()});
+  dynamicPersonaView=mountDynamicPersona({panel,app,run});
  function fill({apiOnly=false}={}){const s=readViewState(app);for(const f of $$('[data-setting]')){const key=f.getAttribute('data-setting');if(dirtyApi.has(key))continue;if(f.type==='checkbox')f.checked=Boolean(s.settings[key]);else f.value=s.settings[key]??'';}{if($('[data-input]'))$('[data-input]').value=s.draft??'';if($('[data-count]'))$('[data-count]').value=s.settings.messageCount;if($('[data-batch-size]'))$('[data-batch-size]').value=s.settings.summaryBatchSize;const select=$('[data-conversation]');if(select){select.innerHTML=s.conversations.map(c=>`<option value="${esc(c.id)}">${esc(c.title)}</option>`).join('')||'<option value="main">配置对话</option>';select.value=s.conversationId;}}syncInherited();syncSummaryRange();}
  function collect(root=panel){const patch={};for(const f of root.querySelectorAll('[data-setting]')){const k=f.getAttribute('data-setting'),d=PRODUCT_SETTING_REGISTRY[k];if(['number','integer'].includes(d.type)&&f.value.trim()==='')throw new Error(`${d.label}不能为空`);patch[k]=d.type==='boolean'?f.checked:['number','integer'].includes(d.type)?Number(f.value):f.value;}return patch;}
  function apiPatch(kind,forRequest=false){const patch=collect($(`[data-api-card="${kind}"]`));if(forRequest&&['assistant','supplement'].includes(kind)&&patch[`${kind}FollowSummary`])Object.assign(patch,collect($('[data-api-card="summary"]')));return patch;}
@@ -130,7 +134,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
    finally{if(modelRequests.get(kind)===request){modelRequests.delete(kind);fetchButton.disabled=false;fetchButton.textContent='拉取模型列表';floating?.setBusy(Boolean(readViewState(app).busy)||modelRequests.size>0);}}
  }
  async function run(fn,{name='',button:control}={}){
-const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'}连接测试`:name.startsWith('save-')?'保存设置':({'journal-write':'更新角色记录','custom-save-module':'保存区块','custom-save-module-value':'保存记录','custom-read-mvu':'读取 MVU','custom-import-modules':'导入区块',open:'启用自动任务',assistant:'配置助手',beginner:'规则配置',summarize:'总结','focus-summary':'总结',analyze:'分析资料',vectors:'建立向量索引',import:'导入文件',remember:'保存记事'})[name];
+const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'}连接测试`:name.startsWith('save-')?'保存设置':({'dynamic-persona':'动态人设操作','journal-write':'更新角色记录','custom-save-module':'保存区块','custom-save-module-value':'保存记录','custom-read-mvu':'读取 MVU','custom-import-modules':'导入区块',open:'启用自动任务',assistant:'配置助手',beginner:'规则配置',summarize:'总结','focus-summary':'总结',analyze:'分析资料',vectors:'建立向量索引',import:'导入文件',remember:'保存记事'})[name];
    const isSummary=['summarize','focus-summary'].includes(name),isModels=name.startsWith('models-'),before=lastFeedbackId;
    const oldLabel=control?.textContent;if(label){feedback(`${label}中…`,'running');if(control){control.disabled=true;control.textContent=`${label}中…`;}}
    try{const result=await fn();painting.request();if(name.startsWith('test-')&&result?.message)feedback(`${API_INFO[name.slice(5)]?.title??'模型'}：${result.message}`,result.level??'info',true);else if(name==='vectors'&&result?.message)feedback(result.message,result.pending?'warning':'success',true);else if(result?.message&&result?.level&&!isSummary)feedback(result.message,result.level,true);else if(label&&!isSummary&&!isModels)feedback(`${label}完成`,'success',true);}
@@ -175,7 +179,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  for(const b of $$('[data-record-tab]'))b.addEventListener('click',()=>showRecordTab(b.dataset.recordTab));
  const logJump=documentRef.createElement('button');logJump.type='button';logJump.textContent='查看运行日志';logJump.dataset.openLogs='';logJump.addEventListener('click',()=>{setPage('recording');showRecordTab('logs');});$('[data-status]')?.after(logJump);
  const pageButtons=$$('[data-page]');
- function setPage(page){if(!$(`[data-view="${page}"]`))return currentPage;currentPage=page;if(['recall','vectors'].includes(page))void app.refreshVectorStatus?.({cached:true});for(const s of $$('[data-view]'))s.hidden=s.getAttribute('data-view')!==page;for(const b of pageButtons)b.classList?.toggle('active',b.getAttribute('data-page')===page||b.getAttribute('data-page')==='memory'&&['dialogue','diary'].includes(page)||b.getAttribute('data-page')==='recall'&&RECALL_PAGES.includes(page)||b.getAttribute('data-page')==='modules'&&!NAV.includes(page)&&!RECALL_PAGES.includes(page)&&!['dialogue','diary'].includes(page));if($('[data-open-logs]'))$('[data-open-logs]').hidden=!['memory','recording','api','assistant'].includes(page);const chatControls=$('[data-scope]')?.closest?.('.sy-top');if(chatControls)chatControls.hidden=!['memory','recording','current'].includes(page);if($('[data-status]'))$('[data-status]').hidden=!['memory','recording','current'].includes(page);if(page==='recording'&&!$('[data-record-panel="logs"]').hidden){if(chatControls)chatControls.hidden=true;if($('[data-status]'))$('[data-status]').hidden=true;if($('[data-open-logs]'))$('[data-open-logs]').hidden=true;}panel.closest?.('.sy-workbench-content')?.scrollTo?.(0,0);painting.flush();return page;}
+ function setPage(page){if(!$(`[data-view="${page}"]`))return currentPage;currentPage=page;if(['recall','vectors'].includes(page))void app.refreshVectorStatus?.({cached:true});for(const s of $$('[data-view]'))s.hidden=s.getAttribute('data-view')!==page;for(const b of pageButtons)b.classList?.toggle('active',b.getAttribute('data-page')===page||b.getAttribute('data-page')==='memory'&&['dialogue','diary','dynamic-persona'].includes(page)||b.getAttribute('data-page')==='recall'&&RECALL_PAGES.includes(page)||b.getAttribute('data-page')==='modules'&&!NAV.includes(page)&&!RECALL_PAGES.includes(page)&&!['dialogue','diary','dynamic-persona'].includes(page));if($('[data-open-logs]'))$('[data-open-logs]').hidden=!['memory','recording','api','assistant'].includes(page);const chatControls=$('[data-scope]')?.closest?.('.sy-top');if(chatControls)chatControls.hidden=!['memory','recording','current'].includes(page);if($('[data-status]'))$('[data-status]').hidden=!['memory','recording','current'].includes(page);if(page==='recording'&&!$('[data-record-panel="logs"]').hidden){if(chatControls)chatControls.hidden=true;if($('[data-status]'))$('[data-status]').hidden=true;if($('[data-open-logs]'))$('[data-open-logs]').hidden=true;}panel.closest?.('.sy-workbench-content')?.scrollTo?.(0,0);painting.flush();return page;}
  for(const b of pageButtons)b.addEventListener?.('click',()=>setPage(b.getAttribute('data-page')));
  for(const b of $$('[data-jump]'))b.addEventListener?.('click',()=>setPage(b.getAttribute('data-jump')));
  for(const f of $$('[data-key]'))f.addEventListener?.('input',()=>{const kind=f.getAttribute('data-key');app.setKey(kind,f.value,$(`[data-setting="${API_INFO[kind].prefix}Endpoint"]`)?.value);resetModels(kind);if(kind==='summary'){resetModels('assistant');resetModels('supplement');}});

@@ -173,7 +173,7 @@ export function createProductShellController({
   let bindingPromise = null;
   let activeTask = null;
   let destroyed = false;
-  let generation = 0;
+  let generation = 0, bindingGeneration = 0;
   let subscriptions = [];
   let settingsLoaded = false;
   let globalApiSettings = null, legacyApiSettings = {}, legacySettings = {};
@@ -231,6 +231,7 @@ export function createProductShellController({
     return messages.map(message=>{let body=message.text;for(const tag of tags)body=body.replace(new RegExp(`<${tag}(?:\\s[^>]*)?>[\\s\\S]*?<\\/${tag}>`,'gi'),'');return {...message,text:body};});
   }
   function tokenValid(token, session = state.session) { return !destroyed && token === generation && session && state.session === session; }
+  function bindingValid(token,session=state.session){return !destroyed&&token===bindingGeneration&&session&&state.session===session&&state.status!==PRODUCT_SHELL_STATUS.INVALIDATED;}
 
   async function removeSubscriptions() {
     const pending = subscriptions.splice(0);
@@ -244,6 +245,7 @@ export function createProductShellController({
 
   function invalidate(reason = 'MESSAGE_UPDATED', code = 'SOURCE_INVALIDATED') {
     generation += 1;
+    bindingGeneration += 1;
     if (abortController && !abortController.signal.aborted) abortController.abort(reason);
     abortController = null;
     activeTask = null;
@@ -810,6 +812,7 @@ export function createProductShellController({
   async function dispose() {
     destroyed = true;
     generation += 1;
+    bindingGeneration += 1;
     if (abortController && !abortController.signal.aborted) abortController.abort('disposed');
     activeTask = null;
     const unsubscribeFailures = await removeSubscriptions();
@@ -837,6 +840,13 @@ export function createProductShellController({
       if(!tokenValid(token,session)||stableStringify(await adapterInstance.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});
       return cleanMessages(range.messages);
     },
+    async readIndependentRange(options={}){
+      if(!state.session)throw Object.assign(new Error('请先打开聊天'),{code:'CHAT_CHANGED'});
+      const session=state.session,token=bindingGeneration;
+      const check=async()=>{if(!bindingValid(token,session)||stableStringify(await adapterInstance.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
+      await check();const range=await readProductHostRange(session,{...options,maxMessages});await check();
+      return {...range,messages:cleanMessages(range.messages)};
+    },
     get state() { return cloneState(state); },
     get settings() { return clone(state.settings); },
     get legacyApiSettings() { return clone(legacyApiSettings); },
@@ -844,8 +854,8 @@ export function createProductShellController({
     useGlobalSettings(patch) { globalApiSettings=validateProductPatch(patch);Object.assign(state.settings,globalApiSettings);transport=null; },
     async historyTail(){
       if(!state.session)throw new Error('请先打开聊天');
-      const session=state.session,token=currentToken();
-      const check=async()=>{const ref=await adapterInstance.currentRef();if(!tokenValid(token,session)||stableStringify(ref)!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
+      const session=state.session,token=bindingGeneration;
+      const check=async()=>{const ref=await adapterInstance.currentRef();if(!bindingValid(token,session)||stableStringify(ref)!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
       await check();let page;
       try{page=await session.handle.history.tail({limit:1});}
       catch(error){await check();throw Object.assign(new Error('当前聊天历史读取失败。'),{code:'HISTORY_UNAVAILABLE',details:{causeError:error,stage:'prepare'}});}
@@ -879,8 +889,10 @@ export function createProductShellController({
     workspace() {
       if (!sessionStore || !state.scope || state.status === 'invalidated') throw new Error('请先打开当前聊天');
       const session = state.session;
-      const token = currentToken();
-      return { store: sessionStore, scope: clone(state.scope), isCurrent: () => tokenValid(token, session) && state.status !== 'invalidated' };
+      const token = bindingGeneration;
+      // A summary cancellation ends that model task, not the chat binding or
+      // another background workflow. Real source/chat changes still revoke it.
+      return { store: sessionStore, scope: clone(state.scope), isCurrent: () => bindingValid(token, session) };
     },
     setPage(page) { state.activePage = ['memory', 'current', 'assistant', 'settings'].includes(page) ? page : 'memory'; return state.activePage; },
     close() { state.closed = true; return { status: 'closed', draft: clone(state.draft), settings: clone(state.settings) }; },
