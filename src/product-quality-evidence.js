@@ -3,12 +3,13 @@ import {topicalTokens} from './memory-evidence.js';
 import {enrichRetrievalMetadata} from './product-dictionary.js';
 
 import {qualitySourceSegments} from './source-evidence.js';
+import {narrativeReading} from './narrative-reading.js';
 export {qualitySourceSegments} from './source-evidence.js';
 
-export function qualityEvidenceCatalog(sources,records){
+export function qualityEvidenceCatalog(sources,records,readingConfig=''){
   const catalog=[];
   for(const source of sources){
-    const paragraphs=qualitySourceSegments(source),related=records.filter(r=>r.sourceRefs?.some(ref=>ref.sourceId===source.id));
+    const paragraphs=readingConfig||/<\/?sy_(?:context|private)\b/i.test(source.text??'')?narrativeReading(source,readingConfig).segments.map(s=>({...s,segmentId:`${s.segmentId}-r${s.start.toString(36)}-${s.end.toString(36)}`})):qualitySourceSegments(source),related=records.filter(r=>r.sourceRefs?.some(ref=>ref.sourceId===source.id));
     const people=related.flatMap(r=>[r.person,r.actorId,...(r.participants??[]),...(r.entities??[]).filter(e=>e.kind==='人物').flatMap(e=>[e.name,...(e.aliases??[])])]).filter(n=>typeof n==='string');
     const terms=topicalTokens(related.map(r=>[r.knowledge,r.description,r.text,r.content,r.to,r.title].filter(Boolean).join(' ')).join(' '),people);
     const selected=new Set();
@@ -18,7 +19,7 @@ export function qualityEvidenceCatalog(sources,records){
     if(paragraphs.reduce((n,p)=>n+p.text.length,0)<=2400||!terms.length)paragraphs.forEach((_,i)=>selected.add(i));
     else{
       let topicalHits=0;
-      paragraphs.forEach((p,i)=>{const hit=terms.some(t=>p.text.toLocaleLowerCase().includes(t));if(hit)topicalHits++;if(hit||/time_format|\d{4}[年/\-]\d{1,2}[月/\-]\d{1,2}/u.test(p.text))for(let n=Math.max(0,i-1);n<=Math.min(paragraphs.length-1,i+1);n++)selected.add(n);});
+      paragraphs.forEach((p,i)=>{const hit=terms.some(t=>p.text.toLocaleLowerCase().includes(t));if(hit)topicalHits++;if(hit||/time_format|sy_private|sy_context|\d{4}[年/\-]\d{1,2}[月/\-]\d{1,2}/u.test(p.text))for(let n=Math.max(0,i-1);n<=Math.min(paragraphs.length-1,i+1);n++)selected.add(n);});
       if(!topicalHits)paragraphs.forEach((_,i)=>selected.add(i));
     }
     catalog.push(...paragraphs.filter((_,i)=>selected.has(i)));
@@ -39,7 +40,7 @@ function evidenceError(){return Object.assign(new Error('记忆校对未通过�
 export function resolveQualityProposal(proposal,catalog,sources,record={},records={}){
   if(!catalog)return proposal;
   const value=clone(proposal),byId=new Map(catalog.map(s=>[s.segmentId,s])),sourceMap=new Map(sources.map(s=>[s.id,s]));
-  const resolve=id=>{const s=byId.get(id),original=s&&sourceMap.get(s.sourceId);if(!s||!original||original.text.slice(s.start,s.end)!==s.text)throw evidenceError();return s;};
+  const resolve=id=>{const s=byId.get(id),original=s&&sourceMap.get(s.sourceId);if(!s||!original||original.text.slice(s.start,s.end)!==s.text||!s.text.replace(/<[^>]*>/g,'').trim())throw evidenceError();return s;};
   if(Array.isArray(value.evidence))value.evidence=value.evidence.map(e=>{
     if(typeof e?.segmentId!=='string')return e;
     const s=resolve(e.segmentId);return {sourceId:s.sourceId,quote:s.text};

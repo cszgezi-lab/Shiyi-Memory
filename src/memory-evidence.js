@@ -15,6 +15,54 @@ export function narrativeEvidence(value) {
   return body?body[1]:text;
 }
 
+// Public-speech projection only. General narrative/diary readers still need
+// private thoughts. Scan before line filtering can discard standalone markers.
+// Preserve all outside bytes and insert a non-whitespace boundary, so removing
+// private text cannot join a speaker, utterance or GAL translation across it.
+export function withoutPrivateSpeech(value){
+  const text=String(value??''),ranges=[];
+  let cursor=0,depth=0,opened=0;
+  while(cursor<text.length){
+    const start=text.indexOf('<',cursor);if(start<0)break;
+    if(text.startsWith('<!--',start)){
+      const end=text.indexOf('-->',start+4);cursor=end<0?text.length:end+3;continue;
+    }
+    const head=/^<\s*(\/?)\s*([A-Za-z][A-Za-z0-9_:-]*)(?=[\s/>]|$)/u.exec(text.slice(start));
+    if(!head){cursor=start+1;continue;}
+    const privateTag=head[2].toLowerCase()==='sy_private';
+    let end=start+head[0].length,quote='';
+    // Quoted > or apparent closing tags in attributes are not delimiters.
+    for(;end<text.length;end++){
+      const c=text[end];
+      if(quote){if(c===quote)quote='';}
+      else if(c==='"'||c==="'")quote=c;
+      else if(c==='>'||c==='<')break;
+    }
+    if(text[end]!=='>'){
+      if(privateTag){ranges.push([depth?opened:head[1]?0:start,text.length]);depth=0;break;}
+      cursor=Math.max(start+1,end);continue;
+    }
+    cursor=end+1;if(!privateTag)continue;
+    if(head[1]){
+      // A closing marker without its opener makes the preceding prefix private.
+      if(!depth)ranges.push([0,cursor]);
+      else if(--depth===0)ranges.push([opened,cursor]);
+    }else if(/\/\s*>$/u.test(text.slice(start,cursor))){
+      if(!depth)ranges.push([start,cursor]);
+    }else{if(!depth)opened=start;depth++;}
+  }
+  if(depth)ranges.push([opened,text.length]);
+  if(!ranges.length)return text;
+  const merged=[];
+  for(const range of ranges.sort((a,b)=>a[0]-b[0])){
+    const last=merged.at(-1);
+    if(last&&range[0]<=last[1])last[1]=Math.max(last[1],range[1]);else merged.push([...range]);
+  }
+  let result='',end=0;
+  for(const [from,to]of merged){result+=text.slice(end,from)+'\n\uFFFC\n';end=to;}
+  return result+text.slice(end);
+}
+
 // Read-time compatibility: an explicit top-level null still means unknown.
 export function factValidity(record, field) {
   return Object.hasOwn(record, field) ? record[field] : record.temporal?.[field];
@@ -36,7 +84,7 @@ export function hasQuotedEvidence(evidence, quote) {
 }
 
 export function hasSpeechEvidence(evidence,quote,speaker){
-  evidence=narrativeEvidence(evidence);
+  evidence=narrativeEvidence(withoutPrivateSpeech(evidence));
   if(!String(evidence).includes(speaker)||!String(evidence).includes(quote))return false;
   // GAL pairs have an explicitly attributed Japanese line AND a Chinese
   // translation. Neither unrelated speakers nor narrator brackets qualify.

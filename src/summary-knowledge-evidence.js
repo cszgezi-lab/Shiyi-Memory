@@ -1,5 +1,6 @@
 import {qualitySourceSegments} from './source-evidence.js';
 import {clone,isPlainObject} from './utils.js';
+import {narrativeReading} from './narrative-reading.js';
 
 const sourceCache=new WeakMap();
 function partsFor(source){
@@ -7,12 +8,23 @@ function partsFor(source){
   if(cached&&cached.text===source.text&&cached.id===id)return cached.parts;
   const parts=qualitySourceSegments({...source,id});sourceCache.set(source,{text:source.text,id,parts});return parts;
 }
+function readingFor(source,config){
+  partsFor(source);const cached=sourceCache.get(source),key=typeof config==='string'?config:JSON.stringify(config);
+  if(cached.readingKey!==key){cached.reading=narrativeReading({...source,id:source.sourceId??source.id},config);cached.readingKey=key;}
+  return cached.reading;
+}
 
 // Transport-only source view: one copy of each narrative, no extra AI call or
 // database. IDs are scoped to the exact source/fragment; raw storage stays raw.
-export function summaryKnowledgeSources(messages=[]){
+export function summaryKnowledgeSources(messages=[],config=''){
   return messages.map(message=>{
     const parts=partsFor(message);
+    if(config||/<\/?sy_(?:context|private)\b/i.test(message.text??'')){
+      const reading=readingFor(message,config??'');
+      const knowledgeCues=reading.parts.filter(p=>/sy_private|不知情|不知道|未读|心里|内心|告诉|告知|听见|读完|得知|说[：:]|回答[：:]/.test(p.text)).map(p=>p.part);
+      const view={...message,text:reading.chunks.map(p=>`${p.part?`〔p${p.part}〕`:''}${p.text}`).join('\n'),...(knowledgeCues.length?{knowledgeCues}:{}),...(reading.warnings.length?{readingWarnings:reading.warnings}:{})};
+      Object.defineProperty(view,'_reading',{value:{stats:reading.stats}});return view;
+    }
     const knowledgeCues=parts.flatMap((p,i)=>/不知情|不知道|尚不知|没.{0,8}(?:看|听|读)|未(?:读|获告知)|不等于|才首次|才知道|才被|心里|内心|闭.{0,8}眼|捂.{0,8}耳|告诉|告知|听见|听清|听完|读完|得知|说[：:]|回答[：:]/.test(p.text)?[i+1]:[]);
     return {...message,text:parts.map((p,i)=>`〔p${i+1}〕${p.text}`).join(''),...(knowledgeCues.length?{knowledgeCues}:{})};
   });
@@ -32,16 +44,38 @@ export const SUMMARY_KNOWLEDGE_EVIDENCE_RULE='原文text中的〔p1〕等是程�
 
 // Provenance checks, NOT a claim of local natural-language entailment. The
 // model judges perception in the main extraction; this verifies its citations.
-export function bindSummaryKnowledge(record,sources,legacyBind){
+export function bindSummaryKnowledge(record,sources,legacyBind,{readingConfig=''}={}){
   const proof=record.acquisitionEvidence;
-  if(!isPlainObject(proof)||!('holder' in proof||'content' in proof))return legacyBind(record,sources.map(s=>s.text).join('\n'));
+  if(!isPlainObject(proof)||!('holder' in proof||'content' in proof)){
+    if(!readingConfig)return legacyBind(record,sources.map(s=>s.text).join('\n'));
+    // Legacy quotations still use the established holder/length checks. Only
+    // truly contiguous offered bytes can substantiate the quote: neither a
+    // deleted gap nor another source may be joined into invented evidence.
+    if(typeof proof?.quote==='string')for(const source of sources){
+      const runs=[];
+      for(const s of [...readingFor(source,readingConfig).segments].sort((a,b)=>a.start-b.start)){
+        const last=runs.at(-1);
+        if(last&&s.start<=last.end)last.end=Math.max(last.end,s.end);
+        else runs.push({start:s.start,end:s.end});
+      }
+      for(const {start,end}of runs){
+        const text=source.text.slice(start,end);
+        if(!text.includes(proof.quote))continue;
+        // The reader already excluded unsafe spans; do not apply the legacy
+        // first-content-wrapper selection again to this exact visible run.
+        const bound=legacyBind(record,text,{narrativeText:text});
+        if(bound.acquisitionEvidence)return bound;
+      }
+    }
+    return legacyBind(record,'');
+  }
   const pending=reason=>({...record,acquisitionEvidence:null,knowledgeReview:{status:'pending',reason}});
   if(typeof proof.access!=='string'||!proof.access.trim()||proof.access.length>2000)return pending('acquisition_access_missing');
   const same=(a,b)=>a.sourceId===b.sourceId&&(a.fragmentId??null)===(b.fragmentId??null);
   const cache=new Map();
   const resolve=list=>{
     if(!Array.isArray(list)||!list.length||list.length>24)throw Error('acquisition_reference_invalid');
-    return list.map(input=>{
+    return list.flatMap(input=>{
       const ref=normalizeNarrativePartRef(input,sources);
       if(!isPlainObject(ref)||(Object.keys(ref).some(k=>!['sourceId','fragmentId','part'].includes(k))))throw Error('acquisition_reference_invalid');
       const candidates=sources.filter(s=>same(s,ref));
@@ -51,11 +85,14 @@ export function bindSummaryKnowledge(record,sources,legacyBind){
       const part=typeof ref.part==='string'&&/^p?[1-9]\d*$/.test(ref.part)?Number(ref.part.replace(/^p/,'')):ref.part;
       const p=Number.isSafeInteger(part)&&part>0?parts[part-1]:null;
       if(!p||source.text.slice(p.start,p.end)!==p.text)throw Error('acquisition_reference_invalid');
-      return {sourceId:source.sourceId,...(source.fragmentId?{fragmentId:source.fragmentId}:{}),part,start:p.start,end:p.end,quote:p.text};
+      const offered=readingConfig?readingFor(source,readingConfig).parts.find(p=>p.part===part)?.slices:[p];
+      if(!offered?.length)throw Error('acquisition_reference_invalid');
+      return offered.filter(s=>s.text.replace(/<[^>]*>/g,'').trim()).map(s=>({sourceId:source.sourceId,...(source.fragmentId?{fragmentId:source.fragmentId}:{}),part,start:s.start,end:s.end,quote:s.text}));
     });
   };
   try{
     const holder=resolve(proof.holder),content=resolve(proof.content);
+    if(!holder.length||!content.length)return pending('acquisition_reference_invalid');
     return {...record,knowledgeReview:null,acquisitionEvidence:{method:'summary-source-parts-v1',person:record.person,access:proof.access.trim(),quote:holder[0].quote,holder:clone(holder),content:clone(content)}};
   }catch(error){return pending(error.message);}
 }

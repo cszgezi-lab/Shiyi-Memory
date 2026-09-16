@@ -2,6 +2,7 @@ import {clone,sha256,stableStringify,estimateUnits,makeId} from './utils.js';
 import {autoSummaryPlan} from './product-auto-summary.js';
 import {failureText} from './product-feedback.js';
 import {qualitySourceSegments} from './source-evidence.js';
+import {narrativeReading,NARRATIVE_READING_RULE,narrativeCounters} from './narrative-reading.js';
 import {personaManualPlan,personaManualPending,personaManualUnfinished} from './dynamic-persona-plan.js';
 import {personaIdentity,personaAliases,foldName} from './persona-identity.js';
 import {personaSourceIndex} from './persona-source-index.js';
@@ -24,8 +25,9 @@ export function currentPersonaProfiles(rows,stageMode='narrative'){
   const selected=new Map();for(const p of rows){const key=foldName(p.name),old=selected.get(key);if(!old||Boolean(p.locked)&&!old.locked||Boolean(p.locked)===Boolean(old.locked)&&(p.through??0)>=(old.through??0))selected.set(key,p);}
   return [...selected.values()];
 }
-export function personaRequest({messages,world,previous,prompt,dictionary,aliases='',stageMode='narrative',records={}}){
-  const source=messages.map(m=>({...m,text:qualitySourceSegments(m).map(s=>s.text).join('')}));
+export function personaRequest({messages,world,previous,prompt,dictionary,aliases='',stageMode='narrative',records={},readingConfig=''}){
+  const readings=[];
+  const source=messages.map(m=>{if(readingConfig||/<\/?sy_(?:context|private)\b/i.test(m.text??'')){const r=narrativeReading(m,readingConfig);readings.push(r);return {...m,text:r.chunks.map(p=>p.text).join('\n')};}return {...m,text:qualitySourceSegments(m).map(s=>s.text).join('')};});
   const text=source.map(m=>m.text).join('\n');
   const indexed=personaSourceIndex(world,{previous,dictionary,aliases,source:text}),identity=indexed.identity;
   const mentioned=new Set(identity.mentions(text).map(p=>p.key)),groups=new Map();
@@ -33,8 +35,8 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
     const person=identity.forTitle(s.name),key=person.key;if(!groups.has(key))groups.set(key,{id:`P${groups.size+1}`,title:s.name,characterId:person.characterId,name:person.name,aliases:[...person.visibleAliases],text:[]});const group=groups.get(key);group.text.push(s.text);return {...s,ref:group.id};
   });
   const known=currentPersonaProfiles(previous.filter(p=>!p.deleted&&mentioned.has(foldName(p.name))),stageMode);
-  const modeRule=stageMode==='strict'?'当前选择严格MVU阶段兼容：人物演绎限于当前数值阶段，不跨越其明确边界。':'当前选择剧情主导：MVU只作参考，不用数值阶段否定已发生的剧情。previous的最近完整档案继续有效，不因MVU阶段改变自动回退；正文中的共同关系需实际双方确认。';
-  return {messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n姓名使用original/previous提供的正式姓名；简称、昵称、简繁写法不创建另一个角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),original:[...groups.values()].map(g=>({id:g.id,name:g.name,aliases:g.aliases,parts:personaParts(spans.filter(s=>s.ownerKey===foldName(g.name)),known.find(p=>foldName(p.name)===foldName(g.name))).filter(p=>p.original.trim()).map(p=>({ref:p.ref,title:p.title,text:p.text,original:p.original===p.text?undefined:p.original}))})),materials:personaMaterials(records,identity,mentioned,Math.max(...source.map(m=>m.index))),previous:known.map(p=>({name:p.name,aliases:[...(identity.resolve(p.name)?.visibleAliases??[])],text:p.composition?.notes??p.text,examples:p.composition?.examples,locked:p.locked,through:p.through,currentStage:stageMode!=='strict'||!p.bindings?.length||p.bindings.every(b=>spans.some(s=>s.id===b.id&&s.stage===b.stage))})),reviewFocus:personaReviewFocus(source,identity)})}],spans,identity,audit:indexed.audit};
+  const modeRule=(stageMode==='strict'?'当前选择严格MVU阶段兼容：人物演绎限于当前数值阶段，不跨越其明确边界。':'当前选择剧情主导：MVU只作参考，不用数值阶段否定已发生的剧情。previous的最近完整档案继续有效，不因MVU阶段改变自动回退；正文中的共同关系需实际双方确认。')+(readings.length?'\n'+NARRATIVE_READING_RULE:'');
+  return {messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n姓名使用original/previous提供的正式姓名；简称、昵称、简繁写法不创建另一个角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),original:[...groups.values()].map(g=>({id:g.id,name:g.name,aliases:g.aliases,parts:personaParts(spans.filter(s=>s.ownerKey===foldName(g.name)),known.find(p=>foldName(p.name)===foldName(g.name))).filter(p=>p.original.trim()).map(p=>({ref:p.ref,title:p.title,text:p.text,original:p.original===p.text?undefined:p.original}))})),materials:personaMaterials(records,identity,mentioned,Math.max(...source.map(m=>m.index))),previous:known.map(p=>({name:p.name,aliases:[...(identity.resolve(p.name)?.visibleAliases??[])],text:p.composition?.notes??p.text,examples:p.composition?.examples,locked:p.locked,through:p.through,currentStage:stageMode!=='strict'||!p.bindings?.length||p.bindings.every(b=>spans.some(s=>s.id===b.id&&s.stage===b.stage))})),reviewFocus:personaReviewFocus(source,identity)})}],spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
 }
 export function parsePersonaResponse(response,{messages,spans,previous,identity,dictionary,aliases='',stageMode='narrative',preserveSources=false,diagnostic=()=>{}}){
   const reason=response?.choices?.[0]?.finish_reason;
@@ -190,7 +192,8 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const sourceHash=sha256(range.messages),world=await worldbook.read();guard();
       const liveManual=data.profiles.filter(p=>p.manual);
       const previous=clone(manualId?[...data.manualPlan.workingProfiles.filter(p=>!liveManual.some(m=>m.id===p.id)),...liveManual]:data.profiles);
-      const request=personaRequest({messages:range.messages,world,previous,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records()});
+      const request=personaRequest({messages:range.messages,world,previous,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction});
+      if(request.readingReport)diagnostic({run,task:'persona',phase:'reading',level:request.readingReport.readingFallbacks?'warning':'info',details:request.readingReport});
       view={...view,worldbook:{status:world.status??'ready',cardName:world.cardName,books:[...new Set(world.entries?.map(e=>e.book)??[])],entries:world.entries?.length??0,safeFragments:world.spans?.length??0,audit:request.audit}};emit();
       const inputUnits=estimateUnits(JSON.stringify(request.messages));if(inputUnits>config.dynamicPersonaInputUnits)throw Object.assign(new Error(`人设输入约 ${inputUnits} 单位，超过设置的 ${config.dynamicPersonaInputUnits}；未截断正文或改变楼数`),{code:'INPUT_BUDGET_EXCEEDED',details:{stage:'prepare',reason:'input_budget_exceeded',inputUnits,inputLimit:config.dynamicPersonaInputUnits}});
       diagnostic({run,task:'persona',phase:'plan',details:{startIndex:next.nextStart,endIndex:next.nextEnd,sourceCount:range.messages.length,inputUnits,inputLimit:config.dynamicPersonaInputUnits,maxTokens:config.dynamicPersonaOutputTokens,plannedRequests:1,modelRole:'dynamicPersona'}});

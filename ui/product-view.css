@@ -211,3 +211,65 @@
 .sy-quality-item h4{font-size:1em;margin:4px 0;overflow-wrap:anywhere}
 .sy-quality-source{white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto;padding:8px;font-size:.9em;contain:content}
 .sy-quality-plan{border:1px solid var(--sy-border,#596360);border-radius:8px;padding:10px;margin:8px 0}
+
+/* People: a compact directory beside a reading page; colors inherit the host theme. */
+#shiyi-product-shell .sy-people{min-width:0;max-width:100%;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-people button{min-height:44px;min-width:44px;max-width:100%;border-radius:3px;white-space:normal;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-people-links{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 12px}
+#shiyi-product-shell .sy-people-links button{flex:0 1 auto;border-color:transparent;padding:8px}
+#shiyi-product-shell .sy-people-layout{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
+#shiyi-product-shell .sy-people-directory,#shiyi-product-shell .sy-people-reading{min-width:0;max-width:100%}
+#shiyi-product-shell .sy-people-directory{align-self:start}
+#shiyi-product-shell .sy-people-switch{display:inline-flex;align-items:baseline;flex-wrap:wrap;gap:4px 12px;max-width:calc(100% - 18px);vertical-align:top}
+#shiyi-product-shell .sy-people-switch strong{font-size:16px;font-weight:600;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-people-switch-hint{font-size:12px;font-weight:400;opacity:.75}
+#shiyi-product-shell .sy-people-search{display:flex;flex-direction:column;gap:4px;font-size:13px}
+#shiyi-product-shell .sy-people-search input{width:100%;min-width:0;min-height:44px;max-width:100%;border-radius:3px}
+#shiyi-product-shell .sy-people-list{display:flex;flex-direction:column;margin-top:8px}
+#shiyi-product-shell .sy-people-list button{width:100%;text-align:left;border:0;border-bottom:1px solid var(--sy-border);padding:10px 8px}
+#shiyi-product-shell .sy-people-list strong{display:block;font-size:14px;font-weight:600}
+#shiyi-product-shell .sy-people-list small{display:block;font-size:12px;opacity:.72;margin-top:2px}
+#shiyi-product-shell .sy-people-list [aria-pressed=true]{color:var(--sy-accent);background:color-mix(in srgb,var(--sy-accent) 10%,transparent);box-shadow:inset 2px 0 var(--sy-accent)}
+#shiyi-product-shell .sy-people-pagination{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:4px;margin-top:8px}
+#shiyi-product-shell .sy-people-pagination span{text-align:center;font-size:12px}
+#shiyi-product-shell .sy-people-pagination button{font-size:13px;padding:8px 4px;border-color:transparent}
+#shiyi-product-shell .sy-people-reading{border-top:1px solid var(--sy-border);padding-top:12px}
+#shiyi-product-shell .sy-people-reading h4{font-size:20px;line-height:1.5;font-family:serif;margin:0 0 6px;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-people-reading h5{font-size:15px;font-weight:600;margin:0 0 8px}
+#shiyi-product-shell .sy-people-reading h6{font-size:14px;font-weight:500;margin:4px 0}
+#shiyi-product-shell .sy-people-reading h5 small{font-weight:400;opacity:.7}
+#shiyi-product-shell .sy-people-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;margin:12px 0}
+#shiyi-product-shell .sy-people-stats dt{font-size:12px;opacity:.72}
+#shiyi-product-shell .sy-people-stats dd{font-size:17px;margin:0;font-variant-numeric:tabular-nums}
+#shiyi-product-shell .sy-people-section{padding:14px 0;border-top:1px solid var(--sy-border)}
+#shiyi-product-shell .sy-people-entry+.sy-people-entry{margin-top:12px}
+#shiyi-product-shell .sy-people-reading p{margin:6px 0;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-people-prose,#shiyi-product-shell .sy-people-reading blockquote{white-space:pre-wrap;font-size:14px;line-height:1.8;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-people-reading blockquote{margin:8px 0;padding:4px 10px;border-left:2px solid var(--sy-accent)}
+#shiyi-product-shell .sy-people-reading button{font-size:13px;padding:8px;border-color:transparent;color:var(--sy-accent)}
+#shiyi-product-shell .sy-people-sources,#shiyi-product-shell .sy-people-settings{border-top:1px solid var(--sy-border);margin-top:8px}
+#shiyi-product-shell .sy-people summary{min-height:44px;padding:10px 0;font-size:13px;cursor:pointer;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-people-sources small{display:block}
+#shiyi-product-shell .sy-people :is(button,input,summary):focus-visible,#shiyi-product-shell [data-people-title]:focus-visible{outline:2px solid var(--sy-accent);outline-offset:2px}
+@media(min-width:760px){#shiyi-product-shell .sy-people-layout:has(> .sy-people-directory[open]){grid-template-columns:minmax(0,1fr) minmax(0,2fr)}#shiyi-product-shell .sy-people-directory[open]+.sy-people-reading{border-top:0;border-left:1px solid var(--sy-border);padding:0 0 0 20px}}
+
+/* Reading/workspace routes: a compact index rather than another tile wall. */
+#shiyi-product-shell .sy-section-heading{margin:18px 0 22px}
+#shiyi-product-shell .sy-section-heading>small{font-size:11px;letter-spacing:.15em;opacity:.6}
+#shiyi-product-shell .sy-section-heading h3{font-family:serif;font-size:24px;margin:4px 0 8px}
+#shiyi-product-shell .sy-section-heading p{font-size:13px;margin:0;opacity:.75}
+#shiyi-product-shell .sy-section-route{display:flex;align-items:center;justify-content:space-between;gap:10px;border-block:1px solid var(--sy-border);padding:8px 0;margin:14px 0}
+#shiyi-product-shell .sy-section-route span{font-size:12px;opacity:.72}
+#shiyi-product-shell .sy-section-route button{flex-shrink:0;font-size:12px;border:0;border-radius:3px;color:var(--sy-accent);padding:6px}
+#shiyi-product-shell .sy-tool-list{display:flex;flex-direction:column;margin:12px 0}
+#shiyi-product-shell .sy-tool-list button{display:grid;grid-template-columns:30px minmax(0,1fr) 16px;align-items:center;gap:8px;width:100%;text-align:left;border:0;border-bottom:1px solid var(--sy-border);border-radius:0;padding:14px 4px}
+#shiyi-product-shell .sy-tool-number{font-size:11px;font-variant-numeric:tabular-nums;opacity:.45}
+#shiyi-product-shell .sy-tool-list strong{font-size:15px;font-weight:600}
+#shiyi-product-shell .sy-tool-list small{display:block;font-size:12px;opacity:.65;margin-top:3px}
+#shiyi-product-shell .sy-check{display:flex;align-items:center;gap:8px;min-height:44px;font-size:14px}
+#shiyi-product-shell .sy-extraction-rule{padding:10px 0;border-block-end:1px solid var(--sy-border);margin:8px 0}
+#shiyi-product-shell .sy-extraction-rule summary{font-size:14px;min-height:44px;white-space:normal;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-extraction-preview{border-top:1px solid var(--sy-border);margin-top:24px;padding-top:18px}
+#shiyi-product-shell .sy-source-preview{white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;font-size:13px;line-height:1.7;max-height:360px;overflow:auto;border-left:2px solid var(--sy-accent);padding:0 12px}
+#shiyi-product-shell [data-extraction-warnings]{white-space:pre-wrap}
+#shiyi-product-shell [data-extraction-json]{font-family:monospace;font-size:13px}

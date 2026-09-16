@@ -3,7 +3,7 @@ import {sha256} from './utils.js';
 // Local source slices, not a new memory database. IDs bind exact offsets and
 // text; the model selects IDs instead of retyping prose. Keep time headers and
 // narrative HTML. Never offer reasoning, executable styling or variable edits.
-export function qualitySourceSegments(source){
+export function qualitySourceSegments(source,{includeStructural=false}={}){
   const text=String(source.text??''),excluded=[];
   // An inline-code example such as `<think>` is not a real opening marker.
   // Preserve offsets while ignoring examples during control-tag recognition;
@@ -20,7 +20,7 @@ export function qualitySourceSegments(source){
   for(const [a,b]of excluded){if(a>cursor)ranges.push([cursor,a]);cursor=Math.max(cursor,b);}if(cursor<text.length)ranges.push([cursor,text.length]);
   const prefix=sha256([source.id,text]).slice(0,8),segments=[];
   for(const [a,b]of ranges)for(const m of text.slice(a,b).matchAll(/[^\r\n]+(?:\r?\n|$)/g)){
-    const value=m[0];if(!value.replace(/<[^>]*>/g,'').trim())continue;
+    const value=m[0];if(!value.replace(/<[^>]*>/g,'').trim()&&!(includeStructural&&/^\s*(?:<\/?(?:sy_context|sy_private|time_format)\b[^>]*>\s*)+$/i.test(value)))continue;
     const start=a+m.index;
     // Keep ordinary paragraphs intact. Very long single-line narratives are
     // divided at sentence boundaries (or contiguous chunks), never truncated.

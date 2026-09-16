@@ -25,6 +25,7 @@ import { moduleSummaryContract, moduleSummaryInstructions, expandModuleSummary, 
 import { applySummaryPreset, summaryPresetFromRules, PRESET_TRANSPORT_GUARD } from './summary-presets.js';
 import {parseSummaryJson} from './summary-json.js';
 import {summaryKnowledgeSources,SUMMARY_KNOWLEDGE_EVIDENCE_RULE} from './summary-knowledge-evidence.js';
+import {NARRATIVE_READING_RULE,narrativeCounters} from './narrative-reading.js';
 
 function responseStatus(response) {
   return Number(response?.status ?? response?.statusCode ?? 200);
@@ -105,7 +106,7 @@ async function parseModelResponse(raw, { onMetadata = () => {}, onNormalize = ()
 
 function modelEnvelope(request) {
   const preset=summaryPresetFromRules(request.extractionContext?.rules);
-  const value = Object.fromEntries(Object.entries(request).filter(([key])=>key!=='instructions'));
+  const value = Object.fromEntries(Object.entries(request).filter(([key])=>key!=='instructions'&&key!=='readingConfig'));
   if (request.extractionContext?.coverage) {
     const coverage = {...request.extractionContext.coverage};
     // Hashes/revisions prove sources locally, but models only copy locators.
@@ -120,12 +121,30 @@ function modelEnvelope(request) {
     value.extractionContext.outputContract.knowledgeEvidenceTransport=SUMMARY_KNOWLEDGE_EVIDENCE_RULE;
     value.extractionContext.outputContract.partialKnowledgeExample='部分获知示例（不是剧情）：人物只看到桌上已有成品菜，没看见烹饪。应有known“桌上已有成品菜”，access“只见成品，未见烹饪、配料和制作者”；若原文明说不知道制作者，可另有explicitly_unaware。不能只写不知道谁做菜，而遗漏此人确实看到的成品。把这个原则用于本批实际原文，不复制示例事实。';
     value.extractionContext.outputContract.knowledgeCueRules='段号p1不是宿主fragmentId，不填入sourceRefs或summaryView.fragmentId；它仅填在acquisitionEvidence的part字段。knowledgeCues只标出原文中可能含获知/明确未知/感知限制的段号，不是判断或完整清单。按原文顺序检查：谁获得了哪项具体信息、哪些内容仍未获知，后来是否出现新的告知或亲见。对只获得部分信息的人，保留已获得的具体部分及access中的限制，不能只写其不知情而抹掉实际获知。明确不知情到后来获知分别记录各自时间/来源，不覆盖历史；没提及者不推定状态。不要因关键词给所有在场者补知情，也不要为减少校对省略有效记录。';
-    value.sourceMessages=summaryKnowledgeSources(value.sourceMessages);
-    value.bridgeMessages=summaryKnowledgeSources(value.bridgeMessages);
+    value.sourceMessages=summaryKnowledgeSources(value.sourceMessages,request.extractionContext?.rules?.narrativeExtraction);
+    value.bridgeMessages=summaryKnowledgeSources(value.bridgeMessages,request.extractionContext?.rules?.narrativeExtraction);
+    if(request.extractionContext?.rules?.narrativeExtraction||value.sourceMessages?.some(m=>m._reading))value.extractionContext.outputContract.readingRule=NARRATIVE_READING_RULE;
+  }
+  if(request.summaryStage&&(request.extractionContext?.rules?.narrativeExtraction||value.sourceMessages?.some(m=>/<\/?sy_(?:context|private)\b/i.test(m.text)))){
+    value.sourceMessages=summaryKnowledgeSources(value.sourceMessages,request.extractionContext?.rules?.narrativeExtraction);
+    value.bridgeMessages=summaryKnowledgeSources(value.bridgeMessages,request.extractionContext?.rules?.narrativeExtraction);
+    value.readingRule=NARRATIVE_READING_RULE;
+  }
+  // Repair builders retain the frozen local policy, not an already-filtered
+  // source. Budget measurement and provider I/O both use this one projection.
+  // Main/staged requests and the independently projected review stay separate.
+  if(['ShiyiFloorRepair','ShiyiCategoryRepair','ShiyiReferenceRepair','ShiyiSummaryEnumRepair'].includes(request.kind)){
+    value.sourceMessages=summaryKnowledgeSources(value.sourceMessages,request.readingConfig);
+    value.bridgeMessages=summaryKnowledgeSources(value.bridgeMessages,request.readingConfig);
+    if(request.readingConfig||[...value.sourceMessages,...value.bridgeMessages].some(m=>m._reading))value.readingRule=NARRATIVE_READING_RULE;
+  }
+  if(request.kind==='ShiyiSummaryVerification'&&Object.hasOwn(value.recordingRules??{},'narrativeExtraction')){
+    const {narrativeExtraction,...recordingRules}=value.recordingRules;
+    value.recordingRules=recordingRules;
   }
   // Keep the frozen preset locally for checkpoint identity, but transmit its
   // system prompt and writing rules once, not the entire library a second time.
-  if(preset)value.extractionContext={...value.extractionContext,rules:request.extractionContext.rules.recordingRules};
+  if(preset||request.extractionContext?.rules?.narrativeExtraction)value.extractionContext={...value.extractionContext,rules:request.extractionContext.rules.recordingRules};
   return verificationEnvelope(value);
 }
 
@@ -138,7 +157,9 @@ function modelInvoker(model) {
     // Keep the exact wire shape in one place so the host can measure the
     // serialized payload before invoking an adapter.  The adapter receives no
     // second, independently estimated request.
-    invoke.providerPayload = (request) => ({
+    invoke.providerPayload = (request) => {
+      const envelope=modelEnvelope(request);
+      const payload={
       model: model.profile?.model,
       ...summaryTransportOptions(model.profile),
       ...(Number.isSafeInteger(request?.effectiveMaxTokens) && request.effectiveMaxTokens > 0
@@ -146,9 +167,14 @@ function modelInvoker(model) {
         : model.profile?.maxTokens > 0 ? { max_tokens: model.profile.maxTokens } : {}),
       messages: [
         { role: 'system', content: request.kind==='ShiyiSummaryRequest'&&!request.summaryStage ? (summaryPresetFromRules(request.extractionContext?.rules)?`${PRESET_TRANSPORT_GUARD}\n${summaryPresetFromRules(request.extractionContext.rules).instructions}`:moduleSummaryInstructions) : request.instructions },
-        { role: 'user', content: JSON.stringify(modelEnvelope(request)) },
+        { role: 'user', content: JSON.stringify(envelope) },
       ],
-    });
+      };
+      const readings=[...(envelope.sourceMessages??[]),...(envelope.bridgeMessages??[])].map(m=>m._reading).filter(Boolean);
+      Object.defineProperty(payload,'_outputContract',{value:envelope.extractionContext?.outputContract});
+      if(readings.length)Object.defineProperty(payload,'_readingReport',{value:narrativeCounters(readings)});
+      return payload;
+    };
     return invoke;
   }
   throw new ValidationError('summary model adapter must be a function or expose summarize/generate/chatCompletions');
@@ -679,7 +705,8 @@ export class SummaryEngine {
           providerPayload=model.providerPayload?.(request)??null;units=estimateModelInputUnits(providerPayload??request);
         }
         if(units>requestLimit)throw new ShiyiError('本次模型输入超过设置的输入预算；已返回结果保留，尚未发送该请求','INPUT_BUDGET_EXCEEDED',{...baseDetails,reason:'input_budget_exceeded',stage:'prepare',inputLimit:requestLimit,inputUnits:units});
-        const wireContract=providerPayload?modelEnvelope(request).extractionContext?.outputContract:request.extractionContext?.outputContract;
+        const wireContract=providerPayload?._outputContract??request.extractionContext?.outputContract;
+        if(providerPayload?._readingReport)emit('reading',providerPayload._readingReport,providerPayload._readingReport.readingFallbacks?'warning':'info');
         emit('request',{...baseDetails,summaryStage:request.summaryStage,modelRole:request.summaryRole??'summary',sourceInputUnits:estimateUnits(JSON.stringify(request.sourceMessages??[])),historyInputUnits:estimateUnits(JSON.stringify(request.relevantRecords??{})),schemaInputUnits:estimateUnits(JSON.stringify(wireContract??request.outputContract??{})),bridgeInputUnits:estimateUnits(JSON.stringify(request.bridgeMessages??[])),inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
         const started=this.now();state.requests++;childCalls++;
         try{
@@ -843,7 +870,11 @@ export class SummaryEngine {
               const match=/^(\w+)\[(\d+)\]/.exec(issue.path??'');
               return {...issue,...(match?{id:output[match[1]]?.[Number(match[2])]?.id}:{})};
             });
-            const review=verificationRequest(request,output,{validationIssues,pending:progress?.pending??[]});
+            const readingConfig=request.extractionContext?.rules?.narrativeExtraction;
+            const projectReview=readingConfig||request.sourceMessages.some(m=>/<\/?sy_(?:context|private)\b/i.test(m.text));
+            const reviewRequest=projectReview?{...request,sourceMessages:summaryKnowledgeSources(request.sourceMessages,readingConfig),bridgeMessages:summaryKnowledgeSources(request.bridgeMessages,readingConfig)}:request;
+            const review=verificationRequest(reviewRequest,output,{validationIssues,pending:progress?.pending??[]});
+            if(projectReview)review.instructions+='\n'+NARRATIVE_READING_RULE;
             const apply=async response=>{
               const changes=await parseModelResponse(response,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,purpose:'summary_verification'})});
               const result=applyVerificationProgress(output,changes,review);
@@ -899,6 +930,7 @@ export class SummaryEngine {
           sourceRefs: evidenceRefsFor(child),
           sourceFloorIndices: [...child.sourceMessages,...child.bridgeMessages].map(m=>({sourceId:m.id,fragmentId:m.fragmentId,index:m.index})),
           sourceTexts: [...child.sourceMessages,...child.bridgeMessages].map(m=>({sourceId:m.id,fragmentId:m.fragmentId,text:m.text})),
+          readingConfig:child.rules?.narrativeExtraction,
           requireKnowledgeEvidence:typeof this.model.providerPayload==='function'&&!this.staged&&!this.verified,
           sourceRevision: child.sourceRevision,
           configVersion: child.configVersion,

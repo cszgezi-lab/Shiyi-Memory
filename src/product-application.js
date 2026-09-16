@@ -1,4 +1,5 @@
 import { HostAdapter } from './host-adapter.js';
+import {narrativePreview} from './narrative-reading.js';
 import {createDynamicPersona} from './dynamic-persona.js';
 import {createPersonaWorldbook} from './dynamic-persona-worldbook.js';
 import { batchVectorCards,batchVectorGroups } from './product-batches.js';
@@ -162,6 +163,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const readers=Object.fromEntries(Object.entries(state).map(([key,value])=>[key,()=>clone(value)]));
     const cardRevision=viewIdentity(state.cards);
     return lazyViewState({...readers,cardRevision:()=>cardRevision,batchRevision:()=>viewIdentity(state.batches),automatic:automaticPlan,autoRunning:()=>autoRunning,
+      // Compare source identities before the people view consumes/clones large fields.
+      peopleRevision:()=>{const settings=core.settings;return JSON.stringify([cardRevision,viewIdentity(state.dynamicPersona),viewIdentity(activeDictionary()),settings.aliases,settings.dynamicPersonaMvuMode]);},
       merges:()=>workspace?.isCurrent()&&!state.stale?clone(state.merges??[]):[],injectionLog:()=>workspace?.isCurrent()?injectionLog?.state:null,
       dictionary:()=>clone(activeDictionary()),runtimeLog:()=>runtimeLog.state,enabled:()=>enabled,chatReady:()=>Boolean(workspace?.isCurrent())&&!state.stale,
       settings:()=>core.settings,core:()=>core.state,busy:()=>Boolean(active)||apiOperations.size>0,
@@ -1450,6 +1453,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const application={saveCharacterKeepsake,editPersonProfile,inspectAutomaticProgress,setAutoStartFloor,setAutomatic,processAutomatic:()=>autoSummary({force:true}),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
     inspectDynamicPersona:()=>dynamicPersona.inspect(),processDynamicPersona:async()=>{await dynamicPersona.load();return dynamicPersona.process({force:true,retry:true});},pauseDynamicPersona:()=>dynamicPersona.pause(),setDynamicPersonaStart:floor=>dynamicPersona.setStart(floor),editDynamicPersona:(id,patch)=>dynamicPersona.edit(id,patch),undoDynamicPersona:id=>dynamicPersona.undo(id),addDynamicPersona:(name,text)=>dynamicPersona.add(name,text),
     previewDynamicPersonaManual:async options=>{await dynamicPersona.load();return dynamicPersona.previewManual(options);},
+    async previewNarrativeExtraction({text,floor,config=core.settings.narrativeExtraction}={}){
+      if(typeof text==='string')return narrativePreview({id:'local-preview',text},config);
+      assertCurrent();if(!Number.isInteger(floor)||floor<0)throw Error('请填写要预览的聊天楼号');
+      const range=await core.readIndependentRange({startIndex:floor,endIndex:floor});assertCurrent();
+      const source=range.messages.find(m=>m.index===floor);if(!source)throw Error('没有读到这一楼的原文');
+      return {...narrativePreview(source,config),floor};
+    },
     startDynamicPersonaManual:async options=>{if(!enabled)throw new Error('插件已暂停，请先启用插件，再开始手动人设补建');await dynamicPersona.load();await dynamicPersona.createManual(options);await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();},
     continueDynamicPersonaManual:async()=>{if(!enabled)throw new Error('插件已暂停，请先启用插件，再继续手动人设补建');await dynamicPersona.load();if(['paused','running','failed'].includes(dynamicPersona.state.manualPlan?.status))await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();},
     pauseDynamicPersonaManual:()=>dynamicPersona.pauseManual(),discardDynamicPersonaManual:()=>dynamicPersona.discardManual(),inspectDynamicPersonaWorldbook:()=>dynamicPersona.inspectWorldbook(),syncDynamicPersonaWorldbook:()=>dynamicPersona.syncMirror(),

@@ -24,19 +24,21 @@ import { recallSectionsHTML, mountRecallView, RECALL_PAGES } from './product-rec
 import { ASSISTANT_SKILL_VERSION, ASSISTANT_SKILLS, RECOMMENDED_MEMORY_SETTINGS } from '../src/product-assistant-skills.js';
 import { customModulesHTML,mountCustomModules,moduleProposalHTML } from './product-custom-modules.js';
 import {qualityPanelHTML,mountQualityView} from './product-quality-view.js';
+import {peopleHTML,mountPeopleView} from './product-people-view.js';
+import {extractionHTML,mountExtractionView} from './product-extraction-view.js';
 
 const ID='shiyi-product-shell';
-const NAV=['memory','recording','recall','assistant','api','modules'];
+const NAV=['memory','people','recording','recall','assistant','modules'];
 
 export function initProductShell({documentRef=globalThis.document,host=globalThis,application=null,controller=null,controllerOptions={}}={}){
  if(!documentRef||documentRef.getElementById?.(ID))return null;
  const panel=documentRef.createElement('section');panel.id=ID;panel.className='sy-root';
  panel.innerHTML=`<div class="sy-shell"><div class="sy-brand"><span class="sy-mark">拾</span><span>拾忆<small>让故事有迹可循</small></span><span class="sy-version">${PRODUCT_VERSION}</span></div><div class="sy-body">
  <div class="sy-top"><span data-scope>尚未打开聊天</span><div class="sy-actions">${button('open','启用插件',true)}${button('disable','暂停插件')}</div></div><p role="status" aria-live="polite" class="sy-status" data-status>连接一个模型，就可以开始整理故事。</p>
- <nav class="sy-nav" aria-label="拾忆导航">${['记忆','记录','召回','助手','API','设置'].map((v,i)=>`<button type="button" data-page="${NAV[i]}" ${i===0?'class="active"':''}>${v}</button>`).join('')}</nav>
+ <nav class="sy-nav" aria-label="拾忆导航">${['故事','人物','记录','召回','助手','设置'].map((v,i)=>`<button type="button" data-page="${NAV[i]}" ${i===0?'class="active"':''}>${v}</button>`).join('')}</nav>
  <section data-view="memory"><div class="sy-top"><h3>故事记忆</h3>${button('refresh','刷新')}</div>
  <p class="sy-help">查看已保存的故事细节，或直接补充一件事。</p>
- <div class="sy-actions"><button type="button" data-page="dialogue">关键对话</button><button type="button" data-page="diary">角色心迹</button><button type="button" data-page="dynamic-persona">动态人设</button></div>
+ <div class="sy-section-route"><span>情节与经历留在故事，人物成长集中查看。</span><button type="button" data-jump="people">人物工作区 →</button></div>
  ${qualityPanelHTML()}
  ${memoryEditorHTML()}
  ${customModulesHTML()}
@@ -49,7 +51,9 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  ${recallSectionsHTML()}
  ${characterJournalHTML()}
  ${dynamicPersonaHTML()}
- <section data-view="modules" hidden><h3>模块</h3><div class="sy-module-grid">${[['injection','注入','调整发给 AI 的记忆'],['retrieval','检索','关键词、向量与重排'],['world','世界与知识库','原作、规则文件与别名'],['settings','设置与备份','配置、数据与版本']].map(([key,title,help])=>`<button type="button" data-page="${key}"><strong>${title}</strong><small>${help}</small></button>`).join('')}</div></section>
+ ${peopleHTML()}
+ ${extractionHTML()}
+ <section data-view="modules" hidden><header class="sy-section-heading"><small>工作台</small><h3>设置与工具</h3><p>连接模型、调整读取方式，或管理资料与备份。</p></header><div class="sy-tool-list">${[['api','API 与模型','总结、人设、向量各自的连接'],['extraction','正文提取','规则编辑、中文读取与免费预览'],['injection','注入方式','调整实际发给 AI 的记忆'],['retrieval','检索策略','关键词、向量与重排'],['world','世界与知识库','导入资料与名称字典'],['settings','数据与备份','配置、导出与版本']].map(([key,title,help],i)=>`<button type="button" data-page="${key}"><span class="sy-tool-number">0${i+1}</span><span><strong>${title}</strong><small>${help}</small></span><span aria-hidden="true">›</span></button>`).join('')}</div></section>
  <section data-view="injection" hidden><h3>注入</h3>${settingsSection('injection')}${button('save-settings','保存注入设置',true)}<button type="button" data-page="current">查看本轮记忆与召回预览</button></section>
  <section data-view="retrieval" hidden><h3>检索</h3>${field('筛选档位','<select data-recall-level><option value="24">通用均衡 · 24 条候选</option><option value="48">更细筛选 · 48 条候选</option></select>')}${button('save-recall-preset','应用分类策略')}<p class="sy-help">字典扩展别称与主题 → BM25 精确词匹配、向量找语义近似 → 分类候选合并 → 重排比较相关性 → 去重并按注入预算选取。重排不负责事件合并。扩大候选不增加最终注入上限，但可能增加接口耗时。通用策略是本项目九类记忆的初始配置，并非复制 ANIMA 的特定角色参数，也不是实测最优值；不改变 API、注入上限或向量开关。</p>${settingsSection('retrieval')}<div class="sy-actions">${button('save-settings','保存检索设置',true)}</div></section>
  <section data-view="world" hidden><h3>世界与知识库</h3>${settingsSection('world')}${button('save-settings','保存世界设置',true)}<button type="button" data-page="dictionary">查看自动字典与标签</button>${knowledgeImportHTML()}</section>
@@ -60,7 +64,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  function resetModels(kind){const pending=modelRequests.get(kind);pending?.abort();modelRequests.delete(kind);if(pending)feedback('模型列表请求已取消，请按当前配置重新拉取。');const list=$(`[data-model-list="${kind}"]`);if(list){list.innerHTML='<option value="">先拉取模型列表，也可以在下方直接输入</option>';list.disabled=true;}const b=$(`[data-action="models-${kind}"]`);if(b){b.disabled=false;b.textContent='拉取模型列表';}if($(`[data-model-status="${kind}"]`))$(`[data-model-status="${kind}"]`).textContent='';floating?.setBusy(Boolean(app?.state.busy)||modelRequests.size>0);}
  function resetAllModels(){for(const kind of Object.keys(API_INFO))resetModels(kind);}
  function syncInherited(){for(const kind of ['assistant','supplement']){const follow=$(`[data-setting="${kind}FollowSummary"]`)?.checked;if($(`[data-api-fields="${kind}"]`))$(`[data-api-fields="${kind}"]`).hidden=kind==='assistant'&&follow;if(kind==='supplement'){const connection=$('[data-api-connection="supplement"]');if(connection)connection.hidden=follow;const advanced=$('[data-api-card="supplement"] .sy-advanced');if(advanced)advanced.hidden=follow;}const notice=$(`[data-inherited="${kind}"]`);if(notice){const model=$('[data-setting="providerModel"]')?.value||'请先设置总结模型';notice.textContent=follow?(kind==='supplement'?'共用总结地址和 Key；模型以下方选择为准。':`正在沿用：${model}`):'';}}}
- let cardStamp='',qualityView=null,dynamicPersonaView=null,personaNotice='';
+ let cardStamp='',qualityView=null,dynamicPersonaView=null,personaNotice='',peopleView=null,extractionView=null;
  function paintCards(){
     if(!snapshot||!$('[data-cards]'))return;
     if(floating?.window.hidden||currentPage!=='memory')return;
@@ -101,6 +105,8 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
     if(recording&&recordTab==='logs')logView?.paint(s);
     if(recording&&recordTab==='merges')mergeView?.paint(s);
     if(currentPage==='dictionary')dictionaryView?.paint(s);
+    if(currentPage==='people')peopleView?.paint(s);
+    if(currentPage==='extraction')extractionView?.paint(s);
     if(RECALL_PAGES.includes(currentPage))recallView?.paint(s);
     if(memory){
    qualityView?.paint(s);
@@ -141,7 +147,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
 const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'}连接测试`:name.startsWith('save-')?'保存设置':({'dynamic-persona':'动态人设操作','journal-write':'更新角色记录','custom-save-module':'保存区块','custom-save-module-value':'保存记录','custom-read-mvu':'读取 MVU','custom-import-modules':'导入区块',open:'启用自动任务',assistant:'配置助手',beginner:'规则配置',summarize:'总结','focus-summary':'总结',analyze:'分析资料',vectors:'建立向量索引',import:'导入文件',remember:'保存记事'})[name];
    const isSummary=['summarize','focus-summary'].includes(name),isModels=name.startsWith('models-'),before=lastFeedbackId;
    const oldLabel=control?.textContent;if(label){feedback(`${label}中…`,'running');if(control){control.disabled=true;control.textContent=`${label}中…`;}}
-   try{const result=await fn();painting.request();if(name.startsWith('test-')&&result?.message)feedback(`${API_INFO[name.slice(5)]?.title??'模型'}：${result.message}`,result.level??'info',true);else if(name==='vectors'&&result?.message)feedback(result.message,result.pending?'warning':'success',true);else if(result?.message&&result?.level&&!isSummary)feedback(result.message,result.level,true);else if(name==='dynamic-persona')feedback(result?.message??'操作已处理；人物生成状态与进度见动态人设页。','info');else if(label&&!isSummary&&!isModels)feedback(`${label}完成`,'success',true);}
+   try{const result=await fn();painting.request();if(name.startsWith('test-')&&result?.message)feedback(`${API_INFO[name.slice(5)]?.title??'模型'}：${result.message}`,result.level??'info',true);else if(name==='vectors'&&result?.message)feedback(result.message,result.pending?'warning':'success',true);else if(result?.message&&result?.level&&!isSummary)feedback(result.message,result.level,true);else if(name==='dynamic-persona')feedback(result?.message??'操作已处理；人物生成状态与进度见动态人设页。','info');else if(name==='extraction')feedback('正文提取操作完成；预览和保存状态见当前页面。','success');else if(label&&!isSummary&&!isModels)feedback(`${label}完成`,'success',true);}
    catch(e){void app.reportError?.(e,{stage:'ui'});const text=`${label??'操作'}未完成：${failureText(e)}`;if($('[data-status]'))$('[data-status]').textContent=text;if(!isSummary||before===lastFeedbackId)feedback(text,['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(e?.code)?'info':'error',!['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(e?.code));}
    finally{if(control&&label){control.disabled=false;control.textContent=oldLabel;}floating?.setBusy(Boolean(readViewState(app).busy)||modelRequests.size>0);}
  }
@@ -183,7 +189,19 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  for(const b of $$('[data-record-tab]'))b.addEventListener('click',()=>showRecordTab(b.dataset.recordTab));
  const logJump=documentRef.createElement('button');logJump.type='button';logJump.textContent='查看运行日志';logJump.dataset.openLogs='';logJump.addEventListener('click',()=>{setPage('recording');showRecordTab('logs');});$('[data-status]')?.after(logJump);
  const pageButtons=$$('[data-page]');
- function setPage(page){if(!$(`[data-view="${page}"]`))return currentPage;currentPage=page;if(['recall','vectors'].includes(page))void app.refreshVectorStatus?.({cached:true});for(const s of $$('[data-view]'))s.hidden=s.getAttribute('data-view')!==page;for(const b of pageButtons)b.classList?.toggle('active',b.getAttribute('data-page')===page||b.getAttribute('data-page')==='memory'&&['dialogue','diary','dynamic-persona'].includes(page)||b.getAttribute('data-page')==='recall'&&RECALL_PAGES.includes(page)||b.getAttribute('data-page')==='modules'&&!NAV.includes(page)&&!RECALL_PAGES.includes(page)&&!['dialogue','diary','dynamic-persona'].includes(page));if($('[data-open-logs]'))$('[data-open-logs]').hidden=!['memory','recording','api','assistant'].includes(page);const chatControls=$('[data-scope]')?.closest?.('.sy-top');if(chatControls)chatControls.hidden=!['memory','recording','current'].includes(page);if($('[data-status]'))$('[data-status]').hidden=!['memory','recording','current'].includes(page);if(page==='recording'&&!$('[data-record-panel="logs"]').hidden){if(chatControls)chatControls.hidden=true;if($('[data-status]'))$('[data-status]').hidden=true;if($('[data-open-logs]'))$('[data-open-logs]').hidden=true;}panel.closest?.('.sy-workbench-content')?.scrollTo?.(0,0);painting.flush();return page;}
+ function setPage(page){
+   if(!$(`[data-view="${page}"]`))return currentPage;
+   currentPage=page;
+   if(['recall','vectors'].includes(page))void app.refreshVectorStatus?.({cached:true});
+   const group=['people','dialogue','diary','dynamic-persona'].includes(page)?'people':RECALL_PAGES.includes(page)?'recall':NAV.includes(page)?page:'modules';
+   for(const s of $$('[data-view]'))s.hidden=s.getAttribute('data-view')!==page;
+   for(const b of pageButtons){const selected=b.getAttribute('data-page')===page||b.closest('.sy-nav')&&b.getAttribute('data-page')===group;b.classList?.toggle('active',Boolean(selected));if(b.closest('.sy-nav'))b.setAttribute('aria-current',selected?'page':'false');}
+   if($('[data-open-logs]'))$('[data-open-logs]').hidden=!['memory','recording','api','assistant'].includes(page);
+   const chatControls=$('[data-scope]')?.closest?.('.sy-top');if(chatControls)chatControls.hidden=!['memory','recording','current'].includes(page);
+   if($('[data-status]'))$('[data-status]').hidden=!['memory','recording','current'].includes(page);
+   if(page==='recording'&&!$('[data-record-panel="logs"]').hidden){if(chatControls)chatControls.hidden=true;if($('[data-status]'))$('[data-status]').hidden=true;if($('[data-open-logs]'))$('[data-open-logs]').hidden=true;}
+   panel.closest?.('.sy-workbench-content')?.scrollTo?.(0,0);painting.flush();return page;
+ }
  for(const b of pageButtons)b.addEventListener?.('click',()=>setPage(b.getAttribute('data-page')));
  for(const b of $$('[data-jump]'))b.addEventListener?.('click',()=>setPage(b.getAttribute('data-jump')));
  for(const f of $$('[data-key]'))f.addEventListener?.('input',()=>{const kind=f.getAttribute('data-key');app.setKey(kind,f.value,$(`[data-setting="${API_INFO[kind].prefix}Endpoint"]`)?.value);resetModels(kind);if(kind==='summary'){resetModels('assistant');resetModels('supplement');}});
@@ -201,6 +219,12 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  presetView=mountSummaryPresets({panel,app,run,host,download});mergeView=mountMergeManagement({panel,app,run,host});recallView=mountRecallView({panel,app,run,setPage,host,download});logView=mountRuntimeLog({panel,app,run,host,download});management=mountMemoryManagement({panel,app,run,host});dictionaryView=mountDictionary({panel,app,run,save:async input=>{if(dirtyApi.has('aliases'))throw new Error('手动字典文本尚未保存，请先保存世界设置');await app.saveDictionaryEntry(input);$('[data-setting="aliases"]').value=readViewState(app).settings.aliases;}});customManagement=mountCustomModules({panel,app,run,host,download,onAssistant:async text=>{await app.setDraft(text);fill();setPage('assistant');}});fill();paint(readViewState(app));
  personEditor=mountPersonEditor({panel,app,run});
  journalView=mountCharacterJournal({panel,app,run,host});
+ peopleView=mountPeopleView({panel,app,run,host,setPage:page=>{setPage(page);if(page==='dynamic-persona')$('[data-persona-controls]').open=true;},onSelect:({name,profileId,kind})=>{
+   if(kind==='facts'){$('[data-search]').value=name;$('[data-category]').value='entityFactChanges';cardStamp='';setPage('memory');return;}
+   if(kind==='dynamic-persona'){setPage(kind);dynamicPersonaView.focus?.(profileId??name);return;}
+   setPage(kind);journalView.selectPerson?.(kind,name);
+ }});
+ extractionView=mountExtractionView({panel,app,run,host,download});
  knowledgeView=mountKnowledgeView({panel,app,run,host});
  floating=mountFloatingProduct({panel,documentRef,host,version:PRODUCT_VERSION,onOpen:()=>{painting.flush();void app.followCurrentChat?.().catch(e=>feedback(`聊天记忆读取未完成：${failureText(e)}`,'warning'));},onClose:()=>painting.request(),onStop:()=>run(()=>app.stop()),onLogs:()=>{setPage('recording');showRecordTab('logs');}});floating.setNotice(noticeText,noticeLevel);
  let destroyed=false;

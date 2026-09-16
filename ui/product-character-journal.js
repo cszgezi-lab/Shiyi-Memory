@@ -3,15 +3,17 @@ import { sha256 } from '../src/utils.js';
 import { readViewState } from '../src/product-view-scheduling.js';
 import { recordTitle,sourceLabel,narrativeText } from '../src/product-narrative.js';
 import { esc,field } from '../src/product-settings-ui.js';
+import {foldName} from '../src/persona-identity.js';
+import {peopleGroups} from './product-people-view.js';
 
-export function characterJournalHTML(){return ['dialogue','diary'].map(kind=>`<section data-view="${kind}" hidden data-keepsake="${kind}"><div class="sy-top"><h3>${kind==='dialogue'?'关键对话':'角色心迹'}</h3><button type="button" data-jump="memory">返回记忆</button></div><p class="sy-help">${kind==='dialogue'?'保留重要原话、双方回应与关系边界。仍重要的台词随相关人物带入；不要求每轮复读。':'按角色和阶段查看内心变化。日记式演绎参考，不代表剧情中实际写过日记；私密想法不会赋予他人知情。'}</p><div class="sy-filters"><input data-keepsake-search placeholder="搜索角色、台词、阶段…" aria-label="搜索${kind==='dialogue'?'关键对话':'角色心迹'}"><button type="button" data-keepsake-add>新增${kind==='dialogue'?'台词':'心迹'}</button></div><p data-keepsake-count class="sy-help" role="status"></p><div data-keepsake-new></div><div data-keepsake-list></div><div class="sy-actions"><button type="button" data-keepsake-prev>上一页</button><button type="button" data-keepsake-next>下一页</button></div></section>`).join('');}
+export function characterJournalHTML(){return ['dialogue','diary'].map(kind=>`<section data-view="${kind}" hidden data-keepsake="${kind}"><div class="sy-top"><h3>${kind==='dialogue'?'关键对话':'角色心迹'}</h3><button type="button" data-jump="people">返回人物</button></div><p class="sy-help">${kind==='dialogue'?'保留重要原话、双方回应与关系边界。仍重要的台词随相关人物带入；不要求每轮复读。':'按角色和阶段查看内心变化。日记式演绎参考，不代表剧情中实际写过日记；私密想法不会赋予他人知情。'}</p><div class="sy-filters"><input data-keepsake-search placeholder="搜索角色、台词、阶段…" aria-label="搜索${kind==='dialogue'?'关键对话':'角色心迹'}"><button type="button" data-keepsake-add>新增${kind==='dialogue'?'台词':'心迹'}</button></div><p data-keepsake-count class="sy-help" role="status"></p><div data-keepsake-new></div><div data-keepsake-list></div><div class="sy-actions"><button type="button" data-keepsake-prev>上一页</button><button type="button" data-keepsake-next>下一页</button></div></section>`).join('');}
 const input=(key,label,value='',multi=false)=>field(label,multi?`<textarea rows="4" data-keep-field="${key}">${esc(value)}</textarea>`:`<input data-keep-field="${key}" value="${esc(value)}">`);
 const select=(key,label,options,value)=>field(label,`<select data-keep-field="${key}">${options.map(([v,l])=>`<option value="${v}" ${v===value?'selected':''}>${l}</option>`).join('')}</select>`);
 export function mountCharacterJournal({panel,app,run,host}){
   const panes=new Map();
   for(const kind of ['dialogue','diary']){
     const root=panel.querySelector(`[data-keepsake="${kind}"]`),$=s=>root.querySelector(s);
-    const state={page:1,stamp:'',scope:null,rows:[],drafts:new Map(),snapshot:null};panes.set(kind,state);
+    const state={page:1,stamp:'',scope:null,rows:[],drafts:new Map(),snapshot:null,person:''};panes.set(kind,state);
     function editor(key,d){
       const data=d.data??{},fresh=key==='new';
       return `<div class="sy-card sy-keepsake-editor" data-keep-editor="${esc(key)}">${fresh&&kind==='dialogue'?field('关联事件或关系',`<select data-keep-parent>${state.snapshot.cards.filter(c=>['events','relationshipChanges','personaChanges','performanceHints'].includes(c.category)&&!c.mergedIds?.length).map(c=>`<option value="${esc(c.id)}" ${c.id===d.recordId?'selected':''}>${esc(recordTitle(c))}</option>`).join('')}</select>`):''}${kind==='dialogue'?input('speaker','说话人',data.speaker)+input('to','对谁说',data.to)+input('text','台词原话',data.text,true)+input('context','当时语境与对方回应',data.context,true)+input('meaning','重要之处',data.meaning,true)+select('status','后续使用',[['active','仍重要 · 随相关人物带入'],['historical','过去阶段 · 按需召回']],data.status??'active'):(fresh?input('subject','所属角色',d.subject)+input('target','涉及对象（可留空）',d.target):'')+input('stage','阶段名称（可自由填写）',data.stage)+input('text','角色心迹',data.text,true)+input('cause','变化缘由／对应经历',data.cause,true)+select('status','阶段',[['current','按本条情境适用'],['historical','过去阶段']],data.status??'current')}<p class="sy-help">手工新增或修改会标为用户编写，保留原记录来源。不会替其他角色增加知情。</p><div class="sy-actions"><button type="button" data-keep-save="${esc(key)}">保存</button><button type="button" data-keep-cancel="${esc(key)}">取消</button></div></div>`;
@@ -23,10 +25,12 @@ export function mountCharacterJournal({panel,app,run,host}){
     }
     function draw(s){
       state.snapshot=s;const scope=JSON.stringify(s.scope??app.core?.state?.scope??null);
-      if(state.scope!==scope){state.drafts.clear();state.page=1;state.scope=scope;state.stamp='';}
+      if(state.scope!==scope){state.drafts.clear();state.page=1;state.scope=scope;state.stamp='';state.person='';}
       const stamp=JSON.stringify([s.cardRevision??s.cards,$('[data-keepsake-search]').value,state.page,[...state.drafts.keys()]]);if(stamp===state.stamp)return;state.stamp=stamp;
-      const all=characterKeepsakes(s.cards),q=$('[data-keepsake-search]').value.toLocaleLowerCase();
-      state.rows=(kind==='dialogue'?all.dialogues:all.diaries).filter(r=>`${r.subject} ${r.target} ${JSON.stringify(r.data)}`.toLocaleLowerCase().includes(q));
+      const all=characterKeepsakes(s.cards),q=foldName($('[data-keepsake-search]').value);
+      const group=state.person?peopleGroups(s).find(g=>foldName(g.name)===foldName(state.person)):null;
+      const selected=new Set((group?.[kind==='dialogue'?'dialogues':'diaries']??[]).map(r=>r.id));
+      state.rows=(kind==='dialogue'?all.dialogues:all.diaries).filter(r=>state.person?selected.has(r.id):foldName(`${r.subject} ${r.target} ${JSON.stringify(r.data)}`).includes(q));
       const pages=Math.max(1,Math.ceil(state.rows.length/12));state.page=Math.min(state.page,pages);
       $('[data-keepsake-count]').textContent=`${state.rows.length} 项 · ${state.page} / ${pages} 页`;
       $('[data-keepsake-prev]').disabled=state.page===1;$('[data-keepsake-next]').disabled=state.page===pages;
@@ -56,8 +60,11 @@ export function mountCharacterJournal({panel,app,run,host}){
       const id=b.dataset.keepDelete??b.dataset.keepToggle,row=state.rows.find(r=>r.id===id);
       if(row)void run(async()=>{const remove=b.hasAttribute('data-keep-delete');if(remove){if(!host.confirm?.('删除这一项？仅移除台词／心迹，不删除关联事件或聊天原文。'))return {message:'已取消删除',level:'info'};await app.saveCharacterKeepsake({...row,remove:true});}else await app.saveCharacterKeepsake({...row,data:{...row.data,disabled:!row.data.disabled}});state.drafts.delete(id);refresh();return {message:remove?'此项已删除，关联事件保留':row.data.disabled?'已恢复此项注入':'此项不再单独注入，原事件和人物事实保留',level:'success'};},{name:'journal-write',button:b});
     });
-    $('[data-keepsake-search]').addEventListener('input',()=>{state.page=1;draw(readViewState(app));});
+    $('[data-keepsake-search]').addEventListener('input',()=>{state.person='';state.page=1;draw(readViewState(app));});
     for(const [sel,step]of [['prev',-1],['next',1]])$(`[data-keepsake-${sel}]`).addEventListener('click',()=>{state.page+=step;draw(readViewState(app));});
   }
-  return {paint(s,page){panes.get(page)?.draw(s);}};
+  return {paint(s,page){panes.get(page)?.draw(s);},selectPerson(kind,name){
+    const state=panes.get(kind),root=panel.querySelector(`[data-keepsake="${kind}"]`);if(!state||!root)return;
+    const snapshot=readViewState(app);state.draw(snapshot);root.querySelector('[data-keepsake-search]').value=name??'';state.person=name??'';state.page=1;state.stamp='';state.draw(snapshot);
+  }};
 }

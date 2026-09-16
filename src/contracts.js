@@ -482,6 +482,7 @@ export function bindDraftBundle(modelOutput, {
   sourceRefs = [],
   sourceFloorIndices = [],
   sourceTexts = [],
+  readingConfig = '',
   requireKnowledgeEvidence = false,
   sourceRevision = null,
   configVersion = '1',
@@ -532,7 +533,7 @@ export function bindDraftBundle(modelOutput, {
     delete next.journalOnly;
     if(next.innerLife!==undefined&&!['personaChanges','performanceHints'].includes(category))delete next.innerLife;
     const knowledge=category==='awarenessChanges'&&requireKnowledgeEvidence&&next.acquisitionEvidence===undefined?{...next,acquisitionEvidence:null}:next;
-    const checked=category==='awarenessChanges'?bindSummaryKnowledge(knowledge,sourceTexts.filter(m=>next.sourceRefs.some(r=>r.sourceId===m.sourceId&&r.fragmentId===m.fragmentId)),bindKnowledgeEvidence):next;
+    const checked=category==='awarenessChanges'?bindSummaryKnowledge(knowledge,sourceTexts.filter(m=>next.sourceRefs.some(r=>r.sourceId===m.sourceId&&r.fragmentId===m.fragmentId)),bindKnowledgeEvidence,{readingConfig}):next;
     return bindOriginalSource(bindCharacterDetails(completeInnerLife(enrichRetrievalMetadata(checked,evidence),evidence,category),evidence),category,sourceTexts);
   };
   const bindCategory = category => normalizedCategory(source[category],category).map((record,index)=>bindEvidence(record,category,index));

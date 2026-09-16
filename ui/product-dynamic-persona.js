@@ -11,10 +11,12 @@ export function dynamicPersonaProgressText(d){
   return `${p.coveredThrough>=p.startFloor?`连续已处理 #${p.startFloor}–${p.coveredThrough}`:'起点后尚未处理'} · 下一批 #${p.nextStart}–${p.nextEnd} · 最新 #${d.lastIndex??'未读取'} · 保留 ${p.keepRecent} 楼。${p.pendingBatches===null?'点击检查进度读取待处理数量。':`当前 ${p.pendingBatches} 个完整待处理批次，正常每批 1 次人设请求。`}旧聊天不继承主总结进度；从 1 开始会分批补读原文。修改起算楼层会跳过更早原文，不代表已建立那些楼层的人设。`;
 }
 export function dynamicPersonaHTML(){return `<section data-view="dynamic-persona" hidden>
-<div class="sy-top"><h3>动态人设</h3><button type="button" data-jump="api">独立 API</button></div>
+<div class="sy-top"><h3>动态人设</h3><button type="button" data-jump="people">人物工作区</button></div>
+<p data-persona-status role="status"></p>
+<details class="sy-card" data-persona-controls><summary>更新与设置 <small>自动周期 · 手动补建 · API</small></summary>
+<div class="sy-actions"><button type="button" data-jump="api">独立 API</button><button type="button" data-jump="extraction">正文提取规则</button></div>
 <p class="sy-help">独立读取原文，不等主总结。自动按周期更新；旧聊天可以手动选范围补建。主聊天只使用已完成的档案，锁屏后可能暂停。</p>
 <p class="sy-help">推荐剧情主导：人物随互动成长，MVU 数值只作参考，不因数值没变就退回旧人设。无 MVU 同样可用；不改变量或脚本。简繁姓名与可确认的简称共同识别，有歧义可在人物编辑或召回字典里校正。</p>
-<p data-persona-status role="status"></p>
 <div class="sy-actions"><button type="button" data-persona-tab="auto" aria-pressed="true">自动更新</button><button type="button" data-persona-tab="manual" aria-pressed="false">手动补建</button></div>
 <div class="sy-card" data-persona-auto>
 <div class="sy-actions"><button type="button" data-persona-enable>启用 / 继续自动</button><button type="button" data-persona-pause>暂停自动</button></div>
@@ -39,6 +41,7 @@ ${field('当前聊天自动起算楼层','<input data-persona-start type="number
 <p class="sy-help" data-persona-worldbook-read></p><p class="sy-help" data-persona-worldbook></p>
 <details class="sy-card" data-persona-source-audit><summary>原书条目识别结果（不是已替换清单）</summary><div data-persona-source-audit-list></div></details>
 <p class="sy-help">同一人物持续更新整份档案，属性可自由增删，历史版本保留；锁定后 AI 不覆盖。原世界书不永久停用：本轮请求中用动态档案替换可识别的人设文字，不重复注入原人设；EJS 条件与 MVU 变量不改，复杂脚本保留。检查读取、同步镜像不调用模型。</p>
+</details>
 <details class="sy-card"><summary>本轮动态人设注入</summary><p data-persona-injected-info></p><div class="sy-packet" data-persona-injected-text></div></details>
 <div class="sy-actions"><button type="button" data-persona-profile-prev>上一组人物</button><button type="button" data-persona-profile-next>下一组人物</button><span data-persona-profile-page></span></div><div data-persona-profiles></div>
 <details class="sy-card"><summary>新增 DIY 人物档案</summary>${field('姓名','<input data-persona-new-name>')}${field('完整人物信息','<textarea rows="6" data-persona-new-text></textarea>')}<button type="button" data-persona-add>新增并锁定</button></details>
@@ -110,5 +113,10 @@ export function mountDynamicPersona({panel,app,run,host=globalThis}){
     const batches=[...(d.batches??[])].sort((a,b)=>b.startIndex-a.startIndex);page=Math.min(page,Math.max(0,Math.ceil(batches.length/10)-1));
     $('[data-persona-batches]').innerHTML=batches.slice(page*10,page*10+10).map(b=>`<p>#${b.startIndex}–${b.endIndex} · ${b.status==='saved'?`已保存 · ${b.profileCount} 份更新`:`未完成：${esc(b.message??'可重试')}`}</p>`).join('')||'<p class="sy-help">还没有人设更新记录。</p>';
   }
-  return {paint};
+  return {paint,focus(idOrName){
+    const s=app.state,visible=currentPersonaProfiles((s.dynamicPersona?.profiles??[]).filter(p=>!p.deleted),s.settings.dynamicPersonaMvuMode);
+    const index=visible.findIndex(p=>p.id===idOrName||p.name===idOrName);if(index<0)return;
+    profilePage=Math.floor(index/6);stamp='';paint(s);
+    const card=[...panel.querySelectorAll('[data-persona-id]')].find(e=>e.dataset.personaId===visible[index].id);card?.scrollIntoView?.({block:'start'});
+  }};
 }

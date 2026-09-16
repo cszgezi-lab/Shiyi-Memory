@@ -59,9 +59,9 @@ export function activeSummaryPreset(text='') {
   // Unchanged recommendation keeps the legacy request and checkpoint binding.
   return preset.instructions===defaults.instructions&&stableStringify(preset.rules)===stableStringify(defaults.rules)?null:preset;
 }
-export function freezeSummaryRules(recordingRules,presets='') {
+export function freezeSummaryRules(recordingRules,presets='',narrativeExtraction='') {
   const summaryPreset=activeSummaryPreset(presets);
-  return summaryPreset?{recordingRules,summaryPreset}:recordingRules;
+  return summaryPreset||narrativeExtraction?{recordingRules,...(summaryPreset?{summaryPreset}:{}),...(narrativeExtraction?{narrativeExtraction}:{})}:recordingRules;
 }
 export function summaryPresetFromRules(rules) {
   return isPlainObject(rules)&&Object.hasOwn(rules,'summaryPreset')?validateSummaryPreset(rules.summaryPreset):null;

@@ -4,6 +4,7 @@ import {summaryRecord,selectSummaryContext} from './summary-context.js';
 import {MEMORY_CATEGORIES} from './product-batches.js';
 import {qualityEvidenceCatalog} from './product-quality-evidence.js';
 import {knowledgeReviewWire} from './product-knowledge-review.js';
+import {NARRATIVE_READING_RULE} from './narrative-reading.js';
 
 export const qualityRows=records=>MEMORY_CATEGORIES.flatMap(category=>(records[category]??[]).map(r=>({...r,category})));
 export function qualityTargets(records,saved={},recordIds=null,preparedStatus=null,automatic=false){
@@ -30,7 +31,7 @@ export async function planQuality({records,effectiveRecords=records,saved={},sou
   const batchSize=Math.max(1,Math.min(100,Math.trunc(Number(settings.qualityBatchRecords)||6)));
   for(let i=0;i<orderedIds.length;i+=batchSize)pending.push(orderedIds.slice(i,i+batchSize));
   const sourceMap=new Map(sources.map(m=>[m.id,m])),jobs=[],blocked=[];
-  const catalog=qualityEvidenceCatalog(sources,[...byId.values()]);
+  const catalog=qualityEvidenceCatalog(sources,[...byId.values()],settings.narrativeExtraction);
   const limit=settings.inputBudgetUnits;
   while(pending.length){
     check();await yieldTask();check();
@@ -43,7 +44,8 @@ export async function planQuality({records,effectiveRecords=records,saved={},sou
     const input={sources:evidence.map(({id,index})=>({id,index,text:offered.filter(s=>s.sourceId===id).map(s=>`【${s.segmentId}】\n${s.text}`).join('\n')})),records:rows.map(r=>({...summaryRecord(r),editableFields:qualityEditableFields(r.category)})),referenceRecords:qualityRows(related.records).filter(r=>!byId.has(r.id)).map(summaryRecord),issues:[...status.issues,...status.unresolved].filter(i=>i.recordIds.some(id=>ids.includes(id)))};
     if(recordIds&&!input.issues.length)input.issues=[{recordIds:ids,description:'用户主动选择校对这些条目；只作有原文依据的必要修正，不强求新增内容。'}];
     const knowledge=rows.every(r=>r.category==='awarenessChanges')?knowledgeReviewWire(rows,offered,evidence):null;
-    const payload=()=>({model,messages:[{role:'system',content:knowledge?.prompt??QUALITY_PROMPT},{role:'user',content:JSON.stringify(knowledge?.input??input)}],stream:false,...(settings.outputBudgetUnits>0?{max_tokens:settings.outputBudgetUnits}:{})});
+    const readingRule=settings.narrativeExtraction||offered.some(s=>/sy_(?:private|context)/i.test(s.text))?'\n'+NARRATIVE_READING_RULE:'';
+    const payload=()=>({model,messages:[{role:'system',content:(knowledge?.prompt??QUALITY_PROMPT)+readingRule},{role:'user',content:JSON.stringify(knowledge?.input??input)}],stream:false,...(settings.outputBudgetUnits>0?{max_tokens:settings.outputBudgetUnits}:{})});
     let wire=payload(),inputUnits=estimateModelInputUnits(wire);
     while(!knowledge&&inputUnits>limit&&input.referenceRecords.length){input.referenceRecords.pop();wire=payload();inputUnits=estimateModelInputUnits(wire);}
     if(inputUnits>limit){

@@ -542,7 +542,7 @@ export function createProductShellController({
       inputBudget: state.settings.inputBudgetUnits,
       outputBudget: state.settings.outputBudgetUnits,
       outputReserveUnits: 0,
-      recordingRules: freezeSummaryRules([state.settings.recordingRules, runtimeRules()].filter(Boolean).join('\n'),state.settings.summaryPresets),
+      recordingRules: freezeSummaryRules([state.settings.recordingRules, runtimeRules()].filter(Boolean).join('\n'),state.settings.summaryPresets,state.settings.narrativeExtraction),
       trigger,
     });
     const preflightAbort=new AbortController();abortController=preflightAbort;activeTask=operationId;

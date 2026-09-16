@@ -1,5 +1,6 @@
 import { clone, isPlainObject } from './utils.js';
 import { readSummaryPresets } from './summary-presets.js';
+import {getNarrativeConfig} from './narrative-extraction.js';
 
 /**
  * Settings shared by the product shell and future assistant panels.
@@ -12,6 +13,7 @@ import { readSummaryPresets } from './summary-presets.js';
 export const PRODUCT_SETTINGS_VERSION = 1;
 
 const DEFINITIONS = [
+  {key:'narrativeExtraction',label:'正文提取规则',defaultValue:'',type:'string',maxLength:16384,consumers:['SummaryEngine','DynamicPersonaController','planQuality']},
   {key:'dynamicPersonaEnabled',label:'启用动态人设',defaultValue:false,type:'boolean',consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaEvery',label:'人设每多少楼更新',defaultValue:10,type:'integer',min:1,max:200,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaKeepRecent',label:'人设保留最近楼数',defaultValue:0,type:'integer',min:0,max:1000,consumers:['DynamicPersonaController']},
@@ -144,6 +146,7 @@ export function validateProductPatch(patch) {
   for (const [key, value] of Object.entries(patch)) {
     const def = PRODUCT_SETTING_REGISTRY[key];
     if(key==='summaryPresets')readSummaryPresets(value);
+    if(key==='narrativeExtraction')getNarrativeConfig(value);
     if (!def || def.persisted === false) throw new Error(`不能通过设置方案修改字段：${key}`);
     if (def.type === 'boolean' && typeof value !== 'boolean') throw new Error(`${def.label}需要开关值`);
     if (['number', 'integer'].includes(def.type) && (typeof value !== 'number' || !Number.isFinite(value) || value < def.min || value > def.max || (def.type === 'integer' && !Number.isInteger(value)))) throw new Error(`${def.label}超出允许范围`);
