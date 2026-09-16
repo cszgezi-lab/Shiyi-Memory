@@ -88,9 +88,25 @@ export function hasPersonaSpeechEvidence(evidence,quote,speaker,identity){
         start=close+1;
       }else if(c!=='【')start=close+1;
       i=close;
-    }else if(/[。！？；，,;!?\r\n]/u.test(c))start=i+1;
+    }else if(/[。！？；，,;!?\r\n]/u.test(c)){
+      // GAL often puts an explicit speaker header on one line and the quoted
+      // utterance on the very next. Retain only a verified header across this
+      // one line break; never bridge narration, blank lines or removed text.
+      const breakLength=c==='\r'&&source[i+1]==='\n'?2:1;
+      if((c==='\n'||c==='\r')&&personaSpeechLead(source.slice(start,i),speaker,identity)&&/^[ \t]*[“「『"]/.test(source.slice(i+breakLength))){i+=breakLength-1;continue;}
+      start=i+1;
+    }
   }
   return false;
+}
+
+// Model formatting is not the utterance itself. Remove at most one complete
+// outer quote/translation pair, never select a substring or one half of a
+// bilingual candidate. The caller must still verify the exact source speaker.
+function unwrappedPersonaQuote(value){
+  const text=typeof value==='string'?value.trim():'';
+  if(!['“','「','『','"','‘','〔'].includes(text[0])||speechSpanEnd(text,0)!==text.length-1)return text;
+  return text.slice(1,-1).trim();
 }
 
 // A small exact-source index, not another summary or extra model request.
@@ -163,8 +179,9 @@ export function composePersona(row,{spans,previous,messages,identity,name,fail})
   const examples=[];let rejectedExamples=0;
   const candidates=row.examples===undefined?(previous?.composition?.examples??[]):Array.isArray(row.examples)?row.examples:[];
   for(const q of candidates){
-    const prior=(previous?.composition?.examples??[]).find(p=>p.kind==='source_quote'&&p.text===q?.text&&p.floor===q?.floor);
-    const m=messages.find(m=>m.index===q?.floor),text=typeof q?.text==='string'?q.text.trim():'';
+    const m=messages.find(m=>m.index===q?.floor),raw=typeof q?.text==='string'?q.text.trim():'';
+    const text=m&&hasPersonaSpeechEvidence(m.text,raw,name,identity)?raw:unwrappedPersonaQuote(raw);
+    const prior=(previous?.composition?.examples??[]).find(p=>p.kind==='source_quote'&&p.text===text&&p.floor===q?.floor);
     // Previously verified history can be outside this batch. If its floor is
     // supplied again, recheck the actual source instead of trusting an old tag.
     if(prior&&!m){if(!examples.some(p=>p.text===prior.text&&p.floor===prior.floor))examples.push(clone(prior));continue;}
