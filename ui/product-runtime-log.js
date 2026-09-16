@@ -9,6 +9,9 @@ export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help"
 const fields={readingOriginalChars:'原始正文字符数',readingSafeChars:'安全正文字符数',readingOutputChars:'读取副本字符数',readingFilteredChars:'额外过滤字符数',readingFallbacks:'回退原安全正文的楼数',requestNumber:'向量请求序号',requestItems:'输入片段数',receivedVectors:'返回向量数',inputChars:'本次输入字符数',longestInputChars:'最长片段字符数',vectorDimensions:'向量维度',indexedItems:'已保存索引条数',pendingItems:'未完成索引条数',failedItems:'失败索引条数',batchNumber:'总结批次',childIndex:'内部子批（从 0 计）',sourceCount:'读取消息数',inputLimit:'输入预算',inputUnits:'实际输入估算',elapsedMs:'耗时（毫秒）',status:'HTTP 状态',expected:'应有逐楼摘要',received:'收到摘要条数',covered:'完整对应楼数',invalidRows:'来源无效或多楼合并',duplicateCount:'重复摘要条数',promptTokens:'服务报告输入 Token',completionTokens:'服务报告输出 Token',totalTokens:'服务报告总 Token',reasoningTokens:'其中推理 Token',responseChars:'回复文本字符数',savedBatches:'保存批数'};
 export function runtimeLogSummary(entry){
   const d=entry.details??{},parts=[];
+  if(['waiting','skipped'].includes(entry.phase)&&d.reason)parts.push(DIAGNOSTIC_REASONS[d.reason]);
+  if(d.modelRequested===false)parts.push('本次未调用模型');
+  if(d.lastIndex!==undefined)parts.push(`最新 #${d.lastIndex}，保留最近 ${d.keepRecent??0} 楼`);
   if(d.startIndex!==undefined)parts.push(`第 ${d.startIndex}–${d.endIndex??d.startIndex} 楼`);
   if(entry.phase==='reading')parts.push(`读取副本 ${d.readingOutputChars??0} 字符，额外过滤 ${d.readingFilteredChars??0} 字符${d.readingFallbacks?`；${d.readingFallbacks} 楼使用原安全正文，可在设置→正文提取预览原因`:''}`);
   if(entry.task==='vectors'&&entry.phase==='retry_wait')parts.push(`向量服务暂不可用，约 ${Math.max(1,Math.ceil((d.retryDelayMs??0)/1000))} 秒后自动续建；无需重新总结`);
@@ -24,6 +27,9 @@ export function runtimeLogSummary(entry){
 }
 function detailsHTML(entry){
   const d=entry.details,lines=[];
+  if(d.historyStep)lines.push(['原文读取位置',d.historyStep==='tail'?'当前聊天末页':'较早历史分页']);
+  if(d.historyReadAttempts!==undefined)lines.push(['本地读取尝试次数',d.historyReadAttempts]);
+  if(d.modelRequested!==undefined)lines.push(['本次调用模型',d.modelRequested?'是':'否']);
   if(d.jsonMode!==undefined)lines.push(['强制服务端 JSON 模式',d.jsonMode?'是':'否']);
   if(d.messageCount!==undefined)lines.push(['请求消息数（不是调用次数）',d.messageCount]);
   if(d.responseHeadersMs!==undefined)lines.push(['收到响应头（毫秒）',d.responseHeadersMs]);

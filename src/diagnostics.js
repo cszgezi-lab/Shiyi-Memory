@@ -1,6 +1,12 @@
 // Shared, content-free diagnostics. Never serialize Error.message, API bodies,
 // headers, URLs, user filenames or arbitrary server error objects into exports.
 export const DIAGNOSTIC_REASONS = Object.freeze({
+  history_decode_failed:'宿主聊天历史不是完整JSON，尚未交给模型处理',
+  history_tail_failed:'读取当前聊天末页失败，尚不能判断原文是否变化',
+  history_before_failed:'读取较早聊天分页失败，未跳过缺失楼层',
+  history_retry_wait:'等待聊天原文就绪后重读；这不是模型调用成功',
+  persona_waiting:'楼层尚未满足自动人设周期，未调用模型',
+  persona_previous_failure:'上一批尚未恢复，本次没有调用人设模型',
   persona_host_binding:'忽略模型填写的旧绑定字段；由程序按唯一人物身份绑定本次已提供的原设定',
   persona_fields:'动态人设的姓名、正文格式或来源楼层不合要求，旧档案保留',persona_character:'人设姓名未在本批原文或既有档案中确认',persona_binding:'所选原设定无法确认属于当前人物，未替换原书',persona_duplicate:'同一人物阶段被重复返回，未覆盖旧档案',persona_stage_changed:'原设定或MVU当前阶段已改变，本批旧阶段回答未应用',
   queue_busy:'等待同一接口的上一条聊天请求完成',queue_cooldown:'接口异常后冷却等待',queue_rpm:'等待每分钟请求名额',
@@ -73,6 +79,9 @@ export const QUALITY_REASONS=Object.freeze(['证据片段不存在或已变化',
 export function diagnosticRequestId(){return `req-${Date.now().toString(36)}-${(++sequence).toString(36)}`;}
 export function safeDiagnosticFields(value={}){
   const result={};
+  if(['tail','before'].includes(value?.historyStep))result.historyStep=value.historyStep;
+  for(const key of ['historyReadAttempts','lastIndex','keepRecent'])if(Number.isSafeInteger(value?.[key])&&value[key]>=0)result[key]=value[key];
+  if(typeof value?.modelRequested==='boolean')result.modelRequested=value.modelRequested;
   const qualityReasons=new Set([...QUALITY_REASONS,'获知者与校对目标不一致','知情状态或渠道不正确']);
   const qualityFields=new Set(['description','text','knowledge','content','recallSummary','entities','tags','temporal','learnedAt','epistemicStatus','before','after','context','scope','object','field','to','validFrom','validUntil','participants','location','state','status','via','innerLife','keyDialogues','acquisitionEvidence','id','category','unknown']);
   if(Array.isArray(value?.verificationIssues))result.verificationIssues=value.verificationIssues.slice(0,100).flatMap(r=>typeof r?.path==='string'&&verificationPath.test(r.path)&&verificationCodes.has(r.code)?[{path:r.path,code:r.code,...(Number.isSafeInteger(r.sourceFloor)&&r.sourceFloor>=0?{sourceFloor:r.sourceFloor}:{})}]:[]);

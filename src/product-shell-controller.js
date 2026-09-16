@@ -18,6 +18,7 @@ import {
   createProductTransport,
   productStoreFromSession,
   readProductHostRange,
+  readProductHistoryTail,
   safeProductError,
 } from './product-host-adapters.js';
 import {
@@ -439,6 +440,7 @@ export function createProductShellController({
         startIndex: options.startIndex,
         endIndex: options.endIndex,
         maxMessages,
+        check:()=>{if(!tokenValid(token,session))throw Object.assign(new Error('读取已停止'),{code:'CANCELED'});},
       });
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
       if(stableStringify(await adapterInstance.currentRef())!==session.refKey)return {status:'invalidated',errorCode:'CHAT_CHANGED'};
@@ -472,7 +474,7 @@ export function createProductShellController({
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
       const code = errorCode(error, 'HISTORY_UNAVAILABLE');
       mark(PRODUCT_SHELL_STATUS.FAILED, code, code === 'SOURCE_INVALIDATED' ? '所选正文已变化。' : '聊天范围读取失败。');
-      return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: code };
+      return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: code, errorDetails:safeLogDetails(errorDiagnostics(error)) };
     }
   }
 
@@ -844,7 +846,7 @@ export function createProductShellController({
       if(!state.session)throw Object.assign(new Error('请先打开聊天'),{code:'CHAT_CHANGED'});
       const session=state.session,token=bindingGeneration;
       const check=async()=>{if(!bindingValid(token,session)||stableStringify(await adapterInstance.currentRef())!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
-      await check();const range=await readProductHostRange(session,{...options,maxMessages});await check();
+      await check();const range=await readProductHostRange(session,{...options,maxMessages,check});await check();
       return {...range,messages:cleanMessages(range.messages)};
     },
     get state() { return cloneState(state); },
@@ -857,8 +859,8 @@ export function createProductShellController({
       const session=state.session,token=bindingGeneration;
       const check=async()=>{const ref=await adapterInstance.currentRef();if(!bindingValid(token,session)||stableStringify(ref)!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
       await check();let page;
-      try{page=await session.handle.history.tail({limit:1});}
-      catch(error){await check();throw Object.assign(new Error('当前聊天历史读取失败。'),{code:'HISTORY_UNAVAILABLE',details:{causeError:error,stage:'prepare'}});}
+      try{page=await readProductHistoryTail(session,{check});}
+      catch(error){await check();throw error;}
       await check();
       // Only the last index is needed for range bounds, not a normalized body.
       // A new streamed reply must not prevent summarizing an older range.

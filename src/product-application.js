@@ -79,7 +79,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let cancelVersion = 0, knowledgeCache = [], opening = false, feedbackSequence = 0;
   let recallRevision = 0;
   let recallSafetyRevision = 0, committedRecall = null;
-  let autoTimer=null,autoPending=false,autoTask=null;
+  let autoTimer=null,autoPending=false,autoTask=null,autoHistoryAttempts=0,autoRetryAt=0;
   let dictionaryRevision=-1, dictionaryCache=null;
   let recallBusy = 0, moduleSourceBaseline=null;
   let vectorTimer=null,vectorJob=null,vectorCheckVersion=0,vectorStorageFailure=null;
@@ -134,7 +134,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try{
       if(version!==cancelVersion)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
       const result=await fn(run);
-      runtimeLog.record({run,task,phase:'complete',level:result?.level==='warning'||result?.degraded?'warning':'success',details:{...details,...(task==='summary'?result?.timings:{}),...(task==='recall'?{degraded:result?.degraded,vectorStatus:result?.trace?.vector?.status,rerankStatus:result?.trace?.rerank?.status}:{}),...(task==='vectors'?{indexedItems:result?.indexed,pendingItems:result?.pending,failedItems:result?.failed,requestNumber:result?.requests}:{}),elapsedMs:Date.now()-started,savedBatches:result?.batches}});
+      runtimeLog.record({run,task,phase:['waiting','skipped'].includes(result?.phase)?result.phase:'complete',level:result?.level==='warning'||result?.degraded?'warning':result?.level==='info'?'info':'success',details:{...details,...result?.diagnostics,...(task==='summary'?result?.timings:{}),...(task==='recall'?{degraded:result?.degraded,vectorStatus:result?.trace?.vector?.status,rerankStatus:result?.trace?.rerank?.status}:{}),...(task==='vectors'?{indexedItems:result?.indexed,pendingItems:result?.pending,failedItems:result?.failed,requestNumber:result?.requests}:{}),elapsedMs:Date.now()-started,savedBatches:result?.batches}});
       return result;
     }catch(error){
       const canceled=['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error?.code)||error?.name==='AbortError';
@@ -181,7 +181,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       check() { if (controller.signal.aborted || version !== cancelVersion) throw Object.assign(new Error('已停止'),{code:'CANCELED'}); assertCurrent(token); },
       finish() { operations.delete(controller); if (active === controller) active = null; notify(); wakeChatFollower(); wakeAutomaticSummary(); wakeVectors(); } };
   }
-  function abortAll() { cancelVersion++;autoPending=false;clearTimeout(autoTimer);autoTimer=null;for (const op of operations) op.abort(); }
+  function abortAll() { cancelVersion++;autoPending=false;autoHistoryAttempts=0;autoRetryAt=0;clearTimeout(autoTimer);autoTimer=null;for (const op of operations) op.abort(); }
   function beginApi() {
     const controller=new AbortController();apiOperations.add(controller);notify();
     return {signal:controller.signal,check(){if(controller.signal.aborted)throw Object.assign(new Error('已停止'),{code:'CANCELED'});},finish(){apiOperations.delete(controller);notify();}};
@@ -455,7 +455,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       try { bindings.push(hostAdapter.subscribe(name, async () => {if(tracking)return;if(name==='MESSAGE_UPDATED'&&moduleMetadataOnly()){await syncModulesQuietly();return;}invalidate(name);})); } catch { /* no automatic activation without final hook */ }
     }
     state.status = 'ready';rememberModuleSources(); await refresh({boundOnly:true}); checkOpen();
-    try{await dynamicPersona.load();}catch(error){void reportError(error,{task:'persona',stage:'storage'});state.dynamicPersona={status:'failed',message:failureText(error),profiles:[],batches:[]};}checkOpen();
+    try{await dynamicPersona.load();}catch(error){void reportError(error,{task:'persona',stage:'prepare'});state.dynamicPersona={...dynamicPersona.state,message:dynamicPersona.state.message||failureText(error)};}checkOpen();
     await loadKnowledge(); await checkTarget(); enabled = enable;if(enable)automaticPaused=false;
     try {
       bindings.push(hostAdapter.subscribe('CHAT_COMPLETION_SETTINGS_READY', async payload => {
@@ -693,7 +693,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         // Staged generations survive crashes but are never available for recall.
         if(!continuing)await core.updateMemoryControls({operations:{[operationId]:'pending'}});op.check();
         const range=await core.readRange({startIndex:item.startIndex,endIndex:item.endIndex});
-        op.check();if(range.status!=='ready')throw Object.assign(new Error(core.state.errorMessage??'范围读取失败'),{code:range.errorCode??'HISTORY_UNAVAILABLE'});
+        op.check();if(range.status!=='ready')throw Object.assign(new Error(core.state.errorMessage??'范围读取失败'),{code:range.errorCode??'HISTORY_UNAVAILABLE',details:range.errorDetails});
         await readBatches(await core.readMemoryView());
         const displayNumber=numberedSummaryBatches(state.batches).find(b=>b.id===item.id)?.displayNumber??i+1;
         state.progress=`第 ${i+1}/${planned.length} 批 · 已读取 #${item.startIndex}–${item.endIndex}，共 ${range.count} 楼`;
@@ -1077,7 +1077,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   function automaticPlan(){return autoSummaryPlan(validAutomaticBatches(),{startFloor:state.autoStartFloor??1,batchSize:core.settings.autoSummaryEvery,keepRecent:core.settings.autoKeepRecent,lastIndex:state.autoLastIndex??null});}
   async function inspectAutomaticProgress(){
     await prepareSummaryChat();const op=begin();
-    try{const r=await core.readRange({count:1});op.check();if(r.status!=='ready')throw new Error('无法读取当前聊天楼数');state.autoLastIndex=r.range.endIndex;notify();return automaticPlan();}finally{op.finish();}
+    try{state.autoLastIndex=await core.historyTail();op.check();notify();return automaticPlan();}finally{op.finish();}
   }
   async function setAutoStartFloor(floor,expectedScope=core.state.scope){
     assertCurrent();if(active)throw new Error('请先停止当前总结');
@@ -1087,13 +1087,16 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function setAutomatic(enabledNow){
     if(enabledNow&&active)throw new Error('请等当前任务结束后启用自动总结');
-    if(enabledNow)automaticPaused=false;
+    if(enabledNow){automaticPaused=false;autoHistoryAttempts=0;autoRetryAt=0;}
     else {autoPending=false;clearTimeout(autoTimer);autoTimer=null;}
     await saveSettings({autoSummaryEnabled:enabledNow});
     if(!enabledNow&&autoRunning){active?.abort();await core.cancelSummary();}
     if(enabledNow&&(!workspace?.isCurrent()||!bindings.length))await open({enable:enabled});
     setMessage(enabledNow?'自动总结已启用；按连续进度等待下一批楼层。':'自动总结已暂停；手动总结与记忆注入不受影响');
-    if(enabledNow){await inspectAutomaticProgress();queueAutomaticSummary();}
+    if(enabledNow){
+      try{await inspectAutomaticProgress();}catch(error){if(error?.code!=='HISTORY_UNAVAILABLE')throw error;void reportError(error,{task:'background',stage:'prepare'});setMessage('自动总结已启用；聊天原文暂未就绪，后台将有限重读。');}
+      queueAutomaticSummary();
+    }
   }
   function queueAutomaticSummary(){
     if(disposed)return;
@@ -1110,21 +1113,28 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       autoTask=(async()=>{await syncModulesQuietly();if(token===epoch&&version===cancelVersion&&!disposed)await autoSummary();})()
         .catch(error=>{if(!disposed)void reportError(error,{task:'background',stage:'background'});})
         .finally(()=>{autoTask=null;wakeAutomaticSummary();});
-    },0);
+    },Math.max(0,autoRetryAt-Date.now()));
   }
   async function autoSummary({force=false}={}) {
     if (active || state.stale || (!force&&(automaticPaused||!core.settings.autoSummaryEnabled)) || !workspace?.isCurrent()) return;
     const feedbackAtStart = feedbackSequence,op=begin();autoRunning=true;
     try {
-      const r = await core.readRange({ count: 1 });op.check();
-      if (r.status !== 'ready') throw Object.assign(new Error(core.state.errorMessage??'无法读取待总结楼层'),{code:r.errorCode??'HISTORY_UNAVAILABLE'});
-      state.autoLastIndex=r.range.endIndex;const plan=automaticPlan();notify();
-      if(!plan.ready){if(force)setMessage('还没有满足条件的完整一批；保留楼层不参与自动总结');return;}
+      state.autoLastIndex=await core.historyTail();op.check();const plan=automaticPlan();notify();
+      if(!plan.ready){autoHistoryAttempts=0;autoRetryAt=0;if(force)setMessage('还没有满足条件的完整一批；保留楼层不参与自动总结');return;}
       if(core.settings.focusMode==='ask_every'&&!force){setMessage('自动总结等待侧重点，可在手动总结中处理下一批');return;}
       op.finish();
       await summarize({startIndex:plan.nextStart,endIndex:plan.nextEnd,batchSize:plan.batchSize,trigger:'auto'});
+      autoHistoryAttempts=0;autoRetryAt=0;
       if(!force)queueAutomaticSummary();
-    }catch(error){if(!op.signal.aborted&&op.token===epoch&&feedbackSequence===feedbackAtStart)summaryFeedback('error',`自动总结未完成：${failureText(error)}`,'auto');if(force)throw error;}
+    }catch(error){
+      if(!force&&!op.signal.aborted&&op.token===epoch&&error?.code==='HISTORY_UNAVAILABLE'){
+        autoHistoryAttempts++;const delay=[1500,5000,15000][autoHistoryAttempts-1]??30000;autoRetryAt=Date.now()+delay;
+        if(autoHistoryAttempts<=3)autoPending=true;
+        summaryFeedback('warning',autoHistoryAttempts<=3?'聊天原文暂未就绪，自动总结稍后重读；已有记忆保留':'聊天原文仍不可读，等待下一次回复完成或回到前台再试；已有记忆保留','auto');
+        runtimeLog.record({task:'background',phase:'waiting',details:{...errorDiagnostics(error),reason:'history_retry_wait',retryDelayMs:delay,historyReadAttempts:autoHistoryAttempts}});
+      }else if(!op.signal.aborted&&op.token===epoch&&feedbackSequence===feedbackAtStart)summaryFeedback('error',`自动总结未完成：${failureText(error)}`,'auto');
+      if(force)throw error;
+    }
     finally{autoRunning=false;op.finish();}
   }
   async function loadKnowledge() {

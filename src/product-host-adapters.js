@@ -81,6 +81,33 @@ function historyApi(session) {
   return history;
 }
 
+function historyReadError(error,historyStep){
+  if(['CHAT_CHANGED','CANCELED','SOURCE_INVALIDATED'].includes(error?.code))return error;
+  const reason=error?.name==='SyntaxError'?'history_decode_failed':historyStep==='before'?'history_before_failed':'history_tail_failed';
+  return productError('当前聊天历史读取失败。','HISTORY_UNAVAILABLE',{causeError:error,stage:'prepare',reason,historyStep});
+}
+
+// Retry the whole snapshot, not an old cursor: TT may be saving JSONL while
+// emitting a reply event. Never skip malformed rows or reopen a different chat.
+async function recoverHistoryRead(session,read,check=()=>{}){
+  for(let attempt=0;attempt<3;attempt++){
+    await check();
+    if(session.adapter?.currentRef&&stableStringify(await session.adapter.currentRef())!==session.refKey)throw productError('聊天已切换。','CHAT_CHANGED');
+    try{return await read();}catch(error){
+      if(error?.code!=='HISTORY_UNAVAILABLE')throw error;
+      error.details={...error.details,historyReadAttempts:attempt+1};
+      if(attempt===2)throw error;
+      await new Promise(resolve=>setTimeout(resolve,attempt===0?250:750));
+    }
+  }
+}
+
+export async function readProductHistoryTail(session,{check=()=>{}}={}){
+  return recoverHistoryRead(session,async()=>{
+    try{return await historyApi(session).tail({limit:1});}catch(error){throw historyReadError(error,'tail');}
+  },check);
+}
+
 export function normalizeHostMessage(message, index) {
   if (!message || typeof message !== 'object' || Array.isArray(message)) throw productError('宿主返回了无效消息。', 'HOST_CONTRACT_INVALID');
   const text = String(message.text ?? message.mes ?? message.content ?? '');
@@ -114,7 +141,10 @@ function validBound(value, name) {
 }
 
 /** Read one frozen, chat-bound range.  This function never reopens the live chat. */
-export async function readProductHostRange(session, { count = 8, startIndex = null, endIndex = null, maxMessages = 200 } = {}) {
+export async function readProductHostRange(session,options={}){
+  return recoverHistoryRead(session,()=>readProductHostRangeOnce(session,options),options.check);
+}
+async function readProductHostRangeOnce(session, { count = 8, startIndex = null, endIndex = null, maxMessages = 200 } = {}) {
   const history = historyApi(session);
   const max = Math.max(1, Math.min(2000, Number.isInteger(maxMessages) ? maxMessages : 200));
   const start = validBound(startIndex, 'startIndex');
@@ -129,7 +159,7 @@ export async function readProductHostRange(session, { count = 8, startIndex = nu
     limit = Math.min(max, count);
   }
   let page;
-  try { page = await history.tail({ limit }); } catch (error) { throw productError('当前聊天历史读取失败。', 'HISTORY_UNAVAILABLE',{causeError:error,stage:'prepare'}); }
+  try { page = await history.tail({ limit }); } catch (error) { throw historyReadError(error,'tail'); }
   if (!page || !Array.isArray(page.messages)) throw productError('宿主历史页格式不可用。', 'HOST_CONTRACT_INVALID');
   const pageStart = Number.isInteger(page.startIndex) && page.startIndex >= 0 ? page.startIndex : Math.max(0, (page.totalCount ?? page.messages.length) - page.messages.length);
   const totalCount = Number.isInteger(page.totalCount) && page.totalCount >= pageStart + page.messages.length ? page.totalCount : pageStart + page.messages.length;
@@ -144,7 +174,7 @@ export async function readProductHostRange(session, { count = 8, startIndex = nu
     while (cursor.startIndex > start && guard < 64) {
       guard += 1;
       let older;
-      try { older = await history.before(cursor, { limit: Math.min(max, Math.max(1, pageStart - start)) }); } catch (error) { throw productError('明确范围历史读取失败。', 'HISTORY_UNAVAILABLE',{causeError:error,stage:'prepare'}); }
+      try { older = await history.before(cursor, { limit: Math.min(max, Math.max(1, pageStart - start)) }); } catch (error) { throw historyReadError(error,'before'); }
       if (!older || !Array.isArray(older.messages) || !Number.isInteger(older.startIndex) || older.startIndex < 0 || older.startIndex >= cursor.startIndex) throw productError('宿主历史范围不连续。', 'HOST_CONTRACT_INVALID');
       if (older.startIndex + older.messages.length !== cursor.startIndex || (older.totalCount !== undefined && older.totalCount !== totalCount)) throw productError('宿主历史缺页或读取期间发生变化。', 'HOST_CONTRACT_INVALID');
       pages.push(older);
