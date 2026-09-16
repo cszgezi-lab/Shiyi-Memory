@@ -109,7 +109,7 @@ export function peopleHTML() {
   </section>`;
 }
 
-const openButton = (group, kind, label, profileId = '') => `<button type="button" data-people-open="${kind}" data-people-profile="${esc(profileId)}"${group.ambiguous ? ' disabled' : ''}>${label}</button>`;
+const openButton = (group, kind, label, profileId = '') => `<button type="button" data-people-open="${kind}" data-people-profile="${esc(profileId)}"${group.ambiguous && !profileId ? ' disabled' : ''}>${label}</button>`;
 const sourceText = record => record.sourceRefs?.length || record.sourceFloors?.length || Number.isInteger(record.floorIndex) || record.documentName
   ? sourceLabel(record) : '来源未注明';
 const phase = row => row.data.disabled ? '不再注入' : row.record.innerLifeHistorical || row.data.status === 'historical'
@@ -196,7 +196,9 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     if (button.dataset.peopleAll) { onSelect?.({ name: '', profileId: null, kind: button.dataset.peopleAll }); return; }
     if (button.dataset.peopleOpen) {
       const group = groups.find(g => g.key === selected);
-      if (group && !group.ambiguous) onSelect?.({ name: group.name, profileId: button.dataset.peopleProfile || null, kind: button.dataset.peopleOpen });
+      // A profile-specific link is safe even when another unresolved record
+      // shares its nickname; only broad record navigation stays disabled.
+      if (group && (!group.ambiguous || button.dataset.peopleProfile)) onSelect?.({ name: group.name, profileId: button.dataset.peopleProfile || null, kind: button.dataset.peopleOpen });
     }
   });
   return { paint };

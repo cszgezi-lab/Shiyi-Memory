@@ -6,7 +6,7 @@ import {errorDiagnostics} from './diagnostics.js';
 import {qualitySourceSegments} from './source-evidence.js';
 import {narrativeReading,NARRATIVE_READING_RULE,narrativeCounters} from './narrative-reading.js';
 import {personaManualPlan,personaManualPending,personaManualUnfinished} from './dynamic-persona-plan.js';
-import {personaIdentity,personaAliases,foldName} from './persona-identity.js';
+import {personaIdentity,personaAliases,foldName,personaTitleNames} from './persona-identity.js';
 import {personaSourceIndex} from './persona-source-index.js';
 import {PERSONA_COMPOSITION_RULE,personaParts,personaMaterials,personaReviewFocus,composePersona,personaSpokenAliases} from './persona-composition.js';
 import {PERSONA_DEVELOPMENT_RULE,personaCharacterCandidates} from './persona-development.js';
@@ -23,6 +23,86 @@ const initial=()=>({version:1,startFloor:1,paused:false,batches:[],profiles:[],m
 const canceled=()=>Object.assign(new Error('人设任务已停止，已保存档案保留'),{code:'CANCELED'});
 const invalid=(reason,message,details={})=>Object.assign(new Error(message),{code:'PERSONA_RESPONSE_INVALID',details:{stage:'validate',reason,modelRole:'dynamicPersona',...details}});
 const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{|@@/i;
+const mergeTextBlocks=(...values)=>{
+  const blocks=[];
+  for(const value of values){
+    for(const block of String(value??'').split(/\n{2,}|\r?\n/).map(s=>s.trim()).filter(Boolean)){
+      const key=foldName(block).replace(/\s+/gu,'');
+      const same=blocks.findIndex(item=>item.key===key||item.key.includes(key)||key.includes(item.key));
+      if(same<0)blocks.push({key,text:block});
+      else if(block.length>blocks[same].text.length)blocks[same]={key,text:block};
+    }
+  }
+  return blocks.map(item=>item.text).join('\n\n');
+};
+const mergeList=(...values)=>{
+  const rows=[];
+  for(const value of values)for(const item of Array.isArray(value)?value:[])if(item!=null&&!rows.some(row=>stableStringify(row)===stableStringify(item)))rows.push(clone(item));
+  return rows;
+};
+const mergeComposition=(primary,secondary)=>{
+  if(!primary&&!secondary)return null;
+  const out={...(primary??{}),...(secondary??{})};
+  for(const key of ['parts','sourceBaseline','changes','examples','development','rejectedExamples','rejectedDevelopment']){
+    if(Array.isArray(primary?.[key])||Array.isArray(secondary?.[key]))out[key]=mergeList(primary?.[key],secondary?.[key]);
+  }
+  if(primary?.notes||secondary?.notes)out.notes=mergeTextBlocks(primary?.notes,secondary?.notes);
+  return out;
+};
+/** Merge two saved dossiers without a model call; the chosen primary keeps
+ * its canonical name and the absorbed name becomes a searchable alias. */
+export function mergePersonaProfiles(primary,secondary){
+  if(!primary||!secondary||primary.id===secondary.id)throw new Error('请选择两个不同的人物档案');
+  const aliases=[...(primary.aliases??[]),secondary.name,...(secondary.aliases??[])].filter(name=>foldName(name)!==foldName(primary.name));
+  return {...primary,
+    aliases:[...new Set(aliases)],
+    text:mergeTextBlocks(primary.text,secondary.text),
+    composition:mergeComposition(primary.composition,secondary.composition),
+    bindings:mergeList(primary.bindings,secondary.bindings),
+    sourceFloors:[...new Set([...(primary.sourceFloors??[]),...(secondary.sourceFloors??[])].filter(Number.isInteger))].sort((a,b)=>a-b),
+    through:Math.max(primary.through??-1,secondary.through??-1),
+    mergedFrom:[...new Set([...(primary.mergedFrom??[]),secondary.id,...(secondary.mergedFrom??[])])],
+    manual:true,
+    locked:Boolean(primary.locked||secondary.locked),
+    deleted:false,
+  };
+};
+const countName=(text,name)=>{
+  const needle=foldName(name),haystack=foldName(text),length=needle.length;
+  if(!needle||!length)return 0;
+  let count=0,index=haystack.indexOf(needle);while(index>=0){count++;index=haystack.indexOf(needle,index+length);}
+  return count;
+};
+function rowIdentity(row,messages,identity){
+  const raw=String(row?.name??'').trim();
+  if(!raw)return null;
+  const variants=[raw,...personaTitleNames(raw)].filter(Boolean);
+  for(const name of variants){const direct=identity.resolve(name);if(direct)return direct;}
+  const owners=[...new Map(identity.people.filter(p=>variants.some(name=>[p.name,...p.aliases].some(alias=>foldName(alias)===foldName(name)))).map(p=>[p.key,p])).values()];
+  if(!owners.length)return null;
+  // A short/ambiguous model label can still be corrected safely when the
+  // requested source floors contain exactly one owner's canonical name. Do
+  // not use list position, popularity, or an arbitrary alias winner.
+  const floors=new Set(Array.isArray(row.sourceFloors)?row.sourceFloors:[]);
+  const source=messages.filter(m=>floors.has(m.index)).map(m=>m.text).join('\n');
+  const modelText=[row.text,...(Array.isArray(row.updates)?row.updates.map(u=>u?.text):[]),...(Array.isArray(row.examples)?row.examples.map(e=>e?.text):[])].filter(Boolean).join('\n');
+  const scored=owners.map(person=>{
+    const canonical=countName(source,person.name),inModel=countName(modelText,person.name);
+    return {person,score:canonical*4+inModel*2,canonical,inModel};
+  });
+  // A short alias is safe only when the selected floors contain exactly one
+  // candidate's canonical name.  “A and B ... nickname ...” is not enough:
+  // frequency/popularity would silently attach the update to the wrong
+  // character.  A canonical name in the model's prose is accepted only when
+  // the source itself has no competing canonical candidate.
+  const sourceOwners=scored.filter(item=>item.canonical>0);
+  if(sourceOwners.length===1)return sourceOwners[0].person;
+  if(sourceOwners.length===0){
+    const modelOwners=scored.filter(item=>item.inModel>0);
+    if(modelOwners.length===1)return modelOwners[0].person;
+  }
+  return null;
+}
 export function currentPersonaProfiles(rows,stageMode='narrative'){
   if(stageMode==='strict')return rows;
   const selected=new Map();for(const p of rows){const key=foldName(p.name),old=selected.get(key);if(!old||Boolean(p.locked)&&!old.locked||Boolean(p.locked)===Boolean(old.locked)&&(p.through??0)>=(old.through??0))selected.set(key,p);}
@@ -54,12 +134,12 @@ export function parsePersonaResponse(response,{messages,spans,previous,identity,
   const seen=new Set(),source=messages.map(m=>m.text).join('\n');
   identity??=personaIdentity({spans,previous,dictionary,aliases,source});
   const mentioned=new Set(identity.mentions(source).map(p=>p.key));
-  return body.profiles.map((row,profileIndex)=>{
+  const parseRow=(row,profileIndex)=>{
     const fail=(field,message,reason='persona_fields')=>invalid(reason,`第${profileIndex+1}份档案：${message}；旧档案保留`,{profileIndex,personaField:field});
     if(!row||typeof row.name!=='string'||!row.name.trim())throw fail('name','缺少人物姓名');
     if(typeof row.text!=='string'||!row.text.trim()&&!Array.isArray(row.updates)||unsafe.test(row.text))throw fail('text','正文为空或含不能写入的脚本标记');
     if(!Array.isArray(row.sourceFloors)||!row.sourceFloors.length||row.sourceFloors.some(f=>!messages.some(m=>m.index===f)))throw fail('sourceFloors','来源楼号缺失或超出本批范围');
-    const person=identity.resolve(row.name),name=person?.name??row.name.trim();
+    const person=rowIdentity(row,messages,identity),name=person?.name??row.name.trim();
     if(person?!mentioned.has(person.key):!foldName(source).includes(foldName(name))||identity.people.some(p=>[...p.aliases].some(a=>foldName(a)===foldName(name))))throw fail('name','姓名或简称不能唯一对应本批角色，请在人物或字典中确认称呼','persona_character');
     // Ownership is a host capability, not a model-authored instruction. A
     // legacy/wrong reference can NEVER expand or redirect this exact own set.
@@ -88,7 +168,19 @@ export function parsePersonaResponse(response,{messages,spans,previous,identity,
     if(composed.composition?.ignoredUpdates)diagnostic({phase:'normalize',details:{profileIndex,normalizedFields:composed.composition.ignoredUpdates}});
     if(!composed.text.trim())throw fail('text','没有可保存的原设定或剧情变化');
     return {id,name,characterId:person?.characterId??sha256(['persona-character',foldName(name)]).slice(0,24),aliases:[...new Set([...(old[0]?.aliases??[]),...(ownIdentity.resolve(name)?.visibleAliases??[]),...spokenAliases,...(row.name.trim()!==name?[row.name.trim()]:[])])],...(old[0]?.aliasPolicy?{aliasPolicy:old[0].aliasPolicy}:{}),...composed,bindings,stage,sourceFloors:[...new Set(row.sourceFloors)],locked:previous.find(p=>p.id===id)?.locked===true};
-  });
+  };
+  const parsed=[],rejectedProfiles=[];
+  for(const [profileIndex,row] of body.profiles.entries())try{parsed.push(parseRow(row,profileIndex));}catch(error){
+    const reason=error?.details?.reason;
+    if(error?.code==='PERSONA_RESPONSE_INVALID'&&reason==='persona_character'){
+      rejectedProfiles.push({profileIndex,personaField:error.details.personaField??'name',reason});
+      diagnostic({phase:'validate',level:'warning',details:{reason:'persona_partial',profileIndex,personaField:error.details.personaField??'name',rejectedReason:reason}});continue;
+    }
+    throw error;
+  }
+  if(!parsed.length&&rejectedProfiles.length){const first=body.profiles[rejectedProfiles[0].profileIndex];try{parseRow(first,rejectedProfiles[0].profileIndex);}catch(error){error.details={...error.details,profileRejections:rejectedProfiles};throw error;}}
+  Object.defineProperty(parsed,'rejectedProfiles',{value:rejectedProfiles,enumerable:false});
+  return parsed;
 }
 export function createDynamicPersona({settings,getWorkspace,readRange,historyTail,worldbook,client,dictionary=()=>({entries:[]}),records=()=>({}),notify=()=>{},log=async(_fn,fn)=>fn(),diagnostic=()=>{},canRun=()=>true,now=Date.now}){
   let data=initial(),scopeKey='',currentWorkspace=null,job=null,timer=null,disposed=false,paused=false,ready=false,serial=Promise.resolve(),view={status:'unbound',message:'动态人设尚未启用'},lastIndex=null;
@@ -253,7 +345,8 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       personaStep='model_request';modelRequested=cached?.fingerprint!==fingerprint;
       const response=!modelRequested?cached.response:await client().chatCompletions({model:config.dynamicPersonaModel,messages:request.messages,stream:true,...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})},{signal:controller.signal});guard();personaStep='parse_profile';
       const rows=parsePersonaResponse(response,{messages:range.messages,spans:request.spans,previous,identity:request.identity,developmentMessages:request.source,stageMode:config.dynamicPersonaMvuMode,preserveSources:true,diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});
-      diagnostic({run,task:'persona',phase:'validate',level:'info',details:{startIndex:next.nextStart,endIndex:next.nextEnd,personaProfiles:rows.length,personaBindings:rows.reduce((n,p)=>n+p.bindings.length,0)}});
+      const rejectedProfiles=rows.rejectedProfiles??[];
+      diagnostic({run,task:'persona',phase:'validate',level:'info',details:{startIndex:next.nextStart,endIndex:next.nextEnd,personaProfiles:rows.length,rejectedProfiles:rejectedProfiles.length,personaBindings:rows.reduce((n,p)=>n+p.bindings.length,0)}});
       if(cached?.fingerprint!==fingerprint)await bound.write(cacheKey,{fingerprint,response});guard();
       if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k])))throw Object.assign(new Error('人设运行期间设置已变化；结果未覆盖旧档案'),{code:'CANCELED'});
       personaStep='source_verify';const checkRange=await readRange({startIndex:next.nextStart,endIndex:next.nextEnd});guard();if(sourceHash!==sha256(checkRange.messages))throw Object.assign(new Error('人设来源正文已变化'),{code:'SOURCE_INVALIDATED'});
@@ -263,7 +356,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
         guard();const base=manualId?previous:data.profiles;
         const versionId=makeId('persona-version');await bound.write(versionId,{profiles:base,through:next.nextEnd});guard();
         const profiles=[...base];for(const row of rows){const i=profiles.findIndex(p=>p.id===row.id);if(i>=0&&(profiles[i].locked||stableStringify(profiles[i])!==stableStringify(previous.find(p=>p.id===row.id))))continue;const item={...row,through:next.nextEnd,sourceHash,versionId,manual:false};if(i<0)profiles.push(item);else profiles[i]=item;}
-        const batch={startIndex:next.nextStart,endIndex:next.nextEnd,status:'saved',sourceHash,versionId,profileCount:rows.length,requestCount:cached?.fingerprint===fingerprint?0:1};
+        const batch={startIndex:next.nextStart,endIndex:next.nextEnd,status:'saved',sourceHash,versionId,profileCount:rows.length,requestCount:cached?.fingerprint===fingerprint?0:1,...(rejectedProfiles.length?{rejectedProfiles}:{})};
         if(manualId){
           if(data.manualPlan?.id!==manualId||data.manualPlan.status!=='running')throw canceled();
           const items=data.manualPlan.items.map(b=>b.startIndex===next.nextStart?batch:b),completed=items.every(b=>b.status==='saved');
@@ -274,7 +367,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
         success=true;
       });
       historyAttempts=0;historyRetryAt=0;
-      view={...view,status:'saved',message:manualId?(data.manualPlan.status==='completed'?`手动人设 #${data.manualPlan.startIndex}–${data.manualPlan.endIndex} 已全部应用；自动更新仍暂停${data.manualPlan.handoff?`，接续起点 #${data.startFloor}`:''}`:`补建进度已保存 #${next.nextStart}–${next.nextEnd}，全部完成后应用；原档案仍可用`):`人设已更新 #${next.nextStart}–${next.nextEnd}，${rows.length} 个角色阶段；主总结进度不变`};emit();
+       view={...view,status:'saved',message:manualId?(data.manualPlan.status==='completed'?`手动人设 #${data.manualPlan.startIndex}–${data.manualPlan.endIndex} 已全部应用；自动更新仍暂停${data.manualPlan.handoff?`，接续起点 #${data.startFloor}`:''}`:`补建进度已保存 #${next.nextStart}–${next.nextEnd}，全部完成后应用；原档案仍可用`):`人设已更新 #${next.nextStart}–${next.nextEnd}，${rows.length} 个角色阶段${rejectedProfiles.length?`，另有 ${rejectedProfiles.length} 份姓名无法确认，已隔离不影响本批`:''}；主总结进度不变`};emit();
       if(manualId&&data.manualPlan.status!=='completed')return {message:view.message,level:'success',batches:1};
       try{await syncMirror(world.cardName,bound);guard();}
       catch(error){guard();view={...view,status:'saved',message:`档案已保存；世界书镜像未完成：${failureText(error)}`};}
@@ -290,6 +383,22 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     catch(error){check(bound);await save({...data,mirror:{...data.mirror,status:'failed',message:failureText(error)}},bound);throw error;}
   });}
   async function mirrorAfterEdit(){try{await syncMirror();}catch(error){view={...view,message:`人物档案已保存；镜像未更新：${failureText(error)}`};emit();}}
+  async function merge(sourceId,targetId){
+    check();if(!sourceId||!targetId||sourceId===targetId)throw new Error('请选择两个不同的人物档案');
+    const bound=currentWorkspace,source=data.profiles.find(p=>p.id===sourceId),target=data.profiles.find(p=>p.id===targetId);
+    if(!source||source.deleted)throw new Error('要并入的人物档案不存在或已经删除');
+    if(!target||target.deleted)throw new Error('要保留的人物档案不存在或已经删除');
+    const versionId=makeId('persona-merge-version');
+    await transact(async()=>{
+      check(bound);await bound.write(versionId,{kind:'persona-merge',profiles:[clone(target),clone(source)],merge:{sourceId,targetId}});check(bound);
+      const merged={...mergePersonaProfiles(target,source),versionId};
+      const profiles=data.profiles.map(p=>p.id===targetId?merged:p.id===sourceId?{...p,deleted:true,locked:true,manual:true,mergedInto:targetId,versionId}:p);
+      await save({...data,profiles},bound);
+    });
+    await mirrorAfterEdit();
+    view={...view,status:'saved',message:`已将“${source.name}”并入“${target.name}”；保留档案、来源与历史版本，短名已作为别称`};emit();
+    return {status:'merged',sourceId,targetId};
+  }
   async function edit(id,patch){check();const bound=currentWorkspace;await transact(async()=>{
     check(bound);const old=data.profiles.find(p=>p.id===id);if(!old)throw new Error('人物档案不存在');
     if(patch.text!==undefined&&(typeof patch.text!=='string'||!patch.text.trim()||unsafe.test(patch.text)))throw new Error('请输入人物档案文本，不要写入脚本代码');
@@ -298,7 +407,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     const update={...old,...Object.fromEntries(['text','locked','deleted'].filter(k=>Object.hasOwn(patch,k)).map(k=>[k,patch[k]])),...(patch.text!==undefined&&patch.text!==old.text?{composition:null}:{}),...aliasPatch,versionId,manual:true};
     await save({...data,profiles:data.profiles.map(p=>p.id===id?update:patch.deleted===true&&settings().dynamicPersonaMvuMode!=='strict'&&foldName(p.name)===foldName(old.name)?{...p,deleted:true,locked:true,manual:true,versionId}:p)},bound);
   });await mirrorAfterEdit();}
-  async function undo(id){check();const bound=currentWorkspace;await transact(async()=>{check(bound);const p=data.profiles.find(p=>p.id===id);if(!p?.versionId)throw new Error('没有可恢复的旧版');const version=await bound.read(p.versionId);check(bound);const old=version?.profiles?.find(p=>p.id===id);await save({...data,profiles:old?data.profiles.map(p=>p.id===id?{...old,locked:true,manual:true}:p):data.profiles.filter(p=>p.id!==id)},bound);});await mirrorAfterEdit();}
+  async function undo(id){check();const bound=currentWorkspace;await transact(async()=>{check(bound);const p=data.profiles.find(p=>p.id===id);if(!p?.versionId)throw new Error('没有可恢复的旧版');const version=await bound.read(p.versionId);check(bound);if(version?.kind==='persona-merge'&&version.merge){const restored=new Map(version.profiles.map(row=>[row.id,{...row,locked:true,manual:true}]));await save({...data,profiles:data.profiles.map(row=>restored.get(row.id)??row)},bound);return;}const old=version?.profiles?.find(p=>p.id===id);await save({...data,profiles:old?data.profiles.map(p=>p.id===id?{...old,locked:true,manual:true}:p):data.profiles.filter(p=>p.id!==id)},bound);});await mirrorAfterEdit();}
   async function add(name,text){check();const bound=currentWorkspace;name=String(name??'').trim();text=String(text??'').trim();if(!name||!text||unsafe.test(text))throw new Error('请填写姓名和完整人物信息，不要包含脚本');personaAliases([name]);const identity=personaIdentity({previous:data.profiles,dictionary:dictionary(),aliases:settings().aliases});if(identity.resolve(name)?.profiles.length)throw new Error('已有这个人物的档案，请直接修改（简繁和已确认别称视为同一人）');const id=sha256([foldName(name),'supplement']).slice(0,24);const through=await historyTail();check(bound);lastIndex=through;await transact(()=>save({...data,profiles:[...data.profiles.filter(p=>p.id!==id),{id,name,characterId:sha256(['persona-character',foldName(name)]).slice(0,24),aliases:[],text,bindings:[],stage:'supplement',sourceFloors:[],through,manual:true,locked:true}]},bound));await mirrorAfterEdit();}
   function profiles(){const rows=ready&&settings().dynamicPersonaEnabled&&currentWorkspace?.isCurrent()?data.profiles.filter(p=>!p.deleted&&(lastIndex===null||p.through<=lastIndex)):[];return currentPersonaProfiles(rows,settings().dynamicPersonaMvuMode);}
   async function inject(payload,{enabled=true}={}){
@@ -316,5 +425,5 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,text:selected.map(p=>`${p.name}：\n${p.text}`).join('\n\n')}};emit();
     return clone(view.lastInjection);
   }
-  return {load,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,undo,add,profiles,inject,syncMirror,export:()=>clone(data),async dispose(){disposed=true;stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};
+  return {load,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,merge,undo,add,profiles,inject,syncMirror,export:()=>clone(data),async dispose(){disposed=true;stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};
 }
