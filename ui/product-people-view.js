@@ -129,6 +129,20 @@ const peopleMergeHTML = profiles => {
   </details>`;
 };
 
+const personaBindHTML = (group, profiles) => {
+  if (!group?.ambiguous || !profiles.length) return '';
+  const options = [...profiles]
+    .sort((a, b) => b.name.length - a.name.length || a.name.localeCompare(b.name, 'zh-CN'))
+    .map(p => `<option value="${esc(p.id)}">${esc(p.name)}${p.bindings?.length ? ' · 已关联原书' : ''}</option>`)
+    .join('');
+  return `<details class="sy-people-persona-bind" data-people-persona-bind>
+    <summary>把“${esc(group.name)}”归入已有动态人设</summary>
+    <p class="sy-help">这个称呼目前对应多人，系统不会猜测归属。选择正确的人物后，只把该称呼保存为目标档案的手工别称；不调用模型、不改原文、不改原世界书。若另有重复的正式档案，请在下方使用“合并重复人物档案”。</p>
+    <label>归入档案<select data-people-persona-bind-target aria-label="把称呼归入人物档案">${options}</select></label>
+    <button type="button" data-people-persona-bind-commit>确认归入此人物</button>
+  </details>`;
+};
+
 export function peopleDetailHTML(group, allProfiles = group?.profiles ?? []) {
   if (!group) return '<p class="sy-empty">暂无人物记录。已有档案、心迹、台词和人物属性会汇集在这里。</p>';
   const profileId = group.profiles[0]?.id ?? '';
@@ -140,8 +154,7 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? []) {
     ${group.aliases.length ? `<p class="sy-help">别称：${esc(group.aliases.join('、'))}</p>` : ''}
     ${group.ambiguous ? '<p class="sy-help" role="status">此称呼对应多人，暂不归入任何人的档案。请从全部记录核对姓名或在召回字典中确认别称。</p>' : ''}
     <dl class="sy-people-stats"><div><dt>档案</dt><dd>${group.profiles.length}</dd></div><div><dt>心迹</dt><dd>${group.diaries.length}</dd></div><div><dt>台词</dt><dd>${group.dialogues.length}</dd></div><div><dt>属性</dt><dd>${group.fieldCount}</dd></div></dl>
-    <section class="sy-people-section"><h5>动态档案</h5>${profileRows || `<p class="sy-help">尚无动态档案</p>${openButton(group, 'dynamic-persona', '查看或补建档案')}`}${group.profiles.length > 2 ? openButton(group, 'dynamic-persona', `查看全部 ${group.profiles.length} 份档案`) : ''}</section>
-    ${peopleMergeHTML(allProfiles)}
+    <section class="sy-people-section sy-people-persona" data-people-persona-block><h5>动态人设档案</h5>${profileRows || `<p class="sy-help">当前称呼还没有绑定动态人设档案。可先补建档案，或在下方把它归入已有角色。</p>${openButton(group, 'dynamic-persona', '查看或补建档案')}`}${group.profiles.length > 2 ? openButton(group, 'dynamic-persona', `查看全部 ${group.profiles.length} 份档案`) : ''}${personaBindHTML(group, allProfiles)}${peopleMergeHTML(allProfiles)}</section>
     <section class="sy-people-section"><h5>角色心迹 <small>${group.diaries.length}</small></h5>${diaryRows || '<p class="sy-help">尚无心迹</p>'}${group.diaries.length ? '<p class="sy-help">私密演绎参考，不赋予他人知情。</p>' : ''}${openButton(group, 'diary', '查看心迹与来源', profileId)}</section>
     <section class="sy-people-section"><h5>关键台词 <small>${group.dialogues.length}</small></h5>${dialogueRows || '<p class="sy-help">尚无关键台词</p>'}${openButton(group, 'dialogue', '查看台词与来源', profileId)}</section>
     <section class="sy-people-section"><h5>人物属性</h5><p class="sy-help">${group.fieldCount} 项属性 · ${group.facts.length} 条记录，含不同时间与情境的取值。</p>${openButton(group, 'facts', '查看属性与来源', profileId)}</section>
@@ -218,6 +231,18 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     }
     if (button.dataset.peoplePageLink) { setPage?.(button.dataset.peoplePageLink); return; }
     if (button.dataset.peopleAll) { onSelect?.({ name: '', profileId: null, kind: button.dataset.peopleAll }); return; }
+    if (button.hasAttribute('data-people-persona-bind-commit')) {
+      const group = groups.find(g => g.key === selected);
+      const targetId = root.querySelector('[data-people-persona-bind-target]')?.value;
+      const profiles = groups.flatMap(g => g.profiles);
+      const target = profiles.find(p => p.id === targetId);
+      if (!group?.ambiguous || !group.name || !target) return;
+      void run(async () => {
+        if (await host.confirm?.(`将称呼“${group.name}”归入“${target.name}”？只会保存别称，不会修改原文或原世界书。`) !== true) return;
+        return app.editDynamicPersona(target.id, { aliases: [...(target.aliases ?? []), group.name] });
+      }, { name: 'dynamic-persona', button });
+      return;
+    }
     if (button.hasAttribute('data-people-merge-commit')) {
       const source = root.querySelector('[data-people-merge-source-select]')?.value;
       const target = root.querySelector('[data-people-merge-target-select]')?.value;
