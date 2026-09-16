@@ -399,6 +399,21 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     view={...view,status:'saved',message:`已将“${source.name}”并入“${target.name}”；保留档案、来源与历史版本，短名已作为别称`};emit();
     return {status:'merged',sourceId,targetId};
   }
+  async function bind(name,targetId){
+    check();
+    const alias=String(name??'').trim(),target=data.profiles.find(p=>p.id===targetId&&!p.deleted);
+    if(!alias)throw new Error('待确认称呼不能为空');
+    personaAliases([alias]);
+    if(!target)throw new Error('归入目标人物档案不存在');
+    // If the nickname already has its own saved dossier, this is a true
+    // dossier merge. Otherwise it is a chat-scoped identity bind; the source
+    // cards are kept intact and the reading projection follows the target.
+    const source=data.profiles.find(p=>p.id!==targetId&&!p.deleted&&foldName(p.name)===foldName(alias));
+    if(source)return merge(source.id,targetId);
+    await edit(targetId,{aliases:[...(target.aliases??[]),alias]});
+    view={...view,status:'saved',message:`已将称呼“${alias}”归入“${target.name}”；心迹、台词、属性与来源将统一显示`};emit();
+    return {status:'bound',alias,targetId,merged:false};
+  }
   async function edit(id,patch){check();const bound=currentWorkspace;await transact(async()=>{
     check(bound);const old=data.profiles.find(p=>p.id===id);if(!old)throw new Error('人物档案不存在');
     if(patch.text!==undefined&&(typeof patch.text!=='string'||!patch.text.trim()||unsafe.test(patch.text)))throw new Error('请输入人物档案文本，不要写入脚本代码');
@@ -425,5 +440,5 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,text:selected.map(p=>`${p.name}：\n${p.text}`).join('\n\n')}};emit();
     return clone(view.lastInjection);
   }
-  return {load,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,merge,undo,add,profiles,inject,syncMirror,export:()=>clone(data),async dispose(){disposed=true;stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};
+  return {load,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,bind,merge,undo,add,profiles,inject,syncMirror,export:()=>clone(data),async dispose(){disposed=true;stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};
 }

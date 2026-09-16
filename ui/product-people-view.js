@@ -115,14 +115,15 @@ const sourceText = record => record.sourceRefs?.length || record.sourceFloors?.l
 const phase = row => row.data.disabled ? '不再注入' : row.record.innerLifeHistorical || row.data.status === 'historical'
   ? '过去阶段' : row.kind === 'dialogue' ? '仍重要' : '按记录情境适用';
 
-const peopleMergeHTML = profiles => {
+const peopleMergeHTML = (profiles, pendingName = '') => {
   if (profiles.length < 2) return '';
   const ordered = [...profiles].sort((a, b) => a.name.length - b.name.length || a.name.localeCompare(b.name, 'zh-CN'));
   const source = ordered[0], target = [...ordered].sort((a, b) => b.name.length - a.name.length || a.name.localeCompare(b.name, 'zh-CN'))[0];
   const options = rows => rows.map(p => `<option value="${esc(p.id)}">${esc(p.name)}${p.bindings?.length ? ' · 已关联原书' : ''}</option>`).join('');
   return `<details class="sy-people-merge" data-people-merge>
     <summary>合并重复人物档案</summary>
-    <p class="sy-help">适合“濑名紫阳花／紫阳花”这类重复档案。选择要并入的档案和要保留正式姓名的档案；内容、动态属性、心迹、台词、来源与别称会合并，不调用模型，原档案可恢复。</p>
+    ${pendingName ? `<p class="sy-help">注意：“${esc(pendingName)}”目前是待确认称呼，不是独立档案，所以不会出现在下面的档案列表。请先在上方“确认归入此人物”；只有两份正式档案都存在时，才使用这里的合并。</p>` : ''}
+    <p class="sy-help">适合“濑名紫阳花／紫阳花”这类重复档案。选择要并入的档案和要保留正式姓名的档案；动态档案内容、属性、心迹、台词、来源与别称会合并，不调用模型，原档案可恢复。原始记录本身仍保留来源，不会被改写成一条混合文本。</p>
     <label>并入档案<select data-people-merge-source-select aria-label="要并入的人物档案">${options(ordered)}</select></label>
     <label>保留档案<select data-people-merge-target-select aria-label="要保留的人物档案">${options(ordered.filter(p => p.id !== source.id))}</select></label>
     <button type="button" data-people-merge-commit>确认合并档案</button>
@@ -131,15 +132,18 @@ const peopleMergeHTML = profiles => {
 
 const personaBindHTML = (group, profiles) => {
   if (!group?.ambiguous || !profiles.length) return '';
-  const options = [...profiles]
+  const ordered = [...profiles]
     .sort((a, b) => b.name.length - a.name.length || a.name.localeCompare(b.name, 'zh-CN'))
-    .map(p => `<option value="${esc(p.id)}">${esc(p.name)}${p.bindings?.length ? ' · 已关联原书' : ''}</option>`)
+  const foldedName = nameKey(group.name);
+  const likely = ordered.filter(p => nameKey(p.name).includes(foldedName));
+  const options = ordered
+    .map(p => `<option value="${esc(p.id)}"${likely.length === 1 && likely[0].id === p.id ? ' selected' : ''}>${esc(p.name)}${p.bindings?.length ? ' · 已关联原书' : ''}</option>`)
     .join('');
-  return `<details class="sy-people-persona-bind" data-people-persona-bind>
+  return `<details open class="sy-people-persona-bind" data-people-persona-bind>
     <summary>把“${esc(group.name)}”归入已有动态人设</summary>
-    <p class="sy-help">这个称呼目前对应多人，系统不会猜测归属。选择正确的人物后，只把该称呼保存为目标档案的手工别称；不调用模型、不改原文、不改原世界书。若另有重复的正式档案，请在下方使用“合并重复人物档案”。</p>
+    <p class="sy-help">这个称呼目前对应多人，系统不会擅自猜测归属。选择正确的人物后，若称呼已有正式档案会直接合并；否则保存为目标档案的手工别称。当前称呼下已有的心迹、台词、属性会随身份归属统一显示。不调用模型、不改原文、不改原世界书；合并仍保留可恢复版本。</p>
     <label>归入档案<select data-people-persona-bind-target aria-label="把称呼归入人物档案">${options}</select></label>
-    <button type="button" data-people-persona-bind-commit>确认归入此人物</button>
+    <button type="button" data-people-persona-bind-commit>确认归入所选人物</button>
   </details>`;
 };
 
@@ -150,11 +154,13 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? []) {
   const diaryRows = group.diaries.slice(0, 2).map(r => `<div class="sy-people-entry"><h6>${esc(r.data.stage ?? '未注明阶段')}</h6><p class="sy-help">${phase(r)} · ${esc(epistemicLabel(r.data.basis) ?? '依据未注明')}${r.data.origin === 'stage_observation' ? ' · 阶段观察，非逐字心声' : ''}</p><p class="sy-people-prose">${preview(r.data.text)}</p><p class="sy-help">${esc(sourceText(r.record))}</p></div>`).join('');
   const dialogueRows = group.dialogues.slice(0, 2).map(r => `<div class="sy-people-entry"><p class="sy-help">${esc(r.subject)}${r.target ? ` → ${esc(r.target)}` : ''} · ${phase(r)}${r.data.provenance === 'user_authored' ? ' · 用户编写，非核对原话' : ''}</p><blockquote>${preview(r.data.text)}</blockquote>${r.data.context ? `<p>${preview(r.data.context, 160)}</p>` : ''}<p class="sy-help">${esc(sourceText(r.record))}</p></div>`).join('');
   const sources = [...new Map(group.records.map(r => [r.id, r])).values()];
+  const pendingBind = personaBindHTML(group, allProfiles);
   return `<h4 data-people-title tabindex="-1">${esc(group.name)}</h4>
     ${group.aliases.length ? `<p class="sy-help">别称：${esc(group.aliases.join('、'))}</p>` : ''}
     ${group.ambiguous ? '<p class="sy-help" role="status">此称呼对应多人，暂不归入任何人的档案。请从全部记录核对姓名或在召回字典中确认别称。</p>' : ''}
+    ${pendingBind}
     <dl class="sy-people-stats"><div><dt>档案</dt><dd>${group.profiles.length}</dd></div><div><dt>心迹</dt><dd>${group.diaries.length}</dd></div><div><dt>台词</dt><dd>${group.dialogues.length}</dd></div><div><dt>属性</dt><dd>${group.fieldCount}</dd></div></dl>
-    <section class="sy-people-section sy-people-persona" data-people-persona-block><h5>动态人设档案</h5>${profileRows || `<p class="sy-help">当前称呼还没有绑定动态人设档案。可先补建档案，或在下方把它归入已有角色。</p>${openButton(group, 'dynamic-persona', '查看或补建档案')}`}${group.profiles.length > 2 ? openButton(group, 'dynamic-persona', `查看全部 ${group.profiles.length} 份档案`) : ''}${personaBindHTML(group, allProfiles)}${peopleMergeHTML(allProfiles)}</section>
+    <section class="sy-people-section sy-people-persona" data-people-persona-block><h5>动态人设档案</h5>${profileRows || `<p class="sy-help">当前称呼还没有绑定动态人设档案。可先补建档案，或在下方把它归入已有角色。</p>${openButton(group, 'dynamic-persona', '查看或补建档案')}`}${group.profiles.length > 2 ? openButton(group, 'dynamic-persona', `查看全部 ${group.profiles.length} 份档案`) : ''}${peopleMergeHTML(allProfiles, group.ambiguous ? group.name : '')}</section>
     <section class="sy-people-section"><h5>角色心迹 <small>${group.diaries.length}</small></h5>${diaryRows || '<p class="sy-help">尚无心迹</p>'}${group.diaries.length ? '<p class="sy-help">私密演绎参考，不赋予他人知情。</p>' : ''}${openButton(group, 'diary', '查看心迹与来源', profileId)}</section>
     <section class="sy-people-section"><h5>关键台词 <small>${group.dialogues.length}</small></h5>${dialogueRows || '<p class="sy-help">尚无关键台词</p>'}${openButton(group, 'dialogue', '查看台词与来源', profileId)}</section>
     <section class="sy-people-section"><h5>人物属性</h5><p class="sy-help">${group.fieldCount} 项属性 · ${group.facts.length} 条记录，含不同时间与情境的取值。</p>${openButton(group, 'facts', '查看属性与来源', profileId)}</section>
@@ -238,8 +244,9 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
       const target = profiles.find(p => p.id === targetId);
       if (!group?.ambiguous || !group.name || !target) return;
       void run(async () => {
-        if (await host.confirm?.(`将称呼“${group.name}”归入“${target.name}”？只会保存别称，不会修改原文或原世界书。`) !== true) return;
-        return app.editDynamicPersona(target.id, { aliases: [...(target.aliases ?? []), group.name] });
+        if (await host.confirm?.(`将称呼“${group.name}”归入“${target.name}”？若已有同名正式档案会一并合并；原文、原世界书和来源记录不改。`) !== true) return;
+        return app.bindDynamicPersona?.(group.name, target.id)
+          ?? app.editDynamicPersona(target.id, { aliases: [...(target.aliases ?? []), group.name] });
       }, { name: 'dynamic-persona', button });
       return;
     }

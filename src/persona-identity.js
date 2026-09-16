@@ -31,7 +31,16 @@ export function personaIdentity({spans=[],previous=[],dictionary={entries:[]},al
   };
   // Stored canonical identity wins over a model's spelling in this batch.
   for(const p of previous)if(!p.deleted)add(p.name,{characterId:p.characterId,aliases:p.aliases,profile:p});
-  for(const t of [...terms,...overrides])if(!t.disabled&&(t.kind==='人物'||t.manual||people.has(foldName(t.name))))add(t.name,{aliases:t.aliases});
+  for(const t of [...terms,...overrides])if(!t.disabled&&(t.kind==='人物'||t.manual||people.has(foldName(t.name)))){
+    const termKey=foldName(t.name),canonical=people.get(termKey);
+    // An automatically extracted nickname term must not remain a second
+    // person after the user has explicitly bound that nickname to a saved
+    // profile. A separately saved canonical profile still wins as a real
+    // ambiguity and must be merged explicitly.
+    const bound=[...people.values()].find(p=>p.key!==termKey&&p.profiles.some(row=>(row.aliasPolicy==='manual')&&(row.aliases??[]).some(alias=>foldName(alias)===termKey)));
+    if(bound&&!t.manual&&t.kind==='人物'&&!canonical?.profiles.length)continue;
+    add(t.name,{aliases:t.aliases});
+  }
   const titleNames=spans.flatMap(s=>personaTitleNames(s.name).slice(0,1));
   for(const name of titleNames.sort((a,b)=>b.length-a.length)){
     const known=[...people.values()].filter(p=>p.key===foldName(name)||[...p.aliases,...shortNames(p.name)].some(a=>foldName(a)===foldName(name)));
