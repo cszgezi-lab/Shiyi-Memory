@@ -32,7 +32,7 @@ export function safeLogDetails(value = {}) {
   if(Number.isSafeInteger(value?.unwrappedSourceGroups)&&value.unwrappedSourceGroups>0)result.unwrappedSourceGroups=value.unwrappedSourceGroups;
   for(const key of ['historyPages','fetchedMessages','normalizedMessages','prepareMs','modelMs','publishMs','reviewedPassages','expectedPassages','reviewedChecks','expectedChecks','invalidCheckNotes'])if(Number.isSafeInteger(value?.[key])&&value[key]>=0)result[key]=value[key];
   if(['narrative','details'].includes(value?.summaryStage))result.summaryStage=value.summaryStage;
-  for(const key of ['compactFloors','compactChanges','normalizedSourceRefs','linkedEventSources','unknownEventPerspectives','inferredModuleFormats','unwrappedSummaryRoots','unknownEvidenceTypes','unknownKnowledgeMetadata','accepted','rejected','rejectedRows'])if(Number.isSafeInteger(value?.[key])&&value[key]>=0)result[key]=value[key];
+  for(const key of ['compactFloors','compactChanges','normalizedSourceRefs','linkedEventSources','eventLinkFieldCorrections','unknownEventPerspectives','inferredModuleFormats','unwrappedSummaryRoots','unknownEvidenceTypes','unknownKnowledgeMetadata','accepted','rejected','rejectedRows'])if(Number.isSafeInteger(value?.[key])&&value[key]>=0)result[key]=value[key];
   const issues=safeValidationIssues(value?.validationIssues);
   if(issues.length)result.validationIssues=issues;
   if(Number.isSafeInteger(value?.validationIssueCount)&&value.validationIssueCount>issues.length)result.validationIssuesOmitted=value.validationIssueCount-issues.length;

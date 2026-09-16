@@ -7,7 +7,7 @@ import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, c
 import { factValue, fullCharacterGroups, awarenessSubjectLabel } from './product-person-profiles.js';
 import { compileEventPacket } from './product-event-packet.js';
 import { factValidity, awarenessAssociationSupported } from './memory-evidence.js';
-import { originalSourceText, sourceRecallExcerpt, sourceQuote, evidenceTerms, sourceEvidenceQuery } from './source-recall-evidence.js';
+import { originalSourceText, sourceRecallExcerpt, sourceQuote, evidenceTerms, sourceEvidenceQuery, projectSourceForRecall } from './source-recall-evidence.js';
 import { innerLifeText, importantDialoguePacket,markDiaryHistory,characterKeepsakes } from './character-journal.js';
 
 export const CATEGORY_LABELS = Object.freeze({ events: '事件', awarenessChanges: '知情', entityFactChanges: '人物与事实', relationshipChanges: '关系', personaChanges: '人设变化', commitmentChanges: '约定', performanceHints: '演绎参考', summaryView: '楼层摘要', conflicts: '冲突与疑点', knowledge: '资料' });
@@ -227,11 +227,11 @@ export function selectRecallCards(cards, settings, {includeAwareness=false}={}) 
   cards=cards.filter(c=>!(c.category==='commitmentChanges'&&c.state==='unknown'));
   cards=cards.filter(c=>c.knowledgeReview?.status!=='pending');
   cards=cards.filter(c=>!c.journalOnly||(settings.journalEnabled!==false&&c.innerLife?.text&&!c.innerLife.disabled));
-  return cards.filter(c => c.customInject !== false && (includeAwareness||c.category !== 'awarenessChanges'||c.standaloneRecall===true) && !['retracted', 'superseded'].includes(c.lifecycleState) && (c.category !== 'conflicts'||c.sourceRefs?.length>0) && (settings.personaEnabled || !['entityFactChanges','personaChanges','relationshipChanges','awarenessChanges'].includes(c.category)) && (settings.performanceEnabled || c.category !== 'performanceHints') && (settings.knowledgeEnabled || c.category !== 'knowledge'));
+  return cards.filter(c => c.customInject !== false && (includeAwareness||c.category !== 'awarenessChanges'||c.standaloneRecall===true) && !['retracted', 'superseded'].includes(c.lifecycleState) && (c.category !== 'conflicts'||c.sourceRefs?.length>0) && (settings.personaEnabled || !['entityFactChanges','personaChanges','relationshipChanges','awarenessChanges'].includes(c.category)) && (settings.performanceEnabled || c.category !== 'performanceHints') && (settings.knowledgeEnabled || c.category !== 'knowledge')).map(c=>projectSourceForRecall(c,settings.narrativeExtraction));
 }
 export function prepareRecallIndex(cache, cards, settings, { scopeKey, revision, signal } = {}) {
   if (revision === undefined) throw new Error('recall cache requires a snapshot revision');
-  return cache.prepare(selectRecallCards(cards, settings), { scopeKey, revision: { snapshot: revision, persona: settings.personaEnabled, performance: settings.performanceEnabled, knowledge: settings.knowledgeEnabled,journal:settings.journalEnabled }, k1: settings.bm25K1, b: settings.bm25B, signal });
+  return cache.prepare(selectRecallCards(cards, settings), { scopeKey, revision: { snapshot: revision, persona: settings.personaEnabled, performance: settings.performanceEnabled, knowledge: settings.knowledgeEnabled,journal:settings.journalEnabled,reading:settings.narrativeExtraction??'' }, k1: settings.bm25K1, b: settings.bm25B, signal });
 }
 export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null,focusQuery=query,characterQuery=query } = {}) {
   const startedAt = globalThis.performance?.now?.() ?? Date.now();

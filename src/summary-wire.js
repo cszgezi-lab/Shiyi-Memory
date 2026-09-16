@@ -175,6 +175,16 @@ export function expandModuleSummary(output,sourceMessages=[]) {
     // values remain invalid; this does not relax epistemic or source checks.
     if(!Object.hasOwn(e,'perspective'))e.perspective='unknown';
   }
+  // Some providers put an exact local event ID in the optional fact-link
+  // field. Correct the field type, not its target or meaning. Never guess a
+  // missing ID, choose between duplicate IDs, or override a competing link.
+  const factIds=new Set(result.entityFactChanges.map(r=>r.id));
+  for(const row of result.awarenessChanges){
+    if(typeof row.recordRef==='string'&&eventCounts.get(row.recordRef)===1&&!factIds.has(row.recordRef)
+      &&!['eventRef','eventRefs','eventId','eventIds','sourceEventId'].some(k=>Object.hasOwn(row,k))){
+      row.eventRef=row.recordRef;delete row.recordRef;
+    }
+  }
   for(const key of ['excluded','unprocessed'])if(output[key]!==undefined&&!Array.isArray(output[key]))fail(`coverage.${key}`,'invalid_shape');
   result.coverage={sourceRefs:sourceMessages.map(m=>({sourceId:m.id,...(m.fragmentId?{fragmentId:m.fragmentId}:{})})),bridgeRefs:[],processed:result.summaryView.flatMap(r=>r.sourceRefs),excluded:clone(output.excluded??[]),unprocessed:clone(output.unprocessed??[])};
   return result;
@@ -202,7 +212,9 @@ export function moduleLinkNormalization(output,expanded,sourceMessages=[]){
     }).length;
   },0),0);
   const unwrappedSourceGroups=['events',...Object.values(categories)].reduce((n,k)=>n+(output[k]??[]).flatMap(r=>r.sourceRefs??[]).filter(ref=>isPlainObject(ref)&&Object.keys(ref).length===1&&Array.isArray(ref.sourceRefs)&&ref.sourceRefs.length).length,0);
+  const eventLinkFieldCorrections=(output.awarenessChanges??[]).filter((r,i)=>typeof r.recordRef==='string'&&expanded.awarenessChanges[i]?.eventRef===r.recordRef&&!Object.hasOwn(expanded.awarenessChanges[i],'recordRef')).length;
   return {
+    ...(eventLinkFieldCorrections?{eventLinkFieldCorrections}:{}),
     ...(unwrappedSourceGroups?{unwrappedSourceGroups}:{}),
     ...(resolvedSourceTextHints?{resolvedSourceTextHints}:{}),
     ...(wholeFloorEventAnnotations?{wholeFloorEventAnnotations}:{}),

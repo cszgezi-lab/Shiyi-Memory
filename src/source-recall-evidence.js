@@ -1,4 +1,7 @@
 import { sha256 } from './utils.js';
+import {narrativeReading} from './narrative-reading.js';
+
+const readingCache=new WeakMap(),projectionCache=new WeakMap();
 
 // A second, local-only search surface. The host binds each floor's frozen body;
 // a model-supplied copy, bridge floor, or stale content hash is never accepted.
@@ -6,6 +9,7 @@ export function bindOriginalSource(record, category, sources) {
   const next = { ...record };
   delete next.originalSource;
   delete next.localSearchText;
+  delete next.recallReadingConfig;
   if (category !== 'summaryView' || next.sourceRefs?.length !== 1) return next;
   const ref = next.sourceRefs[0];
   const matches = sources.filter(s => s.sourceId === ref.sourceId && s.fragmentId === ref.fragmentId);
@@ -20,7 +24,24 @@ export function originalSourceText(record) {
   const original = record?.originalSource, ref = record?.sourceRefs?.[0];
   if (record?.category !== 'summaryView' || record.sourceRefs?.length !== 1 || typeof original?.text !== 'string' || !ref?.contentHash) return '';
   if (!['sourceId','fragmentId','version','swipeId','hash','contentHash'].every(k => (original.sourceRef?.[k] ?? null) === (ref[k] ?? null))) return '';
-  return sha256(original.text) === ref.contentHash ? original.text : '';
+  if(sha256(original.text)!==ref.contentHash)return '';
+  if(typeof record.recallReadingConfig!=='string')return original.text;
+  const config=record.recallReadingConfig,prior=readingCache.get(original);
+  if(prior?.config===config&&prior.raw===original.text)return prior.text;
+  // Rendering/search use a projection. Frozen raw text/hash stay untouched,
+  // including for old records saved before configurable reading existed.
+  const text=narrativeReading({text:original.text},config).chunks.map(c=>c.text).join('\n');
+  readingCache.set(original,{config,raw:original.text,text});return text;
+}
+
+export function projectSourceForRecall(record,config=''){
+  if(record?.category!=='summaryView'||!record.originalSource)return record;
+  config=typeof config==='string'?config:'';
+  if(record.recallReadingConfig===config)return record;
+  const prior=projectionCache.get(record);if(prior?.config===config)return prior.record;
+  const projected={...record,recallReadingConfig:config},text=originalSourceText(projected);
+  projected.localSearchText=[record.searchText??record.text??record.description,text].filter(Boolean).join('\n');
+  projectionCache.set(record,{config,record:projected});return projected;
 }
 
 const generic = /^(什么|怎么|为什么|怎样|如何|哪个|这个|那个|是否|现在|之前|以前|当时|后来|继续|然后|一下|告诉|关于|他们|她们|究竟|到底|还是|发生|事情|有关|记得|知道)$/u;
