@@ -2,10 +2,11 @@ import { validateProductPatch } from './product-settings.js';
 import { ProviderClient, resolveProviderEndpoint } from './provider.js';
 import { modelListFailure } from './product-feedback.js';
 
-export const API_KINDS = Object.freeze(['summary', 'supplement', 'assistant', 'embedding', 'rerank','dynamicPersona']);
+export const API_KINDS = Object.freeze(['summary', 'supplement', 'assistant', 'embedding', 'rerank','dynamicPersona','knowledge']);
 export function productApiProfile(settings, kind, keys = {}, patch = {}) {
   if (!API_KINDS.includes(kind)) throw new Error('未知模型用途');
   const s = { ...settings, ...validateProductPatch(patch) };
+  if(kind==='knowledge'&&s.knowledgeFollowAssistant)return productApiProfile(s,'assistant',keys);
   const effectiveKind = ['assistant','supplement'].includes(kind) && s[`${kind}FollowSummary`] ? 'summary' : kind;
   const prefix = effectiveKind === 'summary' ? 'provider' : effectiveKind;
   return { endpoint: s[`${prefix}Endpoint`], model: kind==='supplement'&&s.supplementFollowSummary?(s.supplementModel||s.providerModel):s[`${prefix}Model`],

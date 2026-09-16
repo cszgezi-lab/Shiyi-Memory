@@ -273,3 +273,33 @@
 #shiyi-product-shell .sy-source-preview{white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;font-size:13px;line-height:1.7;max-height:360px;overflow:auto;border-left:2px solid var(--sy-accent);padding:0 12px}
 #shiyi-product-shell [data-extraction-warnings]{white-space:pre-wrap}
 #shiyi-product-shell [data-extraction-json]{font-family:monospace;font-size:13px}
+
+/* Compact workbench: hierarchy through separators, not nested pill-shaped cards. */
+#shiyi-product-shell .sy-card{border-radius:4px;padding:12px;margin:12px 0;box-shadow:none}
+#shiyi-product-shell :is(button,input,select,textarea){border-radius:3px}
+#shiyi-product-shell :is(button,select){min-height:44px}
+#shiyi-product-shell :is(h3,h4){font-weight:600;line-height:1.5}
+#shiyi-product-shell h3{font-size:18px;margin:8px 0 14px}
+#shiyi-product-shell h4{font-size:15px;margin:8px 0}
+#shiyi-product-shell .sy-help{font-size:12px;line-height:1.65}
+#shiyi-product-shell .sy-field{font-size:13px;gap:5px;margin:12px 0}
+#shiyi-product-shell .sy-actions{gap:6px}
+#shiyi-product-shell .sy-actions button{font-size:13px;padding:8px 10px}
+#shiyi-product-shell :is(.sy-record-tabs,.sy-recall-tabs){gap:3px;border-bottom:1px solid var(--sy-border);padding-bottom:6px}
+#shiyi-product-shell :is(.sy-record-tabs,.sy-recall-tabs) button{border:0;border-radius:0;font-size:13px;padding:8px 5px}
+#shiyi-product-shell :is(.sy-record-tabs,.sy-recall-tabs) button.active{box-shadow:inset 0 -2px var(--sy-accent);background:color-mix(in srgb,var(--sy-accent) 8%,transparent)}
+/* Keep the nine category tiles at their established 13px / 48px scale. */
+#shiyi-product-shell .sy-memory-tools>details{border-width:1px 0 0;border-radius:0;padding:4px 0;margin:4px 0}
+#shiyi-product-shell .sy-memory-tools>details>summary{font:500 13px/1.5 system-ui,sans-serif;min-height:44px;padding:10px 0}
+#shiyi-product-shell :is(.sy-memory-pager,.sy-coverage){padding:10px 0;border-block:1px solid var(--sy-border);margin:8px 0 14px;min-width:0}
+#shiyi-product-shell .sy-memory-pager{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;font-size:12px}
+#shiyi-product-shell .sy-memory-pager[hidden]{display:none}
+#shiyi-product-shell .sy-memory-pager>div{display:flex;align-items:center;gap:4px;flex-wrap:wrap;max-width:100%}
+#shiyi-product-shell .sy-memory-pager button{font-size:12px;padding:6px}
+#shiyi-product-shell .sy-memory-pager input{width:4em;min-height:44px;text-align:center}
+#shiyi-product-shell .sy-memory-pager select{width:4.5em}
+#shiyi-product-shell .sy-coverage small{display:block;margin-top:8px}
+#shiyi-product-shell .sy-coverage .sy-packet{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0}
+#shiyi-product-shell [data-knowledge-options]>summary{font-size:13px;min-height:44px;padding:10px 0}
+#shiyi-product-shell [data-kb-doc] .sy-packet{max-height:360px;overflow:auto}
+#shiyi-product-shell [data-kb-edit-text]{width:100%;box-sizing:border-box;min-height:160px}

@@ -91,3 +91,22 @@ export async function importTextDocument(workspace, { name, text, purpose = 'kno
   await workspace.update('documents', list => [...list, doc], []);
   return doc;
 }
+
+export const documentPartKey=(doc,part)=>doc.partKeys?.[part]??`${doc.storageId??doc.id}-${part}`;
+
+// Stage only the changed chunk and its analysis before switching the manifest.
+// Unchanged parts are reused: editing a large book must not rewrite the book.
+export async function reviseDocumentChunk(workspace,id,index,{text,expected}={}){
+  const docs=await workspace.read('documents',[]),doc=docs.find(d=>d.id===id);
+  if(!doc||!Number.isSafeInteger(index)||index<0||index>=doc.chunks)throw Error('资料或段号已变化，请重新打开');
+  if(typeof text!=='string'||!text.trim()||text.length>6000)throw Error('片段需要 1–6000 字；要替换整份资料请重新导入文件');
+  const before=await workspace.read(documentPartKey(doc,index));
+  if(!before||expected!==sha256(before.text))throw Error('资料内容已变化，请重新打开片段后修改');
+  if(text===before.text)return doc;
+  const storageId=makeId('doc-revision'),notes=await workspace.read(documentPartKey(doc,'analysis'),[]);
+  await workspace.write(`${storageId}-${index}`,{...before,text,end:before.start+text.length});
+  notes[index]=null;await workspace.write(`${storageId}-analysis`,notes);
+  const next={...doc,partKeys:{...doc.partKeys,[index]:`${storageId}-${index}`,analysis:`${storageId}-analysis`},hash:sha256([doc.hash,index,text]),chars:doc.chars-before.text.length+text.length,updatedAt:Date.now(),analyzed:notes.filter(Boolean).length,dictionaryStatus:'partial',vectorStatus:null};
+  await workspace.update('documents',list=>{const current=list.find(d=>d.id===id);if(stableStringify(current)!==stableStringify(doc))throw Error('资料正在被其他任务修改，请重新打开');return list.map(d=>d.id===id?next:d);},[]);
+  return next;
+}

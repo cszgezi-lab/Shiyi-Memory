@@ -159,7 +159,7 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
     if(detail)lines.push(`旧记录发生时间：${narrativeText(card.mergeReview.previousTime)||'未提取'}；本次提取：${narrativeText(card.mergeReview.proposedTime)||'未提取'}`);
   }
   if (card.epistemicStatus && card.epistemicStatus !== 'observed') lines.push(`性质：${epistemicLabel(card.epistemicStatus)}`);
-  if (card.category === 'knowledge') lines.push(card.worldMode==='fanfiction'?'同人原作资料：当前分支事实优先，原作未来不是已经发生或全员知情。':card.worldMode==='original'?'原创世界资料：设定与主线计划不是当前已发生或全员知情的经历。':'外部设定资料，不等于角色已经历或已知情。');
+  if (card.category === 'knowledge') lines.push('外部设定资料：当前聊天分支事实优先，原作与计划不等于已经发生或角色已知情。');
   else if (card.category==='awarenessChanges') lines.push(`知情：${awarenessText([card])}`);
   else if (card.awareness?.length) lines.push(`知情：${awarenessText(card.awareness)}`);
   else if(!card.relatedEvents?.some(e=>e.awareness.length)&&(!detail||['events','summaryView'].includes(card.category)))lines.push('本条未关联知情记录，不等于无人知情；不能据此让所有角色知情。');
@@ -296,7 +296,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     if(!placed.has(c.id)){ordered.push(c);placed.add(c.id);}
   }
   candidates=ordered;
-  const header = ['[拾忆：有来源的连续性参考，不是必须重演的剧情]', '只让角色使用其实际知情范围；未知不等于全员已知。不要因召回而反复引用台词或加速关系。', settings.storyDate ? `当前故事日期：${settings.storyDate}。旧引语的昨天/明天以原事件时间为准。` : '当前故事日期未确认，不套用现实日期。', settings.worldMode === 'fanfiction' ? '同人资料是原作参照；当前分支的时期、身份和已经发生的事实优先，不强行回归原作。' : '按当前原创分支记录，不凭资料提前推进主线。'].join('\n');
+  const header = ['[拾忆：有来源的连续性参考，不是必须重演的剧情]', '只让角色使用其实际知情范围；未知不等于全员已知。不要因召回而反复引用台词或加速关系。', settings.storyDate ? `当前故事日期：${settings.storyDate}。旧引语的昨天/明天以原事件时间为准。` : '当前故事日期未确认，不套用现实日期。', '资料是设定参照；当前聊天的时期、身份与事实优先，不凭资料提前推进剧情。'].join('\n');
   const ambiguities=[...new Map([...matched.ambiguities,...characters.matched.ambiguities].map(a=>[a.name,a])).values()];
   const ambiguity=ambiguities.map(a=>`称呼“${a.name}”尚未区分：${a.owners.join('、')}；不得合并这些对象的经历。`).join('\n');
   const packetHeader=[header,ambiguity].filter(Boolean).join('\n');

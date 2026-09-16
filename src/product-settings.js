@@ -13,6 +13,12 @@ import {getNarrativeConfig} from './narrative-extraction.js';
 export const PRODUCT_SETTINGS_VERSION = 1;
 
 const DEFINITIONS = [
+  {key:'knowledgeFollowAssistant',label:'资料分析沿用配置助手连接',defaultValue:true,type:'boolean',consumers:['ProductApplication.analyzeDocuments']},
+  {key:'knowledgeEndpoint',label:'资料分析 API 地址',defaultValue:'',type:'string',maxLength:2048,consumers:['ProductApplication.analyzeDocuments']},
+  {key:'knowledgeModel',label:'资料分析模型',defaultValue:'',type:'string',maxLength:240,consumers:['ProductApplication.analyzeDocuments']},
+  {key:'knowledgeEndpointMode',label:'资料分析地址模式',defaultValue:'base',type:'enum',values:['base','exact'],consumers:['ProductApplication.analyzeDocuments']},
+  {key:'knowledgeAuthMode',label:'资料分析认证方式',defaultValue:'bearer',type:'enum',values:['none','bearer','api-key'],consumers:['ProductApplication.analyzeDocuments']},
+  {key:'knowledgeOutputTokens',label:'资料分析回复上限（Token）',defaultValue:4096,type:'integer',min:0,max:131072,consumers:['ProductApplication.analyzeDocuments']},
   {key:'narrativeExtraction',label:'正文提取规则',defaultValue:'',type:'string',maxLength:16384,consumers:['SummaryEngine','DynamicPersonaController','planQuality']},
   {key:'dynamicPersonaEnabled',label:'启用动态人设',defaultValue:false,type:'boolean',consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaEvery',label:'人设每多少楼更新',defaultValue:10,type:'integer',min:1,max:200,consumers:['DynamicPersonaController']},
@@ -214,7 +220,8 @@ export const PRODUCT_PERSISTED_SETTING_KEYS = PERSISTED_KEYS;
 // Connection settings belong to this TT installation, not a story or chat.
 // Credentials remain runtime-only and are deliberately absent from this list.
 export const PRODUCT_API_SETTING_KEYS = Object.freeze([
-  ...['provider','assistant','supplement','embedding','rerank','dynamicPersona'].flatMap(prefix => ['Endpoint','EndpointMode','Model','AuthMode'].map(suffix => prefix + suffix)),
+  ...['provider','assistant','supplement','embedding','rerank','dynamicPersona','knowledge'].flatMap(prefix => ['Endpoint','EndpointMode','Model','AuthMode'].map(suffix => prefix + suffix)),
+  'knowledgeFollowAssistant','knowledgeOutputTokens',
   'assistantFollowSummary','supplementFollowSummary','deadlineMs','summaryDeadlineMs','summaryStreaming','summaryRequestMode','chatRequestsPerMinute','assistantBudgetUnits','assistantOutputTokens',
 ]);
 export function splitProductSettings(patch) {

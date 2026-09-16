@@ -5,6 +5,13 @@ export const button = (action, label, primary = false) => `<button type="button"
 export const field = (label, input) => `<label class="sy-field"><span>${label}</span>${input}</label>`;
 const names = { base:'自动补接口路径', exact:'完整地址（不补路径）', none:'无需 Key', bearer:'标准 Key（默认）', 'api-key':'x-api-key（服务商要求时）', inherit:'沿用记录偏好', ask_manual:'手动总结时填写', ask_every:'每次总结前填写', disabled:'关闭', broadcast:'各类别均衡召回', leader_only:'仅指定通道', original:'原创', fanfiction:'同人', system:'系统', user:'用户', start:'请求开头', before_last:'最后一条消息前' };
 const copy = {
+  knowledgeFollowAssistant:['沿用配置助手连接（默认）','已有助手 / 总结 API 就能分析资料，无需重复填写。关闭后使用本卡的独立地址、模型与 Key；不改其他任务。'],
+  knowledgeOutputTokens:['字典分析回复上限（Token）','推荐 4096；每次最多分析约 6000 字原文，原文始终完整保存，AI 不负责压缩或改写资料。'],
+  dynamicPersonaEvery:['每多少楼更新人物','推荐 10。人设独立计数，不等待主总结；正常每批一次模型请求。'],
+  dynamicPersonaKeepRecent:['保留最近多少楼','推荐 0；需要给重生成留空间可增加。保留的楼层暂不进入人设更新。'],
+  dynamicPersonaInputUnits:['人设输入预算（估算）','推荐 24000；包含正文、原书和已有材料。超限会明确提示，不偷偷拆分你选的批次。'],
+  dynamicPersonaOutputTokens:['人设回复上限（Token）','推荐 8192，限制模型本次回复长度，不截断已保存的完整人物档案。'],
+  dynamicPersonaDeadlineMs:['人设请求超时（毫秒）','推荐 180000，即 3 分钟；后台更新，不增加前台召回等待时间。'],
   dynamicPersonaMvuMode:['人物演绎主次','推荐剧情主导：MVU 数值只作参考，不把人物锁在固定阶段。不会改写变量、阈值或脚本；旧卡也可选择严格阶段兼容。'],
   summaryRequestMode:['总结请求方式','推荐方式不强制服务端 JSON 模式；仍按预设输出、完整校验后保存。不支持流式的接口可选兼容非流式。'],
   summaryReviewEnabled:['完整总结＋查漏纠错（候选）','先完整记录全部模块，再对照原文只补漏、纠错。一批最多两次，后台进行，不阻塞聊天；失败保留已返回结果。'],
@@ -52,8 +59,8 @@ const copy = {
   dictionaryEnabled:['使用自动字典','总结和资料分析时生成；别称有歧义时不自动归并。'],
   tagRecallEnabled:['标签辅助召回','结合本轮相关主题补充候选，仍保留普通语义检索。'],
   tagCandidateLimit:['每个标签初选几条','与普通候选合并去重，再统一重排。'],
-  externalStatePaths:['只读变量路径','读取指定的 chatMetadata 或 lastMessageExtra 字段，不改写 MVU。'],
-  storyDate:['故事日期参照（兼容设置）','未知留空，不使用现实日期代替剧情日期。'],
+  externalStatePaths:['额外读取哪些变量','默认不额外读取：普通卡和动态人设都可正常使用。需要时填写 chatMetadata 或 lastMessageExtra 的具体路径；只读、不改 MVU。'],
+  storyDate:['缺少正文日期时的参照','默认留空＝自动以正文日期为准。仅在剧情明确、正文没有日期时手填；不会用现实日期猜填，也不覆盖正文。'],
   deadlineMs:['模型请求超时（毫秒）','120000 即 2 分钟。'],
   summaryDeadlineMs:['后台总结与复核超时（毫秒）','300000 即单次最多等待 5 分钟，可修改；不延长召回的等待时间。'],
   summaryStreaming:['旧版模式使用流式','仅“旧版 JSON 模式”读取此项；其他方式由上方选项决定。'],
@@ -67,7 +74,7 @@ Object.assign(names,{'chat-stream':'酒馆兼容 · 流式（推荐）','chat-bu
 Object.assign(names,{narrative:'剧情主导 · MVU作参考（推荐）',strict:'严格遵守 MVU 阶段（兼容）'});
 
 export function setting(key, label, help, placeholder = '') {
-  if(key==='summaryPresets')return '<p class="sy-help">总提示词和各模块填写规则，可到“记录 → 总结预设”修改。</p>';
+  if(key==='summaryPresets')return '<p class="sy-help">总提示词和各模块填写规则，可到“总结 → 总结预设”修改。</p>';
   const d = registry[key]; if (!d || d.persisted === false) throw new Error(`未知设置：${key}`);
   const [name, hint] = [label ?? copy[key]?.[0] ?? d.label, help ?? copy[key]?.[1] ?? ''];
   let input;
@@ -89,19 +96,24 @@ export const SETTING_GROUPS = Object.freeze({
   injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','dialogueEnabled','journalEnabled','injectionPosition','injectionRole','injectionLogEnabled'],
   vectors: ['vectorEnabled','vectorAutoUpdate'],
   retrieval: ['rerankEnabled','tagRecallEnabled','tagCandidateLimit','retrievalCandidateLimit','rerankMaxCandidates','bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant','distributedEnabled','distributedStrategy','distributedChannel','retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs'],
-  world: ['worldMode','knowledgeEnabled','dictionaryEnabled','aliases','externalStatePaths','storyDate'],
+  world: ['knowledgeEnabled'],
+  dictionary: ['dictionaryEnabled','aliases'],
+  compatibility: ['externalStatePaths','storyDate'],
 });
 export function settingsSection(kind) {
   const keys = SETTING_GROUPS[kind];
   if (kind === 'recording') return card('共同记录偏好',fields(['recordingRules','focusMode','summaryReviewEnabled'])+advanced('其他调用方式',['summaryStaged','autoMergeEnabled','autoQualityEnabled','qualityBatchRecords'])+button('per-call-mode','切回单次主总结')+'<p class="sy-help">双次复核关闭时才使用其他调用方式。双次模式超过输入预算会提示调整，不暗中拆成多批。</p>'+advanced('总结高级设置',['messageCount','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize']));
-  if (kind === 'automatic') return card('自动总结',setting('autoSummaryEnabled').replace('<input','<input disabled')+fields(['autoSummaryEvery','autoKeepRecent'])+field('当前聊天从哪楼起算','<input data-auto-start type="number" min="0" value="1">')+'<p class="sy-help">新聊天默认从 #1；需要包含开场白可填 #0。老聊天会接着已连续总结的楼层处理。改起点只改变后续处理范围，不伪造此前的总结。</p><div class="sy-packet" data-auto-progress role="status"></div><div class="sy-actions"><button type="button" data-action="auto-save">保存自动设置</button><button type="button" data-action="auto-inspect">检查进度</button></div><div class="sy-actions"><button type="button" data-action="auto-start">启用自动</button><button type="button" data-action="auto-pause">暂停自动</button><button type="button" data-action="auto-process">处理下一批</button></div>');
-  if (kind === 'injection') return card('把记忆交给 AI', fields(keys.slice(0,6)) + advanced('注入位置', keys.slice(6)));
+  if (kind === 'automatic') return card('自动总结',setting('autoSummaryEnabled').replace('<input','<input disabled')+fields(['autoSummaryEvery','autoKeepRecent'])+field('当前聊天从哪楼起算','<input data-auto-start type="number" min="0" value="1">')+'<p class="sy-help">新聊天默认从 #1；需要包含开场白可填 #0。老聊天会接着已连续总结的楼层处理。改起点只改变后续处理范围，不伪造此前的总结。</p><div class="sy-packet" data-auto-progress role="status"></div><div class="sy-actions"><button type="button" data-action="auto-save">保存自动设置</button></div><div class="sy-actions"><button type="button" data-action="auto-start">启用自动</button><button type="button" data-action="auto-pause">暂停自动</button><button type="button" data-action="auto-process">处理下一批</button></div>');
+  if (kind === 'injection') return card('把记忆交给 AI', '<p class="sy-help">相关人物带入整份已启用档案；关键台词与当前心迹随人物使用，私密想法不赋予其他角色知情。动态人设在人物模块独立开关；本轮实际内容可看“召回 → 注入日志”。</p>'+fields(keys.slice(0,8)) + advanced('注入位置与日志', keys.slice(8)));
   if (kind === 'vectors') return card('向量索引',fields(keys));
   if (kind === 'retrieval') return card('召回策略', fields(['rerankEnabled','retrievalCandidateLimit','rerankMaxCandidates']) + advanced('标签辅助召回',['tagRecallEnabled','tagCandidateLimit']) + advanced('关键词与融合',['bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant']) + advanced('分类检索',['distributedEnabled','distributedStrategy','distributedChannel']) + advanced('超时保护',['retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs']));
-  return card('世界与资料', fields(['worldMode','knowledgeEnabled','dictionaryEnabled','aliases']) + advanced('变量与日期兼容设置',['externalStatePaths','storyDate']));
+  if(kind==='dictionary')return card('字典设置',fields(keys));
+  if(kind==='compatibility')return card('剧情日期',`<p class="sy-help">推荐：自动读取聊天正文；没有日期就保持未知。这是有效默认值，不需要你设置今天的日期。</p>${setting('storyDate')}`)+card('变量读取',`<p class="sy-help">推荐：不额外读取。它不是 MVU 安装器，也不负责驱动阶段。若你的卡需要让总结模型参考少量变量，可选择下方模板，再把路径缩小到必要字段。</p>${field('可选路径模板','<select data-variable-template><option value="">不添加模板（推荐）</option><option value="lastMessageExtra.stat_data">最后一楼 MVU 数据 · lastMessageExtra.stat_data</option><option value="chatMetadata.stat_data">聊天元数据 · chatMetadata.stat_data</option></select>')}${button('variable-template','填入所选模板')}${setting('externalStatePaths')}<p class="sy-help">路径因卡而异，模板不保证存在；不要导入整个变量树。未知路径不会杜撰数值，已有自定义路径不会被更新重置。</p>`);
+  return card('知识库参与召回', fields(keys));
 }
 
 export const API_INFO = Object.freeze({
+  knowledge: {prefix:'knowledge',title:'知识库分析模型',help:'导入世界书或资料后提取人物、别称与检索标签。原文由本机解析并完整保存；向量索引使用单独的向量 API。',resource:'/chat/completions'},
   summary: { prefix:'provider', title:'总结模型', help:'整理你选择的聊天楼层，提取事件、人物、关系与知情者。不会替代主聊天模型。', resource:'/chat/completions' },
   dynamicPersona: {prefix:'dynamicPersona',title:'动态人设模型',help:'独立后台任务，有自己的开关和楼层周期，不沿用总结 API。可选择你服务商提供的 Flash 模型。',resource:'/chat/completions'},
   supplement: { prefix:'supplement', title:'辅助整理模型', help:'分工总结的第二阶段：人物属性、知情、关系与演绎；同时负责合并核对、缺项校对和引用纠错。可选择服务商提供的 Flash 等快速模型。', resource:'/chat/completions' },
@@ -110,8 +122,8 @@ export const API_INFO = Object.freeze({
   rerank: { prefix:'rerank', title:'重排模型', help:'从候选记忆里挑出更相关的内容，让注入更精简。', resource:'/rerank' },
 });
 export function apiSettingsHTML() {
-  return Object.entries(API_INFO).map(([kind, {prefix, title, help, resource}]) => `<section class="sy-card sy-api-card" data-api-card="${kind}"><div class="sy-top"><h4>${title}</h4>${['embedding','rerank'].includes(kind) ? button(`recommend-${kind}`, '补齐推荐值') : ''}</div><p class="sy-help">${help}</p>
-    ${['assistant','supplement'].includes(kind) ? setting(`${kind}FollowSummary`) + `<p class="sy-inherited sy-help" data-inherited="${kind}"></p>` : ''}
+  return Object.entries(API_INFO).sort(([a],[b])=>['summary','dynamicPersona','supplement','assistant','knowledge','embedding','rerank'].indexOf(a)-['summary','dynamicPersona','supplement','assistant','knowledge','embedding','rerank'].indexOf(b)).map(([kind, {prefix, title, help, resource}]) => `<section class="sy-card sy-api-card" data-api-card="${kind}"><div class="sy-top"><h4>${title}</h4>${['embedding','rerank'].includes(kind) ? button(`recommend-${kind}`, '补齐推荐值') : ''}</div><p class="sy-help">${help}</p>
+    ${['assistant','supplement','knowledge'].includes(kind) ? setting(kind==='knowledge'?'knowledgeFollowAssistant':`${kind}FollowSummary`) + `<p class="sy-inherited sy-help" data-inherited="${kind}"></p>` : ''}
     <div data-api-fields="${kind}">
     <div data-api-connection="${kind}">
     ${setting(`${prefix}Endpoint`, 'API 地址', `基础地址只补 ${resource}，不自动添加 /v1。`, '填写你的服务商地址')}
@@ -123,7 +135,7 @@ export function apiSettingsHTML() {
     ${setting(`${prefix}Model`, '模型名称', '', kind==='supplement'?'留空沿用总结模型；也可选择快速模型':'选择列表中的模型，或手动填写')}
     <p class="sy-help" role="status" data-model-status="${kind}"></p></div>
     <details class="sy-advanced"><summary>高级连接选项（通常不用改）</summary>${setting(`${prefix}EndpointMode`, '地址如何使用', `默认只补 ${resource}，绝不补 /v1。填完整接口地址时可选“不补路径”。`)}${setting(`${prefix}AuthMode`, 'Key 发送方式', '一般保持“标准 Key”；不需要 Key 可留空或选“无需 Key”。只有服务商明确要求时才改用 x-api-key。')}${field('模型列表地址（可选）', `<input data-models-url="${kind}" placeholder="留空时按 API 地址推导 /models" autocomplete="off">`)}</details>
-    </div><div class="sy-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></section>`).join('') + card('请求设置', setting('summaryRequestMode') + advanced('旧版请求兼容选项',['summaryStreaming']) + setting('chatRequestsPerMinute') + setting('summaryDeadlineMs') + setting('deadlineMs') + setting('assistantBudgetUnits') + setting('assistantOutputTokens'));
+    </div>${kind==='knowledge'?setting('knowledgeOutputTokens'):''}<div class="sy-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></section>`).join('') + card('请求设置', setting('summaryRequestMode') + advanced('旧版请求兼容选项',['summaryStreaming']) + setting('chatRequestsPerMinute') + setting('summaryDeadlineMs') + setting('deadlineMs') + setting('assistantBudgetUnits') + setting('assistantOutputTokens'));
 }
 
 // Upgrade opt-in: never replace a custom endpoint, model, or a deliberate zero/false.

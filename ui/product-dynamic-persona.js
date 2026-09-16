@@ -13,30 +13,33 @@ export function dynamicPersonaProgressText(d){
 export function dynamicPersonaHTML(){return `<section data-view="dynamic-persona" hidden>
 <div class="sy-top"><h3>动态人设</h3><button type="button" data-jump="people">人物工作区</button></div>
 <p data-persona-status role="status"></p>
-<details class="sy-card" data-persona-controls><summary>更新与设置 <small>自动周期 · 手动补建 · API</small></summary>
-<div class="sy-actions"><button type="button" data-jump="api">独立 API</button><button type="button" data-jump="extraction">正文提取规则</button></div>
+<details class="sy-card" data-persona-controls open><summary>更新人物 <small>自动更新 / 手动补建</small></summary>
 <p class="sy-help">独立读取原文，不等主总结。自动按周期更新；旧聊天可以手动选范围补建。主聊天只使用已完成的档案，锁屏后可能暂停。</p>
 <p class="sy-help">正文新角色也能建档；同一人物持续更新，保留有来源的转变缘由、对象与表达语料，不强行给路人编造成长。成长脉络在整份档案中查看和修改，与人物更新共用一次请求。</p>
-<p class="sy-help">推荐剧情主导：人物随互动成长，MVU 数值只作参考，不因数值没变就退回旧人设。无 MVU 同样可用；不改变量或脚本。简繁姓名与可确认的简称共同识别，有歧义可在人物编辑或召回字典里校正。</p>
 <div class="sy-actions"><button type="button" data-persona-tab="auto" aria-pressed="true">自动更新</button><button type="button" data-persona-tab="manual" aria-pressed="false">手动补建</button></div>
 <div class="sy-card" data-persona-auto>
 <div class="sy-actions"><button type="button" data-persona-enable>启用 / 继续自动</button><button type="button" data-persona-pause>暂停自动</button></div>
 <div class="sy-grid">${setting('dynamicPersonaEvery')}${setting('dynamicPersonaKeepRecent')}</div>
 ${field('当前聊天自动起算楼层','<input data-persona-start type="number" min="0" value="1">')}
 <p class="sy-help" data-persona-progress></p>
-<div class="sy-actions"><button type="button" data-persona-save>保存人设设置</button><button type="button" data-persona-check>检查进度</button><button type="button" data-persona-retry>处理 / 重试下一批</button></div>
+<div class="sy-actions"><button type="button" data-persona-save>保存自动周期</button><button type="button" data-persona-check>检查进度</button><button type="button" data-persona-retry>处理 / 重试下一批</button></div>
 </div>
 <div class="sy-card" data-persona-manual hidden>
 <h4>旧聊天 · 手动补建</h4><p class="sy-help">楼号与聊天一致。只处理选中原文，不复用主总结的进度；手动批大小与自动周期独立。每批正常 1 次人设请求，预览不调用模型。</p>
 <div class="sy-grid">${field('从哪一楼','<input type="number" min="0" value="1" data-persona-manual-start>')}${field('到哪一楼','<input type="number" min="0" data-persona-manual-end>')}${field('每批多少楼','<input type="number" min="1" max="200" value="20" data-persona-manual-size>')}</div>
 <label><input type="checkbox" checked data-persona-manual-handoff> 补完后自动起点接到下一楼（仍需手动启用自动）</label>
-<p class="sy-help">例如 #601–700，每批 20 楼，共 5 批。未选的早期原文不会被补读。大批量受下方输入预算约束，超预算会提示，不会暗中拆小批。全部补完才应用新档案，中途暂停不会把当前人设退回过去。</p>
+<p class="sy-help">例如 #601–700，每批 20 楼，共 5 批。未选的早期原文不会被补读。大批量受“人设设置”中的输入预算约束，超预算会提示，不会暗中拆小批。全部补完才应用新档案，中途暂停不会把当前人设退回过去。</p>
 <div class="sy-actions"><button type="button" data-persona-manual-preview>预览补建计划</button><button type="button" data-persona-manual-start-run disabled>开始后台补建</button></div>
 <p class="sy-help" role="status" data-persona-manual-preview-text>请先选择范围并预览。</p>
 <p role="status" data-persona-manual-status></p>
 <div class="sy-actions"><button type="button" data-persona-manual-pause>暂停补建</button><button type="button" data-persona-manual-continue>继续未完成</button><button type="button" data-persona-manual-discard>放弃本次补建</button></div>
 <div data-persona-manual-items></div><div class="sy-actions"><button type="button" data-persona-manual-prev>上一页</button><span data-persona-manual-page></span><button type="button" data-persona-manual-next>下一页</button></div>
 </div>
+</details>
+<details class="sy-card" data-persona-settings><summary>人设设置 <small>API · 预设 · 来源识别</small></summary>
+<p class="sy-help">更新使用本批正文、已保存的相关心迹与关键台词，以及原书和上一版档案。私人心迹只指导其本人；旧台词保留语境，不覆盖当前关系。设置在自动与手动之间共用，修改后记得保存。</p>
+<div class="sy-actions"><button type="button" data-api-jump="dynamicPersona">人设 API</button><button type="button" data-jump="extraction">正文提取规则</button></div>
+<p class="sy-help">推荐剧情主导：人物随互动成长，MVU 数值只作参考；无 MVU 同样可用，不改变量或脚本。简繁姓名与可确认的简称共同识别，有歧义可在人物编辑或召回字典里校正。</p>
 <details class="sy-card"><summary>共用预设与请求预算 · 可 DIY</summary>${setting('dynamicPersonaMvuMode')}${setting('dynamicPersonaInputUnits')}${setting('dynamicPersonaOutputTokens')}${setting('dynamicPersonaDeadlineMs')}${field('发给人设模型的指导词',`<textarea rows="12" data-persona-prompt>${esc(DYNAMIC_PERSONA_PROMPT)}</textarea>`)}<div class="sy-actions"><button type="button" data-persona-budget-save>保存预设与预算</button><button type="button" data-persona-default>恢复内置预设</button></div></details>
 <div class="sy-actions"><button type="button" data-persona-disable>关闭动态人设</button><button type="button" data-persona-worldbook-check>检查世界书读取</button><button type="button" data-persona-mirror-retry>同步世界书镜像</button></div>
 <p class="sy-help" data-persona-worldbook-read></p><p class="sy-help" data-persona-worldbook></p>
@@ -52,7 +55,7 @@ export function mountDynamicPersona({panel,app,run,host=globalThis}){
   $('[data-persona-source-audit]').addEventListener('toggle',()=>paint(app.state));
   const bind=(s,fn)=>$(s)?.addEventListener('click',e=>run(fn,{name:'dynamic-persona',button:e.currentTarget}));
   $('[data-persona-start]').addEventListener('input',()=>{startDirty=true;});$('[data-persona-prompt]').addEventListener('input',()=>{promptDirty=true;});
-  const save=async()=>{const patch={dynamicPersonaPrompt:$('[data-persona-prompt]').value};for(const input of root.querySelectorAll('[data-setting]'))patch[input.dataset.setting]=input.tagName==='SELECT'?input.value:Number(input.value);await app.setDynamicPersonaStart(Number($('[data-persona-start]').value));await app.saveSettings(patch);startDirty=promptDirty=false;};
+  const save=async()=>{const patch={};for(const key of ['dynamicPersonaEvery','dynamicPersonaKeepRecent'])patch[key]=Number($(`[data-setting="${key}"]`).value);await app.setDynamicPersonaStart(Number($('[data-persona-start]').value));await app.saveSettings(patch);startDirty=false;};
   bind('[data-persona-save]',save);bind('[data-persona-enable]',async()=>{await save();await app.setDynamicPersona(true);});bind('[data-persona-pause]',()=>app.pauseDynamicPersona());bind('[data-persona-disable]',()=>app.setDynamicPersona(false));bind('[data-persona-check]',()=>app.inspectDynamicPersona());bind('[data-persona-retry]',()=>app.processDynamicPersona());
   bind('[data-persona-default]',()=>{$('[data-persona-prompt]').value=DYNAMIC_PERSONA_PROMPT;promptDirty=true;});
   bind('[data-persona-budget-save]',async()=>{const patch={dynamicPersonaPrompt:$('[data-persona-prompt]').value,dynamicPersonaMvuMode:$('[data-setting="dynamicPersonaMvuMode"]').value};for(const key of ['dynamicPersonaInputUnits','dynamicPersonaOutputTokens','dynamicPersonaDeadlineMs'])patch[key]=Number($('[data-setting="'+key+'"]').value);await app.saveSettings(patch);promptDirty=false;});

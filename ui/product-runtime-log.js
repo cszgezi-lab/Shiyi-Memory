@@ -74,7 +74,7 @@ function detailsHTML(entry){
   if(d.upstreamCode)lines.push(['服务错误分类',UPSTREAM_CODES[d.upstreamCode]]);
   if(d.upstreamHint)lines.push(['服务报文提示',UPSTREAM_HINTS[d.upstreamHint]]);
   if(d.requestChars!==undefined)lines.push(['请求 JSON 字符数（不是 Token）',d.requestChars]);
-  if(d.modelRole)lines.push(['模型用途',({dynamicPersona:'动态人设模型',summary:'总结模型',supplement:'辅助整理模型',assistant:'配置助手',embedding:'向量模型',rerank:'重排模型'})[d.modelRole]]);
+  if(d.modelRole)lines.push(['模型用途',({knowledge:'知识库分析模型',dynamicPersona:'动态人设模型',summary:'总结模型',supplement:'辅助整理模型',assistant:'配置助手',embedding:'向量模型',rerank:'重排模型'})[d.modelRole]]);
   if(d.errorType)lines.push(['错误类型',d.errorType]);
   for(const [key,label]of [['bodyChars','接口正文字符数'],['jsonPosition','JSON 出错字符位置'],['jsonLine','JSON 出错行'],['jsonColumn','JSON 出错列'],['choicesCount','回复候选数量'],['toolCallsCount','工具调用数量'],['timeoutMs','请求等待上限（毫秒）']])if(d[key]!==undefined)lines.push([label,d[key]]);
   if(d.contentType)lines.push(['返回结构',({object:'对象',array:'数组',string:'文字',null:'空值',undefined:'缺失',number:'数值',boolean:'是/否'})[d.contentType]]);
@@ -128,7 +128,7 @@ export function mountRuntimeLog({panel,app,run,host,download}){
   function paint(next){
     state=next;const data=state.runtimeLog??{entries:[],persistence:'not_loaded'};
     const filter=$('[data-log-filter]').value;
-    const selected=[...data.entries].reverse().filter(e=>filter==='all'||filter==='issues'&&['error','warning'].includes(e.level)||filter==='vectors'&&['vectors','knowledge-vectors'].includes(e.task)||filter==='summary'&&e.task==='summary'||filter==='merge'&&e.task==='merge'||filter==='api'&&['transport','connection','models','assistant'].includes(e.task));
+    const selected=[...data.entries].reverse().filter(e=>filter==='all'||filter==='issues'&&['error','warning'].includes(e.level)||filter==='vectors'&&['vectors','knowledge-vectors'].includes(e.task)||filter==='summary'&&e.task==='summary'||filter==='merge'&&e.task==='merge'||filter==='api'&&['transport','connection','models','assistant','knowledge','knowledge-edit'].includes(e.task));
     const pages=Math.max(1,Math.ceil(selected.length/10));page=Math.min(page,pages);
     const items=selected.slice((page-1)*10,page*10),nextSignature=JSON.stringify([items,page,filter,data.persistence,data.droppedEntries,data.partialRuns,data.legacyRetentionUnknown,data.storageFailure]);
     if(signature===nextSignature)return;signature=nextSignature;
