@@ -2,11 +2,28 @@ import { readViewState } from '../src/product-view-scheduling.js';
 import { esc,field } from '../src/product-settings-ui.js';
 import { knowledgeImportPlan } from '../src/product-knowledge-import.js';
 
-export function knowledgeImportHTML(){return `<div class="sy-card"><h4>导入资料</h4><p class="sy-help">选择文件 → 预览内容 → 确认导入。默认生成字典、关键词和向量索引；资料是参考设定，不代表角色已经知道。</p><p class="sy-help" data-kb-api-status></p><div class="sy-actions"><button type="button" data-api-jump="knowledge">资料分析 API</button><button type="button" data-api-jump="embedding">向量 API</button></div><p class="sy-help">预览不调用模型；确认导入后才会调用所选服务。</p>${field('文件用途','<select data-purpose><option value="knowledge">作品 / 世界资料</option><option value="rules">配置规则 MD / SKILL / JSON</option></select>')}<input type="file" accept=".txt,.md,.json" multiple data-files aria-label="选择资料文件"><details data-knowledge-options><summary>分段与索引 · 已填推荐值</summary>${field('每段最多多少字','<input type="number" min="200" max="6000" value="600" data-kb-size>')}${field('分隔符（可留空）','<input data-kb-delimiter maxlength="100" placeholder="例如：###">')}<label class="sy-toggle"><span>关键词索引（本地 BM25）</span><input type="checkbox" data-kb-keyword checked></label><label class="sy-toggle"><span>向量索引（调用向量 API）</span><input type="checkbox" data-kb-vector checked></label><label class="sy-toggle"><span>分析资料并生成字典（资料分析 API）</span><input type="checkbox" data-kb-analysis checked></label></details><p class="sy-help">文件在本机解析为文字；确认导入后，所选的分析 / 向量服务会收到相关文字。世界书 JSON 读取已启用条目，不执行脚本。</p><div class="sy-actions"><button type="button" data-kb-preview>预览文件</button><button type="button" data-kb-import disabled class="sy-primary">确认导入</button></div><p class="sy-help" data-kb-plan>先选择文件并预览，确认内容后即可导入。</p><div data-kb-preview-list></div></div><div data-documents></div>`;}
+export function knowledgeImportHTML(){return `<div class="sy-card"><h4>导入资料</h4>
+<div class="sy-actions"><button type="button" data-kb-choose class="sy-primary">选择文件</button><button type="button" data-kb-clear disabled>清除选择</button></div>
+<input type="file" accept=".txt,.md,.json" multiple data-files hidden aria-label="选择资料文件">
+<p class="sy-help" data-kb-selected aria-live="polite">尚未选择文件；支持 TXT、MD、JSON，可多选。</p>
+<p class="sy-help">选择文件 → 预览内容 → 确认导入。默认生成字典、关键词和向量索引；资料是参考设定，不代表角色已经知道。</p><p class="sy-help" data-kb-api-status></p><div class="sy-actions"><button type="button" data-api-jump="knowledge">资料分析 API</button><button type="button" data-api-jump="embedding">向量 API</button></div><p class="sy-help">预览不调用模型；确认导入后才会调用所选服务。</p>${field('文件用途','<select data-purpose><option value="knowledge">作品 / 世界资料</option><option value="rules">配置规则 MD / SKILL / JSON</option></select>')}<details data-knowledge-options><summary>分段与索引 · 已填推荐值</summary>${field('每段最多多少字','<input type="number" min="200" max="6000" value="600" data-kb-size>')}${field('分隔符（可留空）','<input data-kb-delimiter maxlength="100" placeholder="例如：###">')}<label class="sy-toggle"><span>关键词索引（本地 BM25）</span><input type="checkbox" data-kb-keyword checked></label><label class="sy-toggle"><span>向量索引（调用向量 API）</span><input type="checkbox" data-kb-vector checked></label><label class="sy-toggle"><span>分析资料并生成字典（资料分析 API）</span><input type="checkbox" data-kb-analysis checked></label></details><p class="sy-help">文件在本机解析为文字；确认导入后，所选的分析 / 向量服务会收到相关文字。世界书 JSON 读取已启用条目，不执行脚本。</p><div class="sy-actions"><button type="button" data-kb-preview disabled>预览文件</button><button type="button" data-kb-import disabled class="sy-primary">确认导入</button></div><p class="sy-help" data-kb-plan>先选择文件并预览，确认内容后即可导入。</p><div data-kb-preview-list></div></div><div data-documents></div>`;}
 
 export function mountKnowledgeView({panel,app,run,host}){
   const $=s=>panel.querySelector(s);let drafts=[],stamp='',selectionVersion=0;const previews=new Map(),partsById=new Map(),edits=new Map();
-  function invalidate(){selectionVersion++;drafts=[];$('[data-kb-import]').disabled=true;$('[data-kb-preview-list]').textContent='';}
+  const fileInput=$('[data-files]');
+  function updateFileSelection(){
+    const files=Array.from(fileInput.files??[]);
+    $('[data-kb-selected]').textContent=files.length?`已选 ${files.length} 个文件：${files.map(f=>f.name).join('、')}`:'尚未选择文件；支持 TXT、MD、JSON，可多选。';
+    $('[data-kb-choose]').textContent=files.length?'重新选择文件':'选择文件';
+    $('[data-kb-clear]').disabled=!files.length;$('[data-kb-preview]').disabled=!files.length;
+    return files.length;
+  }
+  function invalidate(){selectionVersion++;drafts=[];$('[data-kb-import]').disabled=true;$('[data-kb-preview-list]').textContent='';$('[data-kb-plan]').textContent=updateFileSelection()?'已选择文件，请点击“预览文件”，确认内容后导入。':'先选择文件并预览，确认内容后即可导入。';}
+  // Keep the native picker inside the direct user gesture; awaiting run() can
+  // lose mobile WebView activation. The host intentionally hides file inputs.
+  $('[data-kb-choose]').addEventListener('click',()=>fileInput.click());
+  $('[data-kb-clear]').addEventListener('click',()=>{fileInput.value='';invalidate();});
+  updateFileSelection();
   for(const el of panel.querySelectorAll('[data-files],[data-purpose],[data-kb-size],[data-kb-delimiter],[data-kb-keyword],[data-kb-vector],[data-kb-analysis]'))el.addEventListener('change',invalidate);
   $('[data-purpose]').addEventListener('change',()=>{$('[data-knowledge-options]').hidden=$('[data-purpose]').value==='rules';});
   $('[data-kb-preview]').addEventListener('click',()=>run(async()=>{
@@ -22,7 +39,7 @@ export function mountKnowledgeView({panel,app,run,host}){
       if(input.purpose==='rules'||input.options.autoAnalyze)try{const result=await app.analyzeDocuments([doc.id]);if(result.partial)errors.push(`${doc.name}：字典待补全`);}catch(e){if(e.code==='CANCELED')throw e;errors.push(`${doc.name}：资料分析未完成`);}
       if(input.purpose==='knowledge'&&input.options.vectorEligible)try{const result=await app.buildKnowledgeVectors([doc.id]);if(result.pending)errors.push(`${doc.name}：部分向量未完成`);}catch(e){if(e.code==='CANCELED')throw e;errors.push(`${doc.name}：向量索引未完成`);}
     }
-    $('[data-files]').value='';if(errors.length)throw new Error(`文字资料已保存。${errors.join('；')}。请检查对应 API，再在资料下点击继续；不必重新导入。`);
+    fileInput.value='';invalidate();if(errors.length)throw new Error(`文字资料已保存。${errors.join('；')}。请检查对应 API，再在资料下点击继续；不必重新导入。`);
   },{name:'import'}));
   function paint(s){
     const c=s.settings??{},inherited=c.knowledgeFollowAssistant!==false,model=inherited?(c.assistantFollowSummary?c.providerModel:c.assistantModel):c.knowledgeModel;
