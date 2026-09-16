@@ -20,7 +20,7 @@
   "src/provider-stream.js": "4e4126debfd75f81ff0f4801cc9e7e083a82140e0a3d6ef0906826a316b19f80",
   "src/provider-scheduler.js": "90493f6bc3e9dcd64e38c90409482dbe6db9ca81d4aada9e60c5fdca5b98cb0a",
   "src/reliable-storage.js": "845461b3c2de0dcf2294057ae23631f49c23621d9814a25322f10673756f5958",
-  "src/product-release.js": "53183f32a43f76ea89be957a0f1f27f59f58036a26ec6005e8f32a4ac687f03b",
+  "src/product-release.js": "436842acb3df63949d7f27ab444a76607b23d6654c93a1aedc77ff957d2bdae4",
   "src/dynamic-persona-plan.js": "f719478b3c47f88b8c0139ede136cb92125e0677666d278c24cd21a9aa436b34",
   "src/persona-identity.js": "0433f560e9e1bcfb7c4f8edfe4f1037419bcb3f8f40795bcb3ac20b3dc96e815",
   "src/name-fold.js": "7aaf4804bfab60a86b5cd29dbc00798f1ccb6f3abea76364923b575577757a17",
@@ -104,9 +104,9 @@
   "ui/product-custom-modules.js": "b9633658bf94f1ad7e29d15139e01ac6ca0f789471db062abbdf487cf163d1a4",
   "ui/product-quality-view.js": "092ff29fa7b690a5d06a9e1566d7928667675792df174d09066e421f5c84c417",
   "ui/product-extraction-view.js": "186674e50498246ee7dc5e9f1aa5943434d7cd4984c4b5a32d9c86780cd63e91",
-  "manifest.json": "d2e1827ed91abdb913cc5901920306485f80a6eeff2aed12ac3b53d4f88603a4",
+  "manifest.json": "f92a349fe7a2dc63c9a336a084514e920d4e27175cbe97316464a13968b1ada9",
   "ui/product-view.css": "41ebbe8568b2a2b06d4d554ff523a5fcaa4d16bd23ed267df2b7a5f18d5aa36a",
-  "README.md": "68ac4f302881bd7c1812e31ccec6c8f3f4f6f14d65bf2bdad0118424261bda7a",
-  "CHANGELOG.md": "863bca08705be2210ae5a7e7ff8b6b853ee931aecf602569837f0aaec3856b9e",
+  "README.md": "b4f331bc98136cd76bbe0f139affd9482d3288d4f4f9f2bca1d0b6e1ff243321",
+  "CHANGELOG.md": "3f94a1ec864566371e19ff6a310e1241547b00d0b66187640b5551094727c871",
   ".gitattributes": "cc641658d855cb2ba3f269f3248111fa65fa54225c87b56c5c8e98b6d3d574bf"
 }
