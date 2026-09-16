@@ -115,7 +115,21 @@ const sourceText = record => record.sourceRefs?.length || record.sourceFloors?.l
 const phase = row => row.data.disabled ? '不再注入' : row.record.innerLifeHistorical || row.data.status === 'historical'
   ? '过去阶段' : row.kind === 'dialogue' ? '仍重要' : '按记录情境适用';
 
-export function peopleDetailHTML(group) {
+const peopleMergeHTML = profiles => {
+  if (profiles.length < 2) return '';
+  const ordered = [...profiles].sort((a, b) => a.name.length - b.name.length || a.name.localeCompare(b.name, 'zh-CN'));
+  const source = ordered[0], target = [...ordered].sort((a, b) => b.name.length - a.name.length || a.name.localeCompare(b.name, 'zh-CN'))[0];
+  const options = rows => rows.map(p => `<option value="${esc(p.id)}">${esc(p.name)}${p.bindings?.length ? ' · 已关联原书' : ''}</option>`).join('');
+  return `<details class="sy-people-merge" data-people-merge>
+    <summary>合并重复人物档案</summary>
+    <p class="sy-help">适合“濑名紫阳花／紫阳花”这类重复档案。选择要并入的档案和要保留正式姓名的档案；内容、动态属性、心迹、台词、来源与别称会合并，不调用模型，原档案可恢复。</p>
+    <label>并入档案<select data-people-merge-source-select aria-label="要并入的人物档案">${options(ordered)}</select></label>
+    <label>保留档案<select data-people-merge-target-select aria-label="要保留的人物档案">${options(ordered.filter(p => p.id !== source.id))}</select></label>
+    <button type="button" data-people-merge-commit>确认合并档案</button>
+  </details>`;
+};
+
+export function peopleDetailHTML(group, allProfiles = group?.profiles ?? []) {
   if (!group) return '<p class="sy-empty">暂无人物记录。已有档案、心迹、台词和人物属性会汇集在这里。</p>';
   const profileId = group.profiles[0]?.id ?? '';
   const profileRows = group.profiles.slice(0, 2).map(p => `<div class="sy-people-entry"><p class="sy-help">${p.locked ? '已锁定 · ' : ''}${Number.isInteger(p.through) ? `依据至 #${p.through}` : '已保存档案'}${group.profiles.length > 1 ? ` · ${esc(p.stage ?? '未注明阶段')}` : ''}</p><p class="sy-people-prose">${preview(p.text, 480)}</p>${openButton(group, 'dynamic-persona', '查看档案与来源', p.id)}</div>`).join('');
@@ -127,6 +141,7 @@ export function peopleDetailHTML(group) {
     ${group.ambiguous ? '<p class="sy-help" role="status">此称呼对应多人，暂不归入任何人的档案。请从全部记录核对姓名或在召回字典中确认别称。</p>' : ''}
     <dl class="sy-people-stats"><div><dt>档案</dt><dd>${group.profiles.length}</dd></div><div><dt>心迹</dt><dd>${group.diaries.length}</dd></div><div><dt>台词</dt><dd>${group.dialogues.length}</dd></div><div><dt>属性</dt><dd>${group.fieldCount}</dd></div></dl>
     <section class="sy-people-section"><h5>动态档案</h5>${profileRows || `<p class="sy-help">尚无动态档案</p>${openButton(group, 'dynamic-persona', '查看或补建档案')}`}${group.profiles.length > 2 ? openButton(group, 'dynamic-persona', `查看全部 ${group.profiles.length} 份档案`) : ''}</section>
+    ${peopleMergeHTML(allProfiles)}
     <section class="sy-people-section"><h5>角色心迹 <small>${group.diaries.length}</small></h5>${diaryRows || '<p class="sy-help">尚无心迹</p>'}${group.diaries.length ? '<p class="sy-help">私密演绎参考，不赋予他人知情。</p>' : ''}${openButton(group, 'diary', '查看心迹与来源', profileId)}</section>
     <section class="sy-people-section"><h5>关键台词 <small>${group.dialogues.length}</small></h5>${dialogueRows || '<p class="sy-help">尚无关键台词</p>'}${openButton(group, 'dialogue', '查看台词与来源', profileId)}</section>
     <section class="sy-people-section"><h5>人物属性</h5><p class="sy-help">${group.fieldCount} 项属性 · ${group.facts.length} 条记录，含不同时间与情境的取值。</p>${openButton(group, 'facts', '查看属性与来源', profileId)}</section>
@@ -159,7 +174,8 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     $('[data-people-prev]').disabled = page === 1;
     $('[data-people-next]').disabled = page === pages;
     $('[data-people-list]').innerHTML = rows.map(g => `<button type="button" data-people-key="${esc(g.key)}" aria-pressed="${g.key === selected}"><strong>${esc(g.name)}</strong><small>${g.ambiguous ? '称呼待确认' : `${g.profiles.length} 档案 · ${g.diaries.length} 心迹 · ${g.dialogues.length} 台词 · ${g.fieldCount} 属性`}</small></button>`).join('') || '<p class="sy-empty">没有匹配的人物</p>';
-    const detail = !group && groups.length ? '<p class="sy-empty">没有匹配的人物，试试其他姓名或别称。</p>' : peopleDetailHTML(group);
+    const allProfiles = groups.flatMap(g => g.profiles);
+    const detail = !group && groups.length ? '<p class="sy-empty">没有匹配的人物，试试其他姓名或别称。</p>' : peopleDetailHTML(group, allProfiles);
     if (detail !== rendered) { $('[data-people-detail]').innerHTML = detail; rendered = detail; }
   }
   function paint(snapshot) {
@@ -177,6 +193,14 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     groups = peopleGroups(snapshot); stamp = nextStamp; draw();
   }
   $('[data-people-search]').addEventListener('input', () => { page = 1; draw(); });
+  root.addEventListener('change', event => {
+    const select = event.target.closest('[data-people-merge-source-select]');
+    if (!select) return;
+    const target = root.querySelector('[data-people-merge-target-select]');
+    if (!target) return;
+    const allProfiles = groups.flatMap(g => g.profiles);
+    target.innerHTML = allProfiles.filter(p => p.id !== select.value).sort((a, b) => b.name.length - a.name.length || a.name.localeCompare(b.name, 'zh-CN')).map(p => `<option value="${esc(p.id)}">${esc(p.name)}${p.bindings?.length ? ' · 已关联原书' : ''}</option>`).join('');
+  });
   root.addEventListener('click', event => {
     const button = event.target.closest('button');
     if (!button || button.disabled) return;
@@ -194,6 +218,18 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     }
     if (button.dataset.peoplePageLink) { setPage?.(button.dataset.peoplePageLink); return; }
     if (button.dataset.peopleAll) { onSelect?.({ name: '', profileId: null, kind: button.dataset.peopleAll }); return; }
+    if (button.hasAttribute('data-people-merge-commit')) {
+      const source = root.querySelector('[data-people-merge-source-select]')?.value;
+      const target = root.querySelector('[data-people-merge-target-select]')?.value;
+      const profiles = groups.flatMap(g => g.profiles), sourceProfile = profiles.find(p => p.id === source), targetProfile = profiles.find(p => p.id === target);
+      if (!sourceProfile || !targetProfile || source === target) return;
+      void run(async () => {
+        if (await host.confirm?.(`将“${sourceProfile.name}”并入“${targetProfile.name}”？原档案会保留在可恢复版本中。`) !== true) return;
+        selected = groups.find(g => g.profiles.some(p => p.id === target))?.key ?? selected;
+        return app.mergeDynamicPersona(source, target);
+      }, { name: 'dynamic-persona', button });
+      return;
+    }
     if (button.dataset.peopleOpen) {
       const group = groups.find(g => g.key === selected);
       // A profile-specific link is safe even when another unresolved record
