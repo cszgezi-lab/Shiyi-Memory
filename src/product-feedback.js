@@ -1,5 +1,5 @@
 import { humanValidationIssueText } from './validation-diagnostics.js';
-import { upstreamErrorCode,upstreamErrorHint } from './diagnostics.js';
+import { upstreamErrorCode,upstreamErrorHint,PERSONA_STEPS,DIAGNOSTIC_REASONS } from './diagnostics.js';
 
 const NETWORK = {
   'network.timeout':'请求超时，请重试或调整请求超时。',
@@ -11,6 +11,7 @@ const NETWORK = {
   'network.request_failed':'网络请求失败，请检查服务是否可访问。',
 };
 const CODES = {
+  FILE_EXPORT_FAILED:'文件导出未完成；可在日志页查看／复制文本，不需要重新运行任务。',
   PERSONA_RESPONSE_INVALID:'人设回答的格式、人物或来源未通过检查；旧档案保留，可在动态人设页重试。具体原因见运行日志。',
   PERSONA_STAGE_CHANGED:'MVU阶段或原设定已改变，本批旧阶段回答未覆盖档案；可在动态人设页重试，不需重新总结。',
   QUALITY_RESPONSE_INVALID:'校对结果的格式、对象或原文证据未通过验证；原总结保留，可在内容校对中单独重试。',
@@ -55,6 +56,7 @@ export function productFailure(error) {
   const rawStatus=Number(error?.details?.status);
   const status=Number.isInteger(rawStatus)&&rawStatus>=400&&rawStatus<=599?rawStatus:null;
   let message=HTTP[status]??NETWORK[code]??CODES[code];
+  if(code==='FILE_EXPORT_FAILED')message=DIAGNOSTIC_REASONS[error?.details?.reason]??message;
   if(['TIMEOUT','network.timeout'].includes(code)&&error?.details?.timerLagMs>=5000){
     message=error.details.backgroundSeen?'请求超时，期间页面曾切到后台，超时计时也明显延迟；这段等待不能当作模型计算时间。已保存批次保留，回到前台后只重试未完成项，不必全部重新总结。':'请求超时，页面计时器明显延迟，可能发生后台暂停或界面阻塞，具体原因未确认。已保存批次保留，只需重试未完成项；不能把全部等待当作模型计算时间。';
   }
@@ -94,11 +96,13 @@ export function productFailure(error) {
     if(code==='PERSONA_RESPONSE_INVALID'&&field)message=`第${Number.isSafeInteger(error.details.profileIndex)?error.details.profileIndex+1:'?'}份人设：${field}。旧档案与后续队列保留；请在手动补建中继续未完成，自动更新可重试下一批。`;
     message=message.replace('在批次管理中继续未完成任务即可，不必重新总结成功批次。','手动补建请点“继续未完成”；自动更新可重试下一批。无需重做主总结。').replace('提高总结输入预算','调整人设输入预算');
   }
+  if(!message&&error?.details?.personaStep)message='此步骤发生本地异常，旧档案保留；具体阶段与错误类型已记录。';
   if(!message&&error instanceof TypeError)message='网络请求或浏览器跨域访问失败，请检查网络与服务地址。';
   // Local validation errors contain actionable Chinese text. Never echo remote
   // bodies or raw provider errors (they may contain the request and credentials).
   if(!message&&code==='OPERATION_FAILED'&&typeof error?.message==='string'&&/^[\u3400-\u9fff]/u.test(error.message))
     message=error.message.replace(/https?:\/\/\S+/gi,'[地址]').replace(/(?:Bearer\s+\S+|sk-[\w-]+|anima_[\w-]+)/gi,'[已隐藏]').slice(0,200);
+  if(PERSONA_STEPS[error?.details?.personaStep])message=`${PERSONA_STEPS[error.details.personaStep]}未完成：${message??'原因尚未确认，已有档案保留。'}`;
   return {code,status,message:message??'操作未完成，请检查配置后重试。'};
 }
 

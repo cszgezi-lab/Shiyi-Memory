@@ -1,6 +1,7 @@
 import {esc,field,setting} from '../src/product-settings-ui.js';
 import {DYNAMIC_PERSONA_PROMPT,currentPersonaProfiles} from '../src/dynamic-persona.js';
 import {PERSONA_SOURCE_LABELS} from '../src/persona-source-index.js';
+import {PERSONA_STEPS,DIAGNOSTIC_REASONS} from '../src/diagnostics.js';
 export function personaSourceDetails(p){
   const sources=[...new Map((p.bindings??[]).map(b=>[JSON.stringify([b.book,b.uid]),{book:b.book,title:b.originalName??b.name}])).values()];
   return `<details data-persona-sources><summary>原书来源与本次修改 · ${sources.length} 个条目</summary>${sources.length?sources.map(s=>`<p>${esc(s.book)} · ${esc(s.title)}</p>`).join(''):'<p>尚未关联可替换的原书内容。正文新角色可独立建档和成长，无需先建世界书；若原书本来有人设，可检查读取与人物别称，不代表原人设已被接管。</p>'}${p.composition?`<p>保留 ${p.composition.parts.length||p.composition.sourceBaseline?.length||0} 个${sources.length?'原文':'聊天档案'}片段；本次修改 ${p.composition.changes.length} 处。未修改部分沿用${sources.length?'原文':'已保存底稿'}，不靠模型重写。</p>${p.composition.changes.map(c=>`<details><summary>${esc(c.title)} · 第${esc(c.sourceFloors.join('、'))}楼依据</summary><p>修改前</p><div class="sy-packet">${esc(c.before)}</div><p>修改后</p><div class="sy-packet">${esc(c.after)}</div></details>`).join('')}${p.composition.rejectedExamples?`<p>${p.composition.rejectedExamples} 条语料未确认原话或说话人，未纳入示例；其他档案内容保留。</p>`:''}${p.composition.rejectedDevelopment?`<p>${p.composition.rejectedDevelopment} 项成长补充缺少对应正文依据，未纳入成长脉络；原档案及已保存内容保留，不会自动另开校对任务。</p>`:''}`:'<p>此为旧版或手工档案；不会在升级时重写。下次明确更新时建立原文保留版本。</p>'}</details>`;
@@ -13,6 +14,7 @@ export function dynamicPersonaProgressText(d){
 export function dynamicPersonaHTML(){return `<section data-view="dynamic-persona" hidden>
 <div class="sy-top"><h3>动态人设</h3><button type="button" data-jump="people">人物工作区</button></div>
 <p data-persona-status role="status"></p>
+<details data-persona-failure hidden><summary>本次失败详情（不依赖日志导出）</summary><p data-persona-failure-text class="sy-help"></p></details>
 <details class="sy-card" data-persona-controls open><summary>更新人物 <small>自动更新 / 手动补建</small></summary>
 <p class="sy-help">独立读取原文，不等主总结。自动按周期更新；旧聊天可以手动选范围补建。主聊天只使用已完成的档案，锁屏后可能暂停。</p>
 <p class="sy-help">正文新角色也能建档；同一人物持续更新，保留有来源的转变缘由、对象与表达语料，不强行给路人编造成长。成长脉络在整份档案中查看和修改，与人物更新共用一次请求。</p>
@@ -84,6 +86,8 @@ export function mountDynamicPersona({panel,app,run,host=globalThis}){
     const d=s.dynamicPersona??{profiles:[],batches:[]},nextScope=JSON.stringify(s.core?.scope);
     if(scope!==nextScope){scope=nextScope;stamp=manualStamp=previewStamp='';startDirty=promptDirty=manualDirty=false;page=profilePage=manualPage=0;drafts.clear();$('[data-persona-profiles]').replaceChildren();$('[data-persona-manual-start]').value=1;$('[data-persona-manual-end]').value='';$('[data-persona-manual-size]').value=20;$('[data-persona-manual-handoff]').checked=true;clearPreview();}
     $('[data-persona-status]').textContent=`${s.settings.dynamicPersonaEnabled?'已启用':'未启用'} · ${d.message??'打开聊天后读取档案'}`;
+    $('[data-persona-failure]').hidden=!d.failureDetails;
+    if(d.failureDetails){const f=d.failureDetails;$('[data-persona-failure-text]').textContent=[PERSONA_STEPS[f.personaStep],f.code,DIAGNOSTIC_REASONS[f.reason],f.errorType,f.modelRequested===false?'本次尚未请求模型':f.modelRequested?'本次已请求模型':null,...(f.stackFrames??[]),d.failureStorage?'失败进度另未保存；原始错误仍保留':null].filter(Boolean).join(' · ');}
     if(!startDirty)$('[data-persona-start]').value=d.startFloor??1;if(!promptDirty)$('[data-persona-prompt]').value=s.settings.dynamicPersonaPrompt||DYNAMIC_PERSONA_PROMPT;
     $('[data-persona-progress]').textContent=dynamicPersonaProgressText(d);
     if(!manualDirty&&d.lastIndex!==null&&d.lastIndex!==undefined)$('[data-persona-manual-end]').value=d.lastIndex;

@@ -1,6 +1,10 @@
 // Shared, content-free diagnostics. Never serialize Error.message, API bodies,
 // headers, URLs, user filenames or arbitrary server error objects into exports.
 export const DIAGNOSTIC_REASONS = Object.freeze({
+  log_io_timeout:'日志存储响应超时；本次保留在内存，不阻止任务或日志导出',
+  export_module_unavailable:'宿主文件导出接口加载失败，可复制日志文本',
+  export_permission_denied:'系统拒绝保存文件的权限，可复制日志文本',
+  export_native_failed:'宿主文件保存失败，可复制日志文本；不代表记忆丢失',
   history_decode_failed:'宿主聊天历史不是完整JSON，尚未交给模型处理',
   history_tail_failed:'读取当前聊天末页失败，尚不能判断原文是否变化',
   history_before_failed:'读取较早聊天分页失败，未跳过缺失楼层',
@@ -30,6 +34,7 @@ export const DIAGNOSTIC_REASONS = Object.freeze({
   storage_mismatch:'写入内容与读回内容不一致', storage_decode:'存档完整性校验失败',
   log_document_invalid:'旧日志格式无法读取，未覆盖旧文件', unclassified:'错误未提供可识别原因；请结合阶段与代码位置定位',
 });
+export const PERSONA_STEPS=Object.freeze({history_tail:'读取当前聊天进度',history_range:'读取本批原文',api_config:'检查人设 API 配置',worldbook_read:'读取角色原世界书',prepare_profile:'整理人设输入',cached_response:'读取暂存回答',model_request:'请求人设模型',parse_profile:'解析与检查人设回答',source_verify:'保存前复查原文',worldbook_verify:'保存前复查世界书',profile_save:'保存人物档案',failure_save:'保存失败进度'});
 export const DIAGNOSTIC_PURPOSES=Object.freeze({summary_verification:'原文复核与补漏',summary_narrative:'事件与楼层整理',summary_details:'人物与知情整理',reference_repair:'纠正事件引用',summary:'主总结',floor_repair:'逐楼摘要补全',category_repair:'区块补全',enum_repair:'字段纠错',chat:'聊天模型',embeddings:'向量',rerank:'重排',models:'模型列表',ui:'界面操作',background:'后台任务'});
 export const DIAGNOSTIC_STAGES=Object.freeze({queue:'等待共享请求队列',prepare:'准备请求',request:'等待接口',read_body:'读取响应正文',parse_envelope:'解析接口响应',parse_content:'解析模型正文',validate:'校验结果',repair:'补全结果',storage:'本机保存',ui:'界面操作',background:'后台处理'});
 export const UPSTREAM_CODES=Object.freeze({invalid_api_key:'密钥无效',api_key_missing:'服务要求密钥',context_length_exceeded:'超出模型上下文',insufficient_quota:'额度不足',rate_limit_exceeded:'服务限流',model_not_found:'模型不存在',server_error:'服务内部错误',invalid_request_error:'服务拒绝请求格式',outbound_host_denied:'出站地址被服务拒绝'});
@@ -65,7 +70,8 @@ export function upstreamErrorHint(value){
 }
 export const DIAGNOSTIC_ACTIONS=Object.freeze({editDocumentChunk:'修改资料片段',catchUpAutomatic:'补采未记录楼层',inspectAutomaticProgress:'检查记录覆盖',open:'打开聊天',refresh:'刷新记忆',saveSettings:'保存设置',saveApi:'保存 API',forgetKey:'清除密钥',editRecord:'修改记忆',editPersonProfile:'修改人物档案',deleteRecord:'删除记忆',deleteRecords:'批量删除记忆',remember:'新增记忆',manageBatches:'管理总结批次',deleteBatch:'删除批次',regenerateBatch:'重新总结',retryBatch:'重试总结',retryIncompleteBatches:'重试未完成批次',saveModule:'保存扩展模块',editModuleRecord:'修改扩展记忆',rememberModule:'新增扩展记忆',importModules:'导入模块',exportModules:'导出模块',inspectMvu:'读取 MVU',syncModules:'同步 MVU',applyProposal:'应用助手方案',undoSettings:'撤销配置',saveDictionaryEntry:'修改字典',exportBackup:'导出聊天备份',exportGlobalBackup:'导出全局备份',setAutoStartFloor:'设置自动总结起点',setAutomatic:'配置自动总结',processAutomatic:'执行自动总结',setDraft:'保存助手草稿',newConversation:'新建助手对话',selectConversation:'切换助手对话',deleteConversation:'删除助手对话',hideRecord:'排除记忆',restoreHidden:'恢复被排除记忆',removeDocument:'删除知识库资料',updateDocument:'更新知识库资料',stop:'停止任务',disable:'暂停插件'});
 const files=new Set(['provider-scheduler.js','summary-planner.js','request-deadline.js','provider.js','summary-stages.js','summary-context.js','summary-reference-repair.js','summary-engine.js','summary-recovery.js','contracts.js','repository.js','reliable-storage.js','host-adapter.js','dynamic-persona.js','dynamic-persona-worldbook.js','dynamic-persona-stage.js','product-application.js','product-workspace.js','product-network.js','product-shell-controller.js','product-host-adapters.js','product-view.js','product-runtime-log.js','product-model-list.js','product-vector-indexer.js','product-vector-cache.js','product-vector-storage.js','product-dictionary.js','product-event-merge.js','product-credentials.js','product-global-settings.js','product-module-controller.js','diagnostics.js']);
-const errorTypes=new Set(['Error','TypeError','SyntaxError','RangeError','AbortError','DOMException','ShiyiError','SummaryResponseError','ValidationError','PersistenceError','ScopeConflictError','RevisionConflictError']);
+const errorTypes=new Set(['Error','TypeError','SyntaxError','RangeError','ReferenceError','AbortError','NotAllowedError','DOMException','ShiyiError','SummaryResponseError','ValidationError','PersistenceError','ScopeConflictError','RevisionConflictError']);
+files.add('product-host-ui.js');
 files.add('summary-verification.js');
 files.add('provider-stream.js');
 files.add('quality-response.js');
@@ -79,6 +85,7 @@ export const QUALITY_REASONS=Object.freeze(['证据片段不存在或已变化',
 export function diagnosticRequestId(){return `req-${Date.now().toString(36)}-${(++sequence).toString(36)}`;}
 export function safeDiagnosticFields(value={}){
   const result={};
+  if(Object.hasOwn(PERSONA_STEPS,value?.personaStep))result.personaStep=value.personaStep;
   if(['tail','before'].includes(value?.historyStep))result.historyStep=value.historyStep;
   for(const key of ['historyReadAttempts','lastIndex','keepRecent'])if(Number.isSafeInteger(value?.[key])&&value[key]>=0)result[key]=value[key];
   if(typeof value?.modelRequested==='boolean')result.modelRequested=value.modelRequested;

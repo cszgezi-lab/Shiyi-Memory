@@ -13,6 +13,7 @@ const CODES = new Set(['PERSONA_RESPONSE_INVALID','PERSONA_STAGE_CHANGED','RECOV
 const FINISH_REASONS = new Set(['stop','length','max_tokens','truncated','abort','content_filter','tool_calls','end_turn','unknown']);
 CODES.add('QUALITY_RESPONSE_INVALID');
 CODES.add('PROVIDER_STREAM_ERROR');
+CODES.add('FILE_EXPORT_FAILED');
 const NUMBERS = ['plannedBatches','pendingBatches','batchSize','deferredRecords','deferredCommitments','deferredKnowledge','journalCount','stageObservations','rejectedDialogues','queueWaitMs','queuePosition','requestElapsedMs','plannedRequests','totalChildren','completedChildren','actualWaitMs','timerLagMs','sourceInputUnits','historyInputUnits','schemaInputUnits','bridgeInputUnits','retryDelayMs','recoveryCalls','batchNumber','childIndex','startIndex','endIndex','sourceCount','inputLimit','inputUnits','maxTokens','elapsedMs','status','expected','received','covered','invalidRows','duplicateCount','promptTokens','completionTokens','totalTokens','reasoningTokens','responseChars','savedBatches','normalizedFields','defaultedValidityFields','repairFields','requestNumber','requestItems','receivedVectors','inputChars','longestInputChars','vectorDimensions','indexedItems','pendingItems','failedItems','beforeInputUnits','afterInputUnits','removedRelevantRecords','recoveryInputTarget','requestedMaxTokens','effectiveMaxTokens','relevantCandidateCount'];
 export function safeLogDetails(value = {}) {
   const result = safeDiagnosticFields(value);
@@ -60,12 +61,17 @@ function safeEntry(value) {
 }
 
 /** Local bounded diagnostics. Never accepts prompts, response bodies, keys or URLs. */
-export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now()} = {}) {
+export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),ioWaitMs=1000} = {}) {
   let entries=[],store,loaded=false,loading,queue=Promise.resolve(),nextRun=0,nextId=0,persistence='not_loaded';
   let pending=false,writing=false,droppedEntries=0,partialRuns=[],storageFailure=null,legacyRetentionUnknown=false;
   let timer=null,entryBytes=2;
   const byteSize=e=>new TextEncoder().encode(JSON.stringify(e)).length;
   const notify=()=>{try{onChange();}catch{/* diagnostics must not break a task */}};
+  async function bounded(work){
+    let timeout;
+    try{return await Promise.race([work,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(Object.assign(new Error('日志存储响应超时'),{details:{reason:'log_io_timeout'}})),ioWaitMs);})]);}
+    finally{clearTimeout(timeout);}
+  }
   function trim(){
     const removed=[];
     if(entries.length>RUNTIME_LOG_LIMIT)removed.push(...entries.splice(0,entries.length-RUNTIME_LOG_LIMIT));
@@ -79,8 +85,8 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now()} =
     if(loading)return loading;
     loading=(async()=>{
       try {
-        store=productStoreFromSession({store:await getStore()});
-        const found=await store.tryGetJson(RUNTIME_LOG_ADDRESS);
+        const loadedStore=await bounded((async()=>{const candidate=productStoreFromSession({store:await getStore()});return {candidate,found:await candidate.tryGetJson(RUNTIME_LOG_ADDRESS)};})());
+        const {candidate,found}=loadedStore;
         if(found.found){
           if(found.value?.version!==1||!Array.isArray(found.value.entries))throw Object.assign(new Error('invalid log document'),{details:{reason:'log_document_invalid'}});
           entries=found.value.entries.map(safeEntry).filter(Boolean);entryBytes=2+entries.reduce((n,e)=>n+byteSize(e)+1,0);
@@ -90,7 +96,7 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now()} =
           partialRuns=Array.isArray(found.value.partialRuns)?found.value.partialRuns.filter(Number.isSafeInteger):[];trim();
           nextRun=Math.max(0,...entries.map(e=>e.run));nextId=Math.max(0,...entries.map(e=>e.id));
         }
-        persistence='ready';
+        store=candidate;persistence='ready';
       } catch(error) {store=null;persistence='unavailable';storageFailure=safeLogDetails({...errorDiagnostics(error),storageStage:'read',storageArtifact:'runtime_log'});}
       loaded=true;notify();
     })().finally(()=>{loading=null;});return loading;
@@ -129,8 +135,12 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now()} =
   return {
     load,record,async start(task,details={}){await load();const run=++nextRun;record({run,task,phase:'start',details});return run;},
     get state(){return {entries:clone(entries),persistence,limit:RUNTIME_LOG_LIMIT,byteLimit:RUNTIME_LOG_BYTES,droppedEntries,partialRuns:clone(partialRuns),legacyRetentionUnknown,storageFailure:clone(storageFailure)};},
-    async flush(){if(timer!==null)await persist();else await queue;},
+    async flush(){try{await bounded(timer!==null?persist():queue);}catch(error){persistence='pending';storageFailure=safeLogDetails({...errorDiagnostics(error),storageStage:'write',storageArtifact:'runtime_log'});notify();}},
     async clear(){await load();entries=[];entryBytes=2;droppedEntries=0;partialRuns=[];legacyRetentionUnknown=false;notify();await persist();if(!store||persistence!=='saved')throw new Error('日志清空未通过保存确认，请重试');},
-    async export(){await load();if(timer!==null)await persist();else await queue;const terminal=new Set(entries.filter(e=>['complete','failed','canceled','waiting','skipped'].includes(e.phase)).map(e=>e.run));return {kind:'shiyi-runtime-log',version:1,diagnosticVersion:2,pluginVersion:PRODUCT_VERSION,exportedAt:now(),persistence,retention:{limit:RUNTIME_LOG_LIMIT,byteLimit:RUNTIME_LOG_BYTES,droppedEntries,partialRuns:clone(partialRuns),legacyRetentionUnknown,firstId:entries[0]?.id??null,lastId:entries.at(-1)?.id??null},unfinishedRuns:[...new Set(entries.filter(e=>e.phase==='start'&&!terminal.has(e.run)).map(e=>e.run))],storageFailure:clone(storageFailure),limitations:['不含密钥、请求正文、模型原文或私人文件路径。','宿主或服务未提供的错误原因无法还原。','未结束任务可能仍在运行或曾被强制退出；不能据此断定崩溃。','旧版本丢失的日志不能补录。','运行中日志最多合并 100ms 后写盘；强制退出可能丢失尚未写入的最后几条。'],entries:clone(entries)};},
+    async export(){await load();
+      // Drain already-queued error callbacks, not their storage promises. A
+      // failed action immediately followed by export must include its error.
+      await new Promise(resolve=>setTimeout(resolve,0));return snapshot();},
   };
+  function snapshot(){const terminal=new Set(entries.filter(e=>['complete','failed','canceled','waiting','skipped'].includes(e.phase)).map(e=>e.run));return {kind:'shiyi-runtime-log',version:1,diagnosticVersion:2,pluginVersion:PRODUCT_VERSION,exportedAt:now(),persistence,pendingWrites:writing||pending||timer!==null,retention:{limit:RUNTIME_LOG_LIMIT,byteLimit:RUNTIME_LOG_BYTES,droppedEntries,partialRuns:clone(partialRuns),legacyRetentionUnknown,firstId:entries[0]?.id??null,lastId:entries.at(-1)?.id??null},unfinishedRuns:[...new Set(entries.filter(e=>e.phase==='start'&&!terminal.has(e.run)).map(e=>e.run))],storageFailure:clone(storageFailure),limitations:['不含密钥、请求正文、模型原文或私人文件路径。','宿主或服务未提供的错误原因无法还原。','未结束任务可能仍在运行或曾被强制退出；不能据此断定崩溃。','旧版本丢失的日志不能补录。','导出为当前内存快照，不等待写盘或正在运行的任务结束；pendingWrites 表示本机保存仍在进行。','运行中日志最多合并 100ms 后写盘；强制退出可能丢失尚未写入的最后几条。'],entries:clone(entries)};}
 }

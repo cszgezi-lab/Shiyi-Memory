@@ -5,10 +5,16 @@ export async function exportProductJson(data, name, {
 } = {}) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   if (host?.__TAURITAVERN__?.api) {
-    const { downloadBlobWithRuntime } = await loadExporter();
-    if (typeof downloadBlobWithRuntime !== 'function') throw new Error('当前 TT 缺少文件导出接口，请使用 TT 2.2.0 或更新版本');
+    let downloadBlobWithRuntime;
+    try{({downloadBlobWithRuntime}=await loadExporter());if(typeof downloadBlobWithRuntime!=='function')throw new Error('missing exporter');}
+    catch(error){throw Object.assign(new Error('当前 TT 文件导出接口不可用；日志可使用“查看／复制文本”导出'),{code:'FILE_EXPORT_FAILED',details:{reason:'export_module_unavailable',causeError:error}});}
     // Never silently fall back to a Blob link when native export failed.
-    return downloadBlobWithRuntime(blob, name);
+    try{return await downloadBlobWithRuntime(blob, name);}
+    catch(error){
+      const canceled=error?.name==='AbortError'||/cancel(?:led|ed)?|取消/i.test(String(error?.message??error));
+      const denied=error?.name==='NotAllowedError'||/permission|denied|not allowed|权限/i.test(String(error?.message??error));
+      throw Object.assign(new Error(canceled?'已取消文件导出':denied?'系统拒绝文件保存权限；日志可使用“查看／复制文本”':'宿主保存文件失败；日志可使用“查看／复制文本”'),{code:canceled?'CANCELED':'FILE_EXPORT_FAILED',details:{reason:denied?'export_permission_denied':'export_native_failed',causeError:error}});
+    }
   }
   const url = URL.createObjectURL(blob), anchor = documentRef.createElement('a');
   try {

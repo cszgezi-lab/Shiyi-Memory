@@ -1,11 +1,11 @@
 import { readViewState } from '../src/product-view-scheduling.js';
-import { LOG_TASKS, LOG_PHASES } from '../src/product-runtime-log.js';
+import { LOG_TASKS, LOG_PHASES, safeLogDetails } from '../src/product-runtime-log.js';
 import { esc } from '../src/product-settings-ui.js';
 import { failureText,productFailure } from '../src/product-feedback.js';
 import { safeValidationIssues, validationIssueText } from '../src/validation-diagnostics.js';
-import {DIAGNOSTIC_REASONS,DIAGNOSTIC_PURPOSES,DIAGNOSTIC_STAGES,DIAGNOSTIC_ACTIONS,UPSTREAM_CODES,UPSTREAM_HINTS} from '../src/diagnostics.js';
+import {DIAGNOSTIC_REASONS,DIAGNOSTIC_PURPOSES,DIAGNOSTIC_STAGES,DIAGNOSTIC_ACTIONS,UPSTREAM_CODES,UPSTREAM_HINTS,PERSONA_STEPS,errorDiagnostics} from '../src/diagnostics.js';
 
-export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help">保留最近 2000 条，最多 2 MB。记录请求、解析、校验与保存过程；不包含 Key、聊天正文或模型原文。导出包含全部保留记录，不受筛选和分页影响。</p><div class="sy-actions"><button type="button" data-log-export>导出日志</button><button type="button" data-log-clear>清空日志</button></div><label class="sy-field"><span>显示</span><select data-log-filter><option value="all">全部记录</option><option value="issues">失败与警告</option><option value="vectors">向量索引</option><option value="summary">总结</option><option value="merge">事件合并</option><option value="api">API 与助手</option></select></label><p data-log-storage class="sy-help" role="status"></p><div data-log-list></div><div class="sy-batch-pagination"><button type="button" data-log-prev>上一页</button><span data-log-page></span><button type="button" data-log-next>下一页</button></div>`;}
+export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help">保留最近 2000 条，最多 2 MB。记录请求、解析、校验与保存过程；不包含 Key、聊天正文或模型原文。导出当前内存快照，不等待任务或写盘完成，不受筛选和分页影响。</p><div class="sy-actions"><button type="button" data-log-export>导出日志</button><button type="button" data-log-text>查看／复制文本</button><button type="button" data-log-clear>清空日志</button></div><p data-log-export-status class="sy-help" role="status"></p><details data-log-fallback hidden><summary>日志文本（文件导出不可用时也能复制）</summary><textarea data-log-text-value readonly rows="6" aria-label="日志文本"></textarea><div class="sy-actions"><button type="button" data-log-copy>复制全部文本</button><button type="button" data-log-close>收起文本</button></div></details><label class="sy-field"><span>显示</span><select data-log-filter><option value="all">全部记录</option><option value="issues">失败与警告</option><option value="vectors">向量索引</option><option value="summary">总结</option><option value="merge">事件合并</option><option value="api">API 与助手</option></select></label><p data-log-storage class="sy-help" role="status"></p><div data-log-list></div><div class="sy-batch-pagination"><button type="button" data-log-prev>上一页</button><span data-log-page></span><button type="button" data-log-next>下一页</button></div>`;}
 const fields={readingOriginalChars:'原始正文字符数',readingSafeChars:'安全正文字符数',readingOutputChars:'读取副本字符数',readingFilteredChars:'额外过滤字符数',readingFallbacks:'回退原安全正文的楼数',requestNumber:'向量请求序号',requestItems:'输入片段数',receivedVectors:'返回向量数',inputChars:'本次输入字符数',longestInputChars:'最长片段字符数',vectorDimensions:'向量维度',indexedItems:'已保存索引条数',pendingItems:'未完成索引条数',failedItems:'失败索引条数',batchNumber:'总结批次',childIndex:'内部子批（从 0 计）',sourceCount:'读取消息数',inputLimit:'输入预算',inputUnits:'实际输入估算',elapsedMs:'耗时（毫秒）',status:'HTTP 状态',expected:'应有逐楼摘要',received:'收到摘要条数',covered:'完整对应楼数',invalidRows:'来源无效或多楼合并',duplicateCount:'重复摘要条数',promptTokens:'服务报告输入 Token',completionTokens:'服务报告输出 Token',totalTokens:'服务报告总 Token',reasoningTokens:'其中推理 Token',responseChars:'回复文本字符数',savedBatches:'保存批数'};
 export function runtimeLogSummary(entry){
   const d=entry.details??{},parts=[];
@@ -27,6 +27,7 @@ export function runtimeLogSummary(entry){
 }
 function detailsHTML(entry){
   const d=entry.details,lines=[];
+  if(PERSONA_STEPS[d.personaStep])lines.push(['人设出错步骤',PERSONA_STEPS[d.personaStep]]);
   if(d.historyStep)lines.push(['原文读取位置',d.historyStep==='tail'?'当前聊天末页':'较早历史分页']);
   if(d.historyReadAttempts!==undefined)lines.push(['本地读取尝试次数',d.historyReadAttempts]);
   if(d.modelRequested!==undefined)lines.push(['本次调用模型',d.modelRequested?'是':'否']);
@@ -138,7 +139,7 @@ export function mountRuntimeLog({panel,app,run,host,download}){
     const pages=Math.max(1,Math.ceil(selected.length/10));page=Math.min(page,pages);
     const items=selected.slice((page-1)*10,page*10),nextSignature=JSON.stringify([items,page,filter,data.persistence,data.droppedEntries,data.partialRuns,data.legacyRetentionUnknown,data.storageFailure]);
     if(signature===nextSignature)return;signature=nextSignature;
-    $('[data-log-storage]').textContent={not_loaded:'打开日志后读取。',ready:'日志已读取。',saved:'日志已保存在本机。',unavailable:'日志存储读取失败；本次仅在内存保留，可立即导出。',failed:'日志保存失败；本次仅在内存保留，可立即导出。'}[data.persistence]??'';
+    $('[data-log-storage]').textContent={not_loaded:'打开日志后读取。',ready:'日志已读取。',saved:'日志已保存在本机。',pending:'日志仍在写盘，不影响查看或导出当前内存快照。',unavailable:'日志存储读取失败；本次仅在内存保留，可立即导出。',failed:'日志保存失败；本次仅在内存保留，可立即导出。'}[data.persistence]??'';
     if(data.droppedEntries)$('[data-log-storage]').textContent+=` 已清理 ${data.droppedEntries} 条旧记录。`;
     if(data.partialRuns?.length)$('[data-log-storage]').textContent+=` 任务 ${data.partialRuns.join('、')} 的早期记录已清理。`;
     if(data.legacyRetentionUnknown)$('[data-log-storage]').textContent+=' 旧版本是否已丢弃日志无法确认。';
@@ -149,7 +150,20 @@ export function mountRuntimeLog({panel,app,run,host,download}){
   }
   $('[data-log-filter]').addEventListener('change',()=>{page=1;paint(state??readViewState(app));});
   for(const [sel,delta]of [['[data-log-prev]',-1],['[data-log-next]',1]])$(sel).addEventListener('click',()=>{page+=delta;paint(state??readViewState(app));});
-  $('[data-log-export]').addEventListener('click',()=>run(async()=>download(await app.exportRuntimeLog(),'拾忆-运行日志.json')));
+  let exporting=false;
+  const status=text=>{$('[data-log-export-status]').textContent=text;};
+  const showText=(data,message)=>{const fallback=$('[data-log-fallback]');$('[data-log-text-value]').value=JSON.stringify(data,null,2);fallback.hidden=false;fallback.open=true;status(message);};
+  const report=error=>{try{Promise.resolve(app.reportError?.(error,{stage:'ui',action:'exportRuntimeLog'})).catch(()=>{});}catch{/* exporting diagnostics must not need diagnostics storage */}};
+  $('[data-log-text]').addEventListener('click',async()=>{try{showText(await app.exportRuntimeLog(),'这是当前日志快照；可复制文本，不调用模型。');}catch(error){report(error);status(`日志快照未读取：${failureText(error)}`);}});
+  $('[data-log-copy]').addEventListener('click',async()=>{const area=$('[data-log-text-value]');try{if(!host.navigator?.clipboard?.writeText)throw new Error('clipboard unavailable');await host.navigator.clipboard.writeText(area.value);status('日志文本已复制。');}catch{area.focus();area.select();status('自动复制不可用；已选中文本，可长按复制。');}});
+  $('[data-log-close]').addEventListener('click',()=>{$('[data-log-fallback]').hidden=true;$('[data-log-text-value]').value='';});
+  $('[data-log-export]').addEventListener('click',async()=>{
+    if(exporting)return;exporting=true;$('[data-log-export]').disabled=true;let snapshot;
+    status('正在导出当前日志快照；若系统保存无响应，可点“查看／复制文本”。');
+    try{snapshot=await app.exportRuntimeLog();await download(snapshot,'拾忆-运行日志.json');status('日志已提交导出。');}
+    catch(error){report(error);if(snapshot)showText({...snapshot,exportFailure:safeLogDetails(errorDiagnostics(error))},`文件未导出：${failureText(error)}。日志已在下方展开，可直接复制，无需重跑任务。`);else status(`日志未导出：${failureText(error)}`);}
+    finally{exporting=false;$('[data-log-export]').disabled=false;}
+  });
   $('[data-log-clear]').addEventListener('click',()=>run(async()=>{if(host.confirm?.('清空运行日志？记忆、总结批次、设置和助手对话不会删除。')){await app.clearRuntimeLog();opened.clear();page=1;signature='';paint(readViewState(app));}}));
   return {paint};
 }
