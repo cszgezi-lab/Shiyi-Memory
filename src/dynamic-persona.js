@@ -6,7 +6,8 @@ import {narrativeReading,NARRATIVE_READING_RULE,narrativeCounters} from './narra
 import {personaManualPlan,personaManualPending,personaManualUnfinished} from './dynamic-persona-plan.js';
 import {personaIdentity,personaAliases,foldName} from './persona-identity.js';
 import {personaSourceIndex} from './persona-source-index.js';
-import {PERSONA_COMPOSITION_RULE,personaParts,personaMaterials,personaReviewFocus,composePersona} from './persona-composition.js';
+import {PERSONA_COMPOSITION_RULE,personaParts,personaMaterials,personaReviewFocus,composePersona,personaSpokenAliases} from './persona-composition.js';
+import {PERSONA_DEVELOPMENT_RULE,personaCharacterCandidates} from './persona-development.js';
 
 export const DYNAMIC_PERSONA_PROMPT=`你负责角色的动态人设档案，不负责总结所有事件。最终每个人物一份持续更新的完整档案，属性不限于固定字段。程序保留原设定未变部分；你用中文、自然段/Markdown提供局部修改、当前新增信息与有来源的表达语料，不重新压缩整份原设定。
 根据原设定、上一版完整档案、本批原文更新性格表现、关系对象、关键台词造成的变化与当前阶段心态。保留未改变的身份、爱好和自定义属性，不凭一次情绪抹掉底色；临时情绪、对某人的态度必须写明范围。人物知道什么只依据实际获知过程，旁白、他人内心、未听见的话不能变成该角色知识。不要把提到的计划当完成。
@@ -35,10 +36,13 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
     const person=identity.forTitle(s.name),key=person.key;if(!groups.has(key))groups.set(key,{id:`P${groups.size+1}`,title:s.name,characterId:person.characterId,name:person.name,aliases:[...person.visibleAliases],text:[]});const group=groups.get(key);group.text.push(s.text);return {...s,ref:group.id};
   });
   const known=currentPersonaProfiles(previous.filter(p=>!p.deleted&&mentioned.has(foldName(p.name))),stageMode);
+  const promptParts=parts=>parts.filter(p=>p.original.trim()).map(p=>({ref:p.ref,title:p.title,text:p.text,original:p.original===p.text?undefined:p.original}));
+  const originals=[...groups.values()].map(g=>({id:g.id,name:g.name,aliases:g.aliases,parts:promptParts(personaParts(spans.filter(s=>s.ownerKey===foldName(g.name)),known.find(p=>foldName(p.name)===foldName(g.name))))}));
+  for(const p of known)if(!p.bindings?.length&&!groups.has(foldName(p.name))){const parts=personaParts([],p);if(parts.length)originals.push({name:p.name,source:'chat',aliases:[...(identity.resolve(p.name)?.visibleAliases??[])],parts:promptParts(parts)});}
   const modeRule=(stageMode==='strict'?'当前选择严格MVU阶段兼容：人物演绎限于当前数值阶段，不跨越其明确边界。':'当前选择剧情主导：MVU只作参考，不用数值阶段否定已发生的剧情。previous的最近完整档案继续有效，不因MVU阶段改变自动回退；正文中的共同关系需实际双方确认。')+(readings.length?'\n'+NARRATIVE_READING_RULE:'');
-  return {messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n姓名使用original/previous提供的正式姓名；简称、昵称、简繁写法不创建另一个角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),original:[...groups.values()].map(g=>({id:g.id,name:g.name,aliases:g.aliases,parts:personaParts(spans.filter(s=>s.ownerKey===foldName(g.name)),known.find(p=>foldName(p.name)===foldName(g.name))).filter(p=>p.original.trim()).map(p=>({ref:p.ref,title:p.title,text:p.text,original:p.original===p.text?undefined:p.original}))})),materials:personaMaterials(records,identity,mentioned,Math.max(...source.map(m=>m.index))),previous:known.map(p=>({name:p.name,aliases:[...(identity.resolve(p.name)?.visibleAliases??[])],text:p.composition?.notes??p.text,examples:p.composition?.examples,locked:p.locked,through:p.through,currentStage:stageMode!=='strict'||!p.bindings?.length||p.bindings.every(b=>spans.some(s=>s.id===b.id&&s.stage===b.stage))})),reviewFocus:personaReviewFocus(source,identity)})}],spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
+  return {messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n姓名使用original/previous提供的正式姓名；简称、昵称、简繁写法不创建另一个角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}\n${PERSONA_DEVELOPMENT_RULE}`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),characterCandidates:personaCharacterCandidates(source,identity),original:originals,materials:personaMaterials(records,identity,mentioned,Math.max(...source.map(m=>m.index))),previous:known.map(p=>({name:p.name,aliases:[...(identity.resolve(p.name)?.visibleAliases??[])],text:p.composition?.notes??p.text,examples:p.composition?.examples,development:p.composition?.development,locked:p.locked,through:p.through,currentStage:stageMode!=='strict'||!p.bindings?.length||p.bindings.every(b=>spans.some(s=>s.id===b.id&&s.stage===b.stage))})),reviewFocus:personaReviewFocus(source,identity)})}],source,spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
 }
-export function parsePersonaResponse(response,{messages,spans,previous,identity,dictionary,aliases='',stageMode='narrative',preserveSources=false,diagnostic=()=>{}}){
+export function parsePersonaResponse(response,{messages,spans,previous,identity,dictionary,aliases='',stageMode='narrative',preserveSources=false,developmentMessages,diagnostic=()=>{}}){
   const reason=response?.choices?.[0]?.finish_reason;
   if(reason==='content_filter')throw Object.assign(new Error('人设接口报告内容过滤；原档案保留，可更换配置后重试'),{code:'MODEL_OUTPUT_BLOCKED'});
   if(['length','max_tokens'].includes(reason))throw Object.assign(new Error('人设回答未完整结束；原档案保留'),{code:'MODEL_OUTPUT_TRUNCATED'});
@@ -65,9 +69,23 @@ export function parsePersonaResponse(response,{messages,spans,previous,identity,
     const id=old[0]?.id??sha256([foldName(name),stage]).slice(0,24);if(seen.has(id))throw fail('name','同一人物重复返回多份档案','persona_duplicate');seen.add(id);
     let text=row.text.trim();for(const s of spans)text=text.replaceAll(s.id,`原设定·${s.name}`);
     text=text.replace(/\bprevious\b/g,'上一版档案');
-    const composed=preserveSources?composePersona({...row,text},{spans:bindings,previous:old[0],messages,identity,name,fail}):{text};
+    // A first-time source character needs the same quote/scene/arc identity
+    // context as a worldbook character. This cannot create worldbook bindings.
+    const ownIdentity=person?identity:personaIdentity({previous:[...identity.people.map(p=>({name:p.name,aliases:[...p.aliases],aliasPolicy:'manual'})),{name}],source});
+    const spokenAliases=old[0]?.aliasPolicy==='manual'||['manual','disabled'].includes(person?.aliasPolicy)?[]:personaSpokenAliases(developmentMessages??messages,name,ownIdentity);
+    // Tolerate a misplaced optional list only when its exact evidence starts
+    // with one unique returned character (not the addressee or a third party).
+    const lifted=Array.isArray(body.development)?body.development.filter(d=>{
+      const lead=foldName(String(d?.evidence??'').trim());
+      const owners=body.profiles.filter(p=>typeof p?.name==='string'&&[p.name,...(identity.resolve(p.name)?.aliases??[])].some(n=>lead.startsWith(foldName(n))));
+      return owners.length===1&&owners[0]===row;
+    }):[];
+    const development=lifted.length?[...(Array.isArray(row.development)?row.development:[]),...lifted]:row.development;
+    const composed=preserveSources?composePersona({...row,text,development},{spans:bindings,previous:old[0],messages,developmentMessages,identity:ownIdentity,name,fail}):{text};
+    if(composed.composition?.rejectedDevelopment)diagnostic({phase:'validate',level:'warning',details:{profileIndex,accepted:composed.composition.development.length,rejectedRows:composed.composition.rejectedDevelopment}});
+    if(composed.composition?.ignoredUpdates)diagnostic({phase:'normalize',details:{profileIndex,normalizedFields:composed.composition.ignoredUpdates}});
     if(!composed.text.trim())throw fail('text','没有可保存的原设定或剧情变化');
-    return {id,name,characterId:person?.characterId??sha256(['persona-character',foldName(name)]).slice(0,24),aliases:[...new Set([...(old[0]?.aliases??[]),...(person?.visibleAliases??[]),...(row.name.trim()!==name?[row.name.trim()]:[])])],...(old[0]?.aliasPolicy?{aliasPolicy:old[0].aliasPolicy}:{}),...composed,bindings,stage,sourceFloors:[...new Set(row.sourceFloors)],locked:previous.find(p=>p.id===id)?.locked===true};
+    return {id,name,characterId:person?.characterId??sha256(['persona-character',foldName(name)]).slice(0,24),aliases:[...new Set([...(old[0]?.aliases??[]),...(ownIdentity.resolve(name)?.visibleAliases??[]),...spokenAliases,...(row.name.trim()!==name?[row.name.trim()]:[])])],...(old[0]?.aliasPolicy?{aliasPolicy:old[0].aliasPolicy}:{}),...composed,bindings,stage,sourceFloors:[...new Set(row.sourceFloors)],locked:previous.find(p=>p.id===id)?.locked===true};
   });
 }
 export function createDynamicPersona({settings,getWorkspace,readRange,historyTail,worldbook,client,dictionary=()=>({entries:[]}),records=()=>({}),notify=()=>{},log=async(_fn,fn)=>fn(),diagnostic=()=>{},canRun=()=>true,now=Date.now}){
@@ -201,7 +219,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const cacheKey=manualId?`persona-result-${manualId}-${key}`:`persona-result-${key}`;
       const cached=await bound.read(cacheKey,null);guard();
       const response=cached?.fingerprint===fingerprint?cached.response:await client().chatCompletions({model:config.dynamicPersonaModel,messages:request.messages,stream:true,...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})},{signal:controller.signal});guard();
-      const rows=parsePersonaResponse(response,{messages:range.messages,spans:request.spans,previous,identity:request.identity,stageMode:config.dynamicPersonaMvuMode,preserveSources:true,diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});
+      const rows=parsePersonaResponse(response,{messages:range.messages,spans:request.spans,previous,identity:request.identity,developmentMessages:request.source,stageMode:config.dynamicPersonaMvuMode,preserveSources:true,diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});
       diagnostic({run,task:'persona',phase:'validate',level:'info',details:{startIndex:next.nextStart,endIndex:next.nextEnd,personaProfiles:rows.length,personaBindings:rows.reduce((n,p)=>n+p.bindings.length,0)}});
       if(cached?.fingerprint!==fingerprint)await bound.write(cacheKey,{fingerprint,response});guard();
       if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k])))throw Object.assign(new Error('人设运行期间设置已变化；结果未覆盖旧档案'),{code:'CANCELED'});

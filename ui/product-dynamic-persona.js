@@ -3,7 +3,7 @@ import {DYNAMIC_PERSONA_PROMPT,currentPersonaProfiles} from '../src/dynamic-pers
 import {PERSONA_SOURCE_LABELS} from '../src/persona-source-index.js';
 export function personaSourceDetails(p){
   const sources=[...new Map((p.bindings??[]).map(b=>[JSON.stringify([b.book,b.uid]),{book:b.book,title:b.originalName??b.name}])).values()];
-  return `<details data-persona-sources><summary>原书来源与本次修改 · ${sources.length} 个条目</summary>${sources.length?sources.map(s=>`<p>${esc(s.book)} · ${esc(s.title)}</p>`).join(''):'<p>尚未关联可替换的原书内容，目前仅为补充。请检查世界书读取与人物别称；不代表原人设已被接管。</p>'}${p.composition?`<p>保留 ${p.composition.parts.length} 个原文片段；本次修改 ${p.composition.changes.length} 处。未修改部分沿用原文，不靠模型重写。</p>${p.composition.changes.map(c=>`<details><summary>${esc(c.title)} · 第${esc(c.sourceFloors.join('、'))}楼依据</summary><p>修改前</p><div class="sy-packet">${esc(c.before)}</div><p>修改后</p><div class="sy-packet">${esc(c.after)}</div></details>`).join('')}${p.composition.rejectedExamples?`<p>${p.composition.rejectedExamples} 条语料未确认原话或说话人，未纳入示例；其他档案内容保留。</p>`:''}`:'<p>此为旧版或手工档案；不会在升级时重写。下次明确更新时建立原文保留版本。</p>'}</details>`;
+  return `<details data-persona-sources><summary>原书来源与本次修改 · ${sources.length} 个条目</summary>${sources.length?sources.map(s=>`<p>${esc(s.book)} · ${esc(s.title)}</p>`).join(''):'<p>尚未关联可替换的原书内容。正文新角色可独立建档和成长，无需先建世界书；若原书本来有人设，可检查读取与人物别称，不代表原人设已被接管。</p>'}${p.composition?`<p>保留 ${p.composition.parts.length||p.composition.sourceBaseline?.length||0} 个${sources.length?'原文':'聊天档案'}片段；本次修改 ${p.composition.changes.length} 处。未修改部分沿用${sources.length?'原文':'已保存底稿'}，不靠模型重写。</p>${p.composition.changes.map(c=>`<details><summary>${esc(c.title)} · 第${esc(c.sourceFloors.join('、'))}楼依据</summary><p>修改前</p><div class="sy-packet">${esc(c.before)}</div><p>修改后</p><div class="sy-packet">${esc(c.after)}</div></details>`).join('')}${p.composition.rejectedExamples?`<p>${p.composition.rejectedExamples} 条语料未确认原话或说话人，未纳入示例；其他档案内容保留。</p>`:''}${p.composition.rejectedDevelopment?`<p>${p.composition.rejectedDevelopment} 项成长补充缺少对应正文依据，未纳入成长脉络；原档案及已保存内容保留，不会自动另开校对任务。</p>`:''}`:'<p>此为旧版或手工档案；不会在升级时重写。下次明确更新时建立原文保留版本。</p>'}</details>`;
 }
 export function dynamicPersonaProgressText(d){
   if(!d.plan)return '独立进度尚未读取';
@@ -16,6 +16,7 @@ export function dynamicPersonaHTML(){return `<section data-view="dynamic-persona
 <details class="sy-card" data-persona-controls><summary>更新与设置 <small>自动周期 · 手动补建 · API</small></summary>
 <div class="sy-actions"><button type="button" data-jump="api">独立 API</button><button type="button" data-jump="extraction">正文提取规则</button></div>
 <p class="sy-help">独立读取原文，不等主总结。自动按周期更新；旧聊天可以手动选范围补建。主聊天只使用已完成的档案，锁屏后可能暂停。</p>
+<p class="sy-help">正文新角色也能建档；同一人物持续更新，保留有来源的转变缘由、对象与表达语料，不强行给路人编造成长。成长脉络在整份档案中查看和修改，与人物更新共用一次请求。</p>
 <p class="sy-help">推荐剧情主导：人物随互动成长，MVU 数值只作参考，不因数值没变就退回旧人设。无 MVU 同样可用；不改变量或脚本。简繁姓名与可确认的简称共同识别，有歧义可在人物编辑或召回字典里校正。</p>
 <div class="sy-actions"><button type="button" data-persona-tab="auto" aria-pressed="true">自动更新</button><button type="button" data-persona-tab="manual" aria-pressed="false">手动补建</button></div>
 <div class="sy-card" data-persona-auto>

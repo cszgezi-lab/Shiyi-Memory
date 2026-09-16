@@ -1,11 +1,12 @@
 import {sha256,clone} from './utils.js';
-import {foldName} from './persona-identity.js';
+import {foldName,personaAliases} from './persona-identity.js';
 import {characterKeepsakes,markDiaryHistory} from './character-journal.js';
 import {sourceFloors} from './product-narrative.js';
 import {qualitySourceSegments} from './source-evidence.js';
 import {withoutPrivateSpeech} from './memory-evidence.js';
+import {mergePersonaDevelopment,personaDevelopmentText} from './persona-development.js';
 
-export const PERSONA_COMPOSITION_RULE=`当前使用原文保留模式。original.parts列出程序保留的原设定片段及当前有效文字，ref仅定位本人物片段。不要重写整篇传记。
+export const PERSONA_COMPOSITION_RULE=`当前使用原文保留模式。original.parts列出程序保留的原设定片段及当前有效文字；source=chat表示本聊天已保存的初建人物底稿，不是原世界书。ref仅定位本人物片段。不要重写整篇传记。
 先依据source中的明确时间、日期、学段和倒叙/回忆切换，区分当前叙事时点、原卡默认时点与历史/未来设定。楼号是来源位置，不是故事日期；楼号增加也可能进入更早的倒叙学段，不能直接套用原卡默认的年龄、学校、班级、团体或已成立关系。原文自身有时间冲突时标明来源与待核实处，不把冲突句当定论。只在有明确证据时局部更新；不明确则标注原卡默认时点及适用范围，不把整段旧设定删掉。禁止按学段、日期差或常识自动猜测年龄或学校并替换，未发生的未来关系不可当作当前关系。
 每份人物输出{name,text,sourceFloors,updates:[{ref,text,sourceFloors}],examples:[{text,floor,to,context}]}。text只写原设定之外的当前关系、心态和新增自由属性，必须写明对象与情境，不重复抄外貌背景。previous.text中未改变的新增属性和关系也必须保留，不能每批只剩最新变化。updates只放本批确有依据改变的片段，使用本人物提供的ref；不变化返回[]，不删除其他细节。每个修改都提供本批依据楼号。片段中的其他未变信息保留原措辞。不允许空text删除片段。若旧片段仍断言已被剧情改变的关系或当前穿着，必须修改该片段，不能只在text追加矛盾说法。
 按不同对象写清当前关系、态度与说话方式，并注明来源楼号及当时情境；区分家人面前、公开场合与两人独处时的表达，不能把对某人的说话方式推广给所有人。好感、动摇、羞涩或否认须保留原文证据与不确定性；单方心动不等于双方已确认交往，不虚造好感数值，也不只追加事件流水账。此前仍有效的对象关系与自由属性继续保留。
@@ -109,6 +110,20 @@ function unwrappedPersonaQuote(value){
   return text.slice(1,-1).trim();
 }
 
+// Only an attributed self-naming utterance establishes a new spoken alias.
+// A narrator mentioning two names or someone saying "call her X" does not.
+export function personaSpokenAliases(messages,name,identity){
+  const aliases=[];
+  for(const m of messages)for(const match of m.text.matchAll(/[“「『"]([^“”「」『』"\n]+)[”」』"]/gu)){
+    const quote=match[1],alias=/(?:叫我|称我为|稱我為|我的昵称是|我的暱稱是)([\p{L}·・]{1,20}?)(?:就好|即可|吧|[，。！]|$)/u.exec(quote)?.[1];
+    if(!alias||!hasPersonaSpeechEvidence(m.text,quote,name,identity))continue;
+    try{personaAliases([alias]);}catch{continue;}
+    const other=identity.resolve(alias);if(other&&other.key!==foldName(name))continue;
+    aliases.push(alias);
+  }
+  return [...new Set(aliases)];
+}
+
 // A small exact-source index, not another summary or extra model request.
 // Full source remains available; truncating this optional index loses no input.
 export function personaReviewFocus(messages,identity){
@@ -128,7 +143,18 @@ export function personaReviewFocus(messages,identity){
 export function personaSceneEvidence(messages,identity,name,previous=[]){
   const evidence=new Map(previous.map(e=>[e.kind,e]));
   const change=/换上|換上|换成|換成|脱下|脫下|穿着|穿著|剪短|染成|受伤|受傷|伤愈|傷癒/;
-  for(const m of messages)for(const sentence of m.text.match(/[^。！？\n]+[。！？]?/gu)??[]){
+  const narrative=text=>{
+    const pieces=[];let start=0;
+    for(let i=0;i<text.length;i++)if(speechPairs.has(text[i])){
+      pieces.push(text.slice(start,i));const end=speechSpanEnd(text,i);if(end<0)return pieces;
+      i=end;start=end+1;
+    }
+    pieces.push(text.slice(start));return pieces;
+  };
+  // Do not mistake quoted wishes for actual wardrobe changes; also keep an
+  // actual action immediately after a closing dialogue quote discoverable.
+  for(const m of messages)for(const piece of narrative(m.text))for(const raw of piece.match(/[^。！？\n]+[。！？]?/gu)??[]){
+    const sentence=raw.trim();
     if(!change.test(sentence)||sentence.length>600||/<%|%>|<\/?script\b|\{\{|@@|\[\[SHIYI_PERSONA:/i.test(sentence))continue;
     const people=identity.mentions(sentence);if(people.length!==1||people[0].key!==foldName(name))continue;
     const lead=foldName(sentence.trim()).split(change)[0],person=people[0];
@@ -141,6 +167,16 @@ export function personaSceneEvidence(messages,identity,name,previous=[]){
 }
 
 export function personaParts(spans,previous){
+  if(!spans.length){
+    const saved=previous?.composition?.parts?.filter(p=>p.source==='chat');
+    if(saved?.length){
+      const carried=clone(saved),extra=previous.composition.notes?.trim();
+      if(extra)for(const p of sourcePersonaBaseline(extra,previous.name,previous.sourceFloors??[]))if(p.text.trim()&&!carried.some(old=>old.text.includes(p.text.trim())))carried.push({...p,title:'增补人物档案'});
+      return carried.map((p,i)=>({...p,ref:`B${i+1}`}));
+    }
+    if(previous?.composition?.sourceBaseline?.length)return clone(previous.composition.sourceBaseline).map((p,i)=>({...p,ref:`B${i+1}`}));
+    if(previous?.name&&!previous.bindings?.length&&(previous.composition?.notes??previous.text)?.trim())return sourcePersonaBaseline(previous.composition?.notes??previous.text,previous.name,previous.sourceFloors??[]);
+  }
   const old=new Map((previous?.composition?.parts??[]).map(p=>[p.key,p]));let sequence=0;
   return spans.flatMap(s=>{
     // Preserve every byte, including spacing. Sentence-size changes avoid
@@ -151,6 +187,13 @@ export function personaParts(spans,previous){
       return {key,ref:`B${++sequence}`,book:s.book,uid:s.uid,title:s.originalName??s.name,spanId:s.id,original,text:prior?.text??original,sourceFloors:prior?.sourceFloors??[]};
     });
   });
+}
+
+// The first source-only dossier becomes an editable local baseline on its next
+// update. Arbitrary fields survive by text preservation, not a fixed trait list.
+function sourcePersonaBaseline(text,name,floors){
+  const chunks=text.match(/[^\n。！？]+(?:[。！？]+[”’」』]?|\n|$)|\n/gu)??[text];
+  return (chunks.join('')===text?chunks:[text]).map((original,i)=>({source:'chat',key:sha256([name,i,original]).slice(0,24),ref:`B${i+1}`,book:'当前聊天',uid:name,title:'初建人物档案',spanId:'chat-baseline',original,text:original,sourceFloors:[...floors]}));
 }
 
 export function personaMaterials(records,identity,mentioned,endFloor){
@@ -166,12 +209,18 @@ export function personaMaterials(records,identity,mentioned,endFloor){
   return [...latest.values()];
 }
 
-export function composePersona(row,{spans,previous,messages,identity,name,fail}){
+export function composePersona(row,{spans,previous,messages,developmentMessages,identity,name,fail}){
   const parts=personaParts(spans,previous),byRef=new Map(parts.map(p=>[p.ref,p])),touched=new Set(),changes=[];
+  if(!parts.length&&!row.text.trim())throw fail('text','正文新角色须有可独立阅读的档案，不能只返回局部修改');
   const validFloors=floors=>Array.isArray(floors)&&floors.length&&floors.every(f=>messages.some(m=>m.index===f));
   if(row.updates!==undefined&&!Array.isArray(row.updates))throw fail('text','局部修改应为列表');
-  for(const edit of row.updates??[]){
-    const part=byRef.get(String(edit?.ref??''));
+  // No source book means no mutable parts. Some models redundantly put edits
+  // to previous.text in updates: never apply those as book edits or let them
+  // block an otherwise complete supplemental dossier.
+  const ignoredUpdates=parts.length?0:(row.updates??[]).length;
+  for(const edit of parts.length?(row.updates??[]):[]){
+    const exact=parts.filter(p=>p.source==='chat'&&p.text.trim()===String(edit?.ref??'').trim());
+    const part=byRef.get(String(edit?.ref??''))??(exact.length===1?exact[0]:null);
     if(!part||touched.has(part.key)||typeof edit.text!=='string'||!edit.text.trim()||!validFloors(edit.sourceFloors)||/<%|%>|<\/?script\b|\{\{|@@|\[\[SHIYI_PERSONA:/i.test(edit.text))throw fail('text','局部修改没有唯一对应本人物原文或本批依据，原档案保留');
     touched.add(part.key);const before=part.text;part.text=edit.text+(/\n$/.test(part.original)&&!edit.text.endsWith('\n')?'\n':'');part.sourceFloors=[...new Set(edit.sourceFloors)];
     if(before!==part.text)changes.push({title:part.title,before,after:part.text,sourceFloors:part.sourceFloors});
@@ -189,10 +238,14 @@ export function composePersona(row,{spans,previous,messages,identity,name,fail})
     if(!examples.some(e=>e.text===text&&e.floor===q.floor))examples.push(prior?clone(prior):{text,floor:q.floor,to:typeof q.to==='string'?q.to:'',context:typeof q.context==='string'?q.context:'',kind:'source_quote'});
   }
   const sceneEvidence=personaSceneEvidence(messages,identity,name,previous?.composition?.sceneEvidence);
-  const notes=row.text.trim(),composition={version:1,parts,notes,examples,sceneEvidence,changes,rejectedExamples};
+  const development=mergePersonaDevelopment(row.development,{previous:previous?.composition?.development??[],messages:developmentMessages??messages.map(m=>({...m,text:qualitySourceSegments(m).map(s=>s.text).join('\n\uFFFC\n')})),identity,name});
+  const notes=row.text.trim(),composition={version:1,parts,notes,examples,sceneEvidence,changes,rejectedExamples,ignoredUpdates,development:development.items,rejectedDevelopment:development.rejected,...(!parts.length?{sourceBaseline:sourcePersonaBaseline(notes,name,row.sourceFloors)}:{})};
   const blocks=[];let last;
   for(const part of parts){const key=JSON.stringify([part.book,part.uid,part.spanId]);if(last?.key!==key){last={key,title:part.title,text:''};blocks.push(last);}last.text+=part.text;}
   const exampleText=examples.map(q=>`第${q.floor}楼${q.to?' 对'+q.to:''}：${q.text}${q.context?'〔'+q.context+'〕':''}`).join('\n');
-  const text=[...blocks.map(b=>`【有效设定 · ${b.title}】\n${b.text}`),notes?`【当前剧情变化】\n${notes}`:'',sceneEvidence.length?`【最近外观情境 · 逐字原文，按当时场景理解，不是永久外貌或当前穿着指令】\n${sceneEvidence.map(e=>`第${e.floor}楼：${e.text}`).join('\n')}`:'',examples.length?`【本阶段表达语料 · 原话仅供模仿表达，不要求复读】\n${exampleText}`:'',parts.length?'【适用边界】稳定外貌与习惯以保留设定为底稿；当前叙事时点可能处于倒叙，原卡默认时点的年龄、学段、关系不自动适用于当前场景，无明确依据不猜年龄或学校。来源楼号不是故事日期，原话及衣着按来源当时的时间、对象与场景理解；旧阶段语料不证明当前关系。服装描述服从当前场景与最新明确换装，不把旧场景穿着当永久外貌。当前关系以已发生剧情为准，对某人的表达与好感不推广给所有对象，私密心迹不赋予他人知情。':''].filter(Boolean).join('\n\n');
-  return {text,composition:clone(composition)};
+  const text=[...blocks.map(b=>`【有效设定 · ${b.title}】\n${b.text}`),notes?`【当前剧情变化】\n${notes}`:'',sceneEvidence.length?`【最近外观情境 · 逐字原文，按当时场景理解，不是永久外貌或当前穿着指令】\n${sceneEvidence.map(e=>`第${e.floor}楼：${e.text}`).join('\n')}`:'',examples.length?`【表达语料 · 原话仅供模仿表达，不要求复读；按来源情境理解，旧话不覆盖当前关系】\n${exampleText}`:'',spans.length?'【适用边界】稳定外貌与习惯以保留设定为底稿；当前叙事时点可能处于倒叙，原卡默认时点的年龄、学段、关系不自动适用于当前场景，无明确依据不猜年龄或学校。来源楼号不是故事日期，原话及衣着按来源当时的时间、对象与场景理解；旧阶段语料不证明当前关系。服装描述服从当前场景与最新明确换装，不把旧场景穿着当永久外貌。当前关系以已发生剧情为准，对某人的表达与好感不推广给所有对象，私密心迹不赋予他人知情。':''].filter(Boolean).join('\n\n');
+  // Supplemental characters need the same audience/privacy/scene boundaries
+  // as original-book characters, rather than losing them when parts is empty.
+  const boundary=spans.length?'':'【适用边界】本人物依据当前聊天正文建立，不代表有原世界书设定。保留仍有效的个性与自由属性；关系、口吻和成长仅适用于所述对象与情境。私密心迹不赋予其他人知情；衣着服从当前场景，旧台词不要求复读，倒叙经历不自动推翻当前状态。';
+  return {text:[text,personaDevelopmentText(development.items),boundary].filter(Boolean).join('\n\n'),composition:clone(composition)};
 }
