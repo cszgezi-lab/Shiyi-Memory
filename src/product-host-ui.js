@@ -42,24 +42,56 @@ const exportFailure = (message, reason, { stage, saveStage, causeError, fallback
   new Error(message),
   { code: 'FILE_EXPORT_FAILED', details: { stage, ...(saveStage ? { saveStage } : {}), reason, ...(causeError ? { causeError } : {}), ...(fallbackError ? { fallbackError } : {}) } },
 );
+/** TT's runtime returns camelCase (`savedPath`/`displayName`); a raw bridge
+ * answer uses snake_case (`saved_path`/`display_name`). Accept both so a
+ * successful save is never misread as unconfirmed. */
+function normalizeExportResult(result) {
+  if (!result || typeof result !== 'object') return result;
+  const savedPath = result.savedPath ?? result.saved_path;
+  const displayName = result.displayName ?? result.display_name;
+  const mimeType = result.mimeType ?? result.mime_type;
+  return {
+    ...result,
+    ...(savedPath ? { savedPath } : {}),
+    ...(displayName ? { displayName } : {}),
+    ...(mimeType ? { mimeType } : {}),
+    uri: result.uri ?? '',
+  };
+}
 function confirmedExport(result) {
-  if (!result || typeof result !== 'object') return false;
-  if (result.mode === 'mobile-native') return Boolean(String(result.savedPath ?? '').trim() || String(result.uri ?? '').trim());
-  if (result.mode === 'ios-native-share') return result.completed === true;
-  if (result.mode === 'browser') return true;
-  return false;
+  const value = normalizeExportResult(result);
+  if (!value || typeof value !== 'object') return false;
+  if (value.mode === 'mobile-native' || value.mode === 'android-document-picker') return Boolean(String(value.savedPath ?? '').trim() || String(value.uri ?? '').trim());
+  if (value.mode === 'ios-native-share') return value.completed === true;
+  if (value.mode === 'browser') return true;
+  // No mode: a raw bridge answer that reports a saved location is still a save.
+  return Boolean(String(value.savedPath ?? '').trim() || String(value.uri ?? '').trim()) && Boolean(value.displayName ?? value.savedPath ?? value.uri);
 }
 function dispatchOnly(result) {
   if (result?.mode === 'ios-native-share') return result.completed === false ? 'canceled' : 'share-unconfirmed';
   return 'browser-fallback';
 }
+const saveLocationOf = result => normalizeExportResult(result)?.mode === 'android-document-picker' || result?.savedPath === ''&&Boolean(result?.uri) ? '你选择的保存位置' : '手机 Downloads';
+/** TT on Android can save two ways: the direct public-Downloads bridge, or the
+ * system file picker plus a copy into the chosen document.  A device where one
+ * is broken can still export through the other, so a failed direct save gets one
+ * explicit picker attempt instead of only a text fallback. */
+async function withDocumentPickerFallback(downloadBlobWithRuntime, blob, name, host) {
+  const bridgeName = 'TauriTavernAndroidPublicDownloadBridge';
+  const bridge = host?.[bridgeName];
+  if (!bridge || typeof bridge.copyFileToContentUri !== 'function' || typeof bridge.requestCreateDocumentPicker !== 'function') return null;
+  const direct = bridge.supportsDirectPublicDownloads;
+  bridge.supportsDirectPublicDownloads = () => false;
+  try { return { result: await downloadBlobWithRuntime(blob, name) }; }
+  catch (error) { return { error }; }
+  finally { if (direct === undefined) delete bridge.supportsDirectPublicDownloads; else bridge.supportsDirectPublicDownloads = direct; }
+}
 
 /** Use TT's export runtime so Android saves through its native Downloads bridge.
  * Resolution contract: the promise only resolves when the host itself confirmed
- * a save (`saved:true`, mode mobile-native/ios-native-share/browser); every
- * other outcome resolves as `status:'dispatched'` (the payload was handed to a
- * host path that cannot confirm storage) or rejects with a classified
- * FILE_EXPORT_FAILED / CANCELED error. */
+ * a save (`saved:true`); every other outcome resolves as `status:'dispatched'`
+ * (the payload was handed to a host path that cannot confirm storage) or rejects
+ * with a classified FILE_EXPORT_FAILED / CANCELED error. */
 export async function exportProductJson(data, name, {
   host = globalThis, documentRef = globalThis.document,
   loadExporter = () => import('/scripts/file-export.js'),
@@ -74,23 +106,45 @@ export async function exportProductJson(data, name, {
     }
     try{
       const result=await downloadBlobWithRuntime(blob, name);
-      if(confirmedExport(result))return {...result,status:'saved',saved:true};
-      return {...result,status:'dispatched',saved:false,reason:'export_dispatched_unconfirmed',dispatch:dispatchOnly(result)};
+      if(confirmedExport(result))return {...normalizeExportResult(result),status:'saved',saved:true,exportAttempt:'direct',saveLocation:saveLocationOf(result)};
+      return {...normalizeExportResult(result),status:'dispatched',saved:false,exportAttempt:'direct',reason:'export_dispatched_unconfirmed',dispatch:dispatchOnly(result)};
     }
     catch(error){
       const saveStage=saveStageOf(error);
       if(isCancelError(error))throw Object.assign(new Error('已取消文件导出'),{code:'CANCELED',details:{reason:'canceled',...(saveStage?{saveStage}:{}),causeError:error}});
-      if(isPermissionError(error))throw exportFailure('系统拒绝文件保存权限；日志可使用“查看／复制文本”','export_permission_denied',{stage:'export_save_publish',saveStage,causeError:error});
-      if(isHostExceptionError(error))throw exportFailure('宿主的原生下载接口抛出 Java 异常，本次没有确认文件已保存；请改用“查看／复制文本”导出','export_host_exception',{stage:'export_save_publish',saveStage,causeError:error});
+      if(isPermissionError(error))throw exportFailure('系统拒绝文件保存权限；日志可使用“查看／复制文本”','export_permission_denied',{stage:'export_save_publish',saveStage,exportAttempt:'direct',causeError:error});
+      let hostError=error,pickerTried=false,pickerFailed=false;
+      // The direct public-Downloads save failed.  Try the system picker before
+      // giving up: it writes through a user-chosen document URI instead of the
+      // MediaStore Downloads collection that just failed, so a device where only
+      // the direct path is broken can still export a file.
+      if(isHostExceptionError(error)||saveStage==='publish_failed'||saveStage==='write_failed'||!saveStage){
+        const fallback=await withDocumentPickerFallback(downloadBlobWithRuntime,blob,name,host);
+        if(fallback){
+          pickerTried=true;
+          if(!fallback.error&&confirmedExport(fallback.result))return {...normalizeExportResult(fallback.result),status:'saved',saved:true,exportAttempt:'picker',saveLocation:'你选择的保存位置',directFailure:true};
+          if(isCancelError(fallback.error))throw Object.assign(new Error('已取消文件导出'),{code:'CANCELED',details:{reason:'canceled',exportAttempt:'picker',causeError:fallback.error}});
+          pickerFailed=true;
+          if(fallback.error)hostError=fallback.error;
+        }
+      }
+      const failedStage=saveStageOf(hostError)??saveStage,exportAttempt=pickerFailed?'picker_failed':'direct';
+      // The original direct-save failure keeps its own class and stage; a picker
+      // stage only refines it, so a Java exception stays a Java exception.
+      if(isHostExceptionError(error))throw exportFailure(pickerTried?'宿主的原生下载接口抛出 Java 异常，备用保存通道也没能确认文件已保存；请改用“查看／复制文本”导出':'宿主的原生下载接口抛出 Java 异常，本次没有确认文件已保存；请改用“查看／复制文本”导出','export_host_exception',{stage:'export_save_publish',saveStage:saveStage??failedStage,exportAttempt,causeError:error});
+      if(isHostExceptionError(hostError))throw exportFailure('宿主的原生下载接口抛出 Java 异常，备用保存通道也没能确认文件已保存；请改用“查看／复制文本”导出','export_host_exception',{stage:'export_save_publish',saveStage:failedStage,exportAttempt,causeError:hostError});
       // A missing staging file means the failed step is known before the bridge
       // call; report it as its own reason instead of a generic native failure.
-      if(saveStage==='file_missing')throw exportFailure('宿主找不到本次导出的暂存文件，文件没有保存；请改用“查看／复制文本”导出','export_stage_file_missing',{stage:'export_save_verify',saveStage,causeError:error});
-      // A generic native failure cannot be confirmed as a save.  Offer the
-      // host-owned dispatch path when it exists, but report it as unconfirmed
-      // rather than pretending the file was stored.
-      try{return {...triggerBrowserExport(blob,name,documentRef),nativeAttempt:'failed',reason:'export_native_failed',stage:'export_save_publish',...(saveStage?{saveStage}:{}),status:'dispatched',saved:false,dispatch:'browser-fallback'};}
-      catch(fallbackError){throw exportFailure('宿主保存文件失败；本次没有确认文件已保存，可复制文本导出','export_native_failed',{stage:'export_save_publish',saveStage,causeError:error,fallbackError});}
+      if(failedStage==='file_missing')throw exportFailure('宿主找不到本次导出的暂存文件，文件没有保存；请改用“查看／复制文本”导出','export_stage_file_missing',{stage:'export_save_verify',saveStage:failedStage,exportAttempt,causeError:hostError});
+      // A picker attempt that also failed is a definite failure: the anchor path
+      // cannot help on Android, so do not degrade it into a vague "dispatched".
+      if(pickerTried)throw exportFailure('宿主直存和系统文件选择器都没能保存文件；请改用“查看／复制文本”导出','export_native_failed',{stage:'export_save_publish',saveStage:failedStage,exportAttempt,causeError:hostError});
+      // A generic native failure without a picker channel cannot be confirmed as
+      // a save.  Offer the host-owned dispatch path when it exists, but report it
+      // as unconfirmed rather than pretending the file was stored.
+      try{return {...triggerBrowserExport(blob,name,documentRef),nativeAttempt:'failed',reason:'export_native_failed',stage:'export_save_publish',...(failedStage?{saveStage:failedStage}:{}),exportAttempt,status:'dispatched',saved:false,dispatch:'browser-fallback'};}
+      catch(fallbackError){throw exportFailure('宿主保存文件失败；本次没有确认文件已保存，可复制文本导出','export_native_failed',{stage:'export_save_publish',saveStage:failedStage,exportAttempt,causeError:hostError,fallbackError});}
     }
   }
-  return {...triggerBrowserExport(blob,name,documentRef),reason:'export_dispatched_unconfirmed',stage:'export_dispatch',dispatch:'browser-fallback'};
+  return {...triggerBrowserExport(blob,name,documentRef),reason:'export_dispatched_unconfirmed',stage:'export_dispatch',exportAttempt:'browser',dispatch:'browser-fallback'};
 }

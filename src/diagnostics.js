@@ -8,6 +8,7 @@ export const DIAGNOSTIC_REASONS = Object.freeze({
   export_host_exception:'宿主原生下载接口抛出 Java 异常，本次未确认文件已保存；请改用文本导出',
   export_dispatched_unconfirmed:'文件已交给系统下载但本机无法确认落盘；Downloads 中无文件时请改用文本导出',
   export_stage_file_missing:'宿主导出桥找不到暂存文件，文件未保存；用户数据不受影响',
+  export_picker_fallback_used:'宿主直存 Downloads 失败，已改用系统文件选择器保存成功',
   history_decode_failed:'宿主聊天历史不是完整JSON，尚未交给模型处理',
   history_tail_failed:'读取当前聊天末页失败，尚不能判断原文是否变化',
   history_before_failed:'读取较早聊天分页失败，未跳过缺失楼层',
@@ -111,6 +112,8 @@ export function safeDiagnosticFields(value={}){
     if(stageAliases[raw]){result.stage=stageAliases[raw];result.saveStage=raw;break;}
     if(Object.hasOwn(DIAGNOSTIC_STAGES,raw)){result.stage=raw;break;}
   }
+  // Which host save path was used, and whether the direct one already failed.
+  if(['direct','picker','picker_failed','browser'].includes(value?.exportAttempt))result.exportAttempt=value.exportAttempt;
   if(typeof value?.requestId==='string'&&/^req-[a-z0-9]{1,16}-[a-z0-9]{1,10}$/.test(value.requestId))result.requestId=value.requestId;
   if(errorTypes.has(value?.errorType))result.errorType=value.errorType;
   if(errorTypes.has(value?.causeErrorType))result.causeErrorType=value.causeErrorType;

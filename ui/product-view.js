@@ -178,7 +178,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
       try{void Promise.resolve(app.reportError?.(error,{stage:'ui',action:'exportFile'})).catch(()=>{});}catch{/*导出诊断不能反过来阻止失败提示*/}
       throw error;
     }
-    if(result?.saved===true)host.toastr?.success?.('文件已保存到手机 Downloads');
+    if(result?.saved===true)host.toastr?.success?.(result.exportAttempt==='picker'?`文件已保存到${result.saveLocation??'手机 Downloads'}（系统直存失败，已改用文件选择器）`:`文件已保存到${result.saveLocation??'手机 Downloads'}`);
     else if(result?.status==='dispatched')host.toastr?.info?.(result.dispatch==='share-unconfirmed'?'已交给系统分享；请确认文件已保存到目标位置':'已交给系统下载；本机无法确认已落盘，请确认 Downloads 中出现文件');
     return result;
   }
