@@ -1,6 +1,6 @@
 {
   "index.js": "fd4b19d6505b331139d94b819f4db8f1473799adf236a286044ec92bf64017b8",
-  "ui/product-view.js": "42bc476ff28c80e2e4f9370722c642dfa9bc07b57e9b25b01c911930da0a7708",
+  "ui/product-view.js": "a328f79e6d62aab76842ecaae3c01c762735801f13efe02e3454670a76ce3770",
   "src/product-application.js": "1689fbf2638bdaa655edc90df2955b7c31acc326d90c3bab1d3c4480c889b986",
   "src/host-adapter.js": "f7fb6dd917b95333cebcc6d39db01a8acf89a0bf36587cf20cd1d02fd8a72a03",
   "src/errors.js": "f6af25f08c160e740db91881b1bdd0bb26eb9007979b5ecdf6a79c5897d3ed45",
@@ -20,7 +20,7 @@
   "src/provider-stream.js": "4e4126debfd75f81ff0f4801cc9e7e083a82140e0a3d6ef0906826a316b19f80",
   "src/provider-scheduler.js": "90493f6bc3e9dcd64e38c90409482dbe6db9ca81d4aada9e60c5fdca5b98cb0a",
   "src/reliable-storage.js": "845461b3c2de0dcf2294057ae23631f49c23621d9814a25322f10673756f5958",
-  "src/product-release.js": "80d052acc3d876b61fa8b16b10b9dd5f7e911282827e8f88e19c8b4e74072937",
+  "src/product-release.js": "d5d072b9ea9744584326be4cc1306931837f159169638e2382228e0b62227454",
   "src/dynamic-persona-plan.js": "f719478b3c47f88b8c0139ede136cb92125e0677666d278c24cd21a9aa436b34",
   "src/persona-identity.js": "d5059dcd15f353afb408ac125bbd3181d06cd1598f523b015a63c533a2885d9b",
   "src/name-fold.js": "7aaf4804bfab60a86b5cd29dbc00798f1ccb6f3abea76364923b575577757a17",
@@ -104,9 +104,9 @@
   "ui/product-custom-modules.js": "b9633658bf94f1ad7e29d15139e01ac6ca0f789471db062abbdf487cf163d1a4",
   "ui/product-quality-view.js": "092ff29fa7b690a5d06a9e1566d7928667675792df174d09066e421f5c84c417",
   "ui/product-extraction-view.js": "186674e50498246ee7dc5e9f1aa5943434d7cd4984c4b5a32d9c86780cd63e91",
-  "manifest.json": "5bf450d58cf4ac63df45deaa885c0c1a3a5dd9c0b9eceda57e3714b7ad87d64e",
+  "manifest.json": "f1dbd6d084c069e22bc7284d9b7b4ffb25c5b5af541559eeb0017d90a0b3de63",
   "ui/product-view.css": "f1da2ea4d0f9385d4998ef3a85917c119ee735fdc3e7d3ee680ce7580e14825c",
   "README.md": "f0290f44728d1998f63aa3ce6ba13eb5260bdc9f7231dece4df234e2ec0879a7",
-  "CHANGELOG.md": "2dbca7b4e9be93b70722a37fdd68391bcc4155735dc0b62094364be2a585c627",
+  "CHANGELOG.md": "6d1411e47999643a1646b6432877f17d77fa9f3546e64b4540799cf1cfe6bd6a",
   ".gitattributes": "cc641658d855cb2ba3f269f3248111fa65fa54225c87b56c5c8e98b6d3d574bf"
 }

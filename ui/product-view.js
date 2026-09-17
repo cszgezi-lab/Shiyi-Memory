@@ -53,7 +53,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  ${dynamicPersonaHTML()}
  ${peopleHTML()}
  ${extractionHTML()}
- <section data-view="modules" hidden><header class="sy-section-heading"><small>工作台</small><h3>设置与工具</h3><p>连接模型、调整读取方式，或管理资料与备份。</p></header><div class="sy-tool-list">${[['api','API 与模型','总结、人设、向量各自的连接'],['extraction','正文提取','规则编辑、中文读取与免费预览'],['injection','注入方式','调整实际发给 AI 的记忆'],['retrieval','检索策略','关键词、向量与重排'],['world','世界与知识库','导入、编辑资料与自动建索引'],['compatibility','变量与剧情日期','只读变量、日期来源与兼容选项'],['settings','数据与备份','配置、导出与版本']].map(([key,title,help],i)=>`<button type="button" data-page="${key}"><span class="sy-tool-number">0${i+1}</span><span><strong>${title}</strong><small>${help}</small></span><span aria-hidden="true">›</span></button>`).join('')}</div></section>
+ <section data-view="modules" hidden><header class="sy-section-heading"><small>工作台</small><h3>设置与工具</h3><p>连接模型、调整读取方式，或管理资料与备份。</p></header><details class="sy-card" data-update-center open><summary>更新中心 <small>进度与更新入口</small></summary><div class="sy-packet" data-update-progress role="status"></div><div class="sy-actions"><button type="button" data-jump-page="recording">补采未记录楼层</button><button type="button" data-jump-page="recording">总结下一批</button><button type="button" data-jump-page="dynamic-persona">动态人设设置</button><button type="button" data-jump-page="api">API 与模型</button></div><p class="sy-help">进度只在这里汇总；勾选框、周期与执行按钮在各自面板内，避免同一动作出现两份。这里不会自动开启任何任务。</p></details><div class="sy-tool-list">${[['api','API 与模型','总结、人设、向量各自的连接'],['extraction','正文提取','规则编辑、中文读取与免费预览'],['injection','注入方式','调整实际发给 AI 的记忆'],['retrieval','检索策略','关键词、向量与重排'],['world','世界与知识库','导入、编辑资料与自动建索引'],['compatibility','变量与剧情日期','只读变量、日期来源与兼容选项'],['settings','数据与备份','配置、导出与版本']].map(([key,title,help],i)=>`<button type="button" data-page="${key}"><span class="sy-tool-number">0${i+1}</span><span><strong>${title}</strong><small>${help}</small></span><span aria-hidden="true">›</span></button>`).join('')}</div></section>
  <section data-view="injection" hidden><h3>注入</h3>${settingsSection('injection')}${button('save-settings','保存注入设置',true)}<button type="button" data-page="current">查看本轮记忆与召回预览</button></section>
  <section data-view="retrieval" hidden><h3>检索</h3>${field('筛选档位','<select data-recall-level><option value="24">通用均衡 · 24 条候选</option><option value="48">更细筛选 · 48 条候选</option></select>')}${button('save-recall-preset','应用分类策略')}<p class="sy-help">字典扩展别称与主题 → BM25 精确词匹配、向量找语义近似 → 分类候选合并 → 重排比较相关性 → 去重并按注入预算选取。重排不负责事件合并。扩大候选不增加最终注入上限，但可能增加接口耗时。通用策略是本项目九类记忆的初始配置，并非复制 ANIMA 的特定角色参数，也不是实测最优值；不改变 API、注入上限或向量开关。</p>${settingsSection('retrieval')}<div class="sy-actions">${button('save-settings','保存检索设置',true)}</div></section>
  <section data-view="world" hidden><h3>世界与知识库</h3><p class="sy-help">导入原始资料，自动生成用于检索的字典和索引；资料不等于本聊天的已发生事件或角色知情。</p>${knowledgeImportHTML()}<details class="sy-card"><summary>知识库设置</summary>${settingsSection('world')}${button('save-settings','保存知识库设置',true)}</details></section>
@@ -88,6 +88,23 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
    }));
  }
  function paint(s){snapshot=s;for(const [sel,value]of [['[data-status]',s.message],['[data-scope]',s.chatReady?`当前聊天 · 已连接${s.enabled?'':' · 自动任务未启用'}`:s.status==='loading'?'正在加载当前聊天…':s.status==='no_chat'?'尚未打开聊天':s.stale?'正在重新核对聊天来源…':'等待当前聊天就绪'],['[data-progress]',s.progress]])if($(sel)&&$(sel).textContent!==value)$(sel).textContent=value;
+   // 更新中心只汇总进度：未读取到数据时明确说“未读取”，不假装一切正常。
+   const updateProgress=$('[data-update-progress]');
+   if(updateProgress){
+     const auto=s.automatic,plan=auto?.plan,persona=s.dynamicPersona;
+     let summaryLine='总结：尚未读取进度';
+     if(auto&&plan){
+       summaryLine=`总结：已记录至 #${plan.coveredThrough} ｜ 下次 #${plan.nextStart}–${plan.nextEnd}`;
+       if(plan.pendingBatches)summaryLine+=` ｜ 待处理 ${plan.pendingBatches} 批`;
+     }
+     let personaLine='人设：尚未启用';
+     if(persona&&Number.isFinite(persona.plan?.coveredThrough)){
+       personaLine=`人设：依据至 #${persona.plan.coveredThrough} ｜ 下次 #${persona.plan.nextStart}`;
+       if(persona.paused)personaLine+='（已暂停）';
+     }else if(persona)personaLine='人设：进度未读取';
+     const next=summaryLine+'\n'+personaLine;
+     if(updateProgress.textContent!==next)updateProgress.textContent=next;
+   }
    if(s.feedback&&s.feedback.id!==lastFeedbackId){lastFeedbackId=s.feedback.id;feedback(s.feedback.text,s.feedback.level,['success','error'].includes(s.feedback.level));}
    if(panel.dataset.queueNotice!==(s.requestQueueNotice??'')){
      const previous=panel.dataset.queueNotice;panel.dataset.queueNotice=s.requestQueueNotice??'';
@@ -227,6 +244,8 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  }
  for(const b of pageButtons)b.addEventListener?.('click',()=>setPage(b.getAttribute('data-page')));
  for(const b of $$('[data-jump]'))b.addEventListener?.('click',()=>setPage(b.getAttribute('data-jump')));
+ // 更新中心里的跳转：把用户送到真正带勾选框与周期的面板。
+ for(const b of $$('[data-jump-page]'))b.addEventListener?.('click',()=>setPage(b.getAttribute('data-jump-page')));
  panel.addEventListener('click',e=>{const b=e.target.closest?.('[data-api-jump]');if(b){setPage('api');$(`[data-api-card="${b.dataset.apiJump}"]`)?.scrollIntoView({block:'start'});}});
  for(const f of $$('[data-key]'))f.addEventListener?.('input',()=>{const kind=f.getAttribute('data-key');app.setKey(kind,f.value,$(`[data-setting="${API_INFO[kind].prefix}Endpoint"]`)?.value);resetModels(kind);if(kind==='summary'){resetModels('assistant');resetModels('supplement');}if(['summary','assistant'].includes(kind))resetModels('knowledge');});
  for(const [kind,{prefix}]of Object.entries(API_INFO)){
