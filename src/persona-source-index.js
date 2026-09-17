@@ -40,3 +40,32 @@ export function personaSourceIndex(world,{previous=[],dictionary,aliases='',sour
 }
 
 export const PERSONA_SOURCE_LABELS=Object.freeze({disabled:'原书已停用，未读取',shared:'公共规则，不作为人物替换',unsupported:'模板尚不能安全分离，原条目保留',owned:'已识别人物归属',unresolved:'人物归属未确认，原条目保留'});
+
+/** Why no world-book entry is owned by anybody, in one readable sentence.
+ * Without this the profile panel says "尚未关联可替换的原书内容" and the user
+ * has no way to tell "the card binds no world book" from "the entry names
+ * nobody" from "the host gave no reader at all". */
+export const PERSONA_SOURCE_REASONS=Object.freeze({
+  host_unavailable:'当前宿主没有提供世界书读取接口，只能使用聊天内的动态档案。',
+  no_book:'当前角色卡与聊天都没有绑定世界书，因此没有原设定可以替换。',
+  empty_book:'已读取世界书，但没有可用的启用条目。',
+  no_named_entry:'已读取世界书，但没有任何条目能确认属于某个人物：条目名里需要包含人物名（如「濑名紫阳花·人设」），或在条目里写一行「姓名：濑名紫阳花」。',
+  unparsed_entry:'世界书里有像人物设定的条目，但都是脚本/模板，暂时不能安全拆分，原条目保留不替换。',
+  ready:'已识别到可替换的原书人物条目。',
+});
+export function personaSourceGuide(world){
+  const entries=(world?.entries??[]).filter(e=>e.enabled!==false);
+  if(world?.status==='unavailable')return {reason:'host_unavailable',books:[],entries:0,candidates:[]};
+  const books=[...new Set(entries.map(e=>e.book).filter(Boolean))];
+  if(!books.length)return {reason:'no_book',books,entries:0,candidates:[]};
+  if(!entries.length)return {reason:'empty_book',books,entries:0,candidates:[]};
+  const audit=world.audit??[];
+  const owned=audit.filter(row=>row.status==='owned');
+  if(owned.length)return {reason:'ready',books,entries:entries.length,candidates:owned.map(row=>`${row.book} · ${row.title}`)};
+  const unresolved=audit.filter(row=>row.status==='unresolved').length;
+  const candidates=entries.filter(e=>!(e.content??'').includes('<%')).slice(0,8).map(e=>`${e.book} · ${e.name||'未命名条目'}`);
+  if(unresolved)return {reason:'no_named_entry',books,entries:entries.length,candidates};
+  const unsupported=audit.filter(row=>row.status==='unsupported').length;
+  if(unsupported)return {reason:'unparsed_entry',books,entries:entries.length,candidates};
+  return {reason:'no_named_entry',books,entries:entries.length,candidates};
+}

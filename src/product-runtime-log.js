@@ -60,6 +60,10 @@ function safeEntry(value) {
   return { id:value.id, run:value.run, at:value.at, pluginVersion:/^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(value.pluginVersion)?value.pluginVersion:null, task:value.task, phase:value.phase, level:['info','success','warning','error'].includes(value.level)?value.level:'info', details:safeLogDetails(value.details) };
 }
 
+/** Fields a phone-sized failure report actually needs. Everything else (stack
+ * frames, nested cause chains, validation issue lists) is what made even a
+ * filtered export tens of thousands of characters long. */
+const COMPACT_KEYS=['reason','stage','saveStage','exportAttempt','exportBytes','hostOperations','code','errorType','causeErrorType','personaStep','modelRequested'];
 /** Local bounded diagnostics. Never accepts prompts, response bodies, keys or URLs. */
 export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),ioWaitMs=1000} = {}) {
   let entries=[],store,loaded=false,loading,queue=Promise.resolve(),nextRun=0,nextId=0,persistence='not_loaded';
@@ -142,11 +146,17 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),io
       // failed action immediately followed by export must include its error.
       await new Promise(resolve=>setTimeout(resolve,0));return snapshot(filter);},
   };
-  /** A full snapshot is up to 2 MB, which is too large to read or copy out on a
-   * phone. `filter:{issues:true}` returns only failures/warnings so the user can
-   * copy exactly the record that matters. */
+  /** A phone report needs the facts that locate a failure, not the full
+   * diagnostic dump: stack frames and nested cause chains are what made even a
+   * filtered export tens of thousands of characters long. `COMPACT_KEYS` is
+   * hoisted into the factory scope below so `snapshot` can use it. */
+  function compactEntry(entry){
+    const details={};
+    for(const key of COMPACT_KEYS)if(entry.details?.[key]!==undefined)details[key]=entry.details[key];
+    return {id:entry.id,task:entry.task,phase:entry.phase,level:entry.level,details};
+  }
   function snapshot(filter){
-    const wants=filter?{levels:Array.isArray(filter.levels)&&filter.levels.length?filter.levels:null,task:typeof filter.task==='string'&&filter.task?filter.task:null}:null;
+    const wants=filter?{levels:Array.isArray(filter.levels)&&filter.levels.length?filter.levels:null,task:typeof filter.task==='string'&&filter.task?filter.task:null,limit:Number.isSafeInteger(filter.limit)&&filter.limit>0?filter.limit:null}:null;
     let selected=entries;
     if(wants&&(wants.levels||wants.task)){
       selected=[];
@@ -156,13 +166,17 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),io
         selected.push(entry);
       }
     }
+    // A phone report only needs the newest few records; older history stays
+    // available through the unfiltered export.
+    let truncated=false;
+    if(wants?.limit&&selected.length>wants.limit){truncated=true;selected=selected.slice(-wants.limit);}
     const terminal=new Set(entries.filter(e=>['complete','failed','canceled','waiting','skipped'].includes(e.phase)).map(e=>e.run));
     const filtered=selected.length!==entries.length;
     // A filtered snapshot is meant to be read and copied on a phone, so the bulk
     // metadata (retention limits, limitation list, unfinished runs) is left to
     // the full export and only the failing records are returned.
-    if(filtered)return {kind:'shiyi-runtime-log',version:1,diagnosticVersion:2,pluginVersion:PRODUCT_VERSION,exportedAt:now(),filtered:true,
-      filter:{levels:wants.levels,task:wants.task,total:entries.length,returned:selected.length},entries:clone(selected)};
+    if(filtered)return {kind:'shiyi-runtime-log',version:1,diagnosticVersion:2,pluginVersion:PRODUCT_VERSION,exportedAt:now(),filtered:true,truncated,
+      filter:{levels:wants.levels,task:wants.task,limit:wants.limit,compact:Boolean(filter.compact),total:entries.length,returned:selected.length},entries:clone(selected).map(filter.compact?compactEntry:entry=>entry)};
     return {kind:'shiyi-runtime-log',version:1,diagnosticVersion:2,pluginVersion:PRODUCT_VERSION,exportedAt:now(),persistence,pendingWrites:writing||pending||timer!==null,
       filtered:false,retention:{limit:RUNTIME_LOG_LIMIT,byteLimit:RUNTIME_LOG_BYTES,droppedEntries,partialRuns:clone(partialRuns),legacyRetentionUnknown,firstId:entries[0]?.id??null,lastId:entries.at(-1)?.id??null},unfinishedRuns:[...new Set(entries.filter(e=>e.phase==='start'&&!terminal.has(e.run)).map(e=>e.run))],storageFailure:clone(storageFailure),limitations:['不含密钥、请求正文、模型原文或私人文件路径。','宿主或服务未提供的错误原因无法还原。','未结束任务可能仍在运行或曾被强制退出；不能据此断定崩溃。','旧版本丢失的日志不能补录。','导出为当前内存快照，不等待写盘或正在运行的任务结束；pendingWrites 表示本机保存仍在进行。','运行中日志最多合并 100ms 后写盘；强制退出可能丢失尚未写入的最后几条。'],entries:clone(selected)};
   }

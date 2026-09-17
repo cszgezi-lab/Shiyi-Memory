@@ -7,7 +7,7 @@ import {qualitySourceSegments} from './source-evidence.js';
 import {narrativeReading,NARRATIVE_READING_RULE,narrativeCounters} from './narrative-reading.js';
 import {personaManualPlan,personaManualPending,personaManualUnfinished} from './dynamic-persona-plan.js';
 import {personaIdentity,personaAliases,foldName,personaTitleNames} from './persona-identity.js';
-import {personaSourceIndex} from './persona-source-index.js';
+import {personaSourceIndex,personaSourceGuide} from './persona-source-index.js';
 import {PERSONA_COMPOSITION_RULE,personaParts,personaMaterials,personaReviewFocus,composePersona,personaSpokenAliases} from './persona-composition.js';
 import {PERSONA_DEVELOPMENT_RULE,personaCharacterCandidates} from './persona-development.js';
 
@@ -272,10 +272,21 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       }
     }
     paused=Boolean(data.paused);ready=true;historyAttempts=0;historyRetryAt=0;view={status:paused?'paused':'ready',message:paused?'此聊天的人设更新已暂停，已保存人设仍可注入':Number.isFinite(invalidFrom)?`#${invalidFrom} 起原文已变，更晚的自动人设已撤回；会按独立周期重建`:'已加载当前聊天的动态人设'};emit();wake();
+    // Reading the bound world books and reporting which entries belong to which
+    // character must not depend on the user pressing a button. Refresh it as soon
+    // as the chat is bound; a failure here only leaves the panel without the
+    // report and never surfaces as a chat-level error.
+    void transact(()=>inspectWorldbook({silent:true})).catch(()=>{});
     }catch(error){check(bound);if(error&&typeof error==='object')error.details={...error.details,personaStep:loadStep,modelRole:'dynamicPersona',modelRequested:false};view={...view,failureDetails:safeLogDetails(errorDiagnostics(error))};if(historyFailure(error)){paused=Boolean(data.paused);deferHistory();emit();}throw error;}
   }
   async function inspect(){check();lastIndex=await historyTail();check();emit();return plan();}
-  async function inspectWorldbook(){check();const bound=currentWorkspace,world=await worldbook.read();check(bound);const indexed=personaSourceIndex(world,{previous:data.profiles,dictionary:dictionary(),aliases:settings().aliases});view={...view,worldbook:{status:world.status??'ready',cardName:world.cardName,books:[...new Set(world.entries?.map(e=>e.book)??[])],entries:world.entries?.length??0,safeFragments:world.spans?.length??0,audit:indexed.audit}};emit();return clone(view.worldbook);}
+  /** Read the bound world books and refresh the ownership report. `silent` is
+   * used by the automatic refresh: opening a chat must not surface an error when
+   * there is no chat bound yet or the host has no world-book reader. */
+  async function inspectWorldbook({silent=false}={}){
+    const bound=currentWorkspace;
+    if(silent&&(!bound||!ready||!settings().dynamicPersonaEnabled))return null;
+    check();const world=await worldbook.read();check(bound);const indexed=personaSourceIndex(world,{previous:data.profiles,dictionary:dictionary(),aliases:settings().aliases});view={...view,worldbook:{status:world.status??'ready',cardName:world.cardName,books:[...new Set(world.entries?.map(e=>e.book)??[])],entries:world.entries?.length??0,safeFragments:world.spans?.length??0,audit:indexed.audit,guide:personaSourceGuide({...world,audit:indexed.audit})}};emit();return clone(view.worldbook);}
   async function previewManual(options){
     check();const bound=currentWorkspace;lastIndex=await historyTail();check(bound);
     const next=personaManualPlan(options,lastIndex),saved=data.batches.filter(b=>b.status==='saved').sort((a,b)=>a.startIndex-b.startIndex),affected=saved.filter(b=>b.endIndex>=next.startIndex);
@@ -384,7 +395,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const previous=clone(manualId?[...data.manualPlan.workingProfiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)),...data.profiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)&&isProtectedProfile(p))]:data.profiles);
       const request=personaRequest({messages:range.messages,world,previous,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction});
       if(request.readingReport)diagnostic({run,task:'persona',phase:'reading',level:request.readingReport.readingFallbacks?'warning':'info',details:request.readingReport});
-      view={...view,worldbook:{status:world.status??'ready',cardName:world.cardName,books:[...new Set(world.entries?.map(e=>e.book)??[])],entries:world.entries?.length??0,safeFragments:world.spans?.length??0,audit:request.audit}};emit();
+      view={...view,worldbook:{status:world.status??'ready',cardName:world.cardName,books:[...new Set(world.entries?.map(e=>e.book)??[])],entries:world.entries?.length??0,safeFragments:world.spans?.length??0,audit:request.audit,guide:personaSourceGuide({...world,audit:request.audit})}};emit();
       const inputUnits=estimateUnits(JSON.stringify(request.messages));if(inputUnits>config.dynamicPersonaInputUnits)throw Object.assign(new Error(`人设输入约 ${inputUnits} 单位，超过设置的 ${config.dynamicPersonaInputUnits}；未截断正文或改变楼数`),{code:'INPUT_BUDGET_EXCEEDED',details:{stage:'prepare',reason:'input_budget_exceeded',inputUnits,inputLimit:config.dynamicPersonaInputUnits}});
       diagnostic({run,task:'persona',phase:'plan',details:{startIndex:next.nextStart,endIndex:next.nextEnd,sourceCount:range.messages.length,inputUnits,inputLimit:config.dynamicPersonaInputUnits,maxTokens:config.dynamicPersonaOutputTokens,plannedRequests:1,modelRole:'dynamicPersona'}});
       const fingerprint=sha256({sourceHash,request:request.messages,model:config.dynamicPersonaModel,endpoint:config.dynamicPersonaEndpoint,output:config.dynamicPersonaOutputTokens});
