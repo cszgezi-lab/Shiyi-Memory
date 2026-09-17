@@ -394,7 +394,12 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const response=!modelRequested?cached.response:await client().chatCompletions({model:config.dynamicPersonaModel,messages:request.messages,stream:true,...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})},{signal:controller.signal});guard();personaStep='parse_profile';
       const rows=parsePersonaResponse(response,{messages:range.messages,spans:request.spans,previous,identity:request.identity,developmentMessages:request.source,stageMode:config.dynamicPersonaMvuMode,preserveSources:true,diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});
       const rejectedProfiles=rows.rejectedProfiles??[];
-      diagnostic({run,task:'persona',phase:'validate',level:'info',details:{startIndex:next.nextStart,endIndex:next.nextEnd,personaProfiles:rows.length,rejectedProfiles:rejectedProfiles.length,personaBindings:rows.reduce((n,p)=>n+p.bindings.length,0)}});
+      diagnostic({run,task:'persona',phase:'validate',level:'info',details:{startIndex:next.nextStart,endIndex:next.nextEnd,personaProfiles:rows.length,rejectedProfiles:rejectedProfiles.length,personaBindings:rows.reduce((n,p)=>n+p.bindings.length,0),
+        // Whether the model rewrote retained original-book sentences or only
+        // appended new剧情 text. Without this the user cannot tell whether the
+        // original setting was actually touched.
+        rewrittenSourceSentences:rows.reduce((n,p)=>n+(p.composition?.changes?.length??0),0),
+        retainedSourceSentences:rows.reduce((n,p)=>n+(p.composition?.parts?.length??0),0)}});
       if(cached?.fingerprint!==fingerprint)await bound.write(cacheKey,{fingerprint,response});guard();
       if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k])))throw Object.assign(new Error('人设运行期间设置已变化；结果未覆盖旧档案'),{code:'CANCELED'});
       personaStep='source_verify';const checkRange=await readRange({startIndex:next.nextStart,endIndex:next.nextEnd});guard();if(sourceHash!==sha256(checkRange.messages))throw Object.assign(new Error('人设来源正文已变化'),{code:'SOURCE_INVALIDATED'});
