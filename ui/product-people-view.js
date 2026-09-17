@@ -137,7 +137,7 @@ const peopleMergeHTML = (profiles, pendingName = '') => {
   return `<details class="sy-people-merge" data-people-merge>
     <summary>合并重复人物档案</summary>
     ${pendingName ? `<p class="sy-help">注意：“${esc(pendingName)}”目前是待确认称呼，不是独立档案，所以不会出现在下面的档案列表。请先在上方“确认归入此人物”；只有两份正式档案都存在时，才使用这里的合并。</p>` : ''}
-    <p class="sy-help">适合“濑名紫阳花／紫阳花”这类重复档案。选择要并入的档案和要保留正式姓名的档案；动态档案内容、属性、心迹、台词、来源与别称会合并，不调用模型，原档案可恢复。原始记录本身仍保留来源，不会被改写成一条混合文本。</p>
+    <p class="sy-help">合并只在需要时展开，平时不占位置。适合“濑名紫阳花／紫阳花”这类重复档案：选择要并入的档案和要保留正式姓名的档案；动态档案内容、属性、心迹、台词、来源与别称会合并，不调用模型，原档案可恢复。原始记录本身仍保留来源，不会被改写成一条混合文本。</p>
     <label>并入档案<select data-people-merge-source-select aria-label="要并入的人物档案">${options(ordered)}</select></label>
     <label>保留档案<select data-people-merge-target-select aria-label="要保留的人物档案">${options(ordered.filter(p => p.id !== source.id))}</select></label>
     <button type="button" data-people-merge-commit>确认合并档案</button>
