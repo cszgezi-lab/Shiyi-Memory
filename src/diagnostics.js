@@ -114,6 +114,18 @@ export function safeDiagnosticFields(value={}){
   }
   // Which host save path was used, and whether the direct one already failed.
   if(['direct','picker','picker_failed','browser'].includes(value?.exportAttempt))result.exportAttempt=value.exportAttempt;
+  // Which TT bridge operations the export actually reached, and how each failed.
+  // Fixed operation keys and reason enums only: never a path or host message.
+  if(Number.isSafeInteger(value?.exportBytes)&&value.exportBytes>=0)result.exportBytes=value.exportBytes;
+  if(Array.isArray(value?.hostOperations))result.hostOperations=value.hostOperations.slice(0,8).flatMap(row=>{
+    // Attribution is the operation name plus the fixed error type. The failing
+    // save step is already carried by saveStage/stage, so no host text is needed
+    // here and unknown operation names are dropped.
+    const operation=['saveFileToDownloads','requestCreateDocumentPicker','copyFileToContentUri'].includes(row?.operation)?row.operation:null;
+    if(!operation)return [];
+    const errorType=errorTypes.has(row?.errorType)?row.errorType:undefined;
+    return [{operation,...(errorType?{errorType}:{})}];
+  });
   if(typeof value?.requestId==='string'&&/^req-[a-z0-9]{1,16}-[a-z0-9]{1,10}$/.test(value.requestId))result.requestId=value.requestId;
   if(errorTypes.has(value?.errorType))result.errorType=value.errorType;
   if(errorTypes.has(value?.causeErrorType))result.causeErrorType=value.causeErrorType;
