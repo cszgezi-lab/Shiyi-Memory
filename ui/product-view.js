@@ -40,7 +40,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  <p class="sy-help">点击区块展开，再点一次收起；搜索可查找所有记忆。</p>
  <div data-memory-categories class="sy-category-grid"></div><p data-category-help class="sy-help" hidden></p>
  <div class="sy-filters"><input data-search aria-label="搜索记忆" placeholder="搜索人物、事件、地点…"><select data-category aria-label="记忆类别"><option value="none">未展开</option><option value="all">全部类别</option>${categoryOptions()}</select></div>
- <div data-memory-pager class="sy-memory-pager" hidden><span data-memory-count></span><label>每页 <select data-memory-size aria-label="每页记忆条数"><option value="10">10</option><option value="20">20</option><option value="50">50</option></select></label><div><button type="button" data-memory-prev>上一页</button><label><span class="sy-sr-only">跳转记忆页码</span><input data-memory-page aria-label="记忆页码" type="number" min="1" value="1"></label><span data-memory-pages></span><button type="button" data-memory-next>下一页</button></div></div>
+ <div data-memory-pager class="sy-memory-pager" hidden><span data-memory-count></span><label>每页 <select data-memory-size aria-label="每页记忆条数"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option></select></label><div><button type="button" data-memory-prev>上一页</button><label><span class="sy-sr-only">跳转记忆页码</span><input data-memory-page aria-label="记忆页码" type="number" min="1" value="1"></label><span data-memory-pages></span><button type="button" data-memory-next>下一页</button></div></div>
  <div data-cards></div>
  <div class="sy-memory-tools">${qualityPanelHTML()}${memoryEditorHTML()}${customModulesHTML()}</div>
  </section>

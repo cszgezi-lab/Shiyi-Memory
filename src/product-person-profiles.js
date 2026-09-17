@@ -76,6 +76,18 @@ export function fullCharacterGroups(cards,query,dictionary) {
 
 // A read-only presentation, not a new persistent schema. Arbitrary user/model
 // attributes remain first-class. Search aliases are not identity authority.
+/** Star level of one fact, for ranking a whole dossier. This mirrors
+ * recordImportance in src/product-memory.js, which cannot be imported here
+ * without a cycle; the fallback uses only evidence this module already holds. */
+function factImportance(record){
+  const raw=typeof record?.importance==='number'?record.importance:Number(record?.importance);
+  const score=Number.isFinite(raw)&&raw>=1?Math.min(10,Math.round(raw)):(()=>{
+    const floors=(record?.sourceRefs??[]).length||(record?.sourceFloors??[]).length;
+    const links=1+(record?.eventRefs??[]).length+(record?.eventRef?1:0)+((record?.participants??[]).length>1?1:0);
+    return Math.max(3,Math.min(7,links*2+(floors>1?1:0)));
+  })();
+  return Math.min(5,Math.max(1,Math.ceil(score/2)));
+}
 export function characterProfiles(cards=[]) {
   const profiles=new Map();
   for(const card of cards){
@@ -96,9 +108,10 @@ export function characterProfiles(cards=[]) {
     const latest=version=>Math.max(-1,...version.records.flatMap(sourceFloors));
     field.versions.sort((a,b)=>latest(b)-latest(a));
   }
-  return [...profiles.values()];
+  // A whole dossier ranks by its most important attribute, so one ★★★★★ fact lifts
+  // the person instead of the card sinking as an unranked record in the list.
+  return [...profiles.values()].map(profile=>({...profile,importanceLevel:Math.max(1,...profile.records.map(factImportance))}));
 }
-
 // Only identical fact payload AND guards may be omitted from a recall packet.
 // Different dates, belief holders, values or scoped custom modules stay distinct.
 export function sameFactForRecall(a,b){

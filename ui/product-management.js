@@ -2,7 +2,7 @@ import { readViewState } from '../src/product-view-scheduling.js';
 import { esc,button,field,setting } from '../src/product-settings-ui.js';
 import { CATEGORY_LABELS,CATEGORY_TILE_LABELS,CATEGORY_PAGE_HINT,EVENT_CATEGORY_LABELS,PERSON_CATEGORIES,recordDescription,readable,renderMemoryCard } from '../src/product-memory.js';
 import { characterProfiles,factValue,factSubject,factKey } from '../src/product-person-profiles.js';
-import { recordTitle,sourceLabel,narrativeText } from '../src/product-narrative.js';
+import { recordTitle,sourceLabel,narrativeText,sourceFloors } from '../src/product-narrative.js';
 import { MEMORY_CATEGORIES } from '../src/product-batches.js';
 import { originalSourceText } from '../src/source-recall-evidence.js';
 
@@ -16,19 +16,69 @@ export const categoryOptions=()=>MEMORY_CATEGORIES.map(key=>`<option value="${ke
 export const memoryTileOptions=()=>MEMORY_CATEGORIES.filter(key=>!PERSON_CATEGORIES.includes(key));
 const conflictHelp='来源有矛盾或尚不能确定的内容，不参与自动召回。核实后在相应区块保存正确记忆，再删除这条疑点。';
 export const memoryDetailLabel=category=>({events:'完整事件 · 起因、经过与结果',awarenessChanges:'知情内容与获知方式',entityFactChanges:'属性内容与来源',relationshipChanges:'关系变化与依据',personaChanges:'变化与适用情境',commitmentChanges:'约定内容与进度',performanceHints:'演绎建议与适用范围',summaryView:'完整楼层纪要',conflicts:'疑点与来源',knowledge:'资料原文'})[category]??'详细内容';
-const actions=c=>`<div class="sy-actions"><button type="button" data-edit="${esc(c.id)}">修改</button><button type="button" data-delete="${esc(c.id)}">删除</button><button type="button" data-hide="${esc(c.id)}">不再召回</button></div>`;
+/** 修改 sits in the row header (one tap). The 操作 fold keeps only the actions that
+ * should stay deliberate: deleting and stopping recall. */
+const actions=c=>`<div class="sy-actions"><button type="button" data-delete="${esc(c.id)}">删除</button><button type="button" data-hide="${esc(c.id)}">不再召回</button></div>`;
+/** Rank order used by the list: the first argument ranks higher (appears first)
+ * when this returns positive. 5★ down to 1★, then the heavier kind of record, then
+ * the newer floor. Every key is cheap metadata on purpose: an unopened row must not
+ * be built, and its narrative must not be read, just to order the list. */
+export const memorySortRank=category=>Math.max(0,MEMORY_CATEGORIES.length-MEMORY_CATEGORIES.indexOf(category));
+const newestFloor=card=>Math.max(-1,...(card?.sourceFloors??[]),Number.isInteger(card?.floorIndex)?card.floorIndex:-1);
+export function compareMemoryCards(a,b){
+  return (a.importanceLevel??3)-(b.importanceLevel??3)
+    ||memorySortRank(a.category)-memorySortRank(b.category)
+    ||newestFloor(a)-newestFloor(b);
+}
+/** The same order applied to list entries. A person dossier ranks by its most
+ * important attribute, which is why the profile carries its own level. The key is
+ * built field by field on purpose: copying the whole card would read every hidden
+ * getter (including `.description`) for all records before the visible rows are
+ * even chosen, which is exactly what "bounds narrative rendering" forbids. */
+const rankingKey=({card,profile})=>({
+  importanceLevel:profile?.importanceLevel??card.importanceLevel,
+  category:card.category,
+  sourceFloors:card.sourceFloors,
+  floorIndex:card.floorIndex,
+});
+const compareEntries=(a,b)=>compareMemoryCards(rankingKey(a),rankingKey(b));
+/** Rank the rows without trusting Array.prototype.sort: with exactly two rows it
+ * keeps the incoming order here (Node 24.15.0 / V8 13.6), and a two-row page must
+ * still show the documented order. `compare(first, second) > 0` means the first
+ * row belongs earlier, which is why the comparator is called in that argument
+ * order here — the opposite call would silently reverse the whole list. */
+export function sortByComparator(rows,compare){
+  const out=[...rows];
+  for(let i=1;i<out.length;i++){
+    const row=out[i];let j=i-1;
+    // An already placed row moves right while it belongs after the row being placed.
+    while(j>=0&&compare(row,out[j])>0){out[j+1]=out[j];j--;}
+    out[j+1]=row;
+  }
+  return out;
+}
 export function memoryPage(cards,{q='',category='all',page=1,pageSize=10}={}){
   if(category==='none'&&!q.trim())return {entries:[],total:0,pages:1,page:1,pageSize:[10,20,50].includes(Number(pageSize))?Number(pageSize):10};
   const base=cards.filter(c=>!c.customModuleId),profiles=characterProfiles(base),byRecord=new Map(profiles.flatMap(p=>p.records.map(r=>[r.id,p]))),seen=new Set();
-  const matches=c=>!q.trim()||`${recordTitle(c)} ${recordDescription(c)} ${(c.tags??[]).join(' ')} ${c.localSearchText??c.searchText??''}`.toLocaleLowerCase().includes(q.toLocaleLowerCase());
-  const entries=[];
+  // Search reads the pre-built metadata first. The narrative is only touched when
+  // a query exists AND that metadata is missing (hand-made or legacy cards), so
+  // opening the list never builds the prose of every record in the chat.
+  const matches=c=>{
+    if(!q.trim())return true;
+    const meta=`${recordTitle(c)} ${(c.tags??[]).join(' ')} ${c.localSearchText??c.searchText??''}`.toLocaleLowerCase();
+    if(meta.includes(q.toLocaleLowerCase()))return true;
+    if(c.searchText||c.localSearchText)return false;
+    return recordDescription(c).toLocaleLowerCase().includes(q.toLocaleLowerCase());
+  };
+  const found=[];
   if(category!=='none'||q.trim())for(const c of base){
     if(!['all','none'].includes(category)&&category!==c.category)continue;
     const profile=byRecord.get(c.id);
     if(profile){if(seen.has(profile.id))continue;seen.add(profile.id);if(!profile.records.some(matches))continue;}
     else if(!matches(c))continue;
-    entries.push({card:c,profile});
+    found.push({card:c,profile});
   }
+  const entries=sortByComparator(found,compareEntries);
   const size=[10,20,50].includes(Number(pageSize))?Number(pageSize):10,pages=Math.max(1,Math.ceil(entries.length/size)),current=Math.max(1,Math.min(pages,Math.floor(Number(page))||1));
   return {entries:entries.slice((current-1)*size,current*size),total:entries.length,pages,page:current,pageSize:size};
 }
@@ -47,17 +97,18 @@ export function memoryListHTML(cards,{settings={},q='',category='all',opened=new
     const meta=renderMemoryCard(c,settings,{metadataOnly:true,detail:true});
     const original=originalSourceText(c);
     const originalHTML=original?`<details data-memory-detail="${esc(`original:${c.id}`)}" ${open(`original:${c.id}`)}><summary>查看原文依据</summary><p class="sy-help">总结时保存的本楼原文；不是额外生成的摘要。</p><div class="sy-packet sy-narrative">${esc(original)}</div></details>`:'';
-    rows.push(`<article class="sy-card sy-memory-row" data-memory-level="${c.importanceLevel??3}" data-record-id="${esc(c.id)}"><span class="sy-tag">${CATEGORY_LABELS[c.category]??'记忆'}</span><h4>${starMarkup(c.importanceLevel)}${esc(recordTitle(c))}</h4><p class="sy-help sy-memory-meta">${esc(sourceLabel(c))}</p>${c.recallSummary?`<p class="sy-narrative sy-memory-brief">${esc(c.recallSummary)}</p>`:''}${c.viewpoints?.length||c.keyDialogues?.length?`<p class="sy-help">人物观念 ${c.viewpoints?.length??0} 条 · 关键台词 ${c.keyDialogues?.length??0} 条</p>`:''}<details data-memory-detail="${esc(c.id)}" ${open(c.id)}><summary>${memoryDetailLabel(c.category)}</summary><div class="sy-packet sy-narrative">${esc(recordDescription(c))}</div>${meta?`<div class="sy-packet sy-help">${esc(meta)}</div>`:''}${c.tags?.length?`<p class="sy-help">检索标签：${esc(c.tags.join('、'))}</p>`:''}</details>${originalHTML}<details class="sy-record-actions" data-memory-detail="${esc(`actions:${c.id}`)}" ${open(`actions:${c.id}`)}><summary>操作</summary>${actions(c)}</details></article>`);
+    rows.push(`<article class="sy-card sy-memory-row" data-memory-level="${c.importanceLevel??3}" data-record-id="${esc(c.id)}"><span class="sy-tag">${CATEGORY_LABELS[c.category]??'记忆'}</span><h4>${starMarkup(c.importanceLevel)}<span class="sy-row-title">${esc(recordTitle(c))}</span><button type="button" class="sy-row-edit" data-edit="${esc(c.id)}" aria-label="修改这条记忆">修改</button></h4><p class="sy-help sy-memory-meta">${esc(sourceLabel(c))}</p>${c.recallSummary?`<p class="sy-narrative sy-memory-brief">${esc(c.recallSummary)}</p>`:''}${c.viewpoints?.length||c.keyDialogues?.length?`<p class="sy-help">人物观念 ${c.viewpoints?.length??0} 条 · 关键台词 ${c.keyDialogues?.length??0} 条</p>`:''}<details data-memory-detail="${esc(c.id)}" ${open(c.id)}><summary>${memoryDetailLabel(c.category)}</summary><div class="sy-packet sy-narrative">${esc(recordDescription(c))}</div>${meta?`<div class="sy-packet sy-help">${esc(meta)}</div>`:''}${c.tags?.length?`<p class="sy-help">检索标签：${esc(c.tags.join('、'))}</p>`:''}</details>${originalHTML}<details class="sy-record-actions" data-memory-detail="${esc(`actions:${c.id}`)}" ${open(`actions:${c.id}`)}><summary>操作</summary>${actions(c)}</details></article>`);
   }
   return rows.join('')||'<p class="sy-empty">没有符合条件的记忆。</p>';
 }
 export function memoryEditorHTML(){return `
   <details class="sy-card" data-add-memory><summary>新增记忆</summary>${field('记忆区块',`<select data-note-category>${categoryOptions()}</select>`)}
   <p data-note-help class="sy-help" hidden></p>${field('扩展字段','<select data-note-module-field></select>')}
-  ${field('人物 / 主体','<input data-note-subject>')}${field('关系对象（关系 / 人设）','<input data-note-target>')}${field('属性 / 变化方面','<input data-note-field value="补充信息">')}
+  ${field('人物 / 主体','<input data-note-subject placeholder="例如：甘织玲奈子">')}${field('关系对象（关系 / 人设）','<input data-note-target placeholder="例如：濑名紫阳花">')}${field('属性 / 变化方面','<input data-note-field value="补充信息" placeholder="例如：社团、信任">')}
   ${field('关联事件（知情记录必选）','<select data-note-event><option value="">请选择事件</option></select>')}
-  ${field('记忆内容','<textarea rows="4" data-note></textarea>')}${field('谁知道（事件；未知留空）','<input data-people>')}${button('remember','保存记忆',true)}${button('note-mvu-refresh','读取 MVU 变量')}</details>
-  <div data-edit-memory class="sy-card" hidden><h4>修改记忆</h4><div data-edit-fact-fields hidden>${field('人物 / 主体','<input data-edit-entity maxlength="160">')}${field('属性名称','<input data-edit-field maxlength="160">')}${field('内容格式','<select data-edit-format><option value="text">文字</option><option value="json">结构化 JSON / 数值</option></select>')}</div>${field('标题','<input data-edit-title maxlength="160">')}${field('完整纪要','<textarea rows="8" data-edit-text aria-label="修改记忆内容"></textarea>')}${field('召回速览（修改正文后可留空）','<textarea rows="3" data-edit-brief maxlength="2000"></textarea>')}${field('检索标签','<input data-edit-tags placeholder="用逗号分隔，例如借书归还、转校手续">')}<div class="sy-actions">${button('save-memory-edit','保存修改',true)}${button('cancel-memory-edit','取消')}</div></div>`;}
+  ${field('记忆内容','<textarea rows="4" data-note placeholder="照原文写清谁、何时、做了什么、结果如何。例如：放学后甲在值班室归还储物室钥匙，乙核对后接过保管。"></textarea>')}${field('谁知道（事件；未知留空）','<input data-people placeholder="例如：甲、乙；不确定就留空">')}${button('remember','保存记忆',true)}${button('note-mvu-refresh','读取 MVU 变量')}
+  <p class="sy-help">手写一条：选区块 → 填内容 → 保存。留空的字段不会写入，也不会覆盖已有记忆。</p></details>
+  <div data-edit-memory class="sy-card" hidden><h4>修改记忆</h4><div data-edit-fact-fields hidden>${field('人物 / 主体','<input data-edit-entity maxlength="160" placeholder="例如：甘织玲奈子">')}${field('属性名称','<input data-edit-field maxlength="160" placeholder="例如：社团">')}${field('内容格式','<select data-edit-format><option value="text">文字</option><option value="json">结构化 JSON / 数值</option></select>')}</div>${field('标题','<input data-edit-title maxlength="160" placeholder="一句话标题，例如：归还储物室钥匙">')}${field('完整纪要','<textarea rows="8" data-edit-text aria-label="修改记忆内容" placeholder="写清起因、经过与结果；保留原文里的时间、地点与关键数值。"></textarea>')}${field('召回速览（修改正文后可留空）','<textarea rows="3" data-edit-brief maxlength="2000" placeholder="留空则按正文重新生成；也可以写 60–120 字的一句话速览。"></textarea>')}${field('检索标签','<input data-edit-tags placeholder="用逗号分隔，例如借书归还、转校手续">')}<p class="sy-help">保存后立即用于召回；原始来源与旧版本保留，可再改。</p><div class="sy-actions">${button('save-memory-edit','保存修改',true)}${button('cancel-memory-edit','取消')}</div></div>`;}
 export { batchManagementHTML } from './product-batch-list.js';
 export function mountMemoryManagement({panel,app,run,host}){
   const $=selector=>panel.querySelector?.(selector);if(!$('[data-memory-categories]'))return {paint(){},edit(){}};let editingId=null,lastOptions='';

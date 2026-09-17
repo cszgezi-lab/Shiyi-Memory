@@ -170,26 +170,56 @@ const peopleStars = (record, category) => {
   const n = recordImportance({ ...record, category: record.category ?? category });
   return `<span class="sy-stars sy-lv${n}" aria-label="重要度 ${n}/5">${'★'.repeat(n)}${'☆'.repeat(5 - n)}</span> `;
 };
-export function peopleDetailHTML(group, allProfiles = group?.profiles ?? []) {
+const keepField = (key, label, value = '', multi = false, placeholder = '') => `<label class="sy-field"><span>${esc(label)}</span>${multi
+  ? `<textarea rows="4" data-keep-field="${key}" placeholder="${esc(placeholder)}">${esc(value)}</textarea>`
+  : `<input data-keep-field="${key}" value="${esc(value)}" placeholder="${esc(placeholder)}">`}</label>`;
+/** Inline editors, one per record kind, so a person entry is edited where it is
+ * read. Diary and dialogue text live inside innerLife/keyDialogues, so they go
+ * through the keepsake writer instead of overwriting the whole record body. */
+export function personEntryEditor(row, kind) {
+  if (kind === 'diary') {
+    const d = row.data;
+    return `<section class="sy-card sy-person-entry-editor" data-person-editor="${esc(row.id)}" data-editor-kind="diary">
+      ${keepField('stage', '阶段名称', d.stage ?? '', false, '例如：初识 / 争执后')}
+      ${keepField('text', '角色心迹（角色视角）', d.text ?? '', true, '用角色的语气写这一阶段的内心，例如：我还是不敢直接问。')}
+      ${keepField('cause', '变化缘由（可留空）', d.cause ?? '', true, '哪件事促成的，例如：他在雨里把外套给了我。')}
+      <p class="sy-help">只改这一条心迹，不动事件和其它记录。</p>
+      <div class="sy-actions"><button type="button" class="sy-primary" data-person-keep-save="${esc(row.id)}">保存心迹</button><button type="button" data-person-editor-close>取消</button></div>
+    </section>`;
+  }
+  if (kind === 'dialogue') {
+    const d = row.data;
+    return `<section class="sy-card sy-person-entry-editor" data-person-editor="${esc(row.id)}" data-editor-kind="dialogue">
+      ${keepField('speaker', '说话人', d.speaker ?? '', false, '例如：濑名紫阳花')}
+      ${keepField('to', '对谁说（可留空）', d.to ?? '', false, '例如：甘织玲奈子')}
+      ${keepField('text', '台词原话', d.text ?? '', true, '逐字照抄原文，不要改写。')}
+      ${keepField('context', '当时语境与对方回应（可留空）', d.context ?? '', true, '什么时候、因为什么说的，对方怎么回。')}
+      ${keepField('meaning', '重要之处（可留空）', d.meaning ?? '', true, '例如：第一次明确说出边界。')}
+      <div class="sy-actions"><button type="button" class="sy-primary" data-person-keep-save="${esc(row.id)}">保存台词</button><button type="button" data-person-editor-close>取消</button></div>
+    </section>`;
+  }
+  return '';
+}
+export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], editing = '') {
   if (!group) return '<p class="sy-empty">暂无人物记录。已有档案、心迹、台词和人物属性会汇集在这里。</p>';
   const profileId = group.profiles[0]?.id ?? '';
   const profileRows = group.profiles.slice(0, 2).map(p => `<div class="sy-people-entry">${peopleStars(p)}<p class="sy-help">${p.locked ? '已锁定 · ' : ''}${Number.isInteger(p.through) ? `依据至 #${p.through}` : '已保存档案'}${group.profiles.length > 1 ? ` · ${esc(p.stage ?? '未注明阶段')}` : ''}</p><p class="sy-people-prose">${preview(p.text, 480)}</p>${openButton(group, 'dynamic-persona', '查看档案与来源', p.id)}</div>`).join('');
-  const diaryRows = group.diaries.slice(0, 2).map(r => `<div class="sy-people-entry"><h6>${peopleStars(r.record, 'personaChanges')}${esc(r.data.stage ?? '未注明阶段')}</h6><p class="sy-help">${phase(r)} · ${esc(epistemicLabel(r.data.basis) ?? '依据未注明')}${r.data.origin === 'stage_observation' ? ' · 阶段观察，非逐字心声' : ''}</p><p class="sy-people-prose">${preview(r.data.text)}</p><p class="sy-help">${esc(sourceText(r.record))}</p></div>`).join('');
-  const dialogueRows = group.dialogues.slice(0, 2).map(r => `<div class="sy-people-entry"><p class="sy-help">${peopleStars(r.record, 'performanceHints')}${esc(r.subject)}${r.target ? ` → ${esc(r.target)}` : ''} · ${phase(r)}${r.data.provenance === 'user_authored' ? ' · 用户编写，非核对原话' : ''}</p><blockquote>${preview(r.data.text)}</blockquote>${r.data.context ? `<p>${preview(r.data.context, 160)}</p>` : ''}<p class="sy-help">${esc(sourceText(r.record))}</p></div>`).join('');
+  const diaryRows = group.diaries.slice(0, 2).map(r => `<div class="sy-people-entry"><h6>${peopleStars(r.record, 'personaChanges')}${esc(r.data.stage ?? '未注明阶段')}</h6><p class="sy-help">${phase(r)} · ${esc(epistemicLabel(r.data.basis) ?? '依据未注明')}${r.data.origin === 'stage_observation' ? ' · 阶段观察，非逐字心声' : ''}</p><p class="sy-people-prose">${preview(r.data.text)}</p><p class="sy-help">${esc(sourceText(r.record))}</p><button type="button" data-people-edit="${esc(r.id)}">${editing === r.id ? '收起编辑' : '修改这条心迹'}</button>${editing === r.id ? personEntryEditor(r, 'diary') : ''}</div>`).join('');
+  const dialogueRows = group.dialogues.slice(0, 2).map(r => `<div class="sy-people-entry"><p class="sy-help">${peopleStars(r.record, 'performanceHints')}${esc(r.subject)}${r.target ? ` → ${esc(r.target)}` : ''} · ${phase(r)}${r.data.provenance === 'user_authored' ? ' · 用户编写，非核对原话' : ''}</p><blockquote>${preview(r.data.text)}</blockquote>${r.data.context ? `<p>${preview(r.data.context, 160)}</p>` : ''}<p class="sy-help">${esc(sourceText(r.record))}</p><button type="button" data-people-edit="${esc(r.id)}">${editing === r.id ? '收起编辑' : '修改这条台词'}</button>${editing === r.id ? personEntryEditor(r, 'dialogue') : ''}</div>`).join('');
   const sources = [...new Map(group.records.map(r => [r.id, r])).values()];
   const pendingBind = personaBindHTML(group, allProfiles);
   const personList = (rows, category, render) => `${rows.slice(0, 3).map(record => `<div class="sy-people-entry">
       <p class="sy-help">${peopleStars(record, category)}${esc(sourceText(record))}</p>
       <p class="sy-people-prose">${preview(recordDescription(record))}</p>
       <button type="button" data-people-edit="${esc(record.id)}">修改这条记录</button>
-    </div>`).join('') || `<p class="sy-help">${render}</p>`}${rows.length > 3 ? `<p class="sy-help">此处只列最近 3 条，共 ${rows.length} 条。</p>` : ''}`;
-  const personSection = (title, rows, category, empty) => `<section class="sy-people-section" data-people-module="${category}">
+    </div>`).join('') || `<p class="sy-help">${render}</p>`}${rows.length > 3 ? `<p class="sy-help">此处只列最近 3 条，共 ${rows.length} 条。</p>` : ''}`;  const personSection = (title, rows, category, empty) => `<section class="sy-people-section" data-people-module="${category}">
       <h5>${title} <small>${rows.length}</small></h5>
       ${personList(rows, category, empty)}
       <p class="sy-help">直接点“修改这条记录”即可改内容，保存后用于召回；原始来源仍保留。</p>
     </section>`;
-  return `<h4 data-people-title tabindex="-1">${esc(group.name)}</h4>
+  return `<div class="sy-top"><h4 data-people-title tabindex="-1">${esc(group.name)}</h4><button type="button" data-people-rename>改名</button></div>
     ${group.aliases.length ? `<p class="sy-help">别称：${esc(group.aliases.join('、'))}</p>` : ''}
+    <p class="sy-help">改名只建立“旧名 = 新名”的对照，让已有记录和以后的新记录都归到同一个角色；不会改写原文、已有记录或原世界书，也能在“设置 → 自动字典”里改回来。</p>
     ${group.ambiguous ? '<p class="sy-help" role="status">此称呼对应多人，暂不归入任何人的档案。请从全部记录核对姓名或在召回字典中确认别称。</p>' : ''}
     ${pendingBind}
     <dl class="sy-people-stats"><div><dt>档案</dt><dd>${group.profiles.length}</dd></div><div><dt>心迹</dt><dd>${group.diaries.length}</dd></div><div><dt>台词</dt><dd>${group.dialogues.length}</dd></div><div><dt>属性</dt><dd>${group.fieldCount}</dd></div></dl>
@@ -211,7 +241,7 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? []) {
 export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
   const root = panel.querySelector('[data-view="people"]');
   const $ = selector => root.querySelector(selector);
-  let scope, stamp = '', rendered = '', groups = [], page = 1, selected = '';
+  let scope, stamp = '', rendered = '', groups = [], page = 1, selected = '', editing = '';
   const filter = () => {
     const query = nameKey($('[data-people-search]').value);
     return groups.filter(g => [g.name, ...g.aliases].some(n => nameKey(n).includes(query)));
@@ -230,14 +260,14 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     $('[data-people-next]').disabled = page === pages;
     $('[data-people-list]').innerHTML = rows.map(g => `<button type="button" data-people-key="${esc(g.key)}" aria-pressed="${g.key === selected}"><strong>${esc(g.name)}</strong><small>${g.ambiguous ? '称呼待确认' : `${g.profiles.length} 档案 · ${g.diaries.length} 心迹 · ${g.dialogues.length} 台词 · ${g.fieldCount} 属性`}</small></button>`).join('') || '<p class="sy-empty">没有匹配的人物</p>';
     const allProfiles = groups.flatMap(g => g.profiles);
-    const detail = !group && groups.length ? '<p class="sy-empty">没有匹配的人物，试试其他姓名或别称。</p>' : peopleDetailHTML(group, allProfiles);
+    const detail = !group && groups.length ? '<p class="sy-empty">没有匹配的人物，试试其他姓名或别称。</p>' : peopleDetailHTML(group, allProfiles, editing);
     if (detail !== rendered) { $('[data-people-detail]').innerHTML = detail; rendered = detail; }
   }
   function paint(snapshot) {
     if (root.hidden) return;
     const nextScope = JSON.stringify(snapshot.scope ?? snapshot.core?.scope ?? app?.core?.state?.scope ?? null);
     if (scope !== nextScope) {
-      scope = nextScope; page = 1; selected = ''; stamp = ''; rendered = '';
+      scope = nextScope; page = 1; selected = ''; stamp = ''; rendered = ''; editing = '';
       $('[data-people-search]').value = '';
       $('[data-people-directory]').open = false;
     }
@@ -274,10 +304,44 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     if (button.dataset.peopleEdit) {
       // Read from the cached projection: the reading view never rescans cards.
       const id = button.dataset.peopleEdit;
-      const record = groups.flatMap(g => [...g.relationships, ...g.commitments, ...g.personaChanges, ...g.facts]).find(r => r.id === id);
-      if (!record) return;
+      const all = groups.flatMap(g => [...g.relationships, ...g.commitments, ...g.personaChanges, ...g.facts]);
+      const record = all.find(r => r.id === id);
+      const diary = groups.flatMap(g => g.diaries).find(r => r.id === id);
+      const dialogue = groups.flatMap(g => g.dialogues).find(r => r.id === id);
+      if (!record && !diary && !dialogue) return;
+      // Diary and dialogue text lives in innerLife/keyDialogues, so those two
+      // open an inline editor; everything else opens the one record editor.
+      if (diary || dialogue) { editing = editing === id ? '' : id; rendered = ''; draw(); return; }
       setPage?.('memory');
       panel.dispatchEvent(new CustomEvent('shiyi-edit-memory', { detail: id, bubbles: false }));
+      return;
+    }
+    if (button.hasAttribute('data-person-editor-close')) { editing = ''; rendered = ''; draw(); return; }
+    if (button.dataset.personKeepSave) {
+      const id = button.dataset.personKeepSave;
+      const diary = groups.flatMap(g => g.diaries).find(r => r.id === id);
+      const dialogue = groups.flatMap(g => g.dialogues).find(r => r.id === id);
+      const row = diary ?? dialogue;
+      const box = root.querySelector(`[data-person-editor="${id}"]`);
+      if (!row || !box) return;
+      const data = { ...row.data };
+      for (const field of box.querySelectorAll('[data-keep-field]')) data[field.dataset.keepField] = field.value;
+      void run(() => app.saveCharacterKeepsake({ kind: diary ? 'diary' : 'dialogue', recordId: row.recordId, index: row.index, expected: row.expected, data }), { name: 'journal-write', button })
+        .then(() => { editing = ''; rendered = ''; });
+      return;
+    }
+    if (button.hasAttribute('data-people-rename')) {
+      const group = groups.find(g => g.key === selected);
+      if (!group || group.ambiguous) return;
+      void run(async () => {
+        const next = await host.prompt?.('改成什么名字？旧名会保留为别称，已有记录仍归到这个角色。', group.name);
+        const name = String(next ?? '').trim();
+        if (!name || name === group.name) return;
+        const profile = group.profiles[0];
+        if (profile?.id) await app.editDynamicPersona?.(profile.id, { name, aliases: [...new Set([...(profile.aliases ?? []), group.name])] });
+        await app.saveDictionaryEntry?.({ name, aliases: [group.name], indexWords: [] });
+        rendered = '';
+      }, { name: 'save-dictionary-entry', button });
       return;
     }
     if (button.dataset.peoplePageLink) { setPage?.(button.dataset.peoplePageLink); return; }

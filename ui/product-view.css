@@ -105,9 +105,23 @@
 #shiyi-product-shell [data-view=memory] :is(summary,h4) {font:600 16px/1.5 system-ui,sans-serif;}
 #shiyi-product-shell [data-view=memory] .sy-card p:not(.sy-help) {font:400 16px/1.6 system-ui,sans-serif;}
 #shiyi-product-shell [data-view=memory] :is(.sy-help,.sy-field>span,.sy-tag) {font:400 13px/1.5 system-ui,sans-serif;letter-spacing:normal;}
+/* Owner-approved 0.21.21 reading density: the row title drops from the generic
+   16px role to 14px so four rows fit one phone screen. Declared on
+   [data-view=memory] on purpose: the text-role block above has the same weight
+   and this rule must win. The tile contract (48px/13px) is untouched. */
+#shiyi-product-shell [data-view=memory] .sy-memory-row h4 {display:flex;align-items:flex-start;gap:6px;font:600 14px/1.35 system-ui,sans-serif;margin:4px 0 2px;}
 #shiyi-product-shell .sy-category-grid button {height:48px;justify-content:space-between;text-align:left;padding:6px 8px;flex-direction:row;align-items:center;gap:4px;}
 #shiyi-product-shell .sy-category-grid strong {font:500 13px/1.3 system-ui,sans-serif;display:block;min-height:0;white-space:nowrap;overflow-wrap:normal;}
 #shiyi-product-shell .sy-category-grid small {font:400 13px/1.5 system-ui,sans-serif;opacity:.75;white-space:nowrap;flex-shrink:0;}
+/* One memory row fits more per screen and can be edited in one tap. Only spacing,
+   the two-line brief and the row button change: every existing control stays. */
+#shiyi-product-shell .sy-memory-row {padding:10px;margin:6px 0;}
+#shiyi-product-shell .sy-memory-row h4 .sy-row-title {flex:1;min-width:0;}
+#shiyi-product-shell .sy-row-edit {flex-shrink:0;min-height:32px;padding:2px 10px;font:400 13px/1.4 system-ui,sans-serif;border-radius:8px;}
+#shiyi-product-shell .sy-memory-row .sy-memory-meta {margin:2px 0 4px;}
+#shiyi-product-shell .sy-memory-row .sy-memory-brief {display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:4px 0;}
+#shiyi-product-shell .sy-memory-row>details {margin:2px 0;}
+#shiyi-product-shell .sy-memory-row>details>summary {padding:3px 0;}
 #shiyi-product-shell .sy-batch-filters {display:grid;grid-template-columns:minmax(0,1fr) 82px;gap:8px;}
 #shiyi-product-shell .sy-batch-filters>.sy-field:first-child {grid-column:1/-1;}
 #shiyi-product-shell .sy-batch-row {padding:10px 12px;margin:8px 0;border-radius:12px;}
