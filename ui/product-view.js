@@ -247,6 +247,9 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  // 更新中心里的跳转：把用户送到真正带勾选框与周期的面板。
  for(const b of $$('[data-jump-page]'))b.addEventListener?.('click',()=>setPage(b.getAttribute('data-jump-page')));
  panel.addEventListener('click',e=>{const b=e.target.closest?.('[data-api-jump]');if(b){setPage('api');$(`[data-api-card="${b.dataset.apiJump}"]`)?.scrollIntoView({block:'start'});}});
+ // A person-owned record has no tile on this page. Another page can still hand
+ // one over to this single editor instead of growing a second editor elsewhere.
+ const openMemoryRecord=id=>{const card=readViewState(app).cards.find(c=>c.id===id);if(!card)return false;management?.selectCategory?.(card.category);management?.edit?.(id);return true;};
  for(const f of $$('[data-key]'))f.addEventListener?.('input',()=>{const kind=f.getAttribute('data-key');app.setKey(kind,f.value,$(`[data-setting="${API_INFO[kind].prefix}Endpoint"]`)?.value);resetModels(kind);if(kind==='summary'){resetModels('assistant');resetModels('supplement');}if(['summary','assistant'].includes(kind))resetModels('knowledge');});
  for(const [kind,{prefix}]of Object.entries(API_INFO)){
    for(const f of $$(`[data-api-card="${kind}"] [data-setting], [data-models-url="${kind}"]`))f.addEventListener('input',()=>{if(f.getAttribute('data-setting')!==`${prefix}Model`)resetModels(kind);if(kind==='summary'){resetModels('assistant');resetModels('supplement');}if(['summary','assistant'].includes(kind))resetModels('knowledge');syncInherited();});
@@ -275,6 +278,6 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  floating=mountFloatingProduct({panel,documentRef,host,version:PRODUCT_VERSION,onOpen:()=>{painting.flush();void app.followCurrentChat?.().catch(e=>feedback(`聊天记忆读取未完成：${failureText(e)}`,'warning'));},onClose:()=>painting.request(),onStop:()=>run(()=>app.stop()),onLogs:()=>{setPage('recording');showRecordTab('logs');}});floating.setNotice(noticeText,noticeLevel);
  let destroyed=false;
  Promise.resolve(app.loadApiSettings?.()).then(()=>{if(!destroyed){fill({apiOnly:true});paint(readViewState(app));return app.startChatTracking?.();}}).catch(e=>{if(!destroyed)feedback(`读取全局配置失败：${failureText(e)}`,'error');});
- return {panel,application:app,controller:controller??app.core,setPage,floating,
+ return {panel,application:app,controller:controller??app.core,setPage,floating,openMemoryRecord,
    async destroy(){destroyed=true;painting.dispose();clearTimeout(timer);resetAllModels();floating.destroy();await app.dispose?.();}};
 }

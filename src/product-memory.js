@@ -4,7 +4,7 @@ import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './prod
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel,scopeLabel } from './product-narrative.js';
 import { hasStoryTime, storyDateOf } from './temporal.js';
 import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts } from './product-recall-packing.js';
-import { factValue, fullCharacterGroups, awarenessSubjectLabel } from './product-person-profiles.js';
+import { factValue, fullCharacterGroups, awarenessSubjectLabel, PERSON_RECORD_CATEGORIES } from './product-person-profiles.js';
 import { compileEventPacket } from './product-event-packet.js';
 import { factValidity, awarenessAssociationSupported } from './memory-evidence.js';
 import { originalSourceText, sourceRecallExcerpt, sourceQuote, evidenceTerms, sourceEvidenceQuery, projectSourceForRecall } from './source-recall-evidence.js';
@@ -16,6 +16,14 @@ export const CATEGORY_LABELS = Object.freeze({ events: '事件', awarenessChange
  * published tile metrics are a fixed contract, so the tile uses a shorter word
  * while every other surface keeps the full name. */
 export const CATEGORY_TILE_LABELS = Object.freeze({ events: '事件', awarenessChanges: '知情', entityFactChanges: '人物', relationshipChanges: '关系', personaChanges: '人设', commitmentChanges: '约定', performanceHints: '演绎', summaryView: '楼层', conflicts: '疑点', knowledge: '资料' });
+/** Which page owns a module. Memory records the shared timeline; the people page
+ * owns everything that belongs to one character. Both pages read the SAME stored
+ * categories — this split is presentation only and never migrates, rewrites or
+ * re-files an existing record. */
+export const PERSON_CATEGORIES = PERSON_RECORD_CATEGORIES;
+export const EVENT_CATEGORY_LABELS = Object.freeze(Object.fromEntries(Object.entries(CATEGORY_LABELS).filter(([key]) => !PERSON_CATEGORIES.includes(key))));
+/** The one line that tells a reader where a moved module now lives. */
+export const CATEGORY_PAGE_HINT = Object.freeze(Object.fromEntries(PERSON_CATEGORIES.map(key => [key, `${CATEGORY_LABELS[key]}已归入“人物”页，按人物查看和修改；记录本身没有移动。`])));
 export const readable = value => typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value);
 /** Star level (1–5) for a record, used to colour and rank rows in the memory and
  * people pages. The summary model supplies importance 1–10; when a record has

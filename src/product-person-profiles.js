@@ -21,6 +21,11 @@ export function awarenessSubjectLabel(record){
   return [...new Set(named.length?named:awarenessSubjects(record))].join('、');
 }
 
+/** Records that belong to one named person rather than to the shared timeline:
+ * an attribute, a relationship, a promise or a persona shift. The people page
+ * reads them; the memory page keeps events, awareness, floors and references. */
+export const PERSON_RECORD_CATEGORIES = Object.freeze(['entityFactChanges','relationshipChanges','commitmentChanges','personaChanges']);
+
 // Owners are explicit record fields, never the names found in recalled events.
 // Mentioning a person selects their reference dossier, not proof of presence.
 export function characterRecordSubjects(card) {

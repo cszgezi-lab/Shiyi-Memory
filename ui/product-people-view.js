@@ -1,6 +1,6 @@
 import { foldName, personaIdentity } from '../src/persona-identity.js';
 import { currentPersonaProfiles } from '../src/dynamic-persona.js';
-import { recordImportance } from '../src/product-memory.js';
+import { recordImportance, recordDescription } from '../src/product-memory.js';
 import { characterKeepsakes } from '../src/character-journal.js';
 import { characterRecordSubjects, explicitSubjectNames, factKey } from '../src/product-person-profiles.js';
 import { sourceLabel, recordTitle, epistemicLabel } from '../src/product-narrative.js';
@@ -13,6 +13,9 @@ const preview = (value, limit = 280) => {
   const text = String(value ?? '');
   return esc(text.length > limit ? `${text.slice(0, limit)}…` : text);
 };
+/** Newest first, using the same floor evidence the rest of the page reports. */
+const newestFirst = rows => [...rows].sort((a, b) => floorOf(b) - floorOf(a));
+const floorOf = record => Math.max(-1, ...(record?.sourceFloors ?? []).filter(Number.isInteger), Number.isInteger(record?.floorIndex) ? record.floorIndex : -1);
 
 /** A disposable reading projection. No writes, identity merges or new records. */
 export function peopleGroups(snapshot = {}) {
@@ -32,12 +35,18 @@ export function peopleGroups(snapshot = {}) {
   ].map(nameKey));
   const person = name => !nonPeople.has(nameKey(name)) || definitePeople.has(nameKey(name));
   const recordNames = card => characterRecordSubjects(card).filter(person);
+  /** A promise names its participants in one field, and that list is a display
+   * grouping only: keeping it out of characterRecordSubjects leaves the recall
+   * dossier budget and the open-plan schedule lane exactly as published. */
+  const commitmentNames = card => card.category === 'commitmentChanges'
+    ? namesOf(card.participants ?? card.subject).filter(person) : [];
   const seedDictionary = { ...dictionary, entries: (dictionary.entries ?? []).filter(t => person(t.name)) };
   const base = personaIdentity({ previous: profiles, dictionary: seedDictionary, aliases: settings.aliases ?? '' });
   // Do not promote a shared nickname to a new canonical identity during seeding.
   const claimed = new Set(base.people.flatMap(p => [p.name, ...p.aliases]).map(nameKey));
   const rawNames = [...new Set([
     ...cards.flatMap(recordNames),
+    ...cards.flatMap(commitmentNames),
     ...keepsakes.diaries.flatMap(r => namesOf(r.subject)),
     ...keepsakes.dialogues.flatMap(r => [...namesOf(r.subject), ...namesOf(r.target)]),
   ])];
@@ -60,6 +69,7 @@ export function peopleGroups(snapshot = {}) {
       key, name: resolved?.name ?? name, ambiguous,
       aliases: [...(resolved?.visibleAliases ?? [])].filter(a => identity.resolve(a)?.key === resolved.key),
       profiles: [], diaries: [], dialogues: [], facts: [], records: [],
+      relationships: [], commitments: [], personaChanges: [],
     });
     return groups.get(key);
   };
@@ -68,9 +78,13 @@ export function peopleGroups(snapshot = {}) {
   };
   for (const p of profiles) attach(namesOf(p.name), 'profiles', p);
   for (const card of cards) {
-    const names = recordNames(card);
+    const names = [...new Set([...recordNames(card), ...commitmentNames(card)])];
     attach(names, 'records', card);
-    if (card.category === 'entityFactChanges' && !card.customModuleId) attach(names, 'facts', card);
+    if (card.customModuleId) continue;
+    if (card.category === 'entityFactChanges') attach(names, 'facts', card);
+    else if (card.category === 'relationshipChanges') attach(names, 'relationships', card);
+    else if (card.category === 'commitmentChanges') attach(names, 'commitments', card);
+    else if (card.category === 'personaChanges') attach(names, 'personaChanges', card);
   }
   for (const row of keepsakes.diaries) {
     const names = namesOf(row.subject); // An inner-life target does not own this private account.
@@ -86,6 +100,9 @@ export function peopleGroups(snapshot = {}) {
     ...group,
     profiles: currentPersonaProfiles(group.profiles, settings.dynamicPersonaMvuMode),
     fieldCount: new Set(group.facts.map(factKey).filter(k => k != null)).size,
+    relationships: newestFirst(group.relationships),
+    commitments: newestFirst(group.commitments),
+    personaChanges: newestFirst(group.personaChanges),
   })).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
 }
 
@@ -161,6 +178,16 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? []) {
   const dialogueRows = group.dialogues.slice(0, 2).map(r => `<div class="sy-people-entry"><p class="sy-help">${peopleStars(r.record, 'performanceHints')}${esc(r.subject)}${r.target ? ` → ${esc(r.target)}` : ''} · ${phase(r)}${r.data.provenance === 'user_authored' ? ' · 用户编写，非核对原话' : ''}</p><blockquote>${preview(r.data.text)}</blockquote>${r.data.context ? `<p>${preview(r.data.context, 160)}</p>` : ''}<p class="sy-help">${esc(sourceText(r.record))}</p></div>`).join('');
   const sources = [...new Map(group.records.map(r => [r.id, r])).values()];
   const pendingBind = personaBindHTML(group, allProfiles);
+  const personList = (rows, category, render) => `${rows.slice(0, 3).map(record => `<div class="sy-people-entry">
+      <p class="sy-help">${peopleStars(record, category)}${esc(sourceText(record))}</p>
+      <p class="sy-people-prose">${preview(recordDescription(record))}</p>
+      <button type="button" data-people-edit="${esc(record.id)}">修改这条记录</button>
+    </div>`).join('') || `<p class="sy-help">${render}</p>`}${rows.length > 3 ? `<p class="sy-help">此处只列最近 3 条，共 ${rows.length} 条。</p>` : ''}`;
+  const personSection = (title, rows, category, empty) => `<section class="sy-people-section" data-people-module="${category}">
+      <h5>${title} <small>${rows.length}</small></h5>
+      ${personList(rows, category, empty)}
+      <p class="sy-help">直接点“修改这条记录”即可改内容，保存后用于召回；原始来源仍保留。</p>
+    </section>`;
   return `<h4 data-people-title tabindex="-1">${esc(group.name)}</h4>
     ${group.aliases.length ? `<p class="sy-help">别称：${esc(group.aliases.join('、'))}</p>` : ''}
     ${group.ambiguous ? '<p class="sy-help" role="status">此称呼对应多人，暂不归入任何人的档案。请从全部记录核对姓名或在召回字典中确认别称。</p>' : ''}
@@ -169,7 +196,10 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? []) {
     <section class="sy-people-section sy-people-persona" data-people-persona-block><h5>动态人设档案</h5>${profileRows || `<p class="sy-help">当前称呼还没有绑定动态人设档案。可先补建档案，或在下方把它归入已有角色。</p>${openButton(group, 'dynamic-persona', '查看或补建档案')}`}${group.profiles.length > 2 ? openButton(group, 'dynamic-persona', `查看全部 ${group.profiles.length} 份档案`) : ''}${peopleMergeHTML(allProfiles, group.ambiguous ? group.name : '')}</section>
     <section class="sy-people-section"><h5>角色心迹 <small>${group.diaries.length}</small></h5>${diaryRows || '<p class="sy-help">尚无心迹</p>'}${group.diaries.length ? '<p class="sy-help">私密演绎参考，不赋予他人知情。</p>' : ''}${openButton(group, 'diary', '查看心迹与来源', profileId)}</section>
     <section class="sy-people-section"><h5>关键台词 <small>${group.dialogues.length}</small></h5>${dialogueRows || '<p class="sy-help">尚无关键台词</p>'}${openButton(group, 'dialogue', '查看台词与来源', profileId)}</section>
-    <section class="sy-people-section"><h5>人物属性</h5><p class="sy-help">${group.fieldCount} 项属性 · ${group.facts.length} 条记录，含不同时间与情境的取值。</p>${openButton(group, 'facts', '查看属性与来源', profileId)}</section>
+    <section class="sy-people-section"><h5>人物属性</h5><p class="sy-help">${group.fieldCount} 项属性 · ${group.facts.length} 条记录，含不同时间与情境的取值。</p>${openButton(group, 'facts', '查看属性与来源', profileId)}<p class="sy-help">在“人物属性”详情里可以逐项修改、追加或清空属性。</p></section>
+    ${personSection('关系', group.relationships ?? [], 'relationshipChanges', '尚无关系变化记录')}
+    ${personSection('约定', group.commitments ?? [], 'commitmentChanges', '尚无约定记录')}
+    ${personSection('人设变化', group.personaChanges ?? [], 'personaChanges', '尚无人设变化记录')}
     <details class="sy-people-sources"><summary>来源与关联记忆 · ${sources.length} 条</summary>
       ${group.profiles.slice(0, 2).map(p => `<div class="sy-people-entry"><p>${esc(p.name)} · ${esc(sourceText(p))}</p>${[...new Map((p.bindings ?? []).map(b => [JSON.stringify([b.book, b.uid]), b])).values()].slice(0, 6).map(b => `<p class="sy-help">${esc(b.book)} · ${esc(b.originalName ?? b.name)}（原书只读）</p>`).join('')}${openButton(group, 'dynamic-persona', '查看完整档案来源', p.id)}</div>`).join('')}
       ${sources.slice(0, 6).map(r => `<p>${preview(recordTitle(r), 72)}<small class="sy-help">${esc(sourceText(r))}</small></p>`).join('') || '<p class="sy-help">暂无关联记忆</p>'}
@@ -240,6 +270,15 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     if (button.hasAttribute('data-people-prev') || button.hasAttribute('data-people-next')) {
       page += button.hasAttribute('data-people-prev') ? -1 : 1; draw();
       $('[data-people-list] button')?.focus(); return;
+    }
+    if (button.dataset.peopleEdit) {
+      // Read from the cached projection: the reading view never rescans cards.
+      const id = button.dataset.peopleEdit;
+      const record = groups.flatMap(g => [...g.relationships, ...g.commitments, ...g.personaChanges, ...g.facts]).find(r => r.id === id);
+      if (!record) return;
+      setPage?.('memory');
+      panel.dispatchEvent(new CustomEvent('shiyi-edit-memory', { detail: id, bubbles: false }));
+      return;
     }
     if (button.dataset.peoplePageLink) { setPage?.(button.dataset.peoplePageLink); return; }
     if (button.dataset.peopleAll) { onSelect?.({ name: '', profileId: null, kind: button.dataset.peopleAll }); return; }

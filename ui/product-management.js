@@ -1,6 +1,6 @@
 import { readViewState } from '../src/product-view-scheduling.js';
 import { esc,button,field,setting } from '../src/product-settings-ui.js';
-import { CATEGORY_LABELS,CATEGORY_TILE_LABELS,recordDescription,readable,renderMemoryCard } from '../src/product-memory.js';
+import { CATEGORY_LABELS,CATEGORY_TILE_LABELS,CATEGORY_PAGE_HINT,EVENT_CATEGORY_LABELS,PERSON_CATEGORIES,recordDescription,readable,renderMemoryCard } from '../src/product-memory.js';
 import { characterProfiles,factValue,factSubject,factKey } from '../src/product-person-profiles.js';
 import { recordTitle,sourceLabel,narrativeText } from '../src/product-narrative.js';
 import { MEMORY_CATEGORIES } from '../src/product-batches.js';
@@ -10,6 +10,11 @@ import { originalSourceText } from '../src/source-recall-evidence.js';
 import { mountBatchList,batchRecordDescription } from './product-batch-list.js';
 
 export const categoryOptions=()=>MEMORY_CATEGORIES.map(key=>`<option value="${key}">${CATEGORY_LABELS[key]}</option>`).join('');
+/** The tile grid is the page split: it shows the five timeline modules, because
+ * 人物与事实/关系/约定/人设变化 are read and edited on the 人物 page. The filter
+ * keeps every module so a known record can still be found from memory search. */
+export const memoryTileOptions=()=>MEMORY_CATEGORIES.filter(key=>!PERSON_CATEGORIES.includes(key));
+const conflictHelp='来源有矛盾或尚不能确定的内容，不参与自动召回。核实后在相应区块保存正确记忆，再删除这条疑点。';
 export const memoryDetailLabel=category=>({events:'完整事件 · 起因、经过与结果',awarenessChanges:'知情内容与获知方式',entityFactChanges:'属性内容与来源',relationshipChanges:'关系变化与依据',personaChanges:'变化与适用情境',commitmentChanges:'约定内容与进度',performanceHints:'演绎建议与适用范围',summaryView:'完整楼层纪要',conflicts:'疑点与来源',knowledge:'资料原文'})[category]??'详细内容';
 const actions=c=>`<div class="sy-actions"><button type="button" data-edit="${esc(c.id)}">修改</button><button type="button" data-delete="${esc(c.id)}">删除</button><button type="button" data-hide="${esc(c.id)}">不再召回</button></div>`;
 export function memoryPage(cards,{q='',category='all',page=1,pageSize=10}={}){
@@ -59,7 +64,6 @@ export function mountMemoryManagement({panel,app,run,host}){
   const batchList=mountBatchList({panel,app,run,host});
   const currentCategory=$('[data-category]');
   const selectCategory=(key,toggle=false)=>{currentCategory.value=toggle&&currentCategory.value===key?'none':key;$('[data-note-category]').value=key;currentCategory.dispatchEvent(new panel.ownerDocument.defaultView.Event('change'));syncFields();};
-  const conflictHelp='来源有矛盾或尚不能确定的内容，不参与自动召回。核实后在相应区块保存正确记忆，再删除这条疑点。';
   function selectedModule(){const key=$('[data-note-category]').value;return key.startsWith('module:')?readViewState(app).modules?.find(m=>m.id===key.slice(7)&&!m.archived):null;}
   function syncFields(){
     const key=$('[data-note-category]').value,m=selectedModule(),readonly=m?.mode==='mvu';
@@ -67,9 +71,15 @@ export function mountMemoryManagement({panel,app,run,host}){
     const fields=$('[data-note-module-field]'),value=fields.value;fields.innerHTML=(m?.fields??[]).map(f=>`<option value="${esc(f.id)}">${esc(f.label)} · ${({text:'文字',number:'数值',boolean:'开关'})[f.type]}</option>`).join('');if(m?.fields.some(f=>f.id===value))fields.value=value;
     const help=$('[data-note-help]');help.hidden=!m&&key!=='conflicts';help.textContent=m?(readonly?'此区块绑定 MVU，不能手填数值。点击读取后，在扩展模块中查看。':`${m.name}：填写所选字段，开关使用 true / false。`):conflictHelp;
     $('[data-action="remember"]').hidden=Boolean(readonly);$('[data-action="note-mvu-refresh"]').hidden=!readonly;
-    $('[data-category-help]').hidden=currentCategory.value!=='conflicts';$('[data-category-help]').textContent=conflictHelp;
+    // The filter can only report what it can show. A person-owned module is
+    // still readable here, so say where it lives instead of showing an empty list.
+    const hint=$('[data-category-help]');hint.textContent=CATEGORY_PAGE_HINT[currentCategory.value]??conflictHelp;hint.hidden=currentCategory.value!=='conflicts'&&!CATEGORY_PAGE_HINT[currentCategory.value];
   }
   $('[data-note-category]').addEventListener('change',syncFields);currentCategory?.addEventListener('change',syncFields);syncFields();
+  /** One in-place editor for every page: the people page asks this page to open
+   * a record it owns, so the two views can never drift into two editors. */
+  function requestEdit(id){editingId=null;$('[data-edit-memory]').hidden=true;edit(id);}
+  panel.addEventListener('shiyi-edit-memory',e=>{const id=e.detail;if(typeof id!=='string'||!id)return;requestEdit(id);});
   $('[data-action="note-mvu-refresh"]').addEventListener('click',()=>run(async()=>{const result=await app.syncModules();if(result.status!=='ready')throw new Error('尚未读取到 MVU，请确认当前聊天的变量框架已初始化');},{name:'custom-read-mvu'}));
   $('[data-action="save-memory-edit"]').addEventListener('click',()=>run(async()=>{await app.editRecord(editingId,$('[data-edit-text]').value,{title:$('[data-edit-title]').value,recallSummary:$('[data-edit-brief]').value,tags:$('[data-edit-tags]').value.split(/[,，]/),...(!$('[data-edit-fact-fields]').hidden?{entity:$('[data-edit-entity]').value,field:$('[data-edit-field]').value,valueFormat:$('[data-edit-format]').value}:{})});$('[data-edit-memory]').hidden=true;}));
   $('[data-edit-text]').addEventListener('input',()=>{$('[data-edit-brief]').value='';});
@@ -94,7 +104,7 @@ export function mountMemoryManagement({panel,app,run,host}){
   function paint(state,{memory=true,batches=true}={}){
     const nextMemoryStamp=memory?JSON.stringify([state.cardRevision??state.cards,state.modules,currentCategory.value]):memoryStamp;
     if(memory&&nextMemoryStamp!==memoryStamp){memoryStamp=nextMemoryStamp;
-    const grid=$('[data-memory-categories]');grid.innerHTML=MEMORY_CATEGORIES.map(key=>`<button type="button" data-memory-category="${key}" ${currentCategory.value===key?'class="active"':''}><strong>${CATEGORY_TILE_LABELS[key]}</strong><small>${key==='entityFactChanges'?`${characterProfiles(state.cards).length} 份`:`${state.cards.filter(c=>!c.customModuleId&&c.category===key).length} 条`}</small></button>`).join('');
+    const grid=$('[data-memory-categories]');grid.innerHTML=MEMORY_CATEGORIES.filter(key=>!PERSON_CATEGORIES.includes(key)).map(key=>`<button type="button" data-memory-category="${key}" ${currentCategory.value===key?'class="active"':''}><strong>${CATEGORY_TILE_LABELS[key]}</strong><small>${state.cards.filter(c=>!c.customModuleId&&c.category===key).length} 条</small></button>`).join('');
     for(const b of grid.querySelectorAll('button')){b.setAttribute('aria-expanded',String(currentCategory.value===b.dataset.memoryCategory));b.addEventListener('click',()=>selectCategory(b.dataset.memoryCategory,true));}
     const options=JSON.stringify(state.modules??[]);if(options!==lastOptions){lastOptions=options;const select=$('[data-note-category]'),value=select.value;select.innerHTML=`<optgroup label="基础区块">${categoryOptions()}</optgroup>`+(state.modules?.some(m=>!m.archived)?`<optgroup label="扩展模块">${state.modules.filter(m=>!m.archived).map(m=>`<option value="module:${esc(m.id)}">${esc(m.name)}${m.mode==='mvu'?'（MVU 只读）':''}</option>`).join('')}</optgroup>`:'');if([...select.options].some(o=>o.value===value))select.value=value;syncFields();}
     const select=$('[data-note-event]'),value=select.value;select.innerHTML='<option value="">请选择事件</option>'+state.cards.filter(c=>c.category==='events').map(c=>`<option value="${esc(c.id)}">${esc(recordDescription(c).slice(0,60))}</option>`).join('');select.value=value;
@@ -110,7 +120,7 @@ export function mountMemoryManagement({panel,app,run,host}){
     else await app.remember(text,$('[data-people]').value,{category:$('[data-note-category]').value,subject:$('[data-note-subject]').value,target:$('[data-note-target]').value,field:$('[data-note-field]').value,eventRef:$('[data-note-event]').value});
     $('[data-note]').value='';
   }
-  return {paint,edit,remember,addFact};
+  return {paint,edit,remember,addFact,selectCategory:key=>selectCategory(key)};
 }
 
 export function dictionaryHTML(){return `<div class="sy-card"><h4>自动字典与标签</h4><p class="sy-help">来自当前聊天的总结与已启用的知识库。别称指同一对象的另一种叫法；输入别称可帮助找到正式名称对应的记忆。关联词是相关主题，不会合并人物或让角色自动知情。</p>${field('查找词条','<input data-dictionary-search placeholder="姓名、别称、地点">')}<label class="sy-toggle"><span>显示已删除词条</span><input type="checkbox" data-dictionary-deleted></label><p data-dictionary-count class="sy-help"></p><div data-dictionary-list></div><div class="sy-actions"><button type="button" data-dictionary-prev>上一页</button><button type="button" data-dictionary-next>下一页</button></div><details><summary>已生成的检索标签</summary><div data-dictionary-tags></div></details><details data-dictionary-editor><summary>新增词条</summary>${field('正式名称','<input data-dictionary-name maxlength="80">')}${field('别称','<input data-dictionary-aliases placeholder="用逗号分隔">')}${field('关联检索词（不是别名）','<input data-dictionary-related placeholder="例如校刊、转校手续；用逗号分隔">')}<p class="sy-help">手动校正作为全局设置保存；校正别称不会改变人物事实。</p><div class="sy-actions"><button type="button" data-dictionary-save>保存词条</button><button type="button" data-dictionary-clear>新增另一条</button></div></details></div>`;}
