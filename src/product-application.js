@@ -1487,7 +1487,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     pauseDynamicPersonaManual:()=>dynamicPersona.pauseManual(),discardDynamicPersonaManual:()=>dynamicPersona.discardManual(),inspectDynamicPersonaWorldbook:()=>dynamicPersona.inspectWorldbook(),syncDynamicPersonaWorldbook:()=>dynamicPersona.syncMirror(),
     async setDynamicPersona(enabledNow){await saveSettings({dynamicPersonaEnabled:enabledNow});if(!enabledNow)dynamicPersona.stop();else {if(!workspace?.isCurrent())await open({enable:enabled});await dynamicPersona.load();await dynamicPersona.resume();}},
     startChatTracking,followCurrentChat,reviewMemory,previewQuality,inspectQualityRecord,saveQualityRecord,undoQuality,readViewState,
-    reportError,loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:async()=>{const snapshot=await runtimeLog.export();return {...snapshot,pendingDiagnostics:diagnosticJobs.size};},clearRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.clear();},
+    reportError,loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:async options=>{const snapshot=await runtimeLog.export(options);return {...snapshot,pendingDiagnostics:diagnosticJobs.size};},clearRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.clear();},
     async exportInjectionLog(options){assertCurrent();return injectionLog.export(options);},
     async clearInjectionLog(){assertCurrent();await injectionLog.clear();},
     async removeInjectionLog(id){assertCurrent();await injectionLog.remove(id);},

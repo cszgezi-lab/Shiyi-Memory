@@ -137,10 +137,33 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),io
     get state(){return {entries:clone(entries),persistence,limit:RUNTIME_LOG_LIMIT,byteLimit:RUNTIME_LOG_BYTES,droppedEntries,partialRuns:clone(partialRuns),legacyRetentionUnknown,storageFailure:clone(storageFailure)};},
     async flush(){try{await bounded(timer!==null?persist():queue);}catch(error){persistence='pending';storageFailure=safeLogDetails({...errorDiagnostics(error),storageStage:'write',storageArtifact:'runtime_log'});notify();}},
     async clear(){await load();entries=[];entryBytes=2;droppedEntries=0;partialRuns=[];legacyRetentionUnknown=false;notify();await persist();if(!store||persistence!=='saved')throw new Error('日志清空未通过保存确认，请重试');},
-    async export(){await load();
+    async export({filter}={}){await load();
       // Drain already-queued error callbacks, not their storage promises. A
       // failed action immediately followed by export must include its error.
-      await new Promise(resolve=>setTimeout(resolve,0));return snapshot();},
+      await new Promise(resolve=>setTimeout(resolve,0));return snapshot(filter);},
   };
-  function snapshot(){const terminal=new Set(entries.filter(e=>['complete','failed','canceled','waiting','skipped'].includes(e.phase)).map(e=>e.run));return {kind:'shiyi-runtime-log',version:1,diagnosticVersion:2,pluginVersion:PRODUCT_VERSION,exportedAt:now(),persistence,pendingWrites:writing||pending||timer!==null,retention:{limit:RUNTIME_LOG_LIMIT,byteLimit:RUNTIME_LOG_BYTES,droppedEntries,partialRuns:clone(partialRuns),legacyRetentionUnknown,firstId:entries[0]?.id??null,lastId:entries.at(-1)?.id??null},unfinishedRuns:[...new Set(entries.filter(e=>e.phase==='start'&&!terminal.has(e.run)).map(e=>e.run))],storageFailure:clone(storageFailure),limitations:['不含密钥、请求正文、模型原文或私人文件路径。','宿主或服务未提供的错误原因无法还原。','未结束任务可能仍在运行或曾被强制退出；不能据此断定崩溃。','旧版本丢失的日志不能补录。','导出为当前内存快照，不等待写盘或正在运行的任务结束；pendingWrites 表示本机保存仍在进行。','运行中日志最多合并 100ms 后写盘；强制退出可能丢失尚未写入的最后几条。'],entries:clone(entries)};}
+  /** A full snapshot is up to 2 MB, which is too large to read or copy out on a
+   * phone. `filter:{issues:true}` returns only failures/warnings so the user can
+   * copy exactly the record that matters. */
+  function snapshot(filter){
+    const wants=filter?{levels:Array.isArray(filter.levels)&&filter.levels.length?filter.levels:null,task:typeof filter.task==='string'&&filter.task?filter.task:null}:null;
+    let selected=entries;
+    if(wants&&(wants.levels||wants.task)){
+      selected=[];
+      for(const entry of entries){
+        if(wants.levels&&!wants.levels.includes(entry.level))continue;
+        if(wants.task&&entry.task!==wants.task)continue;
+        selected.push(entry);
+      }
+    }
+    const terminal=new Set(entries.filter(e=>['complete','failed','canceled','waiting','skipped'].includes(e.phase)).map(e=>e.run));
+    const filtered=selected.length!==entries.length;
+    // A filtered snapshot is meant to be read and copied on a phone, so the bulk
+    // metadata (retention limits, limitation list, unfinished runs) is left to
+    // the full export and only the failing records are returned.
+    if(filtered)return {kind:'shiyi-runtime-log',version:1,diagnosticVersion:2,pluginVersion:PRODUCT_VERSION,exportedAt:now(),filtered:true,
+      filter:{levels:wants.levels,task:wants.task,total:entries.length,returned:selected.length},entries:clone(selected)};
+    return {kind:'shiyi-runtime-log',version:1,diagnosticVersion:2,pluginVersion:PRODUCT_VERSION,exportedAt:now(),persistence,pendingWrites:writing||pending||timer!==null,
+      filtered:false,retention:{limit:RUNTIME_LOG_LIMIT,byteLimit:RUNTIME_LOG_BYTES,droppedEntries,partialRuns:clone(partialRuns),legacyRetentionUnknown,firstId:entries[0]?.id??null,lastId:entries.at(-1)?.id??null},unfinishedRuns:[...new Set(entries.filter(e=>e.phase==='start'&&!terminal.has(e.run)).map(e=>e.run))],storageFailure:clone(storageFailure),limitations:['不含密钥、请求正文、模型原文或私人文件路径。','宿主或服务未提供的错误原因无法还原。','未结束任务可能仍在运行或曾被强制退出；不能据此断定崩溃。','旧版本丢失的日志不能补录。','导出为当前内存快照，不等待写盘或正在运行的任务结束；pendingWrites 表示本机保存仍在进行。','运行中日志最多合并 100ms 后写盘；强制退出可能丢失尚未写入的最后几条。'],entries:clone(selected)};
+  }
 }
