@@ -63,7 +63,11 @@ export function mergePersonaProfiles(primary,secondary){
     through:Math.max(primary.through??-1,secondary.through??-1),
     mergedFrom:[...new Set([...(primary.mergedFrom??[]),secondary.id,...(secondary.mergedFrom??[])])],
     manual:true,
-    locked:Boolean(primary.locked||secondary.locked),
+    // The chosen target owns the edit policy.  An absorbed dossier may have
+    // been locked because it was manually repaired or retired; promoting that
+    // flag would silently freeze the target and make later automatic batches
+    // stop updating after a merge.
+    locked:Boolean(primary.locked),
     deleted:false,
   };
 };
