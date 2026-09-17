@@ -40,6 +40,15 @@ export function recordImportance(record){
   })();
   return Math.min(5,Math.max(1,Math.ceil(score/2)));
 }
+/** 最近修改：先看人间改过的记录（controls.edits 会留下 recordedAt），再看最新的
+ * 有来源记录。只读展示，不新增字段、不改写任何记录。 */
+export function recentChanges(cards = [], limit = 3) {
+  const floor = record => Math.max(-1, ...(record?.sourceFloors ?? []).filter(Number.isInteger));
+  const stamp = record => typeof record?.editedAt === 'string' ? Date.parse(record.editedAt) || 0 : 0;
+  return [...cards]
+    .sort((a, b) => stamp(b) - stamp(a) || floor(b) - floor(a))
+    .slice(0, Math.max(0, limit));
+}
 const sameSource=(a,b)=>a.sourceId===b.sourceId&&['fragmentId','version','swipeId','hash','contentHash'].every(k=>(a[k]??null)===(b[k]??null));
 const sharesSource=(a,b)=>(a.sourceRefs??[]).some(x=>(b.sourceRefs??[]).some(y=>sameSource(x,y)));
 export function recordDescription(record) {

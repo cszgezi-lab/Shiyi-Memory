@@ -14,7 +14,8 @@ import { mountFloatingProduct } from '../src/product-floating.js';
 import { esc, button, field, settingsSection, apiSettingsHTML, missingRecommendations, API_INFO } from '../src/product-settings-ui.js';
 import { mergeManagementHTML, mountMergeManagement } from './product-merge-view.js';
 import { categoryOptions,memoryEditorHTML,batchManagementHTML,mountMemoryManagement,dictionaryHTML,mountDictionary } from './product-management.js';
-import { recordTitle, sourceLabel, recallExplanation, narrativeText } from '../src/product-narrative.js';
+import { recordTitle, sourceLabel, recallExplanation, narrativeText, sourceFloors } from '../src/product-narrative.js';
+import { recentChanges, PERSON_CATEGORIES } from '../src/product-memory.js';
 import { failureText } from '../src/product-feedback.js';
 import { summarySelection } from '../src/product-batches.js';
 import { runtimeLogHTML, mountRuntimeLog } from './product-runtime-log.js';
@@ -37,11 +38,12 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  <div class="sy-top"><span data-scope>尚未打开聊天</span><div class="sy-actions">${button('open','启用插件',true)}${button('disable','暂停插件')}</div></div><p role="status" aria-live="polite" class="sy-status" data-status>连接一个模型，就可以开始整理故事。</p>
  <nav class="sy-nav" aria-label="拾忆导航">${['记忆','人物','总结','召回','助手','设置'].map((v,i)=>`<button type="button" data-page="${NAV[i]}" ${i===0?'class="active"':''}>${v}</button>`).join('')}</nav>
  <section data-view="memory"><div class="sy-top"><h3>故事记忆</h3>${button('refresh','刷新')}</div>
- <p class="sy-help">点击区块展开，再点一次收起；搜索可查找所有记忆。</p>
+ <div class="sy-progress" data-memory-progress><div class="sy-dial" data-memory-dial><span data-memory-floor>0</span></div><div class="sy-progress-text"><b data-memory-through>尚未开始记录</b><p data-memory-gap></p><p data-memory-next-batch></p></div></div>
+ <div class="sy-memory-bar"><details class="sy-add-memory" data-add-memory-inline><summary>＋ 新增记忆</summary><div data-add-memory-body></div></details><input data-search aria-label="搜索记忆" placeholder="搜索记忆"><span class="sy-memory-total" data-memory-total></span><select data-category aria-label="记忆类别" class="sy-sr-only"><option value="none">未展开</option><option value="all">全部类别</option>${categoryOptions()}</select></div>
  <div data-memory-categories class="sy-category-grid"></div><p data-category-help class="sy-help" hidden></p>
- <div class="sy-filters"><input data-search aria-label="搜索记忆" placeholder="搜索人物、事件、地点…"><select data-category aria-label="记忆类别"><option value="none">未展开</option><option value="all">全部类别</option>${categoryOptions()}</select></div>
  <div data-memory-pager class="sy-memory-pager" hidden><span data-memory-count></span><label>每页 <select data-memory-size aria-label="每页记忆条数"><option value="10" selected>10</option><option value="20">20</option><option value="50">50</option></select></label><div><button type="button" data-memory-prev>上一页</button><label><span class="sy-sr-only">跳转记忆页码</span><input data-memory-page aria-label="记忆页码" type="number" min="1" value="1"></label><span data-memory-pages></span><button type="button" data-memory-next>下一页</button></div></div>
  <div data-cards></div>
+ <div class="sy-recent" data-recent-changes><h4>最近修改</h4><div data-recent-list><p class="sy-help">还没有记录。</p></div></div>
  <div class="sy-memory-tools">${qualityPanelHTML()}${memoryEditorHTML()}${customModulesHTML()}</div>
  </section>
  <section data-view="recording" hidden><h3>聊天总结</h3><div class="sy-coverage"><div class="sy-top"><h4>记录覆盖</h4><button type="button" data-action="auto-inspect">检查进度</button></div><p class="sy-help sy-packet" data-summary-coverage></p><button type="button" data-action="auto-catchup">一键补采未记录楼层</button><small class="sy-help">只补缺口；采用已保存的自动起点、每批楼数和保留楼数，不会开启自动总结。修改参数请到“自动总结”。</small></div><div class="sy-record-tabs"><button type="button" data-record-tab="compose" class="active">手动总结</button><button type="button" data-record-tab="automatic">自动总结</button><button type="button" data-record-tab="presets">总结预设</button><button type="button" data-record-tab="batches">批次管理</button><button type="button" data-record-tab="merges">事件合并</button><button type="button" data-record-tab="logs">运行日志</button></div><div data-record-panel="compose"><div class="sy-card"><h4>手动总结</h4>${field('总结范围','<select data-range-mode><option value="recent">最近 N 楼</option><option value="range">指定起止楼层</option></select>')}<div data-range-fields="recent">${field('最近多少楼','<input type="number" min="1" max="100000" value="8" data-count>')}<p class="sy-help">最后一楼为 20、填 10，即整理 11–20。</p></div><div data-range-fields="range" hidden><div class="sy-grid">${field('从哪一楼','<input type="number" min="0" data-start placeholder="与聊天 # 编号相同" disabled>')}${field('到哪一楼','<input type="number" min="0" data-end placeholder="包含结束楼" disabled>')}</div></div>${field('每多少楼记录一次','<input type="number" min="1" max="200" value="5" data-batch-size>')}<p class="sy-help" data-summary-selection role="status"></p>${field('本次想记得更细的内容','<textarea rows="3" data-focus placeholder="留空时沿用长期记录偏好"></textarea>')}<div class="sy-actions">${button('focus-summary','开始总结',true)}${button('stop','停止')}</div></div>${settingsSection('recording')}${button('save-settings','保存总结设置',true)}</div><div data-record-panel="automatic" hidden>${settingsSection('automatic')}</div><div data-record-panel="presets" hidden>${summaryPresetsHTML()}</div><div data-record-panel="batches" hidden>${batchManagementHTML()}</div><div data-record-panel="merges" hidden>${mergeManagementHTML()}</div><div data-record-panel="logs" hidden>${runtimeLogHTML()}</div></section>
@@ -66,6 +68,34 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  function resetAllModels(){for(const kind of Object.keys(API_INFO))resetModels(kind);}
  function syncInherited(){for(const kind of ['assistant','supplement']){const follow=$(`[data-setting="${kind}FollowSummary"]`)?.checked;if($(`[data-api-fields="${kind}"]`))$(`[data-api-fields="${kind}"]`).hidden=kind==='assistant'&&follow;if(kind==='supplement'){const connection=$('[data-api-connection="supplement"]');if(connection)connection.hidden=follow;const advanced=$('[data-api-card="supplement"] .sy-advanced');if(advanced)advanced.hidden=follow;}const notice=$(`[data-inherited="${kind}"]`);if(notice){const model=$('[data-setting="providerModel"]')?.value||'请先设置总结模型';notice.textContent=follow?(kind==='supplement'?'共用总结地址和 Key；模型以下方选择为准。':`正在沿用：${model}`):'';}}const follow=$('[data-setting="knowledgeFollowAssistant"]')?.checked;$('[data-api-fields="knowledge"]').hidden=Boolean(follow);const model=$('[data-setting="assistantFollowSummary"]')?.checked?$('[data-setting="providerModel"]')?.value:$('[data-setting="assistantModel"]')?.value;$('[data-inherited="knowledge"]').textContent=follow?`沿用配置助手：${model||'请先配置总结或助手 API'}。可关闭此项单独配置。`:'';}
  let cardStamp='',memoryCurrentPage=1,memoryFilter='',memoryScope='',qualityView=null,dynamicPersonaView=null,personaNotice='',peopleView=null,extractionView=null;
+ /** 进度圆环 / 总条数 / 最近修改：数据全部来自已保存的记忆，不算预测。
+  * 「上次成功时间」只显示真实记录到的时刻，读不到就不显示那一行。 */
+ function paintMemoryOverview(s){
+   const cards=s.cards??[];
+   const timeline=cards.filter(c=>!c.customModuleId&&!PERSON_CATEGORIES.includes(c.category));
+   const floors=cards.filter(c=>c.category==='summaryView').flatMap(c=>sourceFloors(c)).filter(Number.isInteger);
+   const through=floors.length?Math.max(...floors):0;
+   const last=Number.isInteger(s.automatic?.lastIndex)?s.automatic.lastIndex:through;
+   const every=Number(s.settings?.summaryEvery??s.settings?.autoSummaryEvery)||5;
+   const nextTo=last+every;
+   const missing=s.automatic?.coverage?.missingRanges??[];
+   const missingText=missing.length?missing.map(r=>r.startIndex===r.endIndex?`#${r.startIndex}`:`#${r.startIndex}–${r.endIndex}`).join('、'):(s.chatReady?'没有缺口':'尚未读取聊天');
+   const chatFloors=Math.max(0,Number(s.automatic?.lastIndex)||0,through);
+   const dial=$('[data-memory-dial]');
+   if(dial)dial.style.setProperty('--p',String(chatFloors?Math.max(0,Math.min(100,Math.round(through/chatFloors*100))):0));
+   if($('[data-memory-floor]'))$('[data-memory-floor]').textContent=String(through);
+   if($('[data-memory-through]'))$('[data-memory-through]').textContent=through?`已记录到第 ${through} 楼`:'还没有记录楼层';
+   if($('[data-memory-gap]'))$('[data-memory-gap]').textContent=through?`还差 ${missingText}`:'整理一段聊天后，这里会显示进度';
+   const when=s.lastSummaryAt??s.automatic?.lastFinishedAt??null;
+   const whenText=when?`下一批 #${last+1}–${nextTo} ｜ 上次：${narrativeText(when)}`:`下一批 #${last+1}–${nextTo} ｜ 下次自动总结按已保存周期`;
+   if($('[data-memory-next-batch]'))$('[data-memory-next-batch]').textContent=through?whenText:'';
+   if($('[data-memory-total]'))$('[data-memory-total]').textContent=`全部 ${timeline.length} 条`;
+   const list=$('[data-recent-list]');
+   if(list){
+     const rows=recentChanges(timeline);
+     list.innerHTML=rows.length?rows.map(c=>`<div class="sy-recent-row" data-recent-id="${esc(c.id)}"><span>${esc(recordTitle(c))}</span><em>${sourceFloors(c).length?`#${Math.max(...sourceFloors(c))}`:''}</em><span aria-hidden="true">›</span></div>`).join(''):'<p class="sy-help">还没有记录。</p>';
+   }
+ }
  function paintCards(){
     if(!snapshot||!$('[data-cards]'))return;
     if(floating?.window.hidden||currentPage!=='memory')return;
@@ -77,6 +107,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
    const paging=memoryPage(snapshot.cards,{q,category,page:memoryCurrentPage,pageSize:Number($('[data-memory-size]').value)});memoryCurrentPage=paging.page;
    $('[data-memory-pager]').hidden=category==='none'&&!q;$('[data-memory-count]').textContent=`共 ${paging.total} 项`;$('[data-memory-page]').value=paging.page;$('[data-memory-page]').max=paging.pages;$('[data-memory-pages]').textContent=`/ ${paging.pages} 页`;$('[data-memory-prev]').disabled=paging.page===1;$('[data-memory-next]').disabled=paging.page===paging.pages;
    const updated=reconcileMemoryList($('[data-cards]'),memoryListHTML(snapshot.cards,{settings:snapshot.settings,q,category,opened,page:paging.page,pageSize:paging.pageSize}));
+   paintMemoryOverview(snapshot);
    const changedButtons=selector=>updated.flatMap(el=>[...el.querySelectorAll(selector)]);
    for(const b of changedButtons('[data-hide]'))b.addEventListener('click',()=>run(()=>app.hideRecord(b.dataset.hide)));
    for(const b of changedButtons('[data-edit]'))b.addEventListener('click',()=>management?.edit(b.dataset.edit));
@@ -246,6 +277,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  for(const b of $$('[data-jump]'))b.addEventListener?.('click',()=>setPage(b.getAttribute('data-jump')));
  // 更新中心里的跳转：把用户送到真正带勾选框与周期的面板。
  for(const b of $$('[data-jump-page]'))b.addEventListener?.('click',()=>setPage(b.getAttribute('data-jump-page')));
+ panel.addEventListener('click',e=>{const row=e.target.closest?.('[data-recent-id]');if(row){setPage('memory');management?.edit?.(row.dataset.recentId);}});
  panel.addEventListener('click',e=>{const b=e.target.closest?.('[data-api-jump]');if(b){setPage('api');$(`[data-api-card="${b.dataset.apiJump}"]`)?.scrollIntoView({block:'start'});}});
  // A person-owned record has no tile on this page. Another page can still hand
  // one over to this single editor instead of growing a second editor elsewhere.
@@ -265,7 +297,10 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  updates.innerHTML=`<summary>版本与更新 · ${PRODUCT_VERSION}</summary><p class="sy-help">从 Git 安装后，在 TT 的扩展管理中检查拾忆更新。更新完成，等待当前任务结束、保存设置后重载页面即可生效，不需要重装 TT。记忆与已保存的 Key 保留。</p><a href="${PRODUCT_REPOSITORY}" target="_blank" rel="noopener noreferrer">安装地址与更新说明</a>`;
  $('[data-view="settings"]')?.appendChild(updates);
  // Populate the real form at mount, before any explicit chat binding or request.
- presetView=mountSummaryPresets({panel,app,run,host,download});mergeView=mountMergeManagement({panel,app,run,host});recallView=mountRecallView({panel,app,run,setPage,host,download});logView=mountRuntimeLog({panel,app,run,host,download});management=mountMemoryManagement({panel,app,run,host});dictionaryView=mountDictionary({panel,app,run,save:async input=>{if(dirtyApi.has('aliases'))throw new Error('字典高级文本尚未保存，请先保存字典设置');await app.saveDictionaryEntry(input);$('[data-setting="aliases"]').value=readViewState(app).settings.aliases;}});customManagement=mountCustomModules({panel,app,run,host,download,onAssistant:async text=>{await app.setDraft(text);fill();setPage('assistant');}});fill();paint(readViewState(app));
+ presetView=mountSummaryPresets({panel,app,run,host,download});mergeView=mountMergeManagement({panel,app,run,host});recallView=mountRecallView({panel,app,run,setPage,host,download});logView=mountRuntimeLog({panel,app,run,host,download});management=mountMemoryManagement({panel,app,run,host});
+ // 「＋ 新增记忆」在工具栏里，但表单本体只有一份：把它移进工具条内的容器。
+ if($('[data-add-memory-body]')&&$('[data-add-memory-body-fields]'))$('[data-add-memory-body]').append($('[data-add-memory-body-fields]'));
+ dictionaryView=mountDictionary({panel,app,run,save:async input=>{if(dirtyApi.has('aliases'))throw new Error('字典高级文本尚未保存，请先保存字典设置');await app.saveDictionaryEntry(input);$('[data-setting="aliases"]').value=readViewState(app).settings.aliases;}});customManagement=mountCustomModules({panel,app,run,host,download,onAssistant:async text=>{await app.setDraft(text);fill();setPage('assistant');}});fill();paint(readViewState(app));
  personEditor=mountPersonEditor({panel,app,run});
  journalView=mountCharacterJournal({panel,app,run,host});
  peopleView=mountPeopleView({panel,app,run,host,setPage:page=>{setPage(page);if(page==='dynamic-persona')$('[data-persona-controls]').open=true;},onSelect:({name,profileId,kind})=>{

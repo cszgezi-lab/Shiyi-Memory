@@ -393,3 +393,31 @@
 #shiyi-product-shell .sy-field-bar{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 #shiyi-product-shell .sy-field-bar button{min-height:30px;font-size:12.5px;padding:3px 10px}
 #shiyi-product-shell .sy-person-empty{padding:14px 0;font-size:13px;opacity:.7}
+
+/* ── Memory overview (0.21.23): progress ring, one-line toolbar, tiles with the
+   count above the name, and the recently changed records. ── */
+#shiyi-product-shell .sy-progress{display:flex;align-items:center;gap:10px;padding:11px 12px;margin:10px 0;border:1px solid var(--sy-border);border-radius:var(--sy-radius);background:color-mix(in srgb,currentColor 3%,transparent)}
+#shiyi-product-shell .sy-dial{flex:0 0 auto;width:58px;height:58px;border-radius:50%;display:grid;place-items:center;--p:0;background:conic-gradient(var(--sy-accent) calc(var(--p) * 1%),color-mix(in srgb,currentColor 14%,transparent) 0)}
+#shiyi-product-shell .sy-dial>span{width:46px;height:46px;border-radius:50%;background:color-mix(in srgb,var(--SmartThemeBlurTintColor,#fff) 96%,transparent);display:grid;place-items:center;font:600 16px/1 system-ui,sans-serif;font-variant-numeric:tabular-nums;color:inherit}
+#shiyi-product-shell .sy-progress-text{min-width:0;font-size:13px}
+#shiyi-product-shell .sy-progress-text b{display:block;font-size:15px;font-weight:600}
+#shiyi-product-shell .sy-progress-text p{margin:3px 0 0;font-size:12px;opacity:.72;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-memory-bar{display:flex;align-items:center;gap:8px;margin:8px 0}
+#shiyi-product-shell .sy-memory-bar>input{flex:1;min-width:0;min-height:36px;font-size:13px;padding:4px 10px}
+#shiyi-product-shell .sy-memory-bar .sy-memory-total{font-size:12px;opacity:.65;white-space:nowrap}
+#shiyi-product-shell .sy-add-memory{flex:0 0 auto;border:1px solid var(--sy-accent);border-radius:var(--sy-radius-sm);background:var(--sy-accent)}
+#shiyi-product-shell .sy-add-memory>summary{min-height:36px;padding:6px 12px;font:600 13px/1.3 system-ui,sans-serif;color:#fff;white-space:nowrap}
+#shiyi-product-shell .sy-add-memory[open]{flex:1 1 100%;background:transparent;border-color:var(--sy-border)}
+#shiyi-product-shell .sy-add-memory[open]>summary{color:inherit}
+#shiyi-product-shell .sy-add-memory[open]>div{padding:0 2px}
+#shiyi-product-shell .sy-recent{border:1px solid var(--sy-border);border-radius:var(--sy-radius);padding:10px 12px;margin:10px 0;background:color-mix(in srgb,currentColor 2%,transparent)}
+#shiyi-product-shell .sy-recent h4{margin:0 0 4px;font-size:14px}
+#shiyi-product-shell .sy-recent-row{display:flex;align-items:center;gap:8px;min-height:38px;border-bottom:1px solid color-mix(in srgb,currentColor 8%,transparent);font-size:13.5px;cursor:pointer}
+#shiyi-product-shell .sy-recent-row:last-child{border-bottom:0}
+#shiyi-product-shell .sy-recent-row>span:first-child{flex:1;min-width:0;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-recent-row em{font-style:normal;opacity:.55;font-size:12px;white-space:nowrap}
+#shiyi-product-shell .sy-recent-row>span:last-child{opacity:.4}
+/* Tiles keep the published 13px text; the count simply moves above the name. */
+#shiyi-product-shell .sy-category-grid button{height:52px;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:1px}
+#shiyi-product-shell .sy-category-grid strong{font:600 16px/1.15 system-ui,sans-serif;color:var(--sy-accent);font-variant-numeric:tabular-nums;white-space:nowrap}
+#shiyi-product-shell .sy-category-grid small{font:400 12.5px/1.3 system-ui,sans-serif;opacity:.85;white-space:nowrap}

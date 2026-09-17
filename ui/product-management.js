@@ -102,12 +102,12 @@ export function memoryListHTML(cards,{settings={},q='',category='all',opened=new
   return rows.join('')||'<p class="sy-empty">没有符合条件的记忆。</p>';
 }
 export function memoryEditorHTML(){return `
-  <details class="sy-card" data-add-memory><summary>新增记忆</summary>${field('记忆区块',`<select data-note-category>${categoryOptions()}</select>`)}
+  <div data-add-memory-body-fields>${field('记忆区块',`<select data-note-category>${categoryOptions()}</select>`)}
   <p data-note-help class="sy-help" hidden></p>${field('扩展字段','<select data-note-module-field></select>')}
   ${field('人物 / 主体','<input data-note-subject placeholder="例如：甘织玲奈子">')}${field('关系对象（关系 / 人设）','<input data-note-target placeholder="例如：濑名紫阳花">')}${field('属性 / 变化方面','<input data-note-field value="补充信息" placeholder="例如：社团、信任">')}
   ${field('关联事件（知情记录必选）','<select data-note-event><option value="">请选择事件</option></select>')}
   ${field('记忆内容','<textarea rows="4" data-note placeholder="照原文写清谁、何时、做了什么、结果如何。例如：放学后甲在值班室归还储物室钥匙，乙核对后接过保管。"></textarea>')}${field('谁知道（事件；未知留空）','<input data-people placeholder="例如：甲、乙；不确定就留空">')}${button('remember','保存记忆',true)}${button('note-mvu-refresh','读取 MVU 变量')}
-  <p class="sy-help">手写一条：选区块 → 填内容 → 保存。留空的字段不会写入，也不会覆盖已有记忆。</p></details>
+  <p class="sy-help">手写一条：选区块 → 填内容 → 保存。留空的字段不会写入，也不会覆盖已有记忆。</p></div>
   <div data-edit-memory class="sy-card" hidden><h4>修改记忆</h4><div data-edit-fact-fields hidden>${field('人物 / 主体','<input data-edit-entity maxlength="160" placeholder="例如：甘织玲奈子">')}${field('属性名称','<input data-edit-field maxlength="160" placeholder="例如：社团">')}${field('内容格式','<select data-edit-format><option value="text">文字</option><option value="json">结构化 JSON / 数值</option></select>')}</div>${field('标题','<input data-edit-title maxlength="160" placeholder="一句话标题，例如：归还储物室钥匙">')}${field('完整纪要','<textarea rows="8" data-edit-text aria-label="修改记忆内容" placeholder="写清起因、经过与结果；保留原文里的时间、地点与关键数值。"></textarea>')}${field('召回速览（修改正文后可留空）','<textarea rows="3" data-edit-brief maxlength="2000" placeholder="留空则按正文重新生成；也可以写 60–120 字的一句话速览。"></textarea>')}${field('检索标签','<input data-edit-tags placeholder="用逗号分隔，例如借书归还、转校手续">')}<p class="sy-help">保存后立即用于召回；原始来源与旧版本保留，可再改。</p><div class="sy-actions">${button('save-memory-edit','保存修改',true)}${button('cancel-memory-edit','取消')}</div></div>`;}
 export { batchManagementHTML } from './product-batch-list.js';
 export function mountMemoryManagement({panel,app,run,host}){
@@ -155,7 +155,10 @@ export function mountMemoryManagement({panel,app,run,host}){
   function paint(state,{memory=true,batches=true}={}){
     const nextMemoryStamp=memory?JSON.stringify([state.cardRevision??state.cards,state.modules,currentCategory.value]):memoryStamp;
     if(memory&&nextMemoryStamp!==memoryStamp){memoryStamp=nextMemoryStamp;
-    const grid=$('[data-memory-categories]');grid.innerHTML=MEMORY_CATEGORIES.filter(key=>!PERSON_CATEGORIES.includes(key)).map(key=>`<button type="button" data-memory-category="${key}" ${currentCategory.value===key?'class="active"':''}><strong>${CATEGORY_TILE_LABELS[key]}</strong><small>${state.cards.filter(c=>!c.customModuleId&&c.category===key).length} 条</small></button>`).join('');
+    // 0.21.23 磁贴：数字在上、名字在下（名字用完整标签）；资料（知识库）也在这里
+    // 给出一个入口，它不属于存储里的八个汇总类别，但仍要能一眼看到有多少条。
+    const tileKeys=[...MEMORY_CATEGORIES,'knowledge'].filter(key=>!PERSON_CATEGORIES.includes(key));
+    const grid=$('[data-memory-categories]');grid.innerHTML=tileKeys.map(key=>`<button type="button" data-memory-category="${key}" ${currentCategory.value===key?'class="active"':''}><strong>${state.cards.filter(c=>!c.customModuleId&&c.category===key).length}</strong><small>${CATEGORY_LABELS[key]}</small></button>`).join('');
     for(const b of grid.querySelectorAll('button')){b.setAttribute('aria-expanded',String(currentCategory.value===b.dataset.memoryCategory));b.addEventListener('click',()=>selectCategory(b.dataset.memoryCategory,true));}
     const options=JSON.stringify(state.modules??[]);if(options!==lastOptions){lastOptions=options;const select=$('[data-note-category]'),value=select.value;select.innerHTML=`<optgroup label="基础区块">${categoryOptions()}</optgroup>`+(state.modules?.some(m=>!m.archived)?`<optgroup label="扩展模块">${state.modules.filter(m=>!m.archived).map(m=>`<option value="module:${esc(m.id)}">${esc(m.name)}${m.mode==='mvu'?'（MVU 只读）':''}</option>`).join('')}</optgroup>`:'');if([...select.options].some(o=>o.value===value))select.value=value;syncFields();}
     const select=$('[data-note-event]'),value=select.value;select.innerHTML='<option value="">请选择事件</option>'+state.cards.filter(c=>c.category==='events').map(c=>`<option value="${esc(c.id)}">${esc(recordDescription(c).slice(0,60))}</option>`).join('');select.value=value;
