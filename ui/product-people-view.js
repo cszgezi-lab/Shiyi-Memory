@@ -109,25 +109,21 @@ export function peopleGroups(snapshot = {}) {
 export function peopleHTML() {
   return `<section data-view="people" hidden class="sy-people">
     <div class="sy-top"><h3>人物</h3><span data-people-count class="sy-help" role="status"></span></div>
-    <nav class="sy-people-links" aria-label="全部人物记录">
-      <button type="button" data-people-all="dynamic-persona">全部档案</button>
-      <button type="button" data-people-all="diary">全部心迹</button>
-      <button type="button" data-people-all="dialogue">全部台词</button>
-    </nav>
-    <div class="sy-people-layout">
-      <details data-people-directory class="sy-people-directory">
-        <summary><span class="sy-people-switch"><strong data-people-current>选择人物</strong><span class="sy-people-switch-hint">切换人物 · <span data-people-total>0</span> 位</span></span></summary>
-        <label class="sy-people-search">查找人物<input type="search" data-people-search placeholder="姓名或别称" autocomplete="off"></label>
-        <div data-people-list class="sy-people-list"></div>
-        <div class="sy-people-pagination"><button type="button" data-people-prev aria-label="人物上一页">上一页</button><span data-people-page role="status"></span><button type="button" data-people-next aria-label="人物下一页">下一页</button></div>
-      </details>
+    <div class="sy-people-wrap">
+      <div class="sy-person-strip" data-people-strip role="tablist" aria-label="选择人物">
+        <input type="search" data-people-search placeholder="搜角色" aria-label="查找人物" autocomplete="off">
+      </div>
       <article data-people-detail class="sy-people-reading" aria-label="人物阅读区"></article>
     </div>
     <details class="sy-people-settings"><summary>API 与更新设置</summary><div class="sy-people-links"><button type="button" data-people-page-link="api">API 与模型</button><button type="button" data-people-page-link="dynamic-persona">人设更新设置</button></div></details>
   </section>`;
 }
 
-const openButton = (group, kind, label, profileId = '') => `<button type="button" data-people-open="${kind}" data-people-profile="${esc(profileId)}"${group.ambiguous && !profileId ? ' disabled' : ''}>${label}</button>`;
+/** A dossier route is only safe once the name belongs to exactly one person. */
+const openButton = (group, kind, label, profileId = '') => {
+  const disabled = Boolean(group?.ambiguous) && !profileId;
+  return `<button type="button" data-people-open="${kind}" data-people-profile="${esc(profileId)}"${disabled ? ' disabled' : ''}>${label}</button>`;
+};
 const sourceText = record => record.sourceRefs?.length || record.sourceFloors?.length || Number.isInteger(record.floorIndex) || record.documentName
   ? sourceLabel(record) : '来源未注明';
 const phase = row => row.data.disabled ? '不再注入' : row.record.innerLifeHistorical || row.data.status === 'historical'
@@ -200,76 +196,116 @@ export function personEntryEditor(row, kind) {
   }
   return '';
 }
+/** One field row: the whole line opens it, the content opens the editor. */
+export function personFieldRow({ label, value, source, category, id, clamp = 1 }) {
+  const text = String(value ?? '');
+  return `<div class="sy-field-row" data-field-row data-clamp="${clamp}" data-field-category="${esc(category)}" data-field-id="${esc(id ?? '')}">
+    <div class="sy-field-sum" data-people-edit="${esc(id ?? '')}"><span>${esc(label)}</span><span class="sy-field-value">${preview(text, 600)}</span><span class="sy-field-caret">›</span></div>
+    <div class="sy-field-open" hidden>
+      <div class="sy-field-body" role="button" tabindex="0"><div class="sy-field-full">${preview(text, 4000)}</div></div>
+      <p class="sy-field-src">${esc(source || '来源未注明')}</p>
+      <div class="sy-field-bar"><button type="button" data-field-edit>修改</button><button type="button" class="sy-row-remove" data-field-remove>删除</button></div>
+    </div>
+  </div>`;
+}
+const fieldGroup = (title, count, rows, empty, { category = '', add = '' } = {}) => `<section class="sy-field-group" data-people-module="${esc(category)}">
+  <header><span>${esc(title)} <small>${count}</small></span>${add ? `<button type="button" data-people-add="${esc(add)}">新增</button>` : ''}</header>
+  ${rows || `<p class="sy-help">${esc(empty)}</p>`}
+</section>`;
 export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], editing = '') {
-  if (!group) return '<p class="sy-empty">暂无人物记录。已有档案、心迹、台词和人物属性会汇集在这里。</p>';
+  if (!group) return '<p class="sy-person-empty">还没有人物。整理一段聊天后会自动出现，也可以直接新建一个角色。</p>';
   const profileId = group.profiles[0]?.id ?? '';
-  const profileRows = group.profiles.slice(0, 2).map(p => `<div class="sy-people-entry">${peopleStars(p)}<p class="sy-help">${p.locked ? '已锁定 · ' : ''}${Number.isInteger(p.through) ? `依据至 #${p.through}` : '已保存档案'}${group.profiles.length > 1 ? ` · ${esc(p.stage ?? '未注明阶段')}` : ''}</p><p class="sy-people-prose">${preview(p.text, 480)}</p>${openButton(group, 'dynamic-persona', '查看档案与来源', p.id)}</div>`).join('');
-  const diaryRows = group.diaries.slice(0, 2).map(r => `<div class="sy-people-entry"><h6>${peopleStars(r.record, 'personaChanges')}${esc(r.data.stage ?? '未注明阶段')}</h6><p class="sy-help">${phase(r)} · ${esc(epistemicLabel(r.data.basis) ?? '依据未注明')}${r.data.origin === 'stage_observation' ? ' · 阶段观察，非逐字心声' : ''}</p><p class="sy-people-prose">${preview(r.data.text)}</p><p class="sy-help">${esc(sourceText(r.record))}</p><button type="button" data-people-edit="${esc(r.id)}">${editing === r.id ? '收起编辑' : '修改这条心迹'}</button>${editing === r.id ? personEntryEditor(r, 'diary') : ''}</div>`).join('');
-  const dialogueRows = group.dialogues.slice(0, 2).map(r => `<div class="sy-people-entry"><p class="sy-help">${peopleStars(r.record, 'performanceHints')}${esc(r.subject)}${r.target ? ` → ${esc(r.target)}` : ''} · ${phase(r)}${r.data.provenance === 'user_authored' ? ' · 用户编写，非核对原话' : ''}</p><blockquote>${preview(r.data.text)}</blockquote>${r.data.context ? `<p>${preview(r.data.context, 160)}</p>` : ''}<p class="sy-help">${esc(sourceText(r.record))}</p><button type="button" data-people-edit="${esc(r.id)}">${editing === r.id ? '收起编辑' : '修改这条台词'}</button>${editing === r.id ? personEntryEditor(r, 'dialogue') : ''}</div>`).join('');
-  const sources = [...new Map(group.records.map(r => [r.id, r])).values()];
-  const pendingBind = personaBindHTML(group, allProfiles);
-  const personList = (rows, category, render) => `${rows.slice(0, 3).map(record => `<div class="sy-people-entry">
-      <p class="sy-help">${peopleStars(record, category)}${esc(sourceText(record))}</p>
-      <p class="sy-people-prose">${preview(recordDescription(record))}</p>
-      <button type="button" data-people-edit="${esc(record.id)}">修改这条记录</button>
-    </div>`).join('') || `<p class="sy-help">${render}</p>`}${rows.length > 3 ? `<p class="sy-help">此处只列最近 3 条，共 ${rows.length} 条。</p>` : ''}`;  const personSection = (title, rows, category, empty) => `<section class="sy-people-section" data-people-module="${category}">
-      <h5>${title} <small>${rows.length}</small></h5>
-      ${personList(rows, category, empty)}
-      <p class="sy-help">直接点“修改这条记录”即可改内容，保存后用于召回；原始来源仍保留。</p>
-    </section>`;
-  return `<div class="sy-top"><h4 data-people-title tabindex="-1">${esc(group.name)}</h4><button type="button" data-people-rename>改名</button></div>
-    ${group.aliases.length ? `<p class="sy-help">别称：${esc(group.aliases.join('、'))}</p>` : ''}
-    <p class="sy-help">改名只建立“旧名 = 新名”的对照，让已有记录和以后的新记录都归到同一个角色；不会改写原文、已有记录或原世界书，也能在“设置 → 自动字典”里改回来。</p>
+  const profileRows = group.profiles.slice(0, 2).map(p => personFieldRow({
+    label: p.locked ? '整份档案 · 已锁定' : `整份档案 · ${Number.isInteger(p.through) ? `依据至 #${p.through}` : '已保存'}`,
+    value: p.text, source: `${sourceText(p)}${[...new Map((p.bindings ?? []).map(b => [JSON.stringify([b.book, b.uid]), b])).values()].slice(0, 4).map(b => `${b.book} · ${b.originalName ?? b.name}（原书只读）`).join(' · ')}`, category: 'dynamic-persona', id: p.id, clamp: 3,
+  })).join('') || `<p class="sy-help">还没有动态人设档案。${openButton(group, 'dynamic-persona', '补建档案', profileId)}</p>`;  const factRows = group.facts.map(record => personFieldRow({
+    label: `${factKey(record) ?? '属性'}`, value: recordDescription(record).replace(/^[^：]*：/, ''),
+    source: sourceText(record), category: 'entityFactChanges', id: record.id, clamp: 1,
+  })).join('');
+  const personRows = (rows, category) => rows.map(record => personFieldRow({
+    label: recordTitle(record), value: recordDescription(record), source: sourceText(record), category, id: record.id, clamp: 3,
+  })).join('');
+  const diaryRows = group.diaries.slice(0, 3).map(r => `${personFieldRow({
+    label: `${r.data.stage ?? '未注明阶段'} · ${r.record.innerLifeHistorical || r.data.status === 'historical' ? '过去阶段' : '按记录情境适用'}`,
+    value: r.data.text,
+    source: `${sourceText(r.record)} · ${epistemicLabel(r.data.basis) ?? '依据未注明'}${r.data.disabled ? ' · 不再注入' : ''}`, category: 'diary', id: r.id, clamp: 3,
+  })}${editing === r.id ? personEntryEditor(r, 'diary') : ''}`).join('');
+  const dialogueRows = group.dialogues.slice(0, 3).map(r => `${personFieldRow({
+    label: `${r.subject}${r.target ? ` → ${r.target}` : ''} · ${phase(r)}`,
+    value: r.data.text,
+    source: `${sourceText(r.record)}${r.data.provenance === 'user_authored' ? ' · 用户编写，非核对原话' : ''}`, category: 'dialogue', id: r.id, clamp: 3,
+  })}${editing === r.id ? personEntryEditor(r, 'dialogue') : ''}`).join('');
+  const stats = `${group.fieldCount} 项属性 · 关系 ${group.relationships?.length ?? 0} · 约定 ${group.commitments?.length ?? 0} · 人设变化 ${group.personaChanges?.length ?? 0} · 心迹 ${group.diaries.length} · 台词 ${group.dialogues.length}`;
+  return `<div class="sy-person-head">
+      <h4 data-people-title tabindex="-1">${esc(group.name)}</h4>
+      <p class="sy-help">${group.aliases.length ? `别称：${esc(group.aliases.join('、'))} · ` : ''}${esc(stats)}</p>
+      <div class="sy-actions sy-person-bar"><button type="button" data-people-rename>改名</button><button type="button" data-people-merge-open>合并档案</button><button type="button" class="danger" data-people-remove>删除</button></div>
+    </div>
     ${group.ambiguous ? '<p class="sy-help" role="status">此称呼对应多人，暂不归入任何人的档案。请从全部记录核对姓名或在召回字典中确认别称。</p>' : ''}
-    ${pendingBind}
-    <dl class="sy-people-stats"><div><dt>档案</dt><dd>${group.profiles.length}</dd></div><div><dt>心迹</dt><dd>${group.diaries.length}</dd></div><div><dt>台词</dt><dd>${group.dialogues.length}</dd></div><div><dt>属性</dt><dd>${group.fieldCount}</dd></div></dl>
-    <section class="sy-people-section sy-people-persona" data-people-persona-block><h5>动态人设档案</h5>${profileRows || `<p class="sy-help">当前称呼还没有绑定动态人设档案。可先补建档案，或在下方把它归入已有角色。</p>${openButton(group, 'dynamic-persona', '查看或补建档案')}`}${group.profiles.length > 2 ? openButton(group, 'dynamic-persona', `查看全部 ${group.profiles.length} 份档案`) : ''}${peopleMergeHTML(allProfiles, group.ambiguous ? group.name : '')}</section>
-    <section class="sy-people-section"><h5>角色心迹 <small>${group.diaries.length}</small></h5>${diaryRows || '<p class="sy-help">尚无心迹</p>'}${group.diaries.length ? '<p class="sy-help">私密演绎参考，不赋予他人知情。</p>' : ''}${openButton(group, 'diary', '查看心迹与来源', profileId)}</section>
-    <section class="sy-people-section"><h5>关键台词 <small>${group.dialogues.length}</small></h5>${dialogueRows || '<p class="sy-help">尚无关键台词</p>'}${openButton(group, 'dialogue', '查看台词与来源', profileId)}</section>
-    <section class="sy-people-section"><h5>人物属性</h5><p class="sy-help">${group.fieldCount} 项属性 · ${group.facts.length} 条记录，含不同时间与情境的取值。</p>${openButton(group, 'facts', '查看属性与来源', profileId)}<p class="sy-help">在“人物属性”详情里可以逐项修改、追加或清空属性。</p></section>
-    ${personSection('关系', group.relationships ?? [], 'relationshipChanges', '尚无关系变化记录')}
-    ${personSection('约定', group.commitments ?? [], 'commitmentChanges', '尚无约定记录')}
-    ${personSection('人设变化', group.personaChanges ?? [], 'personaChanges', '尚无人设变化记录')}
-    <details class="sy-people-sources"><summary>来源与关联记忆 · ${sources.length} 条</summary>
-      ${group.profiles.slice(0, 2).map(p => `<div class="sy-people-entry"><p>${esc(p.name)} · ${esc(sourceText(p))}</p>${[...new Map((p.bindings ?? []).map(b => [JSON.stringify([b.book, b.uid]), b])).values()].slice(0, 6).map(b => `<p class="sy-help">${esc(b.book)} · ${esc(b.originalName ?? b.name)}（原书只读）</p>`).join('')}${openButton(group, 'dynamic-persona', '查看完整档案来源', p.id)}</div>`).join('')}
-      ${sources.slice(0, 6).map(r => `<p>${preview(recordTitle(r), 72)}<small class="sy-help">${esc(sourceText(r))}</small></p>`).join('') || '<p class="sy-help">暂无关联记忆</p>'}
-      ${sources.length > 6 ? '<p class="sy-help">此处展示前 6 条来源；完整来源见对应档案、心迹、台词或属性页。</p>' : ''}
-    </details>`;
+    ${personaBindHTML(group, allProfiles)}
+    ${peopleMergeHTML(allProfiles, group.ambiguous ? group.name : '')}
+    ${fieldGroup('人物属性', group.fieldCount, factRows, '还没有属性记录。', { category: 'entityFactChanges', add: 'attribute' })}
+    <div class="sy-persona-block" data-people-persona-block>
+      ${fieldGroup('动态人设', group.profiles.length, profileRows, '还没有动态人设档案。', { category: 'dynamic-persona' })}
+    </div>
+    ${fieldGroup('关系', group.relationships?.length ?? 0, personRows(group.relationships ?? [], 'relationshipChanges'), '还没有关系记录。', { category: 'relationshipChanges', add: 'relationship' })}
+    ${fieldGroup('约定', group.commitments?.length ?? 0, personRows(group.commitments ?? [], 'commitmentChanges'), '还没有约定。', { category: 'commitmentChanges', add: 'commitment' })}
+    ${fieldGroup('人设变化', group.personaChanges?.length ?? 0, personRows(group.personaChanges ?? [], 'personaChanges'), '还没有人设变化。', { category: 'personaChanges', add: 'persona' })}
+    ${fieldGroup('角色心迹', group.diaries.length, diaryRows, '还没有心迹。', { category: 'diary' })}
+    ${fieldGroup('关键台词', group.dialogues.length, dialogueRows, '还没有关键台词。', { category: 'dialogue' })}
+    <div class="sy-actions"><button type="button" data-people-open="facts" data-people-profile="${esc(profileId)}"${group.ambiguous && !profileId ? ' disabled' : ''}>全部属性</button><button type="button" data-people-open="dynamic-persona" data-people-profile="${esc(profileId)}"${group.ambiguous && !profileId ? ' disabled' : ''}>全部档案</button><button type="button" data-people-open="diary" data-people-profile="${esc(profileId)}"${group.ambiguous && !profileId ? ' disabled' : ''}>全部心迹</button><button type="button" data-people-open="dialogue" data-people-profile="${esc(profileId)}"${group.ambiguous && !profileId ? ' disabled' : ''}>全部台词</button></div>`;
 }
 
 /** onSelect owns filtered navigation; an empty name clears that page's filter. */
 export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
   const root = panel.querySelector('[data-view="people"]');
   const $ = selector => root.querySelector(selector);
-  let scope, stamp = '', rendered = '', groups = [], page = 1, selected = '', editing = '';
+  let scope, stamp = '', rendered = '', groups = [], selected = '', editing = '', stripStamp = '', query = '';
   const filter = () => {
-    const query = nameKey($('[data-people-search]').value);
-    return groups.filter(g => [g.name, ...g.aliases].some(n => nameKey(n).includes(query)));
+    const needle = nameKey(query);
+    return groups.filter(g => [g.name, ...g.aliases].some(n => nameKey(n).includes(needle)));
   };
-  function draw() {
-    const visible = filter(), pages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
-    page = Math.max(1, Math.min(page, pages));
-    const rows = visible.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-    if (!rows.some(g => g.key === selected)) selected = rows[0]?.key ?? '';
-    const group = rows.find(g => g.key === selected);
+  function draw(rebuildStrip = true) {
+    const visible = filter();
+    if (!visible.some(g => g.key === selected)) selected = visible[0]?.key ?? '';
+    const group = visible.find(g => g.key === selected);
     $('[data-people-count]').textContent = `${groups.length} 位人物`;
-    $('[data-people-current]').textContent = group?.name ?? (groups.length ? '没有匹配的人物' : '暂无人物');
-    $('[data-people-total]').textContent = String(groups.length);
-    $('[data-people-page]').textContent = `${page} / ${pages}`;
-    $('[data-people-prev]').disabled = page === 1;
-    $('[data-people-next]').disabled = page === pages;
-    $('[data-people-list]').innerHTML = rows.map(g => `<button type="button" data-people-key="${esc(g.key)}" aria-pressed="${g.key === selected}"><strong>${esc(g.name)}</strong><small>${g.ambiguous ? '称呼待确认' : `${g.profiles.length} 档案 · ${g.diaries.length} 心迹 · ${g.dialogues.length} 台词 · ${g.fieldCount} 属性`}</small></button>`).join('') || '<p class="sy-empty">没有匹配的人物</p>';
+    const strip = $('[data-people-strip]');
+    const stripMarkup = `<input type="search" data-people-search placeholder="搜角色" aria-label="查找人物" autocomplete="off" value="${esc(query)}">`
+      + visible.map(g => `<button type="button" role="tab" data-people-key="${esc(g.key)}" aria-pressed="${g.key === selected}" title="${esc(g.name)}">${esc(g.name)}</button>`).join('')
+      + '<button type="button" data-people-add="person">＋ 新角色</button>'
+      + (visible.length ? '' : '<small>没有匹配的角色</small>');
+    if (strip && rebuildStrip && stripStamp !== stripMarkup) {
+      stripStamp = stripMarkup;
+      if (typeof strip.insertAdjacentHTML === 'function' && typeof strip.querySelectorAll === 'function') {
+        for (const node of [...strip.querySelectorAll('input,button,small')]) node.remove();
+        strip.insertAdjacentHTML('beforeend', stripMarkup);
+      } else strip.innerHTML = stripMarkup;
+    }
     const allProfiles = groups.flatMap(g => g.profiles);
     const detail = !group && groups.length ? '<p class="sy-empty">没有匹配的人物，试试其他姓名或别称。</p>' : peopleDetailHTML(group, allProfiles, editing);
     if (detail !== rendered) { $('[data-people-detail]').innerHTML = detail; rendered = detail; }
   }
-  function paint(snapshot) {
-    if (root.hidden) return;
+  /** 「新增」只跳到记忆页的同一个编辑器，不在这里再造第二份表单。 */
+  function addFor(kind, button) {
+    const group = groups.find(g => g.key === selected);
+    if (!group) return;
+    const category = { attribute: 'entityFactChanges', relationship: 'relationshipChanges', commitment: 'commitmentChanges', persona: 'personaChanges' }[kind] ?? 'entityFactChanges';
+    setPage?.('memory');
+    const editor = panel.querySelector('[data-note-category]');
+    if (editor) {
+      editor.value = category;
+      editor.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    const subject = panel.querySelector('[data-note-subject]');
+    if (subject) subject.value = group.name;
+    panel.querySelector('[data-note]')?.focus({ preventScroll: true });
+    void button;
+  }
+  function paint(snapshot) {    if (root.hidden) return;
     const nextScope = JSON.stringify(snapshot.scope ?? snapshot.core?.scope ?? app?.core?.state?.scope ?? null);
     if (scope !== nextScope) {
-      scope = nextScope; page = 1; selected = ''; stamp = ''; rendered = ''; editing = '';
-      $('[data-people-search]').value = '';
-      $('[data-people-directory]').open = false;
+      scope = nextScope; selected = ''; stamp = ''; rendered = ''; editing = ''; stripStamp = ''; query = '';
     }
     const revision = snapshot.peopleRevision;
     const nextStamp = revision != null ? `revision:${revision}`
@@ -277,7 +313,36 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     if (stamp === nextStamp) return;
     groups = peopleGroups(snapshot); stamp = nextStamp; draw();
   }
-  $('[data-people-search]').addEventListener('input', () => { page = 1; draw(); });
+  $('[data-people-search]').addEventListener('input', () => draw());
+  /** 第一次点这一行：展开全文。展开之后点这一行的文字：进编辑。 */
+  function openFieldEditor(row) {
+    const id = row?.dataset.fieldId ?? '';
+    const category = row?.dataset.fieldCategory ?? '';
+    if (!id) return;
+    if (category === 'diary' || category === 'dialogue') { editing = id; rendered = ''; draw(); return; }
+    setPage?.('memory');
+    panel.dispatchEvent(new CustomEvent('shiyi-edit-memory', { detail: id, bubbles: false }));
+  }
+  root.addEventListener('click', event => {
+    if (event.target.closest?.('button')) return;
+    const summary = event.target.closest?.('.sy-field-sum');
+    if (!summary) return;
+    const row = summary.closest('[data-field-row]');
+    const open = row?.querySelector('.sy-field-open');
+    if (!row || !open) return;
+    if (row.dataset.open !== '1') { row.dataset.open = '1'; open.hidden = false; return; }
+    openFieldEditor(row);
+  });
+  // 搜索来自横滑名字条里的输入框。重建条带会丢焦点，所以重建后把光标放回输入框。
+  root.addEventListener('input', event => {
+    if (!event.target.closest?.('[data-people-search]')) return;
+    query = String(event.target.value ?? '');
+    rendered = '';
+    draw(true);
+    const box = root.querySelector('[data-people-search]');
+    box?.focus?.({ preventScroll: true });
+    if (box && typeof box.setSelectionRange === 'function') box.setSelectionRange(query.length, query.length);
+  });
   root.addEventListener('change', event => {
     const select = event.target.closest('[data-people-merge-source-select]');
     if (!select) return;
@@ -291,15 +356,27 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     if (!button || button.disabled) return;
     if (button.hasAttribute('data-people-key')) {
       selected = button.dataset.peopleKey; draw();
-      $('[data-people-directory]').open = false;
       const title = $('[data-people-title]');
       title?.focus({ preventScroll: true });
       title?.scrollIntoView({ block: 'start', behavior: 'instant' });
       return;
     }
-    if (button.hasAttribute('data-people-prev') || button.hasAttribute('data-people-next')) {
-      page += button.hasAttribute('data-people-prev') ? -1 : 1; draw();
-      $('[data-people-list] button')?.focus(); return;
+    // 字段行：第一次点整行展开，展开后点内容或「修改」才进编辑。
+    if (button.dataset.peopleAdd) { addFor(button.dataset.peopleAdd, button); return; }
+    if (button.hasAttribute('data-people-merge-open')) {
+      const box = root.querySelector('[data-people-merge]');
+      if (box) { box.open = !box.open; box.scrollIntoView({ block: 'nearest' }); }
+      return;
+    }
+    if (button.hasAttribute('data-people-remove')) {
+      const group = groups.find(g => g.key === selected);
+      if (!group) return;
+      void run(async () => {
+        if (await host.confirm?.(`删除“${group.name}”这个角色的记忆？记录会移入回收站，聊天原文与总结不受影响。`) !== true) return;
+        const ids = [...group.facts, ...group.relationships, ...group.commitments, ...group.personaChanges, ...group.diaries.map(r => r.id), ...group.dialogues.map(r => r.id)];
+        if (ids.length) await app.deleteRecords([...new Set(ids)]);
+      }, { name: 'deleteRecord', button });
+      return;
     }
     if (button.dataset.peopleEdit) {
       // Read from the cached projection: the reading view never rescans cards.
@@ -312,6 +389,22 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
       // Diary and dialogue text lives in innerLife/keyDialogues, so those two
       // open an inline editor; everything else opens the one record editor.
       if (diary || dialogue) { editing = editing === id ? '' : id; rendered = ''; draw(); return; }
+      setPage?.('memory');
+      panel.dispatchEvent(new CustomEvent('shiyi-edit-memory', { detail: id, bubbles: false }));
+      return;
+    }
+    // 一次点击展开，展开后点内容或「修改」进编辑；「删除」把这条移入回收站。
+    if (button.hasAttribute('data-field-remove')) {
+      const id = button.closest('[data-field-row]')?.dataset.fieldId ?? '';
+      if (id) void run(() => app.deleteRecords([id]), { name: 'deleteRecord', button });
+      return;
+    }
+    if (button.hasAttribute('data-field-edit')) {
+      const row = button.closest('[data-field-row]');
+      const id = row?.dataset.fieldId ?? '';
+      const category = row?.dataset.fieldCategory ?? '';
+      if (!id) return;
+      if (category === 'diary' || category === 'dialogue') { editing = id; rendered = ''; draw(); return; }
       setPage?.('memory');
       panel.dispatchEvent(new CustomEvent('shiyi-edit-memory', { detail: id, bubbles: false }));
       return;

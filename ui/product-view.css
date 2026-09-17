@@ -332,3 +332,62 @@
 #shiyi-product-shell [data-knowledge-options]>summary{font-size:13px;min-height:44px;padding:10px 0}
 #shiyi-product-shell [data-kb-doc] .sy-packet{max-height:360px;overflow:auto}
 #shiyi-product-shell [data-kb-edit-text]{width:100%;box-sizing:border-box;min-height:160px}
+
+/* ── 0.21.22 palette: 靛青纸白 (owner-picked), one token set for every module ──
+   Applied last so it overrides the older per-module colour rules without
+   rewriting them; tile metrics (48px / 13px) and layout are untouched. */
+#shiyi-product-shell{
+  --sy-accent:#2f5d8a;
+  --sy-accent-soft:#eaf0f8;
+  --sy-accent-line:#c6d3e4;
+  --sy-danger:#b04a3a;
+  --sy-surface:#f7f9fc;
+  --sy-radius:10px;
+  --sy-radius-sm:6px;
+  --sy-head-font:Georgia,"Songti SC","Noto Serif SC",serif;
+}
+#shiyi-product-shell .sy-mark{background:var(--sy-accent);color:#fff;border-radius:12px}
+#shiyi-product-shell button{border-radius:var(--sy-radius-sm)}
+#shiyi-product-shell :is(button,input,select,textarea){border-radius:var(--sy-radius-sm)}
+#shiyi-product-shell :is(button,select){min-height:36px}
+#shiyi-product-shell .sy-card{border-radius:var(--sy-radius)}
+#shiyi-product-shell .sy-primary{background:var(--sy-accent);border-color:var(--sy-accent);color:#fff}
+#shiyi-product-shell .sy-tag{border-radius:4px;background:var(--sy-accent-soft);color:var(--sy-accent);letter-spacing:.04em}
+#shiyi-product-shell :is(h3,.sy-section-heading h3){font-family:var(--sy-head-font)}
+#shiyi-product-shell .sy-actions button{font-size:13px;padding:5px 10px}
+#shiyi-product-shell .sy-nav .active{color:var(--sy-accent);box-shadow:inset 0 -2px var(--sy-accent)}
+#shiyi-product-shell :is(.sy-record-tabs,.sy-recall-tabs) button.active,#shiyi-product-shell .sy-subnav button.active{background:var(--sy-accent-soft);color:var(--sy-accent)}
+#shiyi-product-shell .sy-category-grid button.active{border-color:var(--sy-accent);background:var(--sy-accent-soft)}
+#shiyi-product-shell .sy-stars{margin-right:6px}
+#shiyi-product-shell .sy-person-bar button.danger,#shiyi-product-shell .sy-row-remove{color:var(--sy-danger)}
+
+/* ── People (0.21.22): a horizontal person strip, then one character with each
+   section as the same one-line field. First tap opens, second tap edits. ── */
+#shiyi-product-shell .sy-people-wrap{display:flex;flex-direction:column;gap:2px}
+#shiyi-product-shell .sy-person-strip{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:2px 0 8px;border-bottom:1px solid var(--sy-border);margin-bottom:8px}
+#shiyi-product-shell .sy-person-strip input{flex:0 0 auto;width:5.5em;min-height:32px;font-size:12px;padding:2px 8px;border-radius:999px;border:1px solid var(--sy-border);background:transparent;color:inherit}
+#shiyi-product-shell .sy-person-strip input:focus{width:9em}
+#shiyi-product-shell .sy-person-strip button{flex:0 0 auto;min-height:32px;font-size:12.5px;padding:3px 11px;border:0;border-radius:999px;background:var(--sy-accent-soft);color:inherit;white-space:nowrap}
+#shiyi-product-shell .sy-person-strip button[aria-pressed=true]{background:var(--sy-accent);color:#fff;font-weight:600}
+#shiyi-product-shell .sy-person-strip button[data-people-add]{background:transparent;border:1px dashed var(--sy-accent-line);color:var(--sy-accent)}
+#shiyi-product-shell .sy-person-strip small{flex:0 0 auto;font-size:11.5px;opacity:.7;white-space:nowrap}
+#shiyi-product-shell .sy-person-head h4{font-family:var(--sy-head-font);font-size:19px;font-weight:700;margin:2px 0 2px}
+#shiyi-product-shell .sy-person-head p{margin:0 0 6px}
+#shiyi-product-shell .sy-field-group{margin-top:12px}
+#shiyi-product-shell .sy-field-group>header{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-weight:600;font-size:13px;opacity:.85}
+#shiyi-product-shell .sy-field-group>header button{min-height:28px;font-size:12.5px;padding:2px 6px;border:0;background:transparent;color:var(--sy-accent)}
+#shiyi-product-shell .sy-field-row{border-bottom:1px solid var(--sy-border)}
+#shiyi-product-shell .sy-field-sum{display:grid;grid-template-columns:6.5em minmax(0,1fr) 12px;gap:8px;align-items:baseline;min-height:36px;padding:6px 0;cursor:pointer}
+#shiyi-product-shell .sy-field-sum>span:first-child{font-size:12.5px;opacity:.72}
+#shiyi-product-shell .sy-field-value{font-size:13.5px;min-width:0;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+#shiyi-product-shell .sy-field-row[data-clamp="3"] .sy-field-value{-webkit-line-clamp:3}
+#shiyi-product-shell .sy-field-caret{text-align:right;opacity:.5}
+#shiyi-product-shell .sy-field-row[data-open="1"] .sy-field-value{display:none}
+#shiyi-product-shell .sy-field-row[data-open="1"] .sy-field-caret{transform:rotate(90deg)}
+#shiyi-product-shell .sy-field-open{padding-bottom:8px}
+#shiyi-product-shell .sy-field-body{cursor:text;border-radius:var(--sy-radius-sm);padding:2px 0}
+#shiyi-product-shell .sy-field-full{font-size:13.5px;white-space:pre-wrap;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-field-src{margin:4px 0 0;font-size:12px;opacity:.65}
+#shiyi-product-shell .sy-field-bar{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+#shiyi-product-shell .sy-field-bar button{min-height:30px;font-size:12.5px;padding:3px 10px}
+#shiyi-product-shell .sy-person-empty{padding:14px 0;font-size:13px;opacity:.7}
