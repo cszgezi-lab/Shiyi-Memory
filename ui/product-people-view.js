@@ -1,5 +1,6 @@
 import { foldName, personaIdentity } from '../src/persona-identity.js';
 import { currentPersonaProfiles } from '../src/dynamic-persona.js';
+import { recordImportance } from '../src/product-memory.js';
 import { characterKeepsakes } from '../src/character-journal.js';
 import { characterRecordSubjects, explicitSubjectNames, factKey } from '../src/product-person-profiles.js';
 import { sourceLabel, recordTitle, epistemicLabel } from '../src/product-narrative.js';
@@ -147,12 +148,17 @@ const personaBindHTML = (group, profiles) => {
   </details>`;
 };
 
+const peopleStars = (record, category) => {
+  if (!record) return '';
+  const n = recordImportance({ ...record, category: record.category ?? category });
+  return `<span class="sy-stars sy-lv${n}" aria-label="重要度 ${n}/5">${'★'.repeat(n)}${'☆'.repeat(5 - n)}</span> `;
+};
 export function peopleDetailHTML(group, allProfiles = group?.profiles ?? []) {
   if (!group) return '<p class="sy-empty">暂无人物记录。已有档案、心迹、台词和人物属性会汇集在这里。</p>';
   const profileId = group.profiles[0]?.id ?? '';
-  const profileRows = group.profiles.slice(0, 2).map(p => `<div class="sy-people-entry"><p class="sy-help">${p.locked ? '已锁定 · ' : ''}${Number.isInteger(p.through) ? `依据至 #${p.through}` : '已保存档案'}${group.profiles.length > 1 ? ` · ${esc(p.stage ?? '未注明阶段')}` : ''}</p><p class="sy-people-prose">${preview(p.text, 480)}</p>${openButton(group, 'dynamic-persona', '查看档案与来源', p.id)}</div>`).join('');
-  const diaryRows = group.diaries.slice(0, 2).map(r => `<div class="sy-people-entry"><h6>${esc(r.data.stage ?? '未注明阶段')}</h6><p class="sy-help">${phase(r)} · ${esc(epistemicLabel(r.data.basis) ?? '依据未注明')}${r.data.origin === 'stage_observation' ? ' · 阶段观察，非逐字心声' : ''}</p><p class="sy-people-prose">${preview(r.data.text)}</p><p class="sy-help">${esc(sourceText(r.record))}</p></div>`).join('');
-  const dialogueRows = group.dialogues.slice(0, 2).map(r => `<div class="sy-people-entry"><p class="sy-help">${esc(r.subject)}${r.target ? ` → ${esc(r.target)}` : ''} · ${phase(r)}${r.data.provenance === 'user_authored' ? ' · 用户编写，非核对原话' : ''}</p><blockquote>${preview(r.data.text)}</blockquote>${r.data.context ? `<p>${preview(r.data.context, 160)}</p>` : ''}<p class="sy-help">${esc(sourceText(r.record))}</p></div>`).join('');
+  const profileRows = group.profiles.slice(0, 2).map(p => `<div class="sy-people-entry">${peopleStars(p)}<p class="sy-help">${p.locked ? '已锁定 · ' : ''}${Number.isInteger(p.through) ? `依据至 #${p.through}` : '已保存档案'}${group.profiles.length > 1 ? ` · ${esc(p.stage ?? '未注明阶段')}` : ''}</p><p class="sy-people-prose">${preview(p.text, 480)}</p>${openButton(group, 'dynamic-persona', '查看档案与来源', p.id)}</div>`).join('');
+  const diaryRows = group.diaries.slice(0, 2).map(r => `<div class="sy-people-entry"><h6>${peopleStars(r.record, 'personaChanges')}${esc(r.data.stage ?? '未注明阶段')}</h6><p class="sy-help">${phase(r)} · ${esc(epistemicLabel(r.data.basis) ?? '依据未注明')}${r.data.origin === 'stage_observation' ? ' · 阶段观察，非逐字心声' : ''}</p><p class="sy-people-prose">${preview(r.data.text)}</p><p class="sy-help">${esc(sourceText(r.record))}</p></div>`).join('');
+  const dialogueRows = group.dialogues.slice(0, 2).map(r => `<div class="sy-people-entry"><p class="sy-help">${peopleStars(r.record, 'performanceHints')}${esc(r.subject)}${r.target ? ` → ${esc(r.target)}` : ''} · ${phase(r)}${r.data.provenance === 'user_authored' ? ' · 用户编写，非核对原话' : ''}</p><blockquote>${preview(r.data.text)}</blockquote>${r.data.context ? `<p>${preview(r.data.context, 160)}</p>` : ''}<p class="sy-help">${esc(sourceText(r.record))}</p></div>`).join('');
   const sources = [...new Map(group.records.map(r => [r.id, r])).values()];
   const pendingBind = personaBindHTML(group, allProfiles);
   return `<h4 data-people-title tabindex="-1">${esc(group.name)}</h4>
