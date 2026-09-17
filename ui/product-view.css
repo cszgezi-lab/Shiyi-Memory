@@ -106,7 +106,7 @@
 #shiyi-product-shell [data-view=memory] .sy-card p:not(.sy-help) {font:400 16px/1.6 system-ui,sans-serif;}
 #shiyi-product-shell [data-view=memory] :is(.sy-help,.sy-field>span,.sy-tag) {font:400 13px/1.5 system-ui,sans-serif;letter-spacing:normal;}
 #shiyi-product-shell .sy-category-grid button {height:48px;justify-content:space-between;text-align:left;padding:6px 8px;flex-direction:row;align-items:center;gap:4px;}
-#shiyi-product-shell .sy-category-grid strong {font:500 13px/1.3 system-ui,sans-serif;display:block;min-height:0;}
+#shiyi-product-shell .sy-category-grid strong {font:500 13px/1.3 system-ui,sans-serif;display:block;min-height:0;white-space:nowrap;overflow-wrap:normal;}
 #shiyi-product-shell .sy-category-grid small {font:400 13px/1.5 system-ui,sans-serif;opacity:.75;white-space:nowrap;flex-shrink:0;}
 #shiyi-product-shell .sy-batch-filters {display:grid;grid-template-columns:minmax(0,1fr) 82px;gap:8px;}
 #shiyi-product-shell .sy-batch-filters>.sy-field:first-child {grid-column:1/-1;}
@@ -173,6 +173,21 @@
 #shiyi-product-shell [data-add-memory]:not([open]),#shiyi-product-shell [data-custom-modules]:not([open]) {grid-column:auto;}
 #shiyi-product-shell [data-view=memory]>.sy-help {display:none;}
 #shiyi-product-shell .sy-filters {margin:8px 0;}
+/* 重要度：五级星标，颜色随等级变化，让重要事件一眼跳出来。 */
+#shiyi-product-shell .sy-stars {font-size:12px;letter-spacing:-.5px;margin-right:6px;white-space:nowrap;font-weight:400;}
+#shiyi-product-shell .sy-lv1 {color:#6f7b86;}
+#shiyi-product-shell .sy-lv2 {color:#7fa3b8;}
+#shiyi-product-shell .sy-lv3 {color:#86b3a5;}
+#shiyi-product-shell .sy-lv4 {color:#d8b25e;}
+#shiyi-product-shell .sy-lv5 {color:#e0865e;}
+#shiyi-product-shell .sy-memory-row[data-memory-level="4"] h4 {color:#e8d3a4;}
+#shiyi-product-shell .sy-memory-row[data-memory-level="5"] h4 {color:#f0c3a4;font-weight:650;}
+#shiyi-product-shell .sy-memory-row[data-memory-level="1"] h4 {opacity:.82;}
+/* A 390px screen cannot fit the search box beside the category filter: the input
+   was squeezed to a few words. Each control gets its own row. */
+#shiyi-product-shell [data-view=memory] .sy-filters {display:flex;flex-direction:column;gap:8px;}
+#shiyi-product-shell [data-view=memory] .sy-filters input[data-search] {width:100%;}
+#shiyi-product-shell [data-view=memory] .sy-filters select {flex:0 0 auto;width:100%;}
 @media(max-width:430px){#shiyi-product-shell .sy-card {padding:10px;margin:8px 0;}#shiyi-product-shell .sy-category-grid {gap:6px;}#shiyi-floating-window>.sy-nav button {font-size:13px;white-space:nowrap;}}
 #shiyi-product-shell .sy-dictionary-row>.sy-tag {margin-left:8px;}
 #shiyi-product-shell [data-vector-entries] .sy-info-row {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px;}

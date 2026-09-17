@@ -1,6 +1,6 @@
 import { readViewState } from '../src/product-view-scheduling.js';
 import { esc,button,field,setting } from '../src/product-settings-ui.js';
-import { CATEGORY_LABELS,recordDescription,readable,renderMemoryCard } from '../src/product-memory.js';
+import { CATEGORY_LABELS,CATEGORY_TILE_LABELS,recordDescription,readable,renderMemoryCard } from '../src/product-memory.js';
 import { characterProfiles,factValue,factSubject,factKey } from '../src/product-person-profiles.js';
 import { recordTitle,sourceLabel,narrativeText } from '../src/product-narrative.js';
 import { MEMORY_CATEGORIES } from '../src/product-batches.js';
@@ -27,10 +27,12 @@ export function memoryPage(cards,{q='',category='all',page=1,pageSize=10}={}){
   const size=[10,20,50].includes(Number(pageSize))?Number(pageSize):10,pages=Math.max(1,Math.ceil(entries.length/size)),current=Math.max(1,Math.min(pages,Math.floor(Number(page))||1));
   return {entries:entries.slice((current-1)*size,current*size),total:entries.length,pages,page:current,pageSize:size};
 }
+/** Star rank shown in front of a record title. The 1–5 level comes from the
+ * summary model's importance (1–10) or, for older records, from local evidence. */
+const starMarkup=level=>{const n=Math.min(5,Math.max(1,Number(level)||3));return `<span class="sy-stars sy-lv${n}" aria-label="重要度 ${n}/5">${'★'.repeat(n)}${'☆'.repeat(5-n)}</span>`;};
 export function memoryListHTML(cards,{settings={},q='',category='all',opened=new Set(),page=1,pageSize=10}={}){
   if(category==='none'&&!q.trim())return '';
-  const selected=memoryPage(cards,{q,category,page,pageSize}),rows=[];
-  const open=id=>opened.has(id)?'open':'';
+  const selected=memoryPage(cards,{q,category,page,pageSize}),rows=[];  const open=id=>opened.has(id)?'open':'';
   for(const {card:c,profile} of selected.entries){
     if(profile){
       const fields=profile.fields.map((f,i)=>`<details class="sy-profile-field" data-memory-detail="${esc(`${profile.id}:${i}`)}" ${open(`${profile.id}:${i}`)}><summary>${esc(f.label)}${f.versions.length>1?` <small>· ${f.versions.length} 项内容 / 变化</small>`:''}<span class="sy-profile-preview">${esc(narrativeText(f.versions[0]?.value).slice(0,140))}</span></summary>${f.versions.map(v=>`<section class="sy-profile-value"><div class="sy-narrative">${esc(v.value===null?'已清空 / 未赋值':narrativeText(v.value))}</div><p class="sy-help">${esc(sourceLabel({sourceRefs:v.records.flatMap(r=>r.sourceRefs??[]),sourceFloors:v.records.flatMap(r=>r.sourceFloors??[])}))}</p>${v.records.length===1?`<div class="sy-packet sy-help">${esc(renderMemoryCard(v.records[0],settings,{metadataOnly:true,detail:true}))}</div>`:`<details data-memory-detail="${esc(`evidence:${v.records[0].id}`)}" ${open(`evidence:${v.records[0].id}`)}><summary>来源与变化记录 · ${v.records.length} 条</summary>${v.records.map(r=>`<div class="sy-profile-evidence"><p class="sy-help">${esc(sourceLabel(r))}</p><div class="sy-packet sy-help">${esc(renderMemoryCard(r,settings,{metadataOnly:true,detail:true}))}</div></div>`).join('')}</details>`}</section>`).join('')}</details>`).join('');
@@ -40,7 +42,7 @@ export function memoryListHTML(cards,{settings={},q='',category='all',opened=new
     const meta=renderMemoryCard(c,settings,{metadataOnly:true,detail:true});
     const original=originalSourceText(c);
     const originalHTML=original?`<details data-memory-detail="${esc(`original:${c.id}`)}" ${open(`original:${c.id}`)}><summary>查看原文依据</summary><p class="sy-help">总结时保存的本楼原文；不是额外生成的摘要。</p><div class="sy-packet sy-narrative">${esc(original)}</div></details>`:'';
-    rows.push(`<article class="sy-card sy-memory-row" data-record-id="${esc(c.id)}"><span class="sy-tag">${CATEGORY_LABELS[c.category]??'记忆'}</span><h4>${esc(recordTitle(c))}</h4><p class="sy-help sy-memory-meta">${esc(sourceLabel(c))}</p>${c.recallSummary?`<p class="sy-narrative sy-memory-brief">${esc(c.recallSummary)}</p>`:''}${c.viewpoints?.length||c.keyDialogues?.length?`<p class="sy-help">人物观念 ${c.viewpoints?.length??0} 条 · 关键台词 ${c.keyDialogues?.length??0} 条</p>`:''}<details data-memory-detail="${esc(c.id)}" ${open(c.id)}><summary>${memoryDetailLabel(c.category)}</summary><div class="sy-packet sy-narrative">${esc(recordDescription(c))}</div>${meta?`<div class="sy-packet sy-help">${esc(meta)}</div>`:''}${c.tags?.length?`<p class="sy-help">检索标签：${esc(c.tags.join('、'))}</p>`:''}</details>${originalHTML}<details class="sy-record-actions" data-memory-detail="${esc(`actions:${c.id}`)}" ${open(`actions:${c.id}`)}><summary>操作</summary>${actions(c)}</details></article>`);
+    rows.push(`<article class="sy-card sy-memory-row" data-memory-level="${c.importanceLevel??3}" data-record-id="${esc(c.id)}"><span class="sy-tag">${CATEGORY_LABELS[c.category]??'记忆'}</span><h4>${starMarkup(c.importanceLevel)}${esc(recordTitle(c))}</h4><p class="sy-help sy-memory-meta">${esc(sourceLabel(c))}</p>${c.recallSummary?`<p class="sy-narrative sy-memory-brief">${esc(c.recallSummary)}</p>`:''}${c.viewpoints?.length||c.keyDialogues?.length?`<p class="sy-help">人物观念 ${c.viewpoints?.length??0} 条 · 关键台词 ${c.keyDialogues?.length??0} 条</p>`:''}<details data-memory-detail="${esc(c.id)}" ${open(c.id)}><summary>${memoryDetailLabel(c.category)}</summary><div class="sy-packet sy-narrative">${esc(recordDescription(c))}</div>${meta?`<div class="sy-packet sy-help">${esc(meta)}</div>`:''}${c.tags?.length?`<p class="sy-help">检索标签：${esc(c.tags.join('、'))}</p>`:''}</details>${originalHTML}<details class="sy-record-actions" data-memory-detail="${esc(`actions:${c.id}`)}" ${open(`actions:${c.id}`)}><summary>操作</summary>${actions(c)}</details></article>`);
   }
   return rows.join('')||'<p class="sy-empty">没有符合条件的记忆。</p>';
 }
@@ -92,7 +94,7 @@ export function mountMemoryManagement({panel,app,run,host}){
   function paint(state,{memory=true,batches=true}={}){
     const nextMemoryStamp=memory?JSON.stringify([state.cardRevision??state.cards,state.modules,currentCategory.value]):memoryStamp;
     if(memory&&nextMemoryStamp!==memoryStamp){memoryStamp=nextMemoryStamp;
-    const grid=$('[data-memory-categories]');grid.innerHTML=MEMORY_CATEGORIES.map(key=>`<button type="button" data-memory-category="${key}" ${currentCategory.value===key?'class="active"':''}><strong>${CATEGORY_LABELS[key]}</strong><small>${key==='entityFactChanges'?`${characterProfiles(state.cards).length} 份`:`${state.cards.filter(c=>!c.customModuleId&&c.category===key).length} 条`}</small></button>`).join('');
+    const grid=$('[data-memory-categories]');grid.innerHTML=MEMORY_CATEGORIES.map(key=>`<button type="button" data-memory-category="${key}" ${currentCategory.value===key?'class="active"':''}><strong>${CATEGORY_TILE_LABELS[key]}</strong><small>${key==='entityFactChanges'?`${characterProfiles(state.cards).length} 份`:`${state.cards.filter(c=>!c.customModuleId&&c.category===key).length} 条`}</small></button>`).join('');
     for(const b of grid.querySelectorAll('button')){b.setAttribute('aria-expanded',String(currentCategory.value===b.dataset.memoryCategory));b.addEventListener('click',()=>selectCategory(b.dataset.memoryCategory,true));}
     const options=JSON.stringify(state.modules??[]);if(options!==lastOptions){lastOptions=options;const select=$('[data-note-category]'),value=select.value;select.innerHTML=`<optgroup label="基础区块">${categoryOptions()}</optgroup>`+(state.modules?.some(m=>!m.archived)?`<optgroup label="扩展模块">${state.modules.filter(m=>!m.archived).map(m=>`<option value="module:${esc(m.id)}">${esc(m.name)}${m.mode==='mvu'?'（MVU 只读）':''}</option>`).join('')}</optgroup>`:'');if([...select.options].some(o=>o.value===value))select.value=value;syncFields();}
     const select=$('[data-note-event]'),value=select.value;select.innerHTML='<option value="">请选择事件</option>'+state.cards.filter(c=>c.category==='events').map(c=>`<option value="${esc(c.id)}">${esc(recordDescription(c).slice(0,60))}</option>`).join('');select.value=value;

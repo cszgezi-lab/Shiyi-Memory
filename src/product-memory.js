@@ -11,7 +11,27 @@ import { originalSourceText, sourceRecallExcerpt, sourceQuote, evidenceTerms, so
 import { innerLifeText, importantDialoguePacket,markDiaryHistory,characterKeepsakes } from './character-journal.js';
 
 export const CATEGORY_LABELS = Object.freeze({ events: '事件', awarenessChanges: '知情', entityFactChanges: '人物与事实', relationshipChanges: '关系', personaChanges: '人设变化', commitmentChanges: '约定', performanceHints: '演绎参考', summaryView: '楼层摘要', conflicts: '冲突与疑点', knowledge: '资料' });
+/** Short names for the compact category tiles only. At 390px the full labels
+ * ("人物与事实", "冲突与疑点") wrapped onto two lines inside the 48px tile. The
+ * published tile metrics are a fixed contract, so the tile uses a shorter word
+ * while every other surface keeps the full name. */
+export const CATEGORY_TILE_LABELS = Object.freeze({ events: '事件', awarenessChanges: '知情', entityFactChanges: '人物', relationshipChanges: '关系', personaChanges: '人设', commitmentChanges: '约定', performanceHints: '演绎', summaryView: '楼层', conflicts: '疑点', knowledge: '资料' });
 export const readable = value => typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value);
+/** Star level (1–5) for a record, used to colour and rank rows in the memory and
+ * people pages. The summary model supplies importance 1–10; when a record has
+ * none (older memories) the level is derived from evidence the program already
+ * holds, so the UI is never blank and no extra model call is needed. */
+export function recordImportance(record){
+  const raw=typeof record?.importance==='number'?record.importance:Number(record?.importance);
+  const score=Number.isFinite(raw)&&raw>=1?Math.min(10,Math.round(raw)):(()=>{
+    const floors=(record?.sourceRefs??[]).length||(record?.sourceFloors??[]).length;
+    const links=1+(record?.eventRefs??[]).length+(record?.eventRef?1:0)+((record?.participants??[]).length>1?1:0);
+    if(record?.category==='performanceHints'||record?.category==='summaryView')return 3;
+    if(record?.category==='conflicts')return 7;
+    return Math.max(3,Math.min(7,links*2+(floors>1?1:0)));
+  })();
+  return Math.min(5,Math.max(1,Math.ceil(score/2)));
+}
 const sameSource=(a,b)=>a.sourceId===b.sourceId&&['fragmentId','version','swipeId','hash','contentHash'].every(k=>(a[k]??null)===(b[k]??null));
 const sharesSource=(a,b)=>(a.sourceRefs??[]).some(x=>(b.sourceRefs??[]).some(y=>sameSource(x,y)));
 export function recordDescription(record) {
@@ -66,6 +86,7 @@ export function memoryCards(records = {}, { hidden = [], knowledge = [], include
       const followUps = followUpsFor(refIds).filter(a => a.id !== record.id);
       const description = recordDescription({...record,category});
       const card={ ...enrichRetrievalMetadata(clone(record),[description,...(record.keyDialogues??[]).map(q=>q.text)].join('\n')), id: record.id, category, description, awareness, followUps, temporal: record.temporal ?? record.storyTime ?? record.time ?? null };
+      card.importanceLevel=recordImportance({...record,category});
       if(category==='events' && awareness.length!==associated.length)card.associationReviewCount=associated.length-awareness.length;
       if(category==='summaryView'||['awarenessChanges','relationshipChanges','personaChanges','commitmentChanges','performanceHints','conflicts'].includes(category)){
         const explicit=links(record);

@@ -57,7 +57,7 @@ export const SUMMARY_OUTPUT_CONTRACT = Object.freeze({
   }),
   requiredFields: Object.freeze(['scope(host-bound)', 'operationId(host-bound)', 'expectedRevision(host-bound)', 'schemaVersion', 'events', 'awarenessChanges', 'entityFactChanges', 'relationshipChanges', 'personaChanges', 'commitmentChanges', 'performanceHints', 'summaryView', 'conflicts', 'coverage']),
   fields: Object.freeze({
-    events: Object.freeze(['id', 'title', 'description', 'recallSummary', 'participants', 'location', 'temporal', 'sourceRefs', 'subject', 'action', 'object', 'state', 'epistemicStatus', 'perspective', 'mergeInto(optional)', 'keyDialogues(optional)', 'viewpoints(optional)']),
+    events: Object.freeze(['id', 'title', 'description', 'recallSummary', 'participants', 'location', 'temporal', 'sourceRefs', 'subject', 'action', 'object', 'state', 'epistemicStatus', 'perspective', 'importance(optional,1-10)', 'mergeInto(optional)', 'keyDialogues(optional)', 'viewpoints(optional)']),
     awarenessChanges: Object.freeze(['id', 'eventRef|eventRefs', 'actorId|person|audience', 'knowledge|fact|content', 'description(optional)', 'status', 'via', 'learnedAt', 'sourceRefs']),
     entityFactChanges: Object.freeze(['id', 'entity|entityId', 'field|key', 'to|value|newValue', 'fieldLabel(optional)', 'temporal(optional)', 'validFrom(optional)', 'validUntil(optional)', 'epistemicStatus', 'sourceRefs']),
     relationshipChanges: Object.freeze(['id', 'from|subject', 'to|object', 'description', 'evidenceKind', 'eventRefs(optional)', 'temporal(optional)', 'epistemicStatus', 'sourceRefs']),

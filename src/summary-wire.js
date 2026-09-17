@@ -20,7 +20,7 @@ export function moduleSummaryContract(legacy) {
     schedulePrecisionRules:'同一安排含集合、出发、预约等不同时间时，content和temporal完整区分各动作及时间，不以集合时间冒充检查/演出开始时间。后来收紧的限制（例如从允许慢练变成禁止练习）是新状态，旧许可必须留在旧时间内，不能汇集多个来源后继续宣称旧许可有效。',
     root:'{format,entityFactChanges:[],personaChanges:[],performanceHints:[],events:[],awarenessChanges:[],relationshipChanges:[],commitmentChanges:[],conflicts:[],summaryView:[],excluded:[],unprocessed:[]}',
     fields:{
-      events:['id','sourceRefs(必填，逐字引用输入来源)','perspective(必填，无法判断用unknown)','title','description','recallSummary(optional)','participants','location','temporal','state','epistemicStatus','mergeInto(optional)','keyDialogues(optional,有关键原话时提取)','viewpoints(optional,有观念证据时提取)','entities(optional)','tags(optional)'],
+      events:['id','sourceRefs(必填，逐字引用输入来源)','perspective(必填，无法判断用unknown)','title','description','recallSummary(optional)','participants','location','temporal','state','epistemicStatus','importance(optional,1-10)','mergeInto(optional)','keyDialogues(optional,有关键原话时提取)','viewpoints(optional,有观念证据时提取)','entities(optional)','tags(optional)'],
       summaryView:['sourceId','fragmentId(only when present in source)','text','participants','location','temporal','eventRefs(optional)'],
       awarenessChanges:['sourceId or sourceRefs','person(单个人名，不拼接多个人；同一命题多人知情分别记录)','knowledge','status','via','learnedAt','acquisitionEvidence:{holder:[{sourceId,part}],content:[{sourceId,part}],access:"该人物实际获知范围与限制"}(原文无段号的旧接口可用quote逐字原文)','eventRef or recordRef(optional)'],
       entityFactChanges:['sourceId or sourceRefs','entity','field(普通属性用中文名称，不加custom:前缀；已授权扩展字段例外)','from(optional previous value)','to(含原文的适用范围与限制，不只取有利结论)','validFrom(optional)','validUntil(optional)','epistemicStatus','id(only if referenced by knowledge)'],

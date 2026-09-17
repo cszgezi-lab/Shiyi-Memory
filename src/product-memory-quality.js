@@ -78,7 +78,7 @@ updates 只返回确需补充/修改的字段，已有正确部分不动；不�
 
 const allowed=new Set(['description','text','knowledge','content','recallSummary','entities','tags','temporal','learnedAt','epistemicStatus','before','after','context','scope','object','field','to','validFrom','validUntil','participants','location','state','status','via','innerLife','keyDialogues','acquisitionEvidence']);
 const categoryFields={
-  events:['description','recallSummary','participants','location','temporal','keyDialogues'],
+  events:['description','recallSummary','participants','location','temporal','importance','keyDialogues'],
   awarenessChanges:['knowledge','recallSummary','status','via','learnedAt','acquisitionEvidence'],
   entityFactChanges:['field','to','context','validFrom','validUntil','temporal','recallSummary'],
   relationshipChanges:['description','before','after','context','scope','object','temporal','keyDialogues'],
