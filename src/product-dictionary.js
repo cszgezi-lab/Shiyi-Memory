@@ -105,11 +105,26 @@ export function updateDictionaryOverride(value,{name,aliases='',indexWords='',di
   if(!remove){const names=Array.isArray(aliases)?aliases:String(aliases).split(/[,，\n]/),related=Array.isArray(indexWords)?indexWords:String(indexWords).split(/[,，\n]/);if([...names,...related].some(n=>clean(n)&&(!validTerm(n)||/[=|!\n]/.test(n))))throw new Error('别称及检索词需要 1–80 字，不使用“他、她、主角”等泛称');rest.push(`${deleted?'!!':disabled?'!':''}${name.trim()}=${names.map(clean).filter(Boolean).join(',')}${related.some(clean)?` | ${related.map(clean).filter(Boolean).join(',')}`:''}`);}
   const result=rest.filter(Boolean).join('\n');if(result.length>12000)throw new Error('手动字典超过可保存长度');return result;
 }
+/** Which entity kinds the model actually supplied, so the dictionary panel can say
+ * whether a chat only ever named people instead of silently looking complete. */
+export function dictionaryKinds(entries=[]){
+  const counts={};
+  for(const entry of entries)if(!entry.deleted)counts[entry.kind]=(counts[entry.kind]??0)+1;
+  return counts;
+}
 export function buildDictionary(cards=[],{aliases='',automatic=true}={}) {
   const words=new Map(),tagSources=new Map();
   const names=[...new Set(cards.flatMap(c=>normalizeTerms(c.entities).filter(t=>t.kind==='人物').map(t=>t.name)))];
   for(const raw of cards){
-    const card=enrichRetrievalMetadata(raw,[raw.description,raw.text,...(raw.keyDialogues??[]).flatMap(q=>[q.text,q.to,q.speaker])].filter(Boolean).join('\n'),names);
+    const evidence=[raw.description,raw.text,...(raw.keyDialogues??[]).flatMap(q=>[q.text,q.to,q.speaker])].filter(Boolean).join('\n');
+    const card=enrichRetrievalMetadata(raw,evidence,names);
+    // 结构化字段里的地点名也进字典：模型常常只把人物写进 entities，把地点写进
+    // location，导致检索时按地名找不到那批记忆。这里只搬运记录里已经写好、
+    // 且确实出现在本条正文中的地名，不改记录本身。
+    const projected=typeof card.location==='string'?clean(card.location):'';
+    if(projected&&validTerm(projected)&&evidence.includes(projected)&&!card.entities.some(t=>key(t.name)===key(projected))){
+      card.entities=[...card.entities,{name:projected,kind:'地点',aliases:[],indexWords:[]}];
+    }
     if(automatic)for(const term of normalizeTerms(card.entities)){
       const id=key(term.name),previous=words.get(id)??{...term,aliases:[],sources:[],manual:false,disabled:false};
       previous.aliases=[...new Set([...previous.aliases,...term.aliases,...(term.name!==previous.name?[term.name]:[])])].slice(0,32);

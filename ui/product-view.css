@@ -184,7 +184,7 @@
 #shiyi-product-shell .sy-dictionary-row .sy-actions {gap:6px;}
 #shiyi-product-shell [data-view=memory] {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 8px;}
 #shiyi-product-shell [data-view=memory]> * {grid-column:1/-1;min-width:0;}
-#shiyi-product-shell [data-add-memory]:not([open]),#shiyi-product-shell [data-custom-modules]:not([open]) {grid-column:auto;}
+#shiyi-product-shell [data-custom-modules]:not([open]) {grid-column:auto;}
 #shiyi-product-shell [data-view=memory]>.sy-help {display:none;}
 #shiyi-product-shell .sy-filters {margin:8px 0;}
 /* 重要度：五级星标，颜色随等级变化，让重要事件一眼跳出来。 */
@@ -267,11 +267,6 @@
 #shiyi-product-shell .sy-people-reading h5{font-size:15px;font-weight:600;margin:0 0 8px}
 #shiyi-product-shell .sy-people-reading h6{font-size:14px;font-weight:500;margin:4px 0}
 #shiyi-product-shell .sy-people-reading h5 small{font-weight:400;opacity:.7}
-#shiyi-product-shell .sy-people-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;margin:12px 0}
-#shiyi-product-shell .sy-people-stats dt{font-size:12px;opacity:.72}
-#shiyi-product-shell .sy-people-stats dd{font-size:17px;margin:0;font-variant-numeric:tabular-nums}
-#shiyi-product-shell .sy-people-section{padding:14px 0;border-top:1px solid var(--sy-border)}
-#shiyi-product-shell .sy-people-entry+.sy-people-entry{margin-top:12px}
 #shiyi-product-shell .sy-people-reading p{margin:6px 0;overflow-wrap:anywhere}
 #shiyi-product-shell .sy-people-prose,#shiyi-product-shell .sy-people-reading blockquote{white-space:pre-wrap;font-size:14px;line-height:1.8;overflow-wrap:anywhere}
 #shiyi-product-shell .sy-people-reading blockquote{margin:8px 0;padding:4px 10px;border-left:2px solid var(--sy-accent)}

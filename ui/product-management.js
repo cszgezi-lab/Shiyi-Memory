@@ -1,4 +1,5 @@
 import { readViewState } from '../src/product-view-scheduling.js';
+import { dictionaryKinds } from '../src/product-dictionary.js';
 import { esc,button,field,setting } from '../src/product-settings-ui.js';
 import { CATEGORY_LABELS,CATEGORY_TILE_LABELS,CATEGORY_PAGE_HINT,EVENT_CATEGORY_LABELS,PERSON_CATEGORIES,recordDescription,readable,renderMemoryCard } from '../src/product-memory.js';
 import { characterProfiles,factValue,factSubject,factKey } from '../src/product-person-profiles.js';
@@ -147,8 +148,11 @@ export function mountMemoryManagement({panel,app,run,host}){
   }
   function addFact(subject){
     selectCategory('entityFactChanges');
-    $('[data-add-memory]').open=true;$('[data-note-subject]').value=subject;$('[data-note-field]').value='';$('[data-note]').value='';
-    $('[data-add-memory]').scrollIntoView({block:'nearest'});$('[data-note-field]').focus({preventScroll:true});
+    // 新增表单现在收在工具栏的折叠块里（data-add-memory-inline），要点开那一层。
+    const box=$('[data-add-memory-inline]');
+    if(box)box.open=true;
+    $('[data-note-subject]').value=subject;$('[data-note-field]').value='';$('[data-note]').value='';
+    box?.scrollIntoView({block:'nearest'});$('[data-note-field]').focus({preventScroll:true});
   }
   panel.addEventListener('shiyi-edit-memory',e=>edit(e.detail));
   let memoryStamp='';
@@ -177,7 +181,7 @@ export function mountMemoryManagement({panel,app,run,host}){
   return {paint,edit,remember,addFact,selectCategory:key=>selectCategory(key)};
 }
 
-export function dictionaryHTML(){return `<div class="sy-card"><h4>自动字典与标签</h4><p class="sy-help">来自当前聊天的总结与已启用的知识库。别称指同一对象的另一种叫法；输入别称可帮助找到正式名称对应的记忆。关联词是相关主题，不会合并人物或让角色自动知情。</p>${field('查找词条','<input data-dictionary-search placeholder="姓名、别称、地点">')}<label class="sy-toggle"><span>显示已删除词条</span><input type="checkbox" data-dictionary-deleted></label><p data-dictionary-count class="sy-help"></p><div data-dictionary-list></div><div class="sy-actions"><button type="button" data-dictionary-prev>上一页</button><button type="button" data-dictionary-next>下一页</button></div><details><summary>已生成的检索标签</summary><div data-dictionary-tags></div></details><details data-dictionary-editor><summary>新增词条</summary>${field('正式名称','<input data-dictionary-name maxlength="80">')}${field('别称','<input data-dictionary-aliases placeholder="用逗号分隔">')}${field('关联检索词（不是别名）','<input data-dictionary-related placeholder="例如校刊、转校手续；用逗号分隔">')}<p class="sy-help">手动校正作为全局设置保存；校正别称不会改变人物事实。</p><div class="sy-actions"><button type="button" data-dictionary-save>保存词条</button><button type="button" data-dictionary-clear>新增另一条</button></div></details></div>`;}
+export function dictionaryHTML(){return `<div class="sy-card"><h4>自动字典与标签</h4><p class="sy-help">来自当前聊天的总结与已启用的知识库。别称指同一对象的另一种叫法；输入别称可帮助找到正式名称对应的记忆。关联词是相关主题，不会合并人物或让角色自动知情。</p><p data-dictionary-kinds class="sy-help"></p>${field('查找词条','<input data-dictionary-search placeholder="姓名、别称、地点">')}<label class="sy-toggle"><span>显示已删除词条</span><input type="checkbox" data-dictionary-deleted></label><p data-dictionary-count class="sy-help"></p><div data-dictionary-list></div><div class="sy-actions"><button type="button" data-dictionary-prev>上一页</button><button type="button" data-dictionary-next>下一页</button></div><details><summary>已生成的检索标签</summary><div data-dictionary-tags></div></details><details data-dictionary-editor><summary>新增词条</summary>${field('正式名称','<input data-dictionary-name maxlength="80">')}${field('别称','<input data-dictionary-aliases placeholder="用逗号分隔">')}${field('关联检索词（不是别名）','<input data-dictionary-related placeholder="例如校刊、转校手续；用逗号分隔">')}<p class="sy-help">手动校正作为全局设置保存；校正别称不会改变人物事实。</p><div class="sy-actions"><button type="button" data-dictionary-save>保存词条</button><button type="button" data-dictionary-clear>新增另一条</button></div></details></div>`;}
 export function mountDictionary({panel,app,run,save=input=>app.saveDictionaryEntry(input)}){
   const $=s=>panel.querySelector(s);if(!$('[data-dictionary-list]'))return {paint(){}};
   let page=1,snapshot=null,signature='';const drafts=new Map();
@@ -186,6 +190,12 @@ export function mountDictionary({panel,app,run,save=input=>app.saveDictionaryEnt
     snapshot=s;const q=$('[data-dictionary-search]').value.trim().toLocaleLowerCase(),entries=(s.dictionary?.entries??[]).filter(e=>!e.deleted||$('[data-dictionary-deleted]').checked).filter(e=>`${e.name} ${e.aliases.join(' ')} ${(e.indexWords??[]).join(' ')}`.toLocaleLowerCase().includes(q));
     const pages=Math.max(1,Math.ceil(entries.length/20));page=Math.min(pages,page);const stamp=JSON.stringify([entries,s.dictionary?.tags,page,[...drafts.keys()]]);if(signature===stamp)return;signature=stamp;
     $('[data-dictionary-count]').textContent=`${entries.length} 个词条 · ${page} / ${pages} 页`;
+    // 只收了人物时明说：模型常常只把人物写进 entities，地名/组织/物品要靠它按合同补。
+    const kinds=dictionaryKinds(s.dictionary?.entries??[]),labels=Object.entries(kinds).map(([kind,n])=>`${kind} ${n}`).join(' · ');
+    const onlyPeople=Object.keys(kinds).length===1&&kinds['人物'];
+    if($('[data-dictionary-kinds]'))$('[data-dictionary-kinds]').textContent=labels
+      ?`当前收了：${labels}${onlyPeople?'（只有人物。地点、组织、物品要看总结是否按合同写进 entities；地点已从事件的地点字段兜底收录）':''}`
+      :'还没有词条。';
     $('[data-dictionary-prev]').disabled=page===1;$('[data-dictionary-next]').disabled=page===pages;
     $('[data-dictionary-list]').innerHTML=entries.slice((page-1)*20,page*20).map(e=>`<article class="sy-dictionary-row" data-word-row="${esc(e.name)}"><strong>${esc(e.name)}</strong><span class="sy-tag">${esc(e.kind)}${e.deleted?' · 已删除':e.disabled?' · 已停用':e.manual?' · 已校正':' · 自动'}</span><p>别称：${esc(e.aliases.join('、')||'暂无')}</p><p>关联检索：${esc((e.indexWords??[]).join('、')||'暂无')}</p>${e.ambiguous.length?`<p class="sy-help">同名待区分：${esc(e.ambiguous.join('、'))}</p>`:''}<p class="sy-help">${esc(e.sources.slice(0,3).map(s=>s.title).join('；')||'用户添加')}</p><div class="sy-actions"><button type="button" data-word-delete="${esc(e.name)}">${e.deleted?'恢复词条':'删除'}</button><button type="button" data-word-edit="${esc(e.name)}">校正</button><button type="button" data-word-disable="${esc(e.name)}">${e.disabled?'启用':'停用'}</button>${e.manual?`<button type="button" data-word-reset="${esc(e.name)}">撤销手动校正</button>`:''}</div>${drafts.has(e.name)?editHTML(e.name,drafts.get(e.name)):''}</article>`).join('')||'<p class="sy-empty">还没有词条。完成新总结或知识库分析后自动生成，也可以手动添加。</p>';
     $('[data-dictionary-tags]').textContent=(s.dictionary?.tags??[]).map(t=>`${t.name} · ${t.count} 条`).join('　')||'暂无标签；可在记忆的修改界面维护。';
