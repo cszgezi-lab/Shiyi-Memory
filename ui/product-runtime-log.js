@@ -5,11 +5,10 @@ import { failureText,productFailure } from '../src/product-feedback.js';
 import { safeValidationIssues, validationIssueText } from '../src/validation-diagnostics.js';
 import {DIAGNOSTIC_REASONS,DIAGNOSTIC_PURPOSES,DIAGNOSTIC_STAGES,DIAGNOSTIC_ACTIONS,UPSTREAM_CODES,UPSTREAM_HINTS,PERSONA_STEPS,errorDiagnostics} from '../src/diagnostics.js';
 
-export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help">保留最近 2000 条，最多 2 MB。记录请求、解析、校验与保存过程；不包含 Key、聊天正文或模型原文。导出当前内存快照，不等待任务或写盘完成，不受筛选和分页影响。</p><div class="sy-actions"><button type="button" data-log-export>导出日志</button><button type="button" data-log-issues-text>只看失败（最近 50 条）</button><button type="button" data-log-text>查看／复制全部文本</button><button type="button" data-log-clear>清空日志</button></div><p data-log-export-status class="sy-help" role="status"></p><details data-log-fallback hidden><summary>日志文本（文件导出不可用时也能复制）</summary><textarea data-log-text-value readonly rows="6" aria-label="日志文本"></textarea><div class="sy-actions"><button type="button" data-log-copy>复制全部文本</button><button type="button" data-log-close>收起文本</button></div></details><label class="sy-field"><span>显示</span><select data-log-filter><option value="all">全部记录</option><option value="issues">失败与警告</option><option value="vectors">向量索引</option><option value="summary">总结</option><option value="merge">事件合并</option><option value="api">API 与助手</option></select></label><p data-log-storage class="sy-help" role="status"></p><div data-log-list></div><div class="sy-batch-pagination"><button type="button" data-log-prev>上一页</button><span data-log-page></span><button type="button" data-log-next>下一页</button></div>`;}
+export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help">保留最近 2000 条，最多 2 MB。记录请求、解析、校验与保存过程；不包含 Key、聊天正文或模型原文。导出当前内存快照，不等待任务或写盘完成，不受筛选和分页影响。</p><div class="sy-actions"><button type="button" data-log-export>导出日志</button><button type="button" data-log-issues-text>只看失败（最近 50 条）</button><button type="button" data-log-text>查看／复制全部文本</button><button type="button" data-log-clear>清空日志</button></div><p data-log-export-status class="sy-help" role="status"></p><details data-log-fallback hidden><summary>日志文本（文件导出不可用时也能复制）</summary><textarea data-log-text-value readonly rows="6" aria-label="日志文本"></textarea><div class="sy-actions"><button type="button" data-log-copy>复制全部文本</button><button type="button" data-log-close>收起文本</button></div></details><label class="sy-field"><span>显示</span><select data-log-filter><option value="all">全部记录</option><option value="issues">失败与警告</option><option value="vectors">向量索引</option><option value="summary">总结</option><option value="merge">事件合并</option><option value="api">API 与助手</option></select></label><p data-log-storage class="sy-help" role="status"></p><div data-log-list></div><div class="sy-batch-pagination" data-log-pager><button type="button" data-log-prev>上一页</button><span data-log-page></span><button type="button" data-log-next>下一页</button></div>`;}
 const fields={readingOriginalChars:'原始正文字符数',readingSafeChars:'安全正文字符数',readingOutputChars:'读取副本字符数',readingFilteredChars:'额外过滤字符数',readingFallbacks:'回退原安全正文的楼数',requestNumber:'向量请求序号',requestItems:'输入片段数',receivedVectors:'返回向量数',inputChars:'本次输入字符数',longestInputChars:'最长片段字符数',vectorDimensions:'向量维度',indexedItems:'已保存索引条数',pendingItems:'未完成索引条数',failedItems:'失败索引条数',batchNumber:'总结批次',childIndex:'内部子批（从 0 计）',sourceCount:'读取消息数',inputLimit:'输入预算',inputUnits:'实际输入估算',elapsedMs:'耗时（毫秒）',status:'HTTP 状态',expected:'应有逐楼摘要',received:'收到摘要条数',covered:'完整对应楼数',invalidRows:'来源无效或多楼合并',duplicateCount:'重复摘要条数',promptTokens:'服务报告输入 Token',completionTokens:'服务报告输出 Token',totalTokens:'服务报告总 Token',reasoningTokens:'其中推理 Token',responseChars:'回复文本字符数',savedBatches:'保存批数'};
 export function runtimeLogSummary(entry){
   const d=entry.details??{},parts=[];
-  if(['waiting','skipped'].includes(entry.phase)&&d.reason)parts.push(DIAGNOSTIC_REASONS[d.reason]);
   if(d.modelRequested===false)parts.push('本次未调用模型');
   if(d.lastIndex!==undefined)parts.push(`最新 #${d.lastIndex}，保留最近 ${d.keepRecent??0} 楼`);
   if(d.startIndex!==undefined)parts.push(`第 ${d.startIndex}–${d.endIndex??d.startIndex} 楼`);
@@ -124,7 +123,8 @@ function detailsHTML(entry){
   if(d.repairAttempted)lines.push(['自动纠错','已尝试一次，未通过校验；没有强行保存']);
   const issues=safeValidationIssues(d.validationIssues);
   if(issues.length){
-    lines.push(['校验问题',`${d.validationIssueCount??issues.length} 项${d.validationIssueCount>issues.length?`（显示前 ${issues.length} 项）`:''}；方括号内是从 0 开始的记录位置，不是聊天楼层`]);
+    // 校验失败要能在摘要里一眼认出来（日志常显在总结页最下面，列表里同时有很多条）。
+    lines.push(['校验未通过',`${d.validationIssueCount??issues.length} 项；方括号内是从 0 开始的记录位置，不是聊天楼层`]);
     for(const issue of issues)lines.push(['校验字段',validationIssueText(issue)]);
   }
   if(d.code)lines.push(['错误',failureText({code:d.code,details:d})]);
@@ -136,9 +136,14 @@ export function mountRuntimeLog({panel,app,run,host,download}){
     state=next;const data=state.runtimeLog??{entries:[],persistence:'not_loaded'};
     const filter=$('[data-log-filter]').value;
     const selected=[...data.entries].reverse().filter(e=>filter==='all'||filter==='issues'&&['error','warning'].includes(e.level)||filter==='vectors'&&['vectors','knowledge-vectors'].includes(e.task)||filter==='summary'&&e.task==='summary'||filter==='merge'&&e.task==='merge'||filter==='api'&&['transport','connection','models','assistant','knowledge','knowledge-edit'].includes(e.task));
-    const pages=Math.max(1,Math.ceil(selected.length/10));page=Math.min(page,pages);
-    const items=selected.slice((page-1)*10,page*10),nextSignature=JSON.stringify([items,page,filter,data.persistence,data.droppedEntries,data.partialRuns,data.legacyRetentionUnknown,data.storageFailure]);
+    // 日志常显在总结页最下面，一页 120 条；刚发生的失败不会掉到第二页，也很少需要翻页。
+    const perPage=120;
+    const pages=Math.max(1,Math.ceil(selected.length/perPage));page=Math.min(page,pages);
+    const items=selected.slice((page-1)*perPage,page*perPage);
+    const nextSignature=JSON.stringify([items.map(e=>e.id),page,filter,data.persistence,data.droppedEntries]);
     if(signature===nextSignature)return;signature=nextSignature;
+    // 日志现在常显在总结页最下面。它不能按签名跳过重绘，否则「刚发生的失败」
+    // 会因为上一次已渲染过同一页而被丢掉；一页只有 10 条，重绘成本可以接受。
     $('[data-log-storage]').textContent={not_loaded:'打开日志后读取。',ready:'日志已读取。',saved:'日志已保存在本机。',pending:'日志仍在写盘，不影响查看或导出当前内存快照。',unavailable:'日志存储读取失败；本次仅在内存保留，可立即导出。',failed:'日志保存失败；本次仅在内存保留，可立即导出。'}[data.persistence]??'';
     if(data.droppedEntries)$('[data-log-storage]').textContent+=` 已清理 ${data.droppedEntries} 条旧记录。`;
     if(data.partialRuns?.length)$('[data-log-storage]').textContent+=` 任务 ${data.partialRuns.join('、')} 的早期记录已清理。`;
@@ -146,10 +151,12 @@ export function mountRuntimeLog({panel,app,run,host,download}){
     if(data.storageFailure)$('[data-log-storage]').textContent+=` 日志存储原因：${DIAGNOSTIC_REASONS[data.storageFailure.reason]??'未提供可识别原因'}。`;
     $('[data-log-list]').innerHTML=items.map(e=>`<details class="sy-card sy-log-row" data-log-id="${e.id}" data-level="${e.level}" ${opened.has(e.id)?'open':''}><summary>任务 ${e.run} · ${LOG_TASKS[e.task]} · ${LOG_PHASES[e.phase]}<small>${esc(new Date(e.at).toLocaleString())} · ${{info:'信息',success:'成功',warning:'提醒',error:'失败'}[e.level]}</small></summary>${detailsHTML(e)}</details>`).join('')||'<p class="sy-empty">没有符合条件的日志。更新前的请求无法补录。</p>';
     for(const el of panel.querySelectorAll('[data-log-id]'))el.addEventListener('toggle',()=>{const id=Number(el.dataset.logId);if(el.open)opened.add(id);else opened.delete(id);});
-    $('[data-log-page]').textContent=`${page} / ${pages} · ${selected.length} 条`;$('[data-log-prev]').disabled=page===1;$('[data-log-next]').disabled=page===pages;
+    if($('[data-log-page]'))$('[data-log-page]').textContent=`${page} / ${pages} · ${selected.length} 条`;
+    if($('[data-log-prev]'))$('[data-log-prev]').disabled=page===1;
+    if($('[data-log-next]'))$('[data-log-next]').disabled=page===pages;
   }
-  $('[data-log-filter]').addEventListener('change',()=>{page=1;paint(state??readViewState(app));});
-  for(const [sel,delta]of [['[data-log-prev]',-1],['[data-log-next]',1]])$(sel).addEventListener('click',()=>{page+=delta;paint(state??readViewState(app));});
+  $('[data-log-filter]')?.addEventListener('change',()=>{page=1;paint(state??readViewState(app));});
+  for(const [sel,delta]of [['[data-log-prev]',-1],['[data-log-next]',1]])$(sel)?.addEventListener('click',()=>{page+=delta;paint(state??readViewState(app));});
   let exporting=false;
   const status=text=>{$('[data-log-export-status]').textContent=text;};
   // Pretty-printing a 50-record report adds a third of its bytes in indentation

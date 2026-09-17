@@ -7,7 +7,7 @@ import { editKeepsakePatch } from './character-journal.js';
 import { lazyViewState } from './product-view-scheduling.js';
 import { createProductShellController } from './product-shell-controller.js';
 import { createWorkspace, importTextDocument, splitDocument,documentPartKey,reviseDocumentChunk } from './product-workspace.js';
-import { autoSummaryPlan,summaryCoverage,missingSummaryRanges } from './product-auto-summary.js';
+import { autoSummaryPlan,summaryCoverage,missingSummaryRanges,advancedStartFloor } from './product-auto-summary.js';
 import { factSubject,factKey,factValue } from './product-person-profiles.js';
 import { sourceKey } from './product-sources.js';
 import { PRODUCT_SETTING_REGISTRY, persistedProductSettings, validateProductPatch, splitProductSettings } from './product-settings.js';
@@ -728,6 +728,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         currentBatch={...currentBatch,status:'saved',savedOperationId:operationId,requests:result.requests,updatedAt:Date.now()};
         await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]).catch(error=>{bookkeepingWarning=true;runtimeLog.record({run:diagnosticRun,task:'summary',phase:'checkpoint_warning',level:'warning',details:{...errorDiagnostics(error),storageArtifact:'checkpoint'}});});
         saved++;state.savedThrough=Math.max(state.savedThrough,item.endIndex);state.stale=false;
+        // 保存之后把「起算楼层」推到真正已记录的位置；失败只记日志，绝不影响已保存的记忆。
+        try{await syncAutoStartFloor();}catch(error){void reportError(error,{task:'summary',stage:'auto_start_floor'});}
         await workspace.write('ui',{savedThrough:state.savedThrough}).catch(error=>{bookkeepingWarning=true;void reportError(error,{task:'storage',stage:'storage'});});await refresh({summaryCommit:true});currentBatch=null;
         publishMs+=Date.now()-publishingAt;
         if(core.settings.autoQualityEnabled&&!usedVerification&&!core.settings.summaryReviewEnabled){
@@ -995,6 +997,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     assertCurrent(token);await core.updateMemoryControls({operations});assertCurrent(token);
     await workspace.update('summary-batches',list=>list.map(row=>selected.includes(row.id)?{...row,status:action==='delete'?'deleted':'saved',savedOperationId:savedBatchOperation(row),operationId:action==='restore'?savedBatchOperation(row):row.operationId}:row),[]);
     await refresh();setMessage(action==='delete'?`已撤下 ${targets.length} 批记忆，可恢复；聊天原文未改变`:`已恢复 ${targets.length} 批`);
+    // 撤下或恢复批次都会改变真实覆盖，起算楼层跟着回到正确位置（删除的楼层重新变成待总结）。
+    try{await syncAutoStartFloor();}catch(error){void reportError(error,{task:'summary',stage:'auto_start_floor'});}
   }
   async function deleteBatch(id){return manageBatches([id],'delete');}
   async function deleteRecord(id){
@@ -1075,12 +1079,42 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   function validAutomaticBatches(){return state.batches.filter(b=>!Object.values(b.records??{}).flat().some(r=>r.sourceRefs?.some(ref=>autoInvalidSources.has(sourceKey(ref)))));}
   function automaticPlan(){return autoSummaryPlan(validAutomaticBatches(),{startFloor:state.autoStartFloor??1,batchSize:core.settings.autoSummaryEvery,keepRecent:core.settings.autoKeepRecent,lastIndex:state.autoLastIndex??null});}
+  /** Keep the saved 起算楼层 in step with what is actually recorded: after a save
+   * (including 补缺口) every floor from the current start onwards that is already
+   * covered moves the start floor up, so the next cycle never re-plans them and
+   * the settings panel shows the real point. Deleting a batch below the start
+   * point rolls it back to the first deleted floor, so the old automatic
+   * behaviour (deleted coverage becomes pending again) still holds. It only ever
+   * moves past floors a saved batch covers, or back onto a deleted one. */
+  async function syncAutoStartFloor(){
+    if(!workspace)return null;
+    const start=state.autoStartFloor??1;
+    const batchSize=core.settings.autoSummaryEvery,keepRecent=core.settings.autoKeepRecent;
+    const lastIndex=Number.isSafeInteger(state.autoLastIndex)?state.autoLastIndex:await core.historyTail();
+    state.autoLastIndex=lastIndex;
+    const coverage=summaryCoverage(validAutomaticBatches(),{startFloor:start,lastIndex,keepRecent,batchSize});
+    const advanced=advancedStartFloor(coverage,start);
+    const controls=state.memoryControls?.operations??{};
+    const isWithdrawn=batch=>batch.status==='deleted'||batchOperationIds(batch).some(id=>controls[id]==='deleted');
+    // 被撤下的批次必须正好盖住「当前已记录区间」的起点（1..reach），并且它自己不在了。
+    // 失败批次的 operation 同样是 deleted，但它从来没让起算点前进过，不能当撤下处理。
+    const covered=coverage.coveredRanges.find(range=>range.startIndex<=start&&range.endIndex>=start);
+    const reach=covered?covered.endIndex:start-1;
+    const firstDeleted=advanced===null?start:state.batches
+      .filter(batch=>isWithdrawn(batch)&&Number.isSafeInteger(batch.startIndex)&&Number.isSafeInteger(batch.endIndex)&&batch.startIndex<=start&&batch.endIndex<=reach)
+      .reduce((value,batch)=>Math.min(value,batch.startIndex),start);
+    const next=firstDeleted<start?firstDeleted:advanced;
+    if(next===null||next===start)return null;
+    await workspace.write('auto-progress',{startFloor:next,updatedAt:Date.now()});
+    state.autoStartFloor=next;notify();
+    runtimeLog.record({run:diagnosticRun,task:'summary',phase:'auto_start_floor',details:{startFloor:next,from:start}});
+    return next;
+  }
   async function inspectAutomaticProgress(){
     await prepareSummaryChat();const op=begin();
     try{state.autoLastIndex=await core.historyTail();op.check();notify();return automaticPlan();}finally{op.finish();}
   }
-  async function setAutoStartFloor(floor,expectedScope=core.state.scope){
-    assertCurrent();if(active)throw new Error('请先停止当前总结');
+  async function setAutoStartFloor(floor,expectedScope=core.state.scope){    assertCurrent();if(active)throw new Error('请先停止当前总结');
     if(stableStringify(expectedScope)!==stableStringify(core.state.scope))throw new Error('聊天已切换，起算楼层未修改');
     if(!Number.isSafeInteger(floor)||floor<0)throw new Error('起算楼层必须是 0 或正整数');
     await workspace.write('auto-progress',{startFloor:floor});state.autoStartFloor=floor;notify();
@@ -1210,6 +1244,23 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       injectedPayloads.add(payload);
       state.actual = { ...result, text:content, usedUnits:estimateUnits(content), previewOnly:false, sent:false, stage:'request_prepared', preparedAt:Date.now() };
       audit('prepared',{query,text:content,result:state.actual,role,position:core.settings.injectionPosition});
+      // 本轮注入花了多久、花在哪一步：写进运行日志，用户才能判断慢在向量、重排还是本地检索。
+      try{
+        const t=result.trace?.timings??{},deadline=result.trace?.deadline??{};
+        runtimeLog.record({run:diagnosticRun,task:'recall',phase:'prepared',details:{
+          elapsedMs:Date.now()-started,
+          vectorMs:Number.isFinite(t.vectorMs)?t.vectorMs:0,
+          rerankMs:Number.isFinite(t.rerankMs)?t.rerankMs:0,
+          localMs:Number.isFinite(t.localMs)?t.localMs:0,
+          totalMs:Number.isFinite(t.totalMs)?t.totalMs:0,
+          deadlineMs:Number.isFinite(deadline.nominalAllowanceMs)?deadline.nominalAllowanceMs:0,
+          deadlineScope:deadline.scope==='online_stages_shared'?'shared':'per_api',
+          vector:result.trace?.vector?.status??'disabled',
+          rerank:result.trace?.rerank?.status??'disabled',
+          candidates:Number.isFinite(result.candidateCount)?result.candidateCount:undefined,
+          usedUnits:state.actual.usedUnits,
+        }});
+      }catch{/* 记时不得影响注入本身 */}
       if (result.degraded) state.message = '本轮记忆已加入；在线检索未完全可用，召回可能不完整，请查看本轮注入。';
       notify();
     } catch(error) { void reportError(error,{task:'recall',stage:'background'});audit(token===epoch?'failed':'changed',{query});if(token===epoch)setMessage('本轮记忆未加入请求：来源变化或检索失败'); }

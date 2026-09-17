@@ -412,6 +412,20 @@
 #shiyi-product-shell .sy-recent-row>span:first-child{flex:1;min-width:0;overflow-wrap:anywhere}
 #shiyi-product-shell .sy-recent-row em{font-style:normal;opacity:.55;font-size:12px;white-space:nowrap}
 #shiyi-product-shell .sy-recent-row>span:last-child{opacity:.4}
+/* ── Summary page (0.21.26): two module cards with a pie of recorded floors, the
+   five tabs, and the runtime log kept at the bottom of the page. ── */
+#shiyi-product-shell .sy-summary-module{display:grid;grid-template-columns:66px minmax(0,1fr);gap:10px;align-items:start;border:1px solid var(--sy-border);border-radius:var(--sy-radius);padding:10px 12px;margin:9px 0;background:color-mix(in srgb,currentColor 2%,transparent)}
+#shiyi-product-shell .sy-pie{width:66px;height:66px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--sy-accent) 0deg 360deg)}
+#shiyi-product-shell .sy-pie>span{width:42px;height:42px;border-radius:50%;background:color-mix(in srgb,var(--SmartThemeBlurTintColor,#fff) 96%,transparent);display:grid;place-items:center;font:600 13px/1 system-ui,sans-serif;font-variant-numeric:tabular-nums;color:inherit}
+#shiyi-product-shell .sy-module-meta{min-width:0}
+#shiyi-product-shell .sy-module-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+#shiyi-product-shell .sy-module-head b{font-size:14px}
+#shiyi-product-shell .sy-module-meta p{margin:3px 0 0;font-size:13px;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-module-meta p[data-summary-covered]{font-weight:600}
+#shiyi-product-shell .sy-module-actions{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+#shiyi-product-shell .sy-summary-module>.sy-help{grid-column:1/-1;margin:2px 0 0}
+#shiyi-product-shell .sy-recent-log{border-top:1px solid var(--sy-border);margin-top:14px;padding-top:10px}
+#shiyi-product-shell .sy-recent-log h3{font-size:15px;margin:0 0 4px}
 /* Tiles keep the published 13px text; the count simply moves above the name. */
 #shiyi-product-shell .sy-category-grid button{height:52px;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:1px}
 #shiyi-product-shell .sy-category-grid strong{font:600 16px/1.15 system-ui,sans-serif;color:var(--sy-accent);font-variant-numeric:tabular-nums;white-space:nowrap}

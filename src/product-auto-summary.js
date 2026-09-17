@@ -11,8 +11,7 @@ export function autoSummaryPlan(batches=[],{startFloor=1,batchSize=10,keepRecent
     eligibleEnd,ready:known&&end<=eligibleEnd,pendingBatches:known?coverage.missingRanges.reduce((n,r)=>n+Math.floor((r.endIndex-r.startIndex+1)/batchSize),0):null,coverage};
 }
 /** Interval subtraction, not a per-floor scan: later saved batches do not hide gaps. */
-export function summaryCoverage(batches=[],{startFloor=1,lastIndex=null,keepRecent=2,batchSize=10}={}){
-  if(!Number.isSafeInteger(startFloor)||startFloor<0||!Number.isSafeInteger(keepRecent)||keepRecent<0||!Number.isSafeInteger(batchSize)||batchSize<1)throw new Error('补采楼层设置无效');
+export function summaryCoverage(batches=[],{startFloor=1,lastIndex=null,keepRecent=2,batchSize=10}={}){  if(!Number.isSafeInteger(startFloor)||startFloor<0||!Number.isSafeInteger(keepRecent)||keepRecent<0||!Number.isSafeInteger(batchSize)||batchSize<1)throw new Error('补采楼层设置无效');
   const eligibleEnd=Number.isSafeInteger(lastIndex)?lastIndex-keepRecent:null,coveredRanges=[],missingRanges=[];
   if(eligibleEnd!==null&&eligibleEnd>=startFloor){
     const sorted=batches.filter(b=>b.status!=='deleted'&&(b.status==='saved'||b.savedOperationId)&&Number.isSafeInteger(b.startIndex)&&Number.isSafeInteger(b.endIndex)&&b.endIndex>=b.startIndex).map(b=>({startIndex:Math.max(startFloor,b.startIndex),endIndex:Math.min(eligibleEnd,b.endIndex)})).filter(b=>b.startIndex<=b.endIndex).sort((a,b)=>a.startIndex-b.startIndex);
@@ -21,6 +20,14 @@ export function summaryCoverage(batches=[],{startFloor=1,lastIndex=null,keepRece
   }
   const floors=rs=>rs.reduce((n,r)=>n+r.endIndex-r.startIndex+1,0);
   return {eligibleEnd,coveredRanges,missingRanges,coveredFloors:floors(coveredRanges),missingFloors:floors(missingRanges),catchUpBatches:missingRanges.reduce((n,r)=>n+Math.ceil((r.endIndex-r.startIndex+1)/batchSize),0)};
+}
+/** 起算楼层只向前推进，并且只跨过「已保存批次真正覆盖」的连续楼层。
+ * 补缺口保存后调用：下一次周期就不会再重复规划这些楼层，设置页显示的起算点
+ * 也就是真实的记录进度。只返回新值，不改任何存储。 */
+export function advancedStartFloor(coverage,startFloor=1){
+  if(!Number.isSafeInteger(startFloor)||startFloor<0)throw new Error('起算楼层无效');
+  const next=(coverage?.coveredRanges??[]).reduce((value,range)=>range.startIndex<=value?Math.max(value,range.endIndex+1):value,startFloor);
+  return next>startFloor?next:null;
 }
 export function missingSummaryRanges(coverage,batchSize){
   if(!Number.isSafeInteger(batchSize)||batchSize<1)throw new Error('每批楼数无效');
