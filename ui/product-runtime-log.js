@@ -21,7 +21,13 @@ export function runtimeLogSummary(entry){
   if(d.pendingBatches!==undefined)parts.push(`另有 ${d.pendingBatches} 批待处理`);
   if(d.plannedBatches!==undefined)parts.push(`计划 ${d.plannedBatches} 批，每批 ${d.batchSize} 楼`);
   if(d.indexedItems!==undefined)parts.push(`索引已建 ${d.indexedItems} 条，待建 ${d.pendingItems??0} 条${d.failedItems?`（其中 ${d.failedItems} 条失败）`:''}`);
-  if(d.elapsedMs!==undefined){const seconds=Math.round(d.elapsedMs/1000);parts.push(`${entry.task==='summary'&&['failed','complete'].includes(entry.phase)?'整轮累计（非单次请求）':'耗时'}：${seconds>=60?`${Math.floor(seconds/60)} 分 ${seconds%60} 秒`:`${seconds} 秒`}`);}
+  // 本轮注入准备花了多久、花在哪一步：这是“回复为什么慢”的直接答案。
+  if(entry.task==='recall'&&d.elapsedMs!==undefined){
+    const sec=value=>String((value/1000).toFixed(2))+' 秒';
+    const limit=d.deadlineMs?'；在线等待上限 '+String(Math.round(d.deadlineMs/1000))+' 秒（'+(d.deadlineScope==='shared'?'共享':'各接口独立')+'）':'';
+    parts.push('本轮准备注入了 '+sec(d.elapsedMs)+'：本地检索 '+sec(d.localMs??0)+'、向量 '+sec(d.vectorMs??0)+'、重排 '+sec(d.rerankMs??0)+limit);
+  }
+  if(d.elapsedMs!==undefined&&entry.task!=='recall'){const seconds=Math.round(d.elapsedMs/1000);parts.push(`${entry.task==='summary'&&['failed','complete'].includes(entry.phase)?'整轮累计（非单次请求）':'耗时'}：${seconds>=60?`${Math.floor(seconds/60)} 分 ${seconds%60} 秒`:`${seconds} 秒`}`);}
   return parts.map(p=>p.replace(/[。；]+$/u,'')).join('。');
 }
 function detailsHTML(entry){
