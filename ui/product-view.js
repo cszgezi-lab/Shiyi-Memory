@@ -165,7 +165,23 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
    try{const value=selectedSummary(false);preview.textContent=mode==='range'?`本次：#${value.startIndex}–${value.endIndex}，共 ${value.endIndex-value.startIndex+1} 楼，每 ${value.batchSize} 楼一批。`:`本次：最近 ${value.count} 楼，每 ${value.batchSize} 楼一批。`;}catch{preview.textContent=mode==='range'?'请填写起止楼层。':'请填写楼数与每批楼数。';}
  }
  function summarize(withFocus){return app.summarize(selectedSummary(withFocus));}
- async function download(data,name){const result=await exportProductJson(data,name,{host,documentRef});host.toastr?.success?.(result.mode==='mobile-native'?'已保存到手机 Downloads':'已提交导出');return result;}
+ async function download(data,name){
+    // Only a host-confirmed save may be reported as success. A dispatched
+    // payload (anchor / TT download-bridge hand-off) is explicitly unconfirmed,
+    // and a failure must stay a failure while the text exit stays usable.
+    let result;
+    try{result=await exportProductJson(data,name,{host,documentRef});}
+    catch(error){
+      const text=`文件导出未完成：${failureText(error)}`;
+      if($('[data-status]'))$('[data-status]').textContent=text;
+      feedback(text,'error',true);
+      try{void Promise.resolve(app.reportError?.(error,{stage:'ui',action:'exportFile'})).catch(()=>{});}catch{/*导出诊断不能反过来阻止失败提示*/}
+      throw error;
+    }
+    if(result?.saved===true)host.toastr?.success?.('文件已保存到手机 Downloads');
+    else if(result?.status==='dispatched')host.toastr?.info?.(result.dispatch==='share-unconfirmed'?'已交给系统分享；请确认文件已保存到目标位置':'已交给系统下载；本机无法确认已落盘，请确认 Downloads 中出现文件');
+    return result;
+  }
  const actions={open:async()=>{await app.open();fill();},disable:()=>app.disable(),refresh:()=>app.refresh(),summarize:()=>summarize(false),'focus-summary':()=>summarize(true),stop:()=>app.stop(),'assistant-stop':()=>app.stop(),remember:async()=>{await app.remember($('[data-note]')?.value??'',$('[data-people]')?.value??'',{category:$('[data-note-category]')?.value??'events',subject:$('[data-note-subject]')?.value??'',target:$('[data-note-target]')?.value??'',field:$('[data-note-field]')?.value??'',eventRef:$('[data-note-event]')?.value??''});if($('[data-note]'))$('[data-note]').value='';},preview:()=>app.preview($('[data-query]')?.value??''),'preview-online':()=>app.preview($('[data-query]')?.value??'',{online:true}),'vector-status':()=>app.refreshVectorStatus(),'save-settings':()=>app.saveSettings(collect()),'test-summary':()=>app.testConnection('summary'),'test-assistant':()=>app.testConnection('assistant'),'test-embedding':()=>app.testConnection('embedding'),'test-rerank':()=>app.testConnection('rerank'),import:async()=>{for(const f of Array.from($('[data-files]')?.files??[]))await app.addDocument({name:f.name,text:await f.text(),purpose:$('[data-purpose]')?.value});},analyze:()=>app.analyzeDocuments(),assistant:async()=>{await app.assistant($('[data-input]')?.value??'');if($('[data-input]'))$('[data-input]').value='';},beginner:async()=>{await app.analyzeDocuments();await app.assistant('按我导入的配置规则一次性生成完整设置方案，只有必要信息缺失才询问，不需要逐项问卷。');},'new-conversation':async()=>{await app.newConversation();fill();},'delete-conversation':async()=>{if(host.confirm?.('删除当前助手对话？已应用设置和记忆不会删除。')){await app.deleteConversation();fill();}},'restore-hidden':()=>app.restoreHidden(),vectors:()=>app.buildVectors(),undo:async()=>{await app.undoSettings();fill();},'export-config':()=>download(app.exportSettings(),'拾忆-配置.json'),'export-global':async()=>download(await app.exportGlobalBackup(),'拾忆-全局备份.json'),'export-backup':async()=>download(await app.exportBackup(),'拾忆-聊天备份.json')};
  actions.remember=()=>management?.remember();
  actions['variable-template']=()=>{const value=$('[data-variable-template]').value;if(!value)return;const input=$('[data-setting="externalStatePaths"]'),paths=input.value.split('\n').map(s=>s.trim()).filter(Boolean);if(!paths.includes(value))input.value=[...paths,value].join('\n');dirtyApi.add('externalStatePaths');feedback('路径模板已填入，检查后保存；未读取或改写变量。');};

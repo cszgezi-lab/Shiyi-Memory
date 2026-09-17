@@ -160,7 +160,7 @@ export function mountRuntimeLog({panel,app,run,host,download}){
   $('[data-log-export]').addEventListener('click',async()=>{
     if(exporting)return;exporting=true;$('[data-log-export]').disabled=true;let snapshot;
     status('正在导出当前日志快照；若系统保存无响应，可点“查看／复制文本”。');
-    try{snapshot=await app.exportRuntimeLog();const result=await download(snapshot,'拾忆-运行日志.json');status(result?.mode==='browser-fallback'?'已交给 TT 下载桥重试；请确认 Downloads 中出现文件。':'日志已提交导出。');}
+    try{snapshot=await app.exportRuntimeLog();const result=await download(snapshot,'拾忆-运行日志.json');status(result?.saved===true?'日志已保存到文件。':result?.status==='dispatched'?'已交给系统下载，但本机无法确认文件已落盘；请确认 Downloads 中出现文件，否则点“查看／复制文本”自行保存。':'日志导出状态未确认；可点“查看／复制文本”直接保存。');}
     catch(error){report(error);if(snapshot)showText({...snapshot,exportFailure:safeLogDetails(errorDiagnostics(error))},`文件未导出：${failureText(error)}。日志已在下方展开，可直接复制，无需重跑任务。`);else status(`日志未导出：${failureText(error)}`);}
     finally{exporting=false;$('[data-log-export]').disabled=false;}
   });

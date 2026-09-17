@@ -5,6 +5,9 @@ export const DIAGNOSTIC_REASONS = Object.freeze({
   export_module_unavailable:'宿主文件导出接口加载失败，可复制日志文本',
   export_permission_denied:'系统拒绝保存文件的权限，可复制日志文本',
   export_native_failed:'宿主文件保存失败，可复制日志文本；不代表记忆丢失',
+  export_host_exception:'宿主原生下载接口抛出 Java 异常，本次未确认文件已保存；请改用文本导出',
+  export_dispatched_unconfirmed:'文件已交给系统下载但本机无法确认落盘；Downloads 中无文件时请改用文本导出',
+  export_stage_file_missing:'宿主导出桥找不到暂存文件，文件未保存；用户数据不受影响',
   history_decode_failed:'宿主聊天历史不是完整JSON，尚未交给模型处理',
   history_tail_failed:'读取当前聊天末页失败，尚不能判断原文是否变化',
   history_before_failed:'读取较早聊天分页失败，未跳过缺失楼层',
@@ -36,7 +39,7 @@ export const DIAGNOSTIC_REASONS = Object.freeze({
 });
 export const PERSONA_STEPS=Object.freeze({history_tail:'读取当前聊天进度',history_range:'读取本批原文',api_config:'检查人设 API 配置',worldbook_read:'读取角色原世界书',prepare_profile:'整理人设输入',cached_response:'读取暂存回答',model_request:'请求人设模型',parse_profile:'解析与检查人设回答',source_verify:'保存前复查原文',worldbook_verify:'保存前复查世界书',profile_save:'保存人物档案',failure_save:'保存失败进度'});
 export const DIAGNOSTIC_PURPOSES=Object.freeze({summary_verification:'原文复核与补漏',summary_narrative:'事件与楼层整理',summary_details:'人物与知情整理',reference_repair:'纠正事件引用',summary:'主总结',floor_repair:'逐楼摘要补全',category_repair:'区块补全',enum_repair:'字段纠错',chat:'聊天模型',embeddings:'向量',rerank:'重排',models:'模型列表',ui:'界面操作',background:'后台任务'});
-export const DIAGNOSTIC_STAGES=Object.freeze({queue:'等待共享请求队列',prepare:'准备请求',request:'等待接口',read_body:'读取响应正文',parse_envelope:'解析接口响应',parse_content:'解析模型正文',validate:'校验结果',repair:'补全结果',storage:'本机保存',ui:'界面操作',background:'后台处理'});
+export const DIAGNOSTIC_STAGES=Object.freeze({queue:'等待共享请求队列',prepare:'准备请求',request:'等待接口',read_body:'读取响应正文',parse_envelope:'解析接口响应',parse_content:'解析模型正文',validate:'校验结果',repair:'补全结果',storage:'本机保存',ui:'界面操作',background:'后台处理',export_load:'加载宿主导出接口',export_prepare:'准备导出文件',export_dispatch:'派发下载动作',export_save_verify:'校验导出暂存文件',export_save_copy:'写入导出文件',export_save_publish:'发布到系统下载目录'});
 export const UPSTREAM_CODES=Object.freeze({invalid_api_key:'密钥无效',api_key_missing:'服务要求密钥',context_length_exceeded:'超出模型上下文',insufficient_quota:'额度不足',rate_limit_exceeded:'服务限流',model_not_found:'模型不存在',server_error:'服务内部错误',invalid_request_error:'服务拒绝请求格式',outbound_host_denied:'出站地址被服务拒绝'});
 // Providers may put a vendor-specific code beside a standard error type.
 // An unrecognized code must not hide a recognized quota/authentication cause.
@@ -70,7 +73,11 @@ export function upstreamErrorHint(value){
 }
 export const DIAGNOSTIC_ACTIONS=Object.freeze({editDocumentChunk:'修改资料片段',catchUpAutomatic:'补采未记录楼层',inspectAutomaticProgress:'检查记录覆盖',open:'打开聊天',refresh:'刷新记忆',saveSettings:'保存设置',saveApi:'保存 API',forgetKey:'清除密钥',editRecord:'修改记忆',editPersonProfile:'修改人物档案',deleteRecord:'删除记忆',deleteRecords:'批量删除记忆',remember:'新增记忆',manageBatches:'管理总结批次',deleteBatch:'删除批次',regenerateBatch:'重新总结',retryBatch:'重试总结',retryIncompleteBatches:'重试未完成批次',saveModule:'保存扩展模块',editModuleRecord:'修改扩展记忆',rememberModule:'新增扩展记忆',importModules:'导入模块',exportModules:'导出模块',inspectMvu:'读取 MVU',syncModules:'同步 MVU',applyProposal:'应用助手方案',undoSettings:'撤销配置',saveDictionaryEntry:'修改字典',exportBackup:'导出聊天备份',exportGlobalBackup:'导出全局备份',setAutoStartFloor:'设置自动总结起点',setAutomatic:'配置自动总结',processAutomatic:'执行自动总结',setDraft:'保存助手草稿',newConversation:'新建助手对话',selectConversation:'切换助手对话',deleteConversation:'删除助手对话',hideRecord:'排除记忆',restoreHidden:'恢复被排除记忆',removeDocument:'删除知识库资料',updateDocument:'更新知识库资料',stop:'停止任务',disable:'暂停插件'});
 const files=new Set(['provider-scheduler.js','summary-planner.js','request-deadline.js','provider.js','summary-stages.js','summary-context.js','summary-reference-repair.js','summary-engine.js','summary-recovery.js','contracts.js','repository.js','reliable-storage.js','host-adapter.js','dynamic-persona.js','dynamic-persona-worldbook.js','dynamic-persona-stage.js','product-application.js','product-workspace.js','product-network.js','product-shell-controller.js','product-host-adapters.js','product-view.js','product-runtime-log.js','product-model-list.js','product-vector-indexer.js','product-vector-cache.js','product-vector-storage.js','product-dictionary.js','product-event-merge.js','product-credentials.js','product-global-settings.js','product-module-controller.js','diagnostics.js']);
-const errorTypes=new Set(['Error','TypeError','SyntaxError','RangeError','ReferenceError','AbortError','NotAllowedError','DOMException','ShiyiError','SummaryResponseError','ValidationError','PersistenceError','ScopeConflictError','RevisionConflictError']);
+// JavaException is the WebView wrapper around a throwable raised inside an
+// Android @JavascriptInterface method (TT's native export bridge). Only the
+// fixed type name is ever recorded; its message may contain host paths and is
+// never stored.
+const errorTypes=new Set(['Error','TypeError','SyntaxError','RangeError','ReferenceError','AbortError','NotAllowedError','DOMException','JavaException','ShiyiError','SummaryResponseError','ValidationError','PersistenceError','ScopeConflictError','RevisionConflictError']);
 files.add('product-host-ui.js');
 files.add('summary-verification.js');
 files.add('provider-stream.js');
@@ -95,9 +102,18 @@ export function safeDiagnosticFields(value={}){
   if(qualityReasons.has(value?.qualityReason))result.qualityReason=value.qualityReason;
   if(Array.isArray(value?.qualityShape))result.qualityShape=value.qualityShape.slice(0,6).flatMap(r=>['root','updates','additions','issues','reviews'].includes(r?.field)&&['missing','null','array','object','string','number','boolean'].includes(r.type)?[{field:r.field,type:r.type,...(Number.isSafeInteger(r.count)&&r.count>=0?{count:r.count}:{})}]:[]);
   if(Array.isArray(value?.qualityRejections))result.qualityRejections=value.qualityRejections.slice(0,100).flatMap(r=>['update','addition','issue'].includes(r?.kind)&&Number.isSafeInteger(r.index)&&r.index>=0?[{kind:r.kind,index:r.index,reason:qualityReasons.has(r.reason)?r.reason:'校对项未通过原文与字段校验',...(Array.isArray(r.fields)?{fields:r.fields.slice(0,40).map(k=>qualityFields.has(k)?k:'unknown')}: {})}]:[]);
-  for(const [key,labels]of [['reason',DIAGNOSTIC_REASONS],['purpose',DIAGNOSTIC_PURPOSES],['stage',DIAGNOSTIC_STAGES]])if(Object.hasOwn(labels,value?.[key]))result[key]=value[key];
+  // A narrower stage for the exact failing step wins over the generic one. It
+  // never carries host text, only a fixed key.
+  const stageAliases={file_missing:'export_save_verify',write_failed:'export_save_copy',publish_failed:'export_save_publish',staging_failed:'export_prepare'};
+  for(const [key,labels]of [['reason',DIAGNOSTIC_REASONS],['purpose',DIAGNOSTIC_PURPOSES]])if(Object.hasOwn(labels,value?.[key]))result[key]=value[key];
+  for(const key of ['saveStage','stage','exportStage']){
+    const raw=value?.[key];
+    if(stageAliases[raw]){result.stage=stageAliases[raw];result.saveStage=raw;break;}
+    if(Object.hasOwn(DIAGNOSTIC_STAGES,raw)){result.stage=raw;break;}
+  }
   if(typeof value?.requestId==='string'&&/^req-[a-z0-9]{1,16}-[a-z0-9]{1,10}$/.test(value.requestId))result.requestId=value.requestId;
   if(errorTypes.has(value?.errorType))result.errorType=value.errorType;
+  if(errorTypes.has(value?.causeErrorType))result.causeErrorType=value.causeErrorType;
   if(['name','text','sourceFloors'].includes(value?.personaField))result.personaField=value.personaField;
   for(const key of ['profileIndex','personaProfiles','personaBindings'])if(Number.isSafeInteger(value?.[key])&&value[key]>=0)result[key]=value[key];
   if(typeof value?.legacyBindingsIgnored==='boolean')result.legacyBindingsIgnored=value.legacyBindingsIgnored;
@@ -121,6 +137,10 @@ export function errorDiagnostics(error){
   const allFrames=[...new Set([...(safeDiagnosticFields(error?.details).stackFrames??[]),...frames])];
   const details={...error?.details,errorType:errorTypes.has(error?.name)?error.name:'Error',code:error?.code??'OPERATION_FAILED',stackFrames:allFrames.slice(0,12),stackFramesOmitted:Math.max(0,allFrames.length-12)};
   if(!details.reason)details.reason='unclassified';
+  // The wrapped host error keeps its own type beside the wrapper, so a Java
+  // bridge failure stays identifiable without any raw message or path.
+  const rootCause=error?.cause??error?.details?.causeError;
+  if(rootCause&&typeof rootCause==='object'&&errorTypes.has(rootCause.name))details.causeErrorType=rootCause.name;
   const seen=new Set([error]),causes=[];let cause=error?.cause??error?.details?.causeError;
   while(cause&&typeof cause==='object'&&!seen.has(cause)&&causes.length<4){seen.add(cause);causes.push(safeDiagnosticFields({...cause.details,errorType:errorTypes.has(cause.name)?cause.name:'Error'}));cause=cause.cause??cause.details?.causeError;}
   if(causes.length)details.causes=causes;
