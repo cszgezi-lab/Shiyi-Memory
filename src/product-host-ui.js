@@ -168,6 +168,8 @@ export async function exportProductJson(data, name, {
         if (isCancelError(fallback.error)) throw Object.assign(new Error('已取消文件导出'),{code:'CANCELED',details:exportDiagnostics({reason:'canceled',exportAttempt:'picker',causeError:fallback.error})});
       }
       const hostError = fallback?.error ?? error;
+      // 归因按「最后真正失败的那一步」算：直存先失败、备用通道又失败时，
+      // 之前用的是直存的阶段，会把备用通道的失败阶段说错。
       const failedStage = saveStageOf(hostError) ?? saveStage;
       const exportAttempt = fallback ? 'picker_failed' : 'direct';
       const details = exportDiagnostics({stage:'export_save_publish',saveStage:failedStage,exportAttempt,causeError:hostError});
@@ -175,6 +177,8 @@ export async function exportProductJson(data, name, {
         throw exportFailure(fallback ? '宿主的原生下载接口抛出 Java 异常，备用保存通道也没能确认文件已保存；请改用“查看／复制文本”导出' : '宿主的原生下载接口抛出 Java 异常，本次没有确认文件已保存；请改用“查看／复制文本”导出','export_host_exception',{...details,saveStage:saveStage??failedStage,causeError:error});
       }
       if (isHostExceptionError(hostError)) throw exportFailure('宿主的原生下载接口抛出 Java 异常，备用保存通道也没能确认文件已保存；请改用“查看／复制文本”导出','export_host_exception',details);
+      // 宿主连暂存文件都没写成：这一步在调用原生桥之前，报清楚比笼统说“保存失败”有用。
+      if (failedStage==='staging_failed') throw exportFailure('宿主在写入导出暂存文件时失败，文件没有保存；请改用“查看／复制文本”导出','export_stage_write_failed',{...details,stage:'export_save_copy'});
       // A missing staging file means the failed step is known before the bridge
       // call; report it as its own reason instead of a generic native failure.
       if (failedStage==='file_missing') throw exportFailure('宿主找不到本次导出的暂存文件，文件没有保存；请改用“查看／复制文本”导出','export_stage_file_missing',{...details,stage:'export_save_verify'});

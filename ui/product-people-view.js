@@ -273,7 +273,7 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     const strip = $('[data-people-strip]');
     const stripMarkup = `<input type="search" data-people-search placeholder="搜角色" aria-label="查找人物" autocomplete="off" value="${esc(query)}">`
       + visible.map(g => `<button type="button" role="tab" data-people-key="${esc(g.key)}" aria-pressed="${g.key === selected}" title="${esc(g.name)}">${esc(g.name)}</button>`).join('')
-      + '<button type="button" data-people-add="person">＋ 新角色</button>'
+      + '<button type="button" data-people-add="person">新角色</button>'
       + (visible.length ? '' : '<small>没有匹配的角色</small>');
     if (strip && rebuildStrip && stripStamp !== stripMarkup) {
       stripStamp = stripMarkup;
