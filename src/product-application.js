@@ -731,6 +731,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         // 保存之后把「起算楼层」推到真正已记录的位置；失败只记日志，绝不影响已保存的记忆。
         try{await syncAutoStartFloor();}catch(error){void reportError(error,{task:'summary',stage:'auto_start_floor'});}
         await workspace.write('ui',{savedThrough:state.savedThrough}).catch(error=>{bookkeepingWarning=true;void reportError(error,{task:'storage',stage:'storage'});});await refresh({summaryCommit:true});currentBatch=null;
+        // Kick off vector indexing immediately after each batch commits — don't make
+        // the user wait for the background timer.  wakeVectors() guards against all
+        // conditions (offline, background tab, vector disabled, etc.) and only fires
+        // when safe; otherwise it reschedules automatically.
+        wakeVectors();
         publishMs+=Date.now()-publishingAt;
         if(core.settings.autoQualityEnabled&&!usedVerification&&!core.settings.summaryReviewEnabled){
           const batch=state.batches.find(b=>b.operationId===operationId),ids=MEMORY_CATEGORIES.flatMap(k=>batch?.records?.[k]??[]).map(r=>r.id);

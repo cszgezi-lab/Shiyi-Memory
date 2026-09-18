@@ -29,14 +29,14 @@ import {peopleHTML,mountPeopleView} from './product-people-view.js';
 import {extractionHTML,mountExtractionView} from './product-extraction-view.js';
 
 const ID='shiyi-product-shell';
-const NAV=['memory','people','recording','recall','assistant','modules'];
+const NAV=['memory','people','recording','recall','log','modules'];
 
 export function initProductShell({documentRef=globalThis.document,host=globalThis,application=null,controller=null,controllerOptions={}}={}){
  if(!documentRef||documentRef.getElementById?.(ID))return null;
  const panel=documentRef.createElement('section');panel.id=ID;panel.className='sy-root';
  panel.innerHTML=`<div class="sy-shell"><div class="sy-brand"><span class="sy-mark">拾</span><span>拾忆<small>让故事有迹可循</small></span><span class="sy-version">${PRODUCT_VERSION}</span></div><div class="sy-body">
  <div class="sy-top"><span data-scope>尚未打开聊天</span><div class="sy-actions">${button('open','启用插件',true)}${button('disable','暂停插件')}</div></div><p role="status" aria-live="polite" class="sy-status" data-status>连接一个模型，就可以开始整理故事。</p>
- <nav class="sy-nav" aria-label="拾忆导航">${['记忆','人物','总结','召回','助手','设置'].map((v,i)=>`<button type="button" data-page="${NAV[i]}" ${i===0?'class="active"':''}>${v}</button>`).join('')}</nav>
+ <nav class="sy-nav" aria-label="拾忆导航">${['记忆','人物','总结','召回','日志','设置'].map((v,i)=>`<button type="button" data-page="${NAV[i]}" ${i===0?'class="active"':''}>${v}</button>`).join('')}</nav>
  <section data-view="memory"><div class="sy-top"><h3>故事记忆</h3>${button('refresh','刷新')}</div>
  <div class="sy-progress" data-memory-progress><div class="sy-dial" data-memory-dial><span data-memory-floor>0</span></div><div class="sy-progress-text"><b data-memory-through>尚未开始记录</b><p data-memory-gap></p><p data-memory-next-batch></p></div></div>
  <div class="sy-memory-bar"><details class="sy-add-memory" data-add-memory-inline><summary>新增记忆</summary><div data-add-memory-body></div></details><input data-search aria-label="搜索记忆" placeholder="搜索记忆"><span class="sy-memory-total" data-memory-total></span><select data-category aria-label="记忆类别" class="sy-sr-only"><option value="none">未展开</option><option value="all">全部类别</option>${categoryOptions()}</select></div>
@@ -46,7 +46,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  <div class="sy-recent" data-recent-changes><h4>最近修改</h4><div data-recent-list><p class="sy-help">还没有记录。</p></div></div>
  <div class="sy-memory-tools">${qualityPanelHTML()}${memoryEditorHTML()}${customModulesHTML()}</div>
  </section>
- <section data-view="recording" hidden><div class="sy-top"><h3>聊天总结</h3><span class="sy-help">进度按已保存的自动设置计算</span><button type="button" data-action="auto-inspect">检查进度</button><button type="button" data-action="auto-catchup">补采缺口</button></div><div data-summary-modules>${summaryModulesHTML()}</div><div class="sy-record-tabs"><button type="button" data-record-tab="compose" class="active">手动总结</button><button type="button" data-record-tab="automatic">自动总结</button><button type="button" data-record-tab="presets">总结预设</button><button type="button" data-record-tab="batches">批次管理</button><button type="button" data-record-tab="merges">事件合并</button></div><div data-record-panel="compose"><div class="sy-card"><h4>手动总结</h4>${field('总结范围','<select data-range-mode><option value="recent">最近 N 楼</option><option value="range">指定起止楼层</option></select>')}<div data-range-fields="recent">${field('最近多少楼','<input type="number" min="1" max="100000" value="8" data-count>')}<p class="sy-help">最后一楼为 20、填 10，即整理 11–20。</p></div><div data-range-fields="range" hidden><div class="sy-grid">${field('从哪一楼','<input type="number" min="0" data-start placeholder="与聊天 # 编号相同" disabled>')}${field('到哪一楼','<input type="number" min="0" data-end placeholder="包含结束楼" disabled>')}</div></div>${field('每多少楼记录一次','<input type="number" min="1" max="200" value="5" data-batch-size>')}<p class="sy-help" data-summary-selection role="status"></p>${field('本次想记得更细的内容','<textarea rows="3" data-focus placeholder="留空时沿用长期记录偏好"></textarea>')}<div class="sy-actions">${button('focus-summary','开始总结',true)}${button('stop','停止')}</div></div>${settingsSection('recording')}${button('save-settings','保存总结设置',true)}</div><div data-record-panel="automatic" hidden>${settingsSection('automatic')}</div><div data-record-panel="presets" hidden>${summaryPresetsHTML()}</div><div data-record-panel="batches" hidden>${batchManagementHTML()}</div><div data-record-panel="merges" hidden>${mergeManagementHTML()}</div><div class="sy-recent-log" data-record-log>${runtimeLogHTML()}</div></section>
+ <section data-view="recording" hidden><div class="sy-top"><h3>聊天总结</h3><span class="sy-help">进度按已保存的自动设置计算</span><button type="button" data-action="auto-inspect">检查进度</button><button type="button" data-action="auto-catchup">补采缺口</button></div><div data-summary-modules>${summaryModulesHTML()}</div><div class="sy-record-tabs"><button type="button" data-record-tab="compose" class="active">手动总结</button><button type="button" data-record-tab="automatic">自动总结</button><button type="button" data-record-tab="presets">总结预设</button><button type="button" data-record-tab="batches">批次管理</button></div><div data-record-panel="compose"><div class="sy-card"><h4>手动总结</h4>${field('总结范围','<select data-range-mode><option value="recent">最近 N 楼</option><option value="range">指定起止楼层</option></select>')}<div data-range-fields="recent">${field('最近多少楼','<input type="number" min="1" max="100000" value="8" data-count>')}<p class="sy-help">最后一楼为 20、填 10，即整理 11–20。</p></div><div data-range-fields="range" hidden><div class="sy-grid">${field('从哪一楼','<input type="number" min="0" data-start placeholder="与聊天 # 编号相同" disabled>')}${field('到哪一楼','<input type="number" min="0" data-end placeholder="包含结束楼" disabled>')}</div></div>${field('每多少楼记录一次','<input type="number" min="1" max="200" value="5" data-batch-size>')}<p class="sy-help" data-summary-selection role="status"></p>${field('本次想记得更细的内容','<textarea rows="3" data-focus placeholder="留空时沿用长期记录偏好"></textarea>')}<div class="sy-actions">${button('focus-summary','开始总结',true)}${button('stop','停止')}</div></div>${settingsSection('recording')}${button('save-settings','保存总结设置',true)}</div><div data-record-panel="automatic" hidden>${settingsSection('automatic')}</div><div data-record-panel="presets" hidden>${summaryPresetsHTML()}</div><div data-record-panel="batches" hidden>${batchManagementHTML()}</div></section>
  <section data-view="current" hidden><h3>本轮记忆</h3><p class="sy-help">本地预览不发送模型请求。向量与重排仅在启用且实际使用时调用。</p>${field('当前剧情查询','<textarea rows="3" data-query></textarea>')}${button('preview','预览本地召回',true)}${button('preview-online','按已启用接口试召回')}<div data-preview></div><h3>最近一次请求准备</h3><div data-actual><p class="sy-empty">尚未向宿主请求加入记忆。</p></div></section>
  <section data-view="assistant" hidden><div class="sy-top"><h3>配置助手</h3><span data-model></span></div><div class="sy-actions"><button type="button" data-jump="api">模型设置</button><button type="button" data-jump="world">添加 TXT / MD / JSON</button></div><div class="sy-actions"><select data-conversation aria-label="历史对话"><option value="main">配置对话</option></select>${button('new-conversation','新对话')}${button('delete-conversation','删除本次对话')}</div><details class="sy-card" data-builtin-skills><summary>内置配置规则 v${ASSISTANT_SKILL_VERSION} · ${ASSISTANT_SKILLS.length} 组</summary>${ASSISTANT_SKILLS.map(skill=>`<details><summary>${esc(skill.title)}</summary><p class="sy-help">${esc(skill.text)}</p></details>`).join('')}</details><div data-history><p class="sy-empty">说说想怎样记忆，也可以一次说完全部要求。</p></div><div data-proposal></div>${field('你的要求','<textarea rows="4" data-input placeholder="描述你的卡、想保留的细节、希望避免的问题，或让我按导入的规则配置。"></textarea>')}<div class="sy-actions">${button('assistant','发送',true)}${button('builtin-beginner','按内置新手规则配置')}${button('beginner','按导入的规则配置')}${button('assistant-stop','停止')}</div><p class="sy-help">Key 不会发送给助手；设置方案应用后才生效。</p></section>
  <section data-view="api" hidden><h3>API 与模型</h3><p class="sy-help">所有聊天共用，无需打开聊天即可配置、拉取模型和测试连接。</p>${apiSettingsHTML()}${button('save-settings','保存 API 设置',true)}</section>
@@ -55,6 +55,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  ${dynamicPersonaHTML()}
  ${peopleHTML()}
  ${extractionHTML()}
+ <section data-view="log" hidden><div class="sy-top"><h3>运行日志</h3></div><div data-log-view>${runtimeLogHTML()}</div></section>
  <section data-view="modules" hidden><header class="sy-section-heading"><small>工作台</small><h3>设置与工具</h3><p>连接模型、调整读取方式，或管理资料与备份。</p></header><details class="sy-card" data-update-center open><summary>更新中心 <small>进度与更新入口</small></summary><div class="sy-packet" data-update-progress role="status"></div><div class="sy-actions"><button type="button" data-jump-page="recording">补采未记录楼层</button><button type="button" data-jump-page="recording">总结下一批</button><button type="button" data-jump-page="dynamic-persona">动态人设设置</button><button type="button" data-jump-page="api">API 与模型</button></div><p class="sy-help">进度只在这里汇总；勾选框、周期与执行按钮在各自面板内，避免同一动作出现两份。这里不会自动开启任何任务。</p></details><div class="sy-tool-list">${[['api','API 与模型','总结、人设、向量各自的连接'],['extraction','正文提取','规则编辑、中文读取与免费预览'],['injection','注入方式','调整实际发给 AI 的记忆'],['retrieval','检索策略','关键词、向量与重排'],['world','世界与知识库','导入、编辑资料与自动建索引'],['compatibility','变量与剧情日期','只读变量、日期来源与兼容选项'],['settings','数据与备份','配置、导出与版本']].map(([key,title,help],i)=>`<button type="button" data-page="${key}"><span class="sy-tool-number">0${i+1}</span><span><strong>${title}</strong><small>${help}</small></span><span aria-hidden="true">›</span></button>`).join('')}</div></section>
  <section data-view="injection" hidden><h3>注入</h3>${settingsSection('injection')}${button('save-settings','保存注入设置',true)}<button type="button" data-page="current">查看本轮记忆与召回预览</button></section>
  <section data-view="retrieval" hidden><h3>检索</h3>${field('筛选档位','<select data-recall-level><option value="24">通用均衡 · 24 条候选</option><option value="48">更细筛选 · 48 条候选</option></select>')}${button('save-recall-preset','应用分类策略')}<p class="sy-help">字典扩展别称与主题 → BM25 精确词匹配、向量找语义近似 → 分类候选合并 → 重排比较相关性 → 去重并按注入预算选取。重排不负责事件合并。扩大候选不增加最终注入上限，但可能增加接口耗时。通用策略是本项目九类记忆的初始配置，并非复制 ANIMA 的特定角色参数，也不是实测最优值；不改变 API、注入上限或向量开关。</p>${settingsSection('retrieval')}<div class="sy-actions">${button('save-settings','保存检索设置',true)}</div></section>
@@ -157,8 +158,9 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
      if(node.querySelector?.('[data-summary-state]'))node.querySelector('[data-summary-state]').textContent=text.state;
      if(node.querySelector?.('[data-summary-covered]'))node.querySelector('[data-summary-covered]').textContent=text.covered;
      if(node.querySelector?.('[data-summary-next]'))node.querySelector('[data-summary-next]').textContent=`${text.next} · 自动每 ${row.batchSize??'—'} 楼一次 · 保留最近 ${row.keepRecent??0} 楼`;
-     if(node.querySelector?.('[data-summary-detail]'))node.querySelector('[data-summary-detail]').textContent=row.detail;
-     if(node.querySelector?.('[data-summary-legend]'))node.querySelector('[data-summary-legend]').textContent=text.legend;
+     // 减负：summary card 只显示已总结范围和缺口；详细数字和图例太啰嗦。
+     if(node.querySelector?.('[data-summary-detail]'))node.querySelector('[data-summary-detail]').hidden=true;
+     if(node.querySelector?.('[data-summary-legend]'))node.querySelector('[data-summary-legend]').hidden=true;
      const coverageLine=node.querySelector?.('[data-summary-coverage]');
      if(coverageLine)coverageLine.hidden=row.kind!=='memory'||!s.automatic;
      const nextButton=node.querySelector?.('[data-summary-next-batch]');
@@ -239,11 +241,9 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
     if(memory||recording&&recordTab==='batches')management?.paint(s,{memory,batches:recording&&recordTab==='batches'});
     if(recording){
      paintSummaryModules(s);
-     // 运行日志固定在最下面：只在进入总结页时加载一次，之后交给 logView 自己
-     // 按内容版本决定是否重绘（每次渲染都重新加载会打断用户正在看的列表）。
-     if(runtimeLogPage!=='recording'){runtimeLogPage='recording';void app.loadRuntimeLog?.().catch(()=>{runtimeLogPage='';});}
     }
-    if(recording&&recordTab==='merges')mergeView?.paint(s);
+    // 日志在独立 page：切到 log page 时加载。
+    if(currentPage==='log')void app.loadRuntimeLog?.().catch(()=>{});
     if(currentPage==='dictionary')dictionaryView?.paint(s);
     if(currentPage==='people')peopleView?.paint(s);
     if(currentPage==='extraction')extractionView?.paint(s);
@@ -300,12 +300,12 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
    try{const value=selectedSummary(false);preview.textContent=mode==='range'?`本次：#${value.startIndex}–${value.endIndex}，共 ${value.endIndex-value.startIndex+1} 楼，每 ${value.batchSize} 楼一批。`:`本次：最近 ${value.count} 楼，每 ${value.batchSize} 楼一批。`;}catch{preview.textContent=mode==='range'?'请填写起止楼层。':'请填写楼数与每批楼数。';}
  }
  function summarize(withFocus){return app.summarize(selectedSummary(withFocus));}
- async function download(data,name){
+ async function download(data,name,{preferBrowser=false}={}){
     // Only a host-confirmed save may be reported as success. A dispatched
     // payload (anchor / TT download-bridge hand-off) is explicitly unconfirmed,
     // and a failure must stay a failure while the text exit stays usable.
     let result;
-    try{result=await exportProductJson(data,name,{host,documentRef});}
+    try{result=await exportProductJson(data,name,{host,documentRef,preferBrowser});}
     catch(error){
       const text=`文件导出未完成：${failureText(error)}`;
       if($('[data-status]'))$('[data-status]').textContent=text;
@@ -346,7 +346,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
      else void run(()=>app.inspectAutomaticProgress());
      return;
    }
-   if(Number.isInteger(start)&&Number.isInteger(end))feedback(`按已保存的设置总结 #${start}–${end}；只补未记录的楼层。`,'info');
+   if(Number.isInteger(start)&&Number.isInteger(end)){feedback(`按已保存的设置总结 #${start}–${end}；只补未记录的楼层。`,'info');return;}
    void run(()=>app.catchUpAutomatic());
  });
  actions['auto-start']=async()=>{await saveAutomatic();await app.setAutomatic(true);fill();};actions['auto-pause']=async()=>{await app.setAutomatic(false);fill();};
@@ -367,7 +367,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  for(const selector of ['[data-range-mode]','[data-count]','[data-start]','[data-end]','[data-batch-size]'])$(selector).addEventListener(selector==='[data-range-mode]'?'change':'input',syncSummaryRange);
  function showRecordTab(name){for(const section of $$('[data-record-panel]'))if(section.dataset.recordPanel!=='logs')section.hidden=section.dataset.recordPanel!==name;for(const tab of $$('[data-record-tab]'))tab.classList.toggle('active',tab.dataset.recordTab===name);setPage('recording');if(name==='logs')void app.loadRuntimeLog?.().then(()=>paint(readViewState(app)));}
  for(const b of $$('[data-record-tab]'))b.addEventListener('click',()=>showRecordTab(b.dataset.recordTab));
- const openLogs=()=>{if(currentPage==='recording'){$('[data-record-log]')?.scrollIntoView({block:'start'});return;}setPage('recording');$('[data-record-log]')?.scrollIntoView({block:'start'});};
+ const openLogs=()=>{setPage('log');};
  const logJump=documentRef.createElement('button');logJump.type='button';logJump.textContent='查看运行日志';logJump.dataset.openLogs='';logJump.addEventListener('click',openLogs);$('[data-status]')?.after(logJump);
  const pageButtons=$$('[data-page]');
  function setPage(page){

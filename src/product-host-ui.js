@@ -132,8 +132,14 @@ export async function exportProductJson(data, name, {
   host = globalThis, documentRef = globalThis.document,
   loadExporter = () => import('/scripts/file-export.js'),
   timeoutMs = 30000,
+  preferBrowser = false,
 } = {}) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  // Some hosts report success on the browser anchor path that the native
+  // Downloads bridge never persists.  The diagnostics file is the common case:
+  // users mostly need to copy it, not park it in Downloads, so prefer the safer
+  // path when asked.
+  if (preferBrowser) return triggerBrowserExport(blob, name, documentRef);
   if (host?.__TAURITAVERN__?.api) {
     let downloadBlobWithRuntime;
     try{({downloadBlobWithRuntime}=await loadExporter());if(typeof downloadBlobWithRuntime!=='function')throw new Error('missing exporter');}
