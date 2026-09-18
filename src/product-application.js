@@ -19,7 +19,7 @@ import { memoryCards, recallMemory, readable, recordDescription, selectRecallCar
 import { RecallIndexCache } from './recall-cache.js';
 import { ProductVectorCache, vectorNorm, vectorIndexCoverage } from './product-vector-cache.js';
 import { buildVectorIndex, embeddingVectors, normalizeVectorJobs, vectorJobKey, vectorStagingKey, vectorFailure, vectorFailureCounts,vectorRetryDelay } from './product-vector-indexer.js';
-import { clone, sha256, makeId, estimateUnits, stableStringify } from './utils.js';
+import { clone, sha256, makeId, estimateUnits, stableStringify, withTimeout } from './utils.js';
 import { createProductFetch } from './product-network.js';
 import { productApiProfile, fetchProductModels } from './product-model-list.js';
 import { selectSummaryContext, summaryRecord } from './summary-context.js';
@@ -1229,7 +1229,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const messages = payload.messages;
     const {intent:query,context,characterContext}=sceneRecallQuery(messages);
     try {
-      const result = await preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context,characterContext,snapshot,clock:sceneClockFromMessages(messages) });
+      let result;
+      try{
+        result = await withTimeout(preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context,characterContext,snapshot,clock:sceneClockFromMessages(messages) }), recallDeadlineMs(), '本轮记忆召回');
+      }catch(error){
+        // 在线部分太慢：这一轮直接用本地检索结果，聊天不因此少一份记忆。
+        if(error?.code!=='TIMEOUT')throw error;
+        runtimeLog.record({run:diagnosticRun,task:'recall',phase:'prepared',level:'warning',details:safeLogDetails({reason:'online_too_slow',stage:'validate',elapsedMs:Date.now()-started,code:'TIMEOUT',modelRole:'embedding'})});
+        result = await preview(query, { online:false,context,characterContext,snapshot,clock:sceneClockFromMessages(messages) });
+      }
       assertCurrent(token); if (revision !== recallSafetyRevision || !enabled || !core.settings.injectionEnabled){audit('changed');return;}
       const role = ['system','user'].includes(core.settings.injectionRole) ? core.settings.injectionRole : 'system';
       const external=externalState({full:true});
@@ -1265,6 +1273,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       notify();
     } catch(error) { void reportError(error,{task:'recall',stage:'background'});audit(token===epoch?'failed':'changed',{query});if(token===epoch)setMessage('本轮记忆未加入请求：来源变化或检索失败'); }
   }
+  // 一轮注入最多花多久（本地检索 + 两条在线通道合计），超过就用已有结果继续。
+  const recallDeadlineMs=()=>{const total=Number(core.settings.retrievalTimeoutMs);if(total>0)return Math.max(500,total);return Math.max(1000,(Number(core.settings.vectorTimeoutMs)||4000)+(Number(core.settings.rerankTimeoutMs)||4000)+1200);};
+  const vectorBudgetMs=()=>Math.max(100,Number(core.settings.vectorTimeoutMs)||4000);
+  const rerankBudgetMs=()=>Math.max(100,Number(core.settings.rerankTimeoutMs)||4000);
   async function retrievalAdapters(cards) {
     const options = {};
     if (core.settings.vectorEnabled) {
@@ -1283,7 +1295,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         if (!searchCards.length) return [];
         if (!indexed) throw new Error('向量索引尚未建立或已过期');
         const q = await vectorCache.query(query, async () => {
-          const response = await c.embeddings({model:c.profile.model,input:[query],encoding_format:'float'}, {signal});
+          // 查询向量必须有自己的上限：超时按降级处理，绝不拖住这次发送。
+          const response = await withTimeout(c.embeddings({model:c.profile.model,input:[query],encoding_format:'float'}, {signal}), vectorBudgetMs(), '查询向量');
           return embeddingVectors(response,1)[0];
         }, signal);
         const result = await vectorCache.search(index, searchCards, q, {limit, fingerprint, signal,tagLanes,categoryLanes});
@@ -1302,7 +1315,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           // ever-growing entire merged event. Legacy records stay untruncated.
           return brief?[record.title,brief,relevantPassage(body,brief,query)].filter(Boolean).join('\n'):body;
         });
-        const result = await c.rerank({model:c.profile.model,query,documents,top_n:candidates.length},{signal});
+        const result = await withTimeout(c.rerank({model:c.profile.model,query,documents,top_n:candidates.length},{signal}), rerankBudgetMs(), '重排请求');
         if (!Array.isArray(result.results) || result.results.length !== candidates.length) throw new Error('重排结果数量不匹配');
         const seen=new Set();
         return result.results.map(item=>{if(!Number.isInteger(item.index)||item.index<0||item.index>=candidates.length||seen.has(item.index))throw new Error('重排索引无效');seen.add(item.index);return {id:candidates[item.index].id,score:item.relevance_score??item.score};});

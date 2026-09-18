@@ -1,7 +1,7 @@
 {
   "index.js": "fd4b19d6505b331139d94b819f4db8f1473799adf236a286044ec92bf64017b8",
   "ui/product-view.js": "f8b2529b4f9879d88cebc222ac39b988e342e41a450006fc27eccb3900d44a13",
-  "src/product-application.js": "4b91b2625683bff75de80488685e55b9fc94d3181739509f2fa258fc9a7b8f3b",
+  "src/product-application.js": "0790d23b8c4efdf34c97878a2a770d5913d5335de1ca00ecad2042281309abf2",
   "src/host-adapter.js": "f7fb6dd917b95333cebcc6d39db01a8acf89a0bf36587cf20cd1d02fd8a72a03",
   "src/errors.js": "f6af25f08c160e740db91881b1bdd0bb26eb9007979b5ecdf6a79c5897d3ed45",
   "src/utils.js": "46c4f73af429204d965385e8ee15d1feea97cb11509bdf30ae4e2cecbd11e306",
@@ -20,7 +20,7 @@
   "src/provider-stream.js": "4e4126debfd75f81ff0f4801cc9e7e083a82140e0a3d6ef0906826a316b19f80",
   "src/provider-scheduler.js": "90493f6bc3e9dcd64e38c90409482dbe6db9ca81d4aada9e60c5fdca5b98cb0a",
   "src/reliable-storage.js": "845461b3c2de0dcf2294057ae23631f49c23621d9814a25322f10673756f5958",
-  "src/product-release.js": "ec8292dec3e31fb520593148c378bbe38d8dabe96bd76ad6a683e69bef7e042f",
+  "src/product-release.js": "37ed0f308fc81b19f8008755eee7592ae40f91aea1dce7407755245ebfea8bef",
   "src/dynamic-persona-plan.js": "f719478b3c47f88b8c0139ede136cb92125e0677666d278c24cd21a9aa436b34",
   "src/persona-identity.js": "d5059dcd15f353afb408ac125bbd3181d06cd1598f523b015a63c533a2885d9b",
   "src/name-fold.js": "7aaf4804bfab60a86b5cd29dbc00798f1ccb6f3abea76364923b575577757a17",
@@ -104,9 +104,9 @@
   "ui/product-custom-modules.js": "b9633658bf94f1ad7e29d15139e01ac6ca0f789471db062abbdf487cf163d1a4",
   "ui/product-quality-view.js": "092ff29fa7b690a5d06a9e1566d7928667675792df174d09066e421f5c84c417",
   "ui/product-extraction-view.js": "295bdd0c31e2e4ed76050ddb3936f963f8b051edb606b4f57d915169e79ef7b7",
-  "manifest.json": "3413d7047730e95ed67cb95290473c003cf4d010a4498ae875c18d318ec30451",
+  "manifest.json": "fda67cf185ed419fbbbefb04ec69fec4ceafdd335e2ef49f06caa97b5de96f17",
   "ui/product-view.css": "fb6311df353b2a21a2e497f745fba05699979dac20a0a101fd937fd41e60e044",
   "README.md": "f0290f44728d1998f63aa3ce6ba13eb5260bdc9f7231dece4df234e2ec0879a7",
-  "CHANGELOG.md": "95d01551b83dcbe580555b2d3e7e281b42d00ce6dd381ec1c2524ac21081d7eb",
+  "CHANGELOG.md": "4514c5bfb35d68fac2b6dd5b13302ff2830a3f442ba6abb122414def679e62d0",
   ".gitattributes": "cc641658d855cb2ba3f269f3248111fa65fa54225c87b56c5c8e98b6d3d574bf"
 }
