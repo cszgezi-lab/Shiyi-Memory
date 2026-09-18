@@ -364,7 +364,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
    actions[`recommend-${kind}`]=()=>{const patch=missingRecommendations(apiPatch(kind),kind);for(const [k,v]of Object.entries(patch)){$(`[data-setting="${k}"]`).value=v;dirtyApi.add(k);}resetModels(kind);$(`[data-model-status="${kind}"]`).textContent=Object.keys(patch).length?'已补齐，点击保存后生效。':'已有配置保持不变。';};
  }
  for(const [name,fn]of Object.entries(actions))for(const b of $$(`[data-action="${name}"]`))b.addEventListener?.('click',()=>run(fn,{name,button:b}));
- for(const selector of ['[data-range-mode]','[data-count]','[data-start]','[data-end]','[data-batch-size]'])$(selector).addEventListener(selector==='[data-range-mode]'?'change':'input',syncSummaryRange);
+ for(const selector of ['[data-range-mode]','[data-count]','[data-start]','[data-end]','[data-batch-size]'])$(selector)?.addEventListener(selector==='[data-range-mode]'?'change':'input',syncSummaryRange);
  function showRecordTab(name){for(const section of $$('[data-record-panel]'))if(section.dataset.recordPanel!=='logs')section.hidden=section.dataset.recordPanel!==name;for(const tab of $$('[data-record-tab]'))tab.classList.toggle('active',tab.dataset.recordTab===name);setPage('recording');if(name==='logs')void app.loadRuntimeLog?.().then(()=>paint(readViewState(app)));}
  for(const b of $$('[data-record-tab]'))b.addEventListener('click',()=>showRecordTab(b.dataset.recordTab));
  const openLogs=()=>{setPage('log');};
@@ -399,9 +399,9 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  }
  for(const f of $$('[data-setting]'))f.addEventListener?.('input',()=>{dirtyApi.add(f.dataset.setting);});
  $('[data-search]')?.addEventListener?.('input',()=>painting.request());$('[data-category]')?.addEventListener?.('change',()=>painting.flush());$('[data-conversation]')?.addEventListener?.('change',()=>run(async()=>{await app.selectConversation($('[data-conversation]').value);fill();}));
- $('[data-memory-size]').addEventListener('change',()=>painting.flush());
- for(const [selector,delta]of [['[data-memory-prev]',-1],['[data-memory-next]',1]])$(selector).addEventListener('click',()=>{memoryCurrentPage+=delta;painting.flush();});
- $('[data-memory-page]').addEventListener('change',()=>{memoryCurrentPage=Math.max(1,Math.floor(Number($('[data-memory-page]').value)||1));painting.flush();});
+$('[data-memory-size]')?.addEventListener('change',()=>painting.flush());
+for(const [selector,delta]of [['[data-memory-prev]',-1],['[data-memory-next]',1]])$(selector)?.addEventListener('click',()=>{memoryCurrentPage+=delta;painting.flush();});
+$('[data-memory-page]')?.addEventListener('change',()=>{memoryCurrentPage=Math.max(1,Math.floor(Number($('[data-memory-page]').value)||1));painting.flush();});
  let timer;$('[data-input]')?.addEventListener?.('input',()=>{clearTimeout(timer);const value=$('[data-input]').value,context=app.draftContext;timer=setTimeout(()=>run(()=>app.setDraft(value,context)),350);});
  const updates=documentRef.createElement('details');updates.className='sy-card';
  updates.innerHTML=`<summary>版本与更新 · ${PRODUCT_VERSION}</summary><p class="sy-help">从 Git 安装后，在 TT 的扩展管理中检查拾忆更新。更新完成，等待当前任务结束、保存设置后重载页面即可生效，不需要重装 TT。记忆与已保存的 Key 保留。</p><a href="${PRODUCT_REPOSITORY}" target="_blank" rel="noopener noreferrer">安装地址与更新说明</a>`;

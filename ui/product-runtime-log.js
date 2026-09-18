@@ -137,7 +137,7 @@ function detailsHTML(entry){
   return `<p class="sy-log-summary">${esc(runtimeLogSummary(entry))}</p><details class="sy-log-technical"><summary>技术详情（排错用，可导出）</summary>${lines.map(([label,value])=>`<div class="sy-log-detail${['错误','校验问题','校验字段'].includes(label)?' sy-log-wide':''}"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('')}</details>`;
 }
 export function mountRuntimeLog({panel,app,run,host,download}){
-  const $=s=>panel.querySelector(s);let page=1,state=null,signature='';const opened=new Set();
+  const $=s=>panel.querySelector?.(s);let page=1,state=null,signature='';const opened=new Set();
   function paint(next){
     state=next;const data=state.runtimeLog??{entries:[],persistence:'not_loaded'};
     const filter=$('[data-log-filter]').value;
@@ -172,17 +172,17 @@ export function mountRuntimeLog({panel,app,run,host,download}){
   // Copying the whole snapshot is impractical on a phone (up to 2 MB). This
   // returns only the newest failing records in compact form: enough to locate a
   // failure, small enough to read and copy on a phone.
-  $('[data-log-issues-text]').addEventListener('click',async()=>{try{showText(await app.exportRuntimeLog({filter:{levels:['error','warning'],limit:50,compact:true}}),'最近 50 条失败与提醒（精简）；可直接复制。需要全部记录请用“查看／复制全部文本”。',true);}catch(error){report(error);status(`失败记录未读取：${failureText(error)}`);}});
-  $('[data-log-text]').addEventListener('click',async()=>{try{showText(await app.exportRuntimeLog(),'这是当前日志快照；可复制文本，不调用模型。');}catch(error){report(error);status(`日志快照未读取：${failureText(error)}`);}});
-  $('[data-log-copy]').addEventListener('click',async()=>{const area=$('[data-log-text-value]');try{if(!host.navigator?.clipboard?.writeText)throw new Error('clipboard unavailable');await host.navigator.clipboard.writeText(area.value);status('日志文本已复制。');}catch{area.focus();area.select();status('自动复制不可用；已选中文本，可长按复制。');}});
-  $('[data-log-close]').addEventListener('click',()=>{$('[data-log-fallback]').hidden=true;$('[data-log-text-value]').value='';});
-  $('[data-log-export]').addEventListener('click',async()=>{
+  $('[data-log-issues-text]')?.addEventListener('click',async()=>{try{showText(await app.exportRuntimeLog({filter:{levels:['error','warning'],limit:50,compact:true}}),'最近 50 条失败与提醒（精简）；可直接复制。需要全部记录请用“查看／复制全部文本”。',true);}catch(error){report(error);status(`失败记录未读取：${failureText(error)}`);}});
+  $('[data-log-text]')?.addEventListener('click',async()=>{try{showText(await app.exportRuntimeLog(),'这是当前日志快照；可复制文本，不调用模型。');}catch(error){report(error);status(`日志快照未读取：${failureText(error)}`);}});
+  $('[data-log-copy]')?.addEventListener('click',async()=>{const area=$('[data-log-text-value]');try{if(!host.navigator?.clipboard?.writeText)throw new Error('clipboard unavailable');await host.navigator.clipboard.writeText(area.value);status('日志文本已复制。');}catch{area.focus();area.select();status('自动复制不可用；已选中文本，可长按复制。');}});
+  $('[data-log-close]')?.addEventListener('click',()=>{$('[data-log-fallback]').hidden=true;$('[data-log-text-value]').value='';});
+  $('[data-log-export]')?.addEventListener('click',async()=>{
     if(exporting)return;exporting=true;$('[data-log-export]').disabled=true;let snapshot;
     status('正在导出当前日志快照；若系统保存无响应，可点“查看／复制文本”。');
     try{snapshot=await app.exportRuntimeLog();const result=await download(snapshot,'拾忆-运行日志.json',{preferBrowser:true});status(result?.saved===true?`日志已保存到${result.saveLocation??'文件'}${result.exportAttempt==='picker'?'（系统直存失败，已改用文件选择器）':''}。`:result?.status==='dispatched'?'已交给浏览器下载/分享；若系统未给出保存位置，可在弹出的下载面板里选择，或点“查看／复制文本”自行保存。':'日志导出状态未确认；可点“查看／复制文本”直接保存。');}
     catch(error){report(error);if(snapshot)showText({...snapshot,exportFailure:safeLogDetails(errorDiagnostics(error))},`文件未导出：${failureText(error)}。日志已在下方展开，可直接复制，无需重跑任务。`);else status(`日志未导出：${failureText(error)}`);}
     finally{exporting=false;$('[data-log-export]').disabled=false;}
   });
-  $('[data-log-clear]').addEventListener('click',()=>run(async()=>{if(host.confirm?.('清空运行日志？记忆、总结批次、设置和助手对话不会删除。')){await app.clearRuntimeLog();opened.clear();page=1;signature='';paint(readViewState(app));}}));
+  $('[data-log-clear]')?.addEventListener('click',()=>run(async()=>{if(host.confirm?.('清空运行日志？记忆、总结批次、设置和助手对话不会删除。')){await app.clearRuntimeLog();opened.clear();page=1;signature='';paint(readViewState(app));}}));
   return {paint};
 }

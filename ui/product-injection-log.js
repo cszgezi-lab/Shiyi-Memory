@@ -4,7 +4,7 @@ import {INJECTION_DETAIL_LABELS} from '../src/product-injection-log.js';
 const status={prepared:'已加入待发送请求',empty:'未找到可注入内容',disabled:'自动注入未启用',stale:'正文已变化，未注入',unavailable:'聊天不可用',failed:'检索失败，未注入',changed:'处理中聊天或配置变化'};
 export function injectionLogHTML(){return `<h3>逐次注入日志</h3><p class="sy-help">只记录本聊天。可以核对具体片段、来源和耗时；“已加入”不等于模型服务已经收到。最近 30 次，较大的记录会提前淘汰旧项。</p><div class="sy-actions"><button type="button" data-injection-export>导出调试日志</button><button type="button" data-injection-clear>清空日志</button></div><label class="sy-check"><input type="checkbox" data-injection-content>导出时包含剧情查询和注入正文</label><p data-injection-storage class="sy-help"></p><div data-injection-history></div><div class="sy-actions"><button type="button" data-injection-prev>上一页</button><span data-injection-page></span><button type="button" data-injection-next>下一页</button></div>`;}
 export function mountInjectionLog({panel,app,run,host,download}){
-  const $=s=>panel.querySelector(s);let page=1,current=null,stamp='',opened=new Set();
+  const $=s=>panel.querySelector?.(s);let page=1,current=null,stamp='',opened=new Set();
   function paint(state){current=state;const log=state.injectionLog,items=[...(log?.entries??[])].reverse(),pages=Math.max(1,Math.ceil(items.length/5));page=Math.min(page,pages);
     const signature=JSON.stringify([log,page]);if(signature===stamp)return;stamp=signature;
     $('[data-injection-storage]').textContent=!state.chatReady?'打开聊天后查看对应日志。':({saved:'已保存到本聊天。',ready:'已读取本聊天日志。',unavailable:'日志存储不可读，本次只在内存保留，可导出。',failed:'日志保存未通过确认，请及时导出。'})[log?.persistence]??'';
@@ -21,8 +21,8 @@ export function mountInjectionLog({panel,app,run,host,download}){
     for(const b of panel.querySelectorAll('[data-injection-delete]'))b.addEventListener('click',()=>run(()=>app.removeInjectionLog(b.dataset.injectionDelete)));
     $('[data-injection-page]').textContent=`${page} / ${pages} · ${items.length} 次`;$('[data-injection-prev]').disabled=page===1;$('[data-injection-next]').disabled=page===pages;
   }
-  for(const [sel,delta] of [['[data-injection-prev]',-1],['[data-injection-next]',1]])$(sel).addEventListener('click',()=>{page+=delta;paint(current??readViewState(app));});
-  $('[data-injection-clear]').addEventListener('click',()=>run(async()=>{if(host.confirm?.('只清空本聊天的注入日志？已保存记忆、总结和聊天原文不变。'))await app.clearInjectionLog();}));
-  $('[data-injection-export]').addEventListener('click',()=>run(async()=>{const includeContent=$('[data-injection-content]').checked;if(includeContent&&!host.confirm?.('导出文件将包含剧情查询、记忆正文及人物名称。确认后再分享给他人。'))return;await download(await app.exportInjectionLog({includeContent}),'拾忆-注入日志.json');}));
+  for(const [sel,delta] of [['[data-injection-prev]',-1],['[data-injection-next]',1]])$(sel)?.addEventListener('click',()=>{page+=delta;paint(current??readViewState(app));});
+  $('[data-injection-clear]')?.addEventListener('click',()=>run(async()=>{if(host.confirm?.('只清空本聊天的注入日志？已保存记忆、总结和聊天原文不变。'))await app.clearInjectionLog();}));
+  $('[data-injection-export]')?.addEventListener('click',()=>run(async()=>{const includeContent=$('[data-injection-content]')?.checked;if(includeContent&&!host.confirm?.('导出文件将包含剧情查询、记忆正文及人物名称。确认后再分享给他人。'))return;await download(await app.exportInjectionLog({includeContent}),'拾忆-注入日志.json');}));
   return {paint};
 }

@@ -7,7 +7,7 @@ const choices=(key,label,values,value)=>field(label,`<select data-q-field="${key
 const statusLabels={known:'知道',heard:'听说',suspected:'怀疑',mistaken:'误解',explicitly_unaware:'明确不知道'};
 const viaLabels={witnessed:'亲眼见到',heard_in_scene:'当场听见',read:'阅读得知',told:'他人转告',background:'既有背景',user_confirmed:'用户确认',special_ability:'特殊能力',unknown:'无法确定'};
 export function mountQualityView({panel,app,run}){
-  const $=s=>panel.querySelector(s),container=$('[data-quality-items]');let limit=10,suggestionLimit=10,deferredLimit=10,last=null,scope=null,planStamp='';
+  const $=s=>panel.querySelector?.(s),container=$('[data-quality-items]');let limit=10,suggestionLimit=10,deferredLimit=10,last=null,scope=null,planStamp='';
   const deferredPanel=panel.ownerDocument.createElement('details');deferredPanel.dataset.qualityDeferred='';deferredPanel.innerHTML='<summary>已尝试，仍需确认 <small data-quality-deferred-count></small></summary><p class="sy-help">这些条目尚未修好，仍保留知情保护；不会默认重复请求。可人工确认或主动重试。</p><button type="button" data-quality-retry>重试待确认条目 · 预览</button><div data-quality-deferred-items></div><button type="button" data-quality-deferred-more hidden>显示更多待确认</button>';$('[data-quality-optional]').before(deferredPanel);
   function editorHTML(r){
     const bodyKey=r.category==='awarenessChanges'?'knowledge':r.category==='entityFactChanges'?'to':r.description!==undefined?'description':r.text!==undefined?'text':'content';
@@ -63,11 +63,11 @@ export function mountQualityView({panel,app,run}){
     $('[data-quality-start]')?.toggleAttribute('disabled',Boolean(s.busy));
     $('[data-action="review-memory"]')?.toggleAttribute('disabled',Boolean(s.busy));
   }
-  $('[data-quality-more]').addEventListener('click',()=>{limit+=10;if(last)paint(last);});
-  $('[data-quality-optional]').addEventListener('toggle',()=>{if(last)paint(last);});
-  $('[data-quality-suggestions-more]').addEventListener('click',()=>{suggestionLimit+=10;if(last)paint(last);});
+  $('[data-quality-more]')?.addEventListener('click',()=>{limit+=10;if(last)paint(last);});
+  $('[data-quality-optional]')?.addEventListener('toggle',()=>{if(last)paint(last);});
+  $('[data-quality-suggestions-more]')?.addEventListener('click',()=>{suggestionLimit+=10;if(last)paint(last);});
   deferredPanel.addEventListener('toggle',()=>{if(last)paint(last);});
-  $('[data-quality-deferred-more]').addEventListener('click',()=>{deferredLimit+=10;if(last)paint(last);});
-  $('[data-quality-retry]').addEventListener('click',()=>run(()=>app.previewQuality((last?.quality?.deferredItems??[]).map(i=>i.id))));
+  $('[data-quality-deferred-more]')?.addEventListener('click',()=>{deferredLimit+=10;if(last)paint(last);});
+  $('[data-quality-retry]')?.addEventListener('click',()=>run(()=>app.previewQuality((last?.quality?.deferredItems??[]).map(i=>i.id))));
   return {paint};
 }

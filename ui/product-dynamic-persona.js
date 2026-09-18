@@ -60,17 +60,17 @@ ${field('当前聊天自动起算楼层','<input data-persona-start type="number
 <details class="sy-card"><summary>新增 DIY 人物档案</summary>${field('姓名','<input data-persona-new-name>')}${field('完整人物信息','<textarea rows="6" data-persona-new-text></textarea>')}<button type="button" data-persona-add>新增并锁定</button></details>
 <details class="sy-card"><summary>独立更新记录</summary><div data-persona-batches></div><div class="sy-actions"><button type="button" data-persona-prev>上一页</button><button type="button" data-persona-next>下一页</button></div></details></section>`;}
 export function mountDynamicPersona({panel,app,run,host=globalThis}){
-  const $=s=>panel.querySelector(s),root=$('[data-view="dynamic-persona"]'),drafts=new Map();let stamp='',scope='',page=0,profilePage=0,startDirty=false,promptDirty=false,manualDirty=false,manualPage=0,manualStamp='',previewStamp='',auditStamp='';
-  $('[data-persona-source-audit]').addEventListener('toggle',()=>paint(app.state));
+  const $=s=>panel.querySelector?.(s),root=$('[data-view="dynamic-persona"]'),drafts=new Map();let stamp='',scope='',page=0,profilePage=0,startDirty=false,promptDirty=false,manualDirty=false,manualPage=0,manualStamp='',previewStamp='',auditStamp='';
+  $('[data-persona-source-audit]')?.addEventListener('toggle',()=>paint(app.state));
   const bind=(s,fn)=>$(s)?.addEventListener('click',e=>run(fn,{name:'dynamic-persona',button:e.currentTarget}));
-  $('[data-persona-start]').addEventListener('input',()=>{startDirty=true;});$('[data-persona-prompt]').addEventListener('input',()=>{promptDirty=true;});
+  $('[data-persona-start]')?.addEventListener('input',()=>{startDirty=true;});$('[data-persona-prompt]')?.addEventListener('input',()=>{promptDirty=true;});
   const save=async()=>{const patch={};for(const key of ['dynamicPersonaEvery','dynamicPersonaKeepRecent'])patch[key]=Number($(`[data-setting="${key}"]`).value);await app.setDynamicPersonaStart(Number($('[data-persona-start]').value));await app.saveSettings(patch);startDirty=false;};
   bind('[data-persona-save]',save);bind('[data-persona-enable]',async()=>{await save();await app.setDynamicPersona(true);});bind('[data-persona-pause]',()=>app.pauseDynamicPersona());bind('[data-persona-disable]',()=>app.setDynamicPersona(false));bind('[data-persona-check]',()=>app.inspectDynamicPersona());bind('[data-persona-retry]',()=>app.processDynamicPersona());
   bind('[data-persona-default]',()=>{$('[data-persona-prompt]').value=DYNAMIC_PERSONA_PROMPT;promptDirty=true;});
   bind('[data-persona-budget-save]',async()=>{const patch={dynamicPersonaPrompt:$('[data-persona-prompt]').value,dynamicPersonaMvuMode:$('[data-setting="dynamicPersonaMvuMode"]').value};for(const key of ['dynamicPersonaInputUnits','dynamicPersonaOutputTokens','dynamicPersonaDeadlineMs'])patch[key]=Number($('[data-setting="'+key+'"]').value);await app.saveSettings(patch);promptDirty=false;});
   const manualOptions=()=>({startIndex:Number($('[data-persona-manual-start]').value),endIndex:Number($('[data-persona-manual-end]').value),batchSize:Number($('[data-persona-manual-size]').value),handoff:$('[data-persona-manual-handoff]').checked});
   const clearPreview=()=>{previewStamp='';$('[data-persona-manual-start-run]').disabled=true;$('[data-persona-manual-preview-text]').textContent='范围已改变，请重新预览。';};
-  for(const sel of ['start','end','size','handoff'])$('[data-persona-manual-'+sel+']').addEventListener('input',()=>{manualDirty=true;clearPreview();});
+  for(const sel of ['start','end','size','handoff'])$('[data-persona-manual-'+sel+']')?.addEventListener('input',()=>{manualDirty=true;clearPreview();});
   for(const tab of root.querySelectorAll('[data-persona-tab]'))tab.addEventListener('click',()=>{
     const manual=tab.dataset.personaTab==='manual';$('[data-persona-auto]').hidden=manual;$('[data-persona-manual]').hidden=!manual;
     for(const button of root.querySelectorAll('[data-persona-tab]'))button.setAttribute('aria-pressed',String(button===tab));

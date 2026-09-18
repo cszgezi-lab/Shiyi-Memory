@@ -13,27 +13,27 @@ export function recallSectionsHTML(){return `
 
 const indexLabels={no_chat:'请先打开聊天',not_checked:'待检查',unavailable:'暂不可用',empty:'没有可索引的记忆',pending:'待补建',ready:'索引完整',updating:'后台更新中',error:'更新未完成',stopped:'已停止',mixed:'向量维度不一致'};
 export function mountRecallView({panel,app,run,setPage,download,host=globalThis}){
-  const $=selector=>panel.querySelector(selector);
+  const $=s=>panel.querySelector?.(s);
   $('[data-view="current"]').insertAdjacentHTML('beforeend',injectionLogHTML());
   const injectionView=mountInjectionLog({panel,app,run,host,download});
   for(const page of RECALL_PAGES){const section=$(`[data-view="${page}"]`);if(!section)continue;const nav=panel.ownerDocument.createElement('nav');nav.className='sy-subnav';nav.setAttribute('aria-label','召回导航');nav.innerHTML=tabs.map(([id,label])=>`<button type="button" data-recall-page="${id}" ${id===page?'class="active" aria-current="page"':''}>${label}</button>`).join('');section.prepend(nav);for(const b of nav.querySelectorAll('button'))b.addEventListener('click',()=>setPage(b.dataset.recallPage));}
   for(const b of panel.querySelectorAll('[data-recall-jump]'))b.addEventListener('click',()=>setPage(b.dataset.recallJump));
-  $('[data-vector-rebuild]').addEventListener('click',()=>{if(host.confirm?.('重建当前聊天全部向量索引？会调用已配置的向量 API，记忆正文保留。'))void run(()=>app.buildVectors({rebuild:true}),{name:'vectors'});});
+  $('[data-vector-rebuild]')?.addEventListener('click',()=>{if(host.confirm?.('重建当前聊天全部向量索引？会调用已配置的向量 API，记忆正文保留。'))void run(()=>app.buildVectors({rebuild:true}),{name:'vectors'});});
   let rowVersion=0,rowPage=1,indexStamp='',lastState=null;
-  $('[data-vector-retry-all]').addEventListener('click',event=>void run(()=>app.retryVectors(),{name:'vectors',button:event.currentTarget}));
-  $('[data-vector-entries]').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.vectorRetry)void run(()=>app.retryVectors([b.dataset.vectorRetry]),{name:'vectors',button:b});if(b.dataset.vectorExclude)void run(async()=>{await app.excludeVector(b.dataset.vectorExclude,b.dataset.excluded!=='true');await loadRows();});if(b.dataset.vectorSource){setPage(b.dataset.vectorCategory==='knowledge'?'world':'memory');if(b.dataset.vectorCategory!=='knowledge')panel.dispatchEvent(new panel.ownerDocument.defaultView.CustomEvent('shiyi-edit-memory',{detail:b.dataset.vectorSource}));}});
+  $('[data-vector-retry-all]')?.addEventListener('click',event=>void run(()=>app.retryVectors(),{name:'vectors',button:event.currentTarget}));
+  $('[data-vector-entries]')?.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.vectorRetry)void run(()=>app.retryVectors([b.dataset.vectorRetry]),{name:'vectors',button:b});if(b.dataset.vectorExclude)void run(async()=>{await app.excludeVector(b.dataset.vectorExclude,b.dataset.excluded!=='true');await loadRows();});if(b.dataset.vectorSource){setPage(b.dataset.vectorCategory==='knowledge'?'world':'memory');if(b.dataset.vectorCategory!=='knowledge')panel.dispatchEvent(new panel.ownerDocument.defaultView.CustomEvent('shiyi-edit-memory',{detail:b.dataset.vectorSource}));}});
   async function loadRows(){
     const version=++rowVersion;
     if(!lastState?.chatReady){$('[data-vector-entries]').textContent='打开聊天后查看对应索引。';$('[data-vector-page]').textContent='';return;}
-    try{const result=await app.listVectorEntries({query:$('[data-vector-search]').value,status:$('[data-vector-filter]').value,page:rowPage});if(version!==rowVersion)return;rowPage=result.page;
+    try{const result=await app.listVectorEntries({query:$('[data-vector-search]')?.value,status:$('[data-vector-filter]')?.value,page:rowPage});if(version!==rowVersion)return;rowPage=result.page;
       $('[data-vector-entries]').innerHTML=result.rows.map(row=>`<div class="sy-info-row"><span>${({failed:'失败',indexed:'已索引',stale:'待更新',missing:'未索引',excluded:'已排除'})[row.status]}</span><strong>${esc(row.title)}</strong>${row.error?`<small class="sy-vector-error">${esc(row.error)}</small>`:""}${row.segments>1?`<small>${row.segments} 段全文索引</small>`:""}${["failed","missing","stale"].includes(row.status)?`<button type="button" data-vector-retry="${esc(row.id)}">重试此项</button>`:""}<button type="button" data-vector-source="${esc(row.id)}" data-vector-category="${esc(row.category)}">修改原记忆</button><button type="button" data-vector-exclude="${esc(row.id)}" data-excluded="${row.status==='excluded'}">${row.status==='excluded'?'恢复索引':'排除向量'}</button></div>`).join('')||'<p class="sy-help">没有符合条件的记忆。</p>';
       $('[data-vector-page]').textContent=`${result.page} / ${result.pages} · ${result.total} 条`;
       $('[data-vector-prev]').disabled=result.page===1;$('[data-vector-next]').disabled=result.page===result.pages;
     }catch{if(version===rowVersion)$('[data-vector-entries]').textContent='索引暂不可读，检查配置后刷新。';}
   }
-  $('[data-vector-search]').addEventListener('input',()=>{rowPage=1;void loadRows();});
-  $('[data-vector-filter]').addEventListener('change',()=>{rowPage=1;void loadRows();});
-  $('[data-vector-prev]').addEventListener('click',()=>{rowPage--;void loadRows();});$('[data-vector-next]').addEventListener('click',()=>{rowPage++;void loadRows();});
+  $('[data-vector-search]')?.addEventListener('input',()=>{rowPage=1;void loadRows();});
+  $('[data-vector-filter]')?.addEventListener('change',()=>{rowPage=1;void loadRows();});
+  $('[data-vector-prev]')?.addEventListener('click',()=>{rowPage--;void loadRows();});$('[data-vector-next]')?.addEventListener('click',()=>{rowPage++;void loadRows();});
   function match(){const query=$('[data-dictionary-query]')?.value??'',dict=readViewState(app).dictionary??{};if(!$('[data-dictionary-match]'))return;const found=dictionaryQuery(query,dict);$('[data-dictionary-match]').textContent=query?[...found.terms.map(t=>`${t.matched.join('、')} → ${t.name}`),...found.ambiguities.map(a=>`${a.name} 有歧义：${a.owners.join('、')}`),found.tags.length?`标签：${found.tags.join('、')}`:''].filter(Boolean).join('\n')||'没有命中词条；仍可通过普通关键词或向量检索。':'输入后立即查看匹配结果。';}
   $('[data-dictionary-query]')?.addEventListener('input',match);
   function paint(s){

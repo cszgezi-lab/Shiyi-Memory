@@ -60,7 +60,7 @@ export function mountSummaryPresets({panel,app,run,host,download}){
     library=readSummaryPresets(next);raw=next;drafts.clear();if(!library.items.some(p=>p.id===selected))selected=library.activeId;draw();
   }
   root.addEventListener('input',event=>{if(event.target.closest('[data-preset-editor]')){dirty=true;status('有未保存修改；尚未用于总结。');}});
-  $('[data-preset-select]').addEventListener('change',()=>{drafts.set(selected,current());selected=$('[data-preset-select]').value;draw();});
+  $('[data-preset-select]')?.addEventListener('change',()=>{drafts.set(selected,current());selected=$('[data-preset-select]').value;draw();});
   const freshId=()=>`preset-${globalThis.crypto.randomUUID()}`;
   async function persist(next){
     await app.loadApiSettings?.();

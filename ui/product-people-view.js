@@ -313,7 +313,7 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     if (stamp === nextStamp) return;
     groups = peopleGroups(snapshot); stamp = nextStamp; draw();
   }
-  $('[data-people-search]').addEventListener('input', () => draw());
+  $('[data-people-search]')?.addEventListener('input', () => draw());
   /** 第一次点这一行：展开全文。展开之后点这一行的文字：进编辑。 */
   function openFieldEditor(row) {
     const id = row?.dataset.fieldId ?? '';

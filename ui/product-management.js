@@ -127,15 +127,15 @@ export function mountMemoryManagement({panel,app,run,host}){
     // still readable here, so say where it lives instead of showing an empty list.
     const hint=$('[data-category-help]');hint.textContent=CATEGORY_PAGE_HINT[currentCategory.value]??conflictHelp;hint.hidden=currentCategory.value!=='conflicts'&&!CATEGORY_PAGE_HINT[currentCategory.value];
   }
-  $('[data-note-category]').addEventListener('change',syncFields);currentCategory?.addEventListener('change',syncFields);syncFields();
+  $('[data-note-category]')?.addEventListener('change',syncFields);currentCategory?.addEventListener('change',syncFields);syncFields();
   /** One in-place editor for every page: the people page asks this page to open
    * a record it owns, so the two views can never drift into two editors. */
   function requestEdit(id){editingId=null;$('[data-edit-memory]').hidden=true;edit(id);}
   panel.addEventListener('shiyi-edit-memory',e=>{const id=e.detail;if(typeof id!=='string'||!id)return;requestEdit(id);});
-  $('[data-action="note-mvu-refresh"]').addEventListener('click',()=>run(async()=>{const result=await app.syncModules();if(result.status!=='ready')throw new Error('尚未读取到 MVU，请确认当前聊天的变量框架已初始化');},{name:'custom-read-mvu'}));
-  $('[data-action="save-memory-edit"]').addEventListener('click',()=>run(async()=>{await app.editRecord(editingId,$('[data-edit-text]').value,{title:$('[data-edit-title]').value,recallSummary:$('[data-edit-brief]').value,tags:$('[data-edit-tags]').value.split(/[,，]/),...(!$('[data-edit-fact-fields]').hidden?{entity:$('[data-edit-entity]').value,field:$('[data-edit-field]').value,valueFormat:$('[data-edit-format]').value}:{})});$('[data-edit-memory]').hidden=true;}));
-  $('[data-edit-text]').addEventListener('input',()=>{$('[data-edit-brief]').value='';});
-  $('[data-action="cancel-memory-edit"]').addEventListener('click',()=>{$('[data-edit-memory]').hidden=true;editingId=null;});
+  $('[data-action="note-mvu-refresh"]')?.addEventListener('click',()=>run(async()=>{const result=await app.syncModules();if(result.status!=='ready')throw new Error('尚未读取到 MVU，请确认当前聊天的变量框架已初始化');},{name:'custom-read-mvu'}));
+  $('[data-action="save-memory-edit"]')?.addEventListener('click',()=>run(async()=>{await app.editRecord(editingId,$('[data-edit-text]').value,{title:$('[data-edit-title]').value,recallSummary:$('[data-edit-brief]').value,tags:$('[data-edit-tags]').value.split(/[,，]/),...(!$('[data-edit-fact-fields]')?.hidden?{entity:$('[data-edit-entity]').value,field:$('[data-edit-field]').value,valueFormat:$('[data-edit-format]').value}:{})});$('[data-edit-memory]').hidden=true;}));
+  $('[data-edit-text]')?.addEventListener('input',()=>{$('[data-edit-brief]').value='';});
+  $('[data-action="cancel-memory-edit"]')?.addEventListener('click',()=>{$('[data-edit-memory]').hidden=true;editingId=null;});
   function edit(id){
     const card=readViewState(app).cards.find(c=>c.id===id);if(!card)return;editingId=id;
     const fact=card.category==='entityFactChanges'&&!card.customModuleId,value=factValue(card),structured=fact&&typeof value!=='string';
@@ -183,7 +183,7 @@ export function mountMemoryManagement({panel,app,run,host}){
 
 export function dictionaryHTML(){return `<div class="sy-card"><h4>自动字典与标签</h4><p class="sy-help">来自当前聊天的总结与已启用的知识库。别称指同一对象的另一种叫法；输入别称可帮助找到正式名称对应的记忆。关联词是相关主题，不会合并人物或让角色自动知情。</p><p data-dictionary-kinds class="sy-help"></p>${field('查找词条','<input data-dictionary-search placeholder="姓名、别称、地点">')}<label class="sy-toggle"><span>显示已删除词条</span><input type="checkbox" data-dictionary-deleted></label><p data-dictionary-count class="sy-help"></p><div data-dictionary-list></div><div class="sy-actions"><button type="button" data-dictionary-prev>上一页</button><button type="button" data-dictionary-next>下一页</button></div><details><summary>已生成的检索标签</summary><div data-dictionary-tags></div></details><details data-dictionary-editor><summary>新增词条</summary>${field('正式名称','<input data-dictionary-name maxlength="80">')}${field('别称','<input data-dictionary-aliases placeholder="用逗号分隔">')}${field('关联检索词（不是别名）','<input data-dictionary-related placeholder="例如校刊、转校手续；用逗号分隔">')}<p class="sy-help">手动校正作为全局设置保存；校正别称不会改变人物事实。</p><div class="sy-actions"><button type="button" data-dictionary-save>保存词条</button><button type="button" data-dictionary-clear>新增另一条</button></div></details></div>`;}
 export function mountDictionary({panel,app,run,save=input=>app.saveDictionaryEntry(input)}){
-  const $=s=>panel.querySelector(s);if(!$('[data-dictionary-list]'))return {paint(){}};
+  const $=s=>panel.querySelector?.(s);if(!$('[data-dictionary-list]'))return {paint(){}};
   let page=1,snapshot=null,signature='';const drafts=new Map();
   const editHTML=(name,d)=>`<div class="sy-word-editor" data-word-editor="${esc(name)}">${field('正式名称',`<input data-word-name value="${esc(d.name)}">`)}${field('别称',`<input data-word-aliases value="${esc(d.aliases)}">`)}${field('关联检索词',`<input data-word-related value="${esc(d.indexWords)}">`)}<div class="sy-actions"><button type="button" data-word-save="${esc(name)}">保存校正</button><button type="button" data-word-cancel="${esc(name)}">取消</button></div></div>`;
   function paint(s){
@@ -216,10 +216,10 @@ export function mountDictionary({panel,app,run,save=input=>app.saveDictionaryEnt
       signature='';paint(readViewState(app));
     },{name:'save-dictionary'});
   });
-  $('[data-dictionary-search]').addEventListener('input',()=>{page=1;paint(snapshot??readViewState(app));});
-  $('[data-dictionary-deleted]').addEventListener('change',()=>{page=1;paint(snapshot??readViewState(app));});
-  $('[data-dictionary-prev]').addEventListener('click',()=>{page--;paint(snapshot);});$('[data-dictionary-next]').addEventListener('click',()=>{page++;paint(snapshot);});
-  $('[data-dictionary-save]').addEventListener('click',()=>run(()=>save({name:$('[data-dictionary-name]').value,aliases:$('[data-dictionary-aliases]').value,indexWords:$('[data-dictionary-related]').value}),{name:'save-dictionary'}));
-  $('[data-dictionary-clear]').addEventListener('click',()=>{$('[data-dictionary-name]').value='';$('[data-dictionary-aliases]').value='';$('[data-dictionary-related]').value='';});
+  $('[data-dictionary-search]')?.addEventListener('input',()=>{page=1;paint(snapshot??readViewState(app));});
+  $('[data-dictionary-deleted]')?.addEventListener('change',()=>{page=1;paint(snapshot??readViewState(app));});
+  $('[data-dictionary-prev]')?.addEventListener('click',()=>{page--;paint(snapshot);});$('[data-dictionary-next]')?.addEventListener('click',()=>{page++;paint(snapshot);});
+  $('[data-dictionary-save]')?.addEventListener('click',()=>run(()=>save({name:$('[data-dictionary-name]').value,aliases:$('[data-dictionary-aliases]').value,indexWords:$('[data-dictionary-related]').value}),{name:'save-dictionary'}));
+  $('[data-dictionary-clear]')?.addEventListener('click',()=>{$('[data-dictionary-name]').value='';$('[data-dictionary-aliases]').value='';$('[data-dictionary-related]').value='';});
   return {paint};
 }

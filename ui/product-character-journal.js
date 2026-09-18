@@ -60,8 +60,8 @@ export function mountCharacterJournal({panel,app,run,host}){
       const id=b.dataset.keepDelete??b.dataset.keepToggle,row=state.rows.find(r=>r.id===id);
       if(row)void run(async()=>{const remove=b.hasAttribute('data-keep-delete');if(remove){if(!host.confirm?.('删除这一项？仅移除台词／心迹，不删除关联事件或聊天原文。'))return {message:'已取消删除',level:'info'};await app.saveCharacterKeepsake({...row,remove:true});}else await app.saveCharacterKeepsake({...row,data:{...row.data,disabled:!row.data.disabled}});state.drafts.delete(id);refresh();return {message:remove?'此项已删除，关联事件保留':row.data.disabled?'已恢复此项注入':'此项不再单独注入，原事件和人物事实保留',level:'success'};},{name:'journal-write',button:b});
     });
-    $('[data-keepsake-search]').addEventListener('input',()=>{state.person='';state.page=1;draw(readViewState(app));});
-    for(const [sel,step]of [['prev',-1],['next',1]])$(`[data-keepsake-${sel}]`).addEventListener('click',()=>{state.page+=step;draw(readViewState(app));});
+    $('[data-keepsake-search]')?.addEventListener('input',()=>{state.person='';state.page=1;draw(readViewState(app));});
+    for(const [sel,step]of [['prev',-1],['next',1]])$(`[data-keepsake-${sel}]`)?.addEventListener('click',()=>{state.page+=step;draw(readViewState(app));});
   }
   return {paint(s,page){panes.get(page)?.draw(s);},selectPerson(kind,name){
     const state=panes.get(kind),root=panel.querySelector(`[data-keepsake="${kind}"]`);if(!state||!root)return;

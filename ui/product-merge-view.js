@@ -6,12 +6,12 @@ import { narrativeText } from '../src/product-narrative.js';
 export function mergeManagementHTML(){return `<h3>事件合并</h3><p class="sy-help">总结先保存，合并单独处理。这里核对同一件事的补充与复述；不改动聊天原文或原始批次。</p><div class="sy-actions"><button type="button" data-merge-retry-all>处理待办 / 重试失败</button><button type="button" data-merge-stop>停止</button></div><label class="sy-field"><span>显示</span><select data-merge-filter><option value="pending">待处理</option><option value="merged">已合并</option><option value="all">全部</option></select></label><p data-merge-total class="sy-help" role="status"></p><div data-merge-list></div><div class="sy-actions"><button type="button" data-merge-prev>上一页</button><span data-merge-page></span><button type="button" data-merge-next>下一页</button></div>`;}
 
 export function mountMergeManagement({panel,app,run,host}){
-  const $=s=>panel.querySelector(s);let page=1,last='',scope='';
-  $('[data-merge-retry-all]').addEventListener('click',e=>run(()=>app.retryMerges(),{name:'merge',button:e.currentTarget}));
-  $('[data-merge-stop]').addEventListener('click',()=>run(()=>app.stop()));
-  $('[data-merge-filter]').addEventListener('change',()=>{page=1;paint(readViewState(app));});
-  $('[data-merge-prev]').addEventListener('click',()=>{page--;paint(readViewState(app));});
-  $('[data-merge-next]').addEventListener('click',()=>{page++;paint(readViewState(app));});
+  const $=s=>panel.querySelector?.(s);let page=1,last='',scope='';
+  $('[data-merge-retry-all]')?.addEventListener('click',e=>run(()=>app.retryMerges(),{name:'merge',button:e.currentTarget}));
+  $('[data-merge-stop]')?.addEventListener('click',()=>run(()=>app.stop()));
+  $('[data-merge-filter]')?.addEventListener('change',()=>{page=1;paint(readViewState(app));});
+  $('[data-merge-prev]')?.addEventListener('click',()=>{page--;paint(readViewState(app));});
+  $('[data-merge-next]')?.addEventListener('click',()=>{page++;paint(readViewState(app));});
   function paint(s){
     const next=JSON.stringify(s.core?.scope);if(next!==scope){scope=next;page=1;last='';}
     const filter=$('[data-merge-filter]').value,all=s.merges??[];

@@ -48,16 +48,16 @@ export function mountExtractionView({panel,app,run,download}){
     const s=result.stats;$('[data-extraction-metrics]').textContent=`原文 ${s.inputChars} 字符 → 安全正文 ${s.safeChars} → 读取 ${s.outputChars}；额外过滤 ${s.removedChars} 字符${s.fallback?' · 已回退':''}。不是 Token 计数。`;
     $('[data-extraction-warnings]').textContent=result.warnings.join('\n');$('[data-extraction-result]').textContent=result.text;
   }
-  const act=(selector,fn)=>$(selector).addEventListener('click',e=>run(fn,{name:'extraction',button:e.currentTarget}));
+  const act=(selector,fn)=>$(selector)?.addEventListener('click',e=>run(fn,{name:'extraction',button:e.currentTarget}));
   root.addEventListener('input',e=>{if(e.target.matches('[data-extraction-source],[data-extraction-floor],[data-extraction-json],[data-extraction-file]')){previewSequence++;return;}if(e.target.closest('[data-extraction-rule]')||e.target.matches('[data-extraction-enabled],[data-extraction-chinese]'))changed();});
   root.addEventListener('click',e=>{const b=e.target.closest('[data-extraction-remove]');if(!b)return;capture();draft.rules=draft.rules.filter(r=>r.id!==b.dataset.extractionRemove);draw();changed();});
-  $('[data-extraction-preset]').addEventListener('change',e=>{if(!e.target.value)return;loadDraft(e.target.value==='safe'?defaultNarrativeExtractionConfig():NARRATIVE_EXTRACTION_PRESETS.find(p=>p.id===e.target.value).config);e.target.value='';});
+  $('[data-extraction-preset]')?.addEventListener('change',e=>{if(!e.target.value)return;loadDraft(e.target.value==='safe'?defaultNarrativeExtractionConfig():NARRATIVE_EXTRACTION_PRESETS.find(p=>p.id===e.target.value).config);e.target.value='';});
   act('[data-extraction-add]',()=>{capture();if(draft.rules.length>=16)throw Error('最多 16 条规则，请先合并或删除不用的规则');draft.rules.push({id:`custom-${Date.now()}-${++sequence}`,name:'自定义规则',enabled:true,kind:'exclude',tag:'options',capture:0});draw();changed();});
   act('[data-extraction-save]',async()=>{const config=normalizeNarrativeConfig(capture()),serialized=JSON.stringify(config),revision=previewSequence;await app.saveSettings({narrativeExtraction:serialized});loaded=serialized;if(revision!==previewSequence){message('提交时的规则已保存；你随后编辑的草稿仍保留，尚未保存。');return;}dirty=false;draft=config;message('规则已保存。新总结、人设更新和新校对计划生效；旧记忆、原文及已开始的请求不改。');});
   act('[data-extraction-export]',()=>download(normalizeNarrativeConfig(capture()),'拾忆-正文提取规则.json'));
   act('[data-extraction-json-show]',()=>{$('[data-extraction-json]').value=JSON.stringify(capture(),null,2);});
   act('[data-extraction-json-load]',()=>loadDraft($('[data-extraction-json]').value));
-  $('[data-extraction-file]').addEventListener('change',e=>run(async()=>{const f=e.target.files?.[0];if(!f)return;if(f.size>24000)throw Error('规则文件超过 24000 字节，请仅导入提取规则');loadDraft(await f.text());e.target.value='';}));
+  $('[data-extraction-file]')?.addEventListener('change',e=>run(async()=>{const f=e.target.files?.[0];if(!f)return;if(f.size>24000)throw Error('规则文件超过 24000 字节，请仅导入提取规则');loadDraft(await f.text());e.target.value='';}));
   act('[data-extraction-preview]',async()=>{const config=capture(),id=++previewSequence,result=await app.previewNarrativeExtraction({text:$('[data-extraction-source]').value,config});if(id===previewSequence)output(result);});
   act('[data-extraction-chat]',async()=>{if(!$('[data-extraction-floor]').value.trim())throw Error('请填写聊天楼号');const config=capture(),id=++previewSequence,result=await app.previewNarrativeExtraction({floor:Number($('[data-extraction-floor]').value),config});if(id===previewSequence)output(result);});
   act('[data-extraction-regex-export]',()=>download(narrativeDisplayRegexes(),'拾忆-轻量标记-仅显示正则.json'));
