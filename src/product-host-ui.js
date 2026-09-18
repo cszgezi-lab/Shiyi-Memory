@@ -132,13 +132,17 @@ export async function exportProductJson(data, name, {
   host = globalThis, documentRef = globalThis.document,
   loadExporter = () => import('/scripts/file-export.js'),
   timeoutMs = 30000,
-  preferBrowser = false,
+  // Default to the browser anchor download path: Android's native Downloads
+  // bridge is unstable (Java exceptions / file_missing), and the browser anchor
+  // reliably fires the system share/save sheet that lets the user pick a real
+  // location. Callers that need the native bridge can pass {preferBrowser:false}.
+  preferBrowser = true,
 } = {}) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  // Some hosts report success on the browser anchor path that the native
-  // Downloads bridge never persists.  The diagnostics file is the common case:
-  // users mostly need to copy it, not park it in Downloads, so prefer the safer
-  // path when asked.
+  // The diagnostics files (logs, settings, presets) mostly need to leave the
+  // app so the user can save them somewhere external; the native Downloads path
+  // frequently fails on Android. Honour explicit caller requests, otherwise
+  // pick the safer browser path.
   if (preferBrowser) return triggerBrowserExport(blob, name, documentRef);
   if (host?.__TAURITAVERN__?.api) {
     let downloadBlobWithRuntime;
