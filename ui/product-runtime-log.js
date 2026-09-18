@@ -140,7 +140,7 @@ export function mountRuntimeLog({panel,app,run,host,download}){
   const $=s=>panel.querySelector?.(s);let page=1,state=null,signature='';const opened=new Set();
   function paint(next){
     state=next;const data=state.runtimeLog??{entries:[],persistence:'not_loaded'};
-    const filter=$('[data-log-filter]').value;
+    const filter=$('[data-log-filter]')?.value??'all';
     const selected=[...data.entries].reverse().filter(e=>filter==='all'||filter==='issues'&&['error','warning'].includes(e.level)||filter==='vectors'&&['vectors','knowledge-vectors'].includes(e.task)||filter==='summary'&&e.task==='summary'||filter==='merge'&&e.task==='merge'||filter==='api'&&['transport','connection','models','assistant','knowledge','knowledge-edit'].includes(e.task));
     // 日志常显在总结页最下面，一页 120 条；刚发生的失败不会掉到第二页，也很少需要翻页。
     const perPage=120;
@@ -150,16 +150,22 @@ export function mountRuntimeLog({panel,app,run,host,download}){
     if(signature===nextSignature)return;signature=nextSignature;
     // 日志现在常显在总结页最下面。它不能按签名跳过重绘，否则「刚发生的失败」
     // 会因为上一次已渲染过同一页而被丢掉；一页只有 10 条，重绘成本可以接受。
-    $('[data-log-storage]').textContent={not_loaded:'打开日志后读取。',ready:'日志已读取。',saved:'日志已保存在本机。',pending:'日志仍在写盘，不影响查看或导出当前内存快照。',unavailable:'日志存储读取失败；本次仅在内存保留，可立即导出。',failed:'日志保存失败；本次仅在内存保留，可立即导出。'}[data.persistence]??'';
-    if(data.droppedEntries)$('[data-log-storage]').textContent+=` 已清理 ${data.droppedEntries} 条旧记录。`;
-    if(data.partialRuns?.length)$('[data-log-storage]').textContent+=` 任务 ${data.partialRuns.join('、')} 的早期记录已清理。`;
-    if(data.legacyRetentionUnknown)$('[data-log-storage]').textContent+=' 旧版本是否已丢弃日志无法确认。';
-    if(data.storageFailure)$('[data-log-storage]').textContent+=` 日志存储原因：${DIAGNOSTIC_REASONS[data.storageFailure.reason]??'未提供可识别原因'}。`;
-    $('[data-log-list]').innerHTML=items.map(e=>`<details class="sy-card sy-log-row" data-log-id="${e.id}" data-level="${e.level}" ${opened.has(e.id)?'open':''}><summary>任务 ${e.run} · ${LOG_TASKS[e.task]} · ${LOG_PHASES[e.phase]}<small>${esc(new Date(e.at).toLocaleString())} · ${{info:'信息',success:'成功',warning:'提醒',error:'失败'}[e.level]}</small></summary>${detailsHTML(e)}</details>`).join('')||'<p class="sy-empty">没有符合条件的日志。更新前的请求无法补录。</p>';
-    for(const el of panel.querySelectorAll('[data-log-id]'))el.addEventListener('toggle',()=>{const id=Number(el.dataset.logId);if(el.open)opened.add(id);else opened.delete(id);});
-    if($('[data-log-page]'))$('[data-log-page]').textContent=`${page} / ${pages} · ${selected.length} 条`;
-    if($('[data-log-prev]'))$('[data-log-prev]').disabled=page===1;
-    if($('[data-log-next]'))$('[data-log-next]').disabled=page===pages;
+    const _logStorage=$('[data-log-storage]');
+    if(_logStorage){
+      _logStorage.textContent={not_loaded:'打开日志后读取。',ready:'日志已读取。',saved:'日志已保存在本机。',pending:'日志仍在写盘，不影响查看或导出当前内存快照。',unavailable:'日志存储读取失败；本次仅在内存保留，可立即导出。',failed:'日志保存失败；本次仅在内存保留，可立即导出。'}[data.persistence]??'';
+      if(data.droppedEntries)_logStorage.textContent+=` 已清理 ${data.droppedEntries} 条旧记录。`;
+      if(data.partialRuns?.length)_logStorage.textContent+=` 任务 ${data.partialRuns.join('、')} 的早期记录已清理。`;
+      if(data.legacyRetentionUnknown)_logStorage.textContent+=' 旧版本是否已丢弃日志无法确认。';
+      if(data.storageFailure)_logStorage.textContent+=` 日志存储原因：${DIAGNOSTIC_REASONS[data.storageFailure.reason]??'未提供可识别原因'}。`;
+    }
+    const _logList=$('[data-log-list]');
+    if(_logList){
+      _logList.innerHTML=items.map(e=>`<details class="sy-card sy-log-row" data-log-id="${e.id}" data-level="${e.level}" ${opened.has(e.id)?'open':''}><summary>任务 ${e.run} · ${LOG_TASKS[e.task]} · ${LOG_PHASES[e.phase]}<small>${esc(new Date(e.at).toLocaleString())} · ${{info:'信息',success:'成功',warning:'提醒',error:'失败'}[e.level]}</small></summary>${detailsHTML(e)}</details>`).join('')||'<p class="sy-empty">没有符合条件的日志。更新前的请求无法补录。</p>';
+      for(const el of _logList.querySelectorAll('[data-log-id]'))el.addEventListener('toggle',()=>{const id=Number(el.dataset.logId);if(el.open)opened.add(id);else opened.delete(id);});
+    }
+    $('[data-log-page]')?.replaceChildren(...(()=>{const span=document.createElement('span');span.textContent=`${page} / ${pages} · ${selected.length} 条`;return [span];})());
+    $('[data-log-prev]')&&($('[data-log-prev]').disabled=page===1);
+    $('[data-log-next]')&&($('[data-log-next]').disabled=page===pages);
   }
   $('[data-log-filter]')?.addEventListener('change',()=>{page=1;paint(state??readViewState(app));});
   for(const [sel,delta]of [['[data-log-prev]',-1],['[data-log-next]',1]])$(sel)?.addEventListener('click',()=>{page+=delta;paint(state??readViewState(app));});

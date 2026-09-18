@@ -258,8 +258,9 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
 
 /** onSelect owns filtered navigation; an empty name clears that page's filter. */
 export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
-  const root = panel.querySelector('[data-view="people"]');
-  const $ = selector => root.querySelector(selector);
+  const root = panel.querySelector?.('[data-view="people"]');
+  if (!root) return { paint(){}, focus(){}, select(){} };
+  const $ = selector => root.querySelector?.(selector);
   let scope, stamp = '', rendered = '', groups = [], selected = '', editing = '', stripStamp = '', query = '';
   const filter = () => {
     const needle = nameKey(query);

@@ -61,6 +61,7 @@ ${field('当前聊天自动起算楼层','<input data-persona-start type="number
 <details class="sy-card"><summary>独立更新记录</summary><div data-persona-batches></div><div class="sy-actions"><button type="button" data-persona-prev>上一页</button><button type="button" data-persona-next>下一页</button></div></details></section>`;}
 export function mountDynamicPersona({panel,app,run,host=globalThis}){
   const $=s=>panel.querySelector?.(s),root=$('[data-view="dynamic-persona"]'),drafts=new Map();let stamp='',scope='',page=0,profilePage=0,startDirty=false,promptDirty=false,manualDirty=false,manualPage=0,manualStamp='',previewStamp='',auditStamp='';
+  if(!root)return {paint(){},focus(){},select(){},tab(){},dispose(){}};
   $('[data-persona-source-audit]')?.addEventListener('toggle',()=>paint(app.state));
   const bind=(s,fn)=>$(s)?.addEventListener('click',e=>run(fn,{name:'dynamic-persona',button:e.currentTarget}));
   $('[data-persona-start]')?.addEventListener('input',()=>{startDirty=true;});$('[data-persona-prompt]')?.addEventListener('input',()=>{promptDirty=true;});

@@ -28,7 +28,8 @@ ${field('从示例开始',`<select data-extraction-preset><option value="">选�
 </section>`;}
 
 export function mountExtractionView({panel,app,run,download}){
-  const root=panel.querySelector('[data-view="extraction"]'),$=s=>root.querySelector(s);
+  const root=panel.querySelector?.('[data-view="extraction"]'),$=s=>root?.querySelector?.(s);
+  if(!root)return {paint(){}};
   let draft=defaultNarrativeExtractionConfig(),dirty=false,loaded=null,sequence=0,previewSequence=0;
   const message=text=>{$('[data-extraction-status]').textContent=text;};
   function capture(){

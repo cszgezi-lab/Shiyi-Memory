@@ -37,7 +37,8 @@ examples.awarenessChanges.knowledge='乙把工作室钥匙交给丙暂时保管�
 export function summaryPresetsHTML(){return `<div data-preset-root><p class="sy-help">预设决定 AI 怎样整理、各模块怎样写。手动与自动总结共用，全局保存；已开始的批次沿用启动时的版本。不会增加模型调用。</p><p data-preset-active role="status"></p><label class="sy-field"><span>编辑预设</span><select data-preset-select></select></label><div class="sy-actions"><button type="button" data-preset-action="copy">复制为新预设</button><button type="button" data-preset-action="delete">删除预设</button></div><div data-preset-editor></div><div class="sy-actions"><button type="button" data-preset-action="save">保存并启用</button><button type="button" data-preset-action="reset">恢复推荐内容</button><button type="button" data-preset-action="revert">放弃未保存修改</button></div><p data-preset-status role="status"></p><details class="sy-card"><summary>导入与导出</summary><p class="sy-help">JSON 文件只含预设，不含 API、Key 或聊天。导入只加入预设库，选中并保存后才启用。</p><input type="file" accept=".json,application/json" data-preset-file aria-label="导入预设 JSON"><div class="sy-actions"><button type="button" data-preset-action="import">导入预设</button><button type="button" data-preset-action="export">导出当前编辑稿</button></div></details><details class="sy-card"><summary>发送内容预览</summary><p class="sy-help">这是本编辑稿的主总结提示词和模块规则；保存并启用后用于后续批次。真实请求另附所选楼层、相关旧记忆和记录偏好。来源编号、枚举及存储结构由程序固定；新字段可用动态人物属性或扩展模块。</p><button type="button" data-preset-action="preview">刷新预览</button><pre class="sy-packet" data-preset-preview></pre></details></div>`;}
 
 export function mountSummaryPresets({panel,app,run,host,download}){
-  const root=panel.querySelector('[data-preset-root]'),$=selector=>root.querySelector(selector);
+  const root=panel.querySelector?.('[data-preset-root]'),$=selector=>root?.querySelector?.(selector);
+  if(!root)return {paint(){}};
   let library=readSummaryPresets(),selected='default',raw=null,dirty=false,drafts=new Map();
   const status=text=>{$('[data-preset-status]').textContent=text;};
   function current(){

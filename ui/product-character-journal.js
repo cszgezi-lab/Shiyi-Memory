@@ -12,7 +12,8 @@ const select=(key,label,options,value)=>field(label,`<select data-keep-field="${
 export function mountCharacterJournal({panel,app,run,host}){
   const panes=new Map();
   for(const kind of ['dialogue','diary']){
-    const root=panel.querySelector(`[data-keepsake="${kind}"]`),$=s=>root.querySelector(s);
+    const root=panel.querySelector?.(`[data-keepsake="${kind}"]`),$=s=>root?.querySelector?.(s);
+    if(!root)continue;
     const state={page:1,stamp:'',scope:null,rows:[],drafts:new Map(),snapshot:null,person:''};panes.set(kind,state);
     function editor(key,d){
       const data=d.data??{},fresh=key==='new';

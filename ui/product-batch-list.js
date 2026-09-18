@@ -37,12 +37,12 @@ export function mountBatchList({panel,app,run,host}){
   function paint(view){
     if(view.batchRevision===undefined||view.batchRevision!==batchRevision){batchRevision=view.batchRevision;batchSnapshot=view.batches??[];}
     const s=Object.create(view);Object.defineProperty(s,'batches',{value:batchSnapshot});
-    const scope=JSON.stringify(s.core?.scope);if(scope!==lastScope){lastScope=scope;currentPage=1;lastPaint='';selected.clear();$('[data-batch-search]').value='';$('[data-batch-status]').value='active';}
-    const p=pageSummaryBatches(s.batches??[],{query:$('[data-batch-search]').value,status:$('[data-batch-status]').value,page:currentPage,pageSize:Number($('[data-batch-size-list]').value)});currentPage=p.page;
+    const scope=JSON.stringify(s.core?.scope);if(scope!==lastScope){lastScope=scope;currentPage=1;lastPaint='';selected.clear();if($('[data-batch-search]'))$('[data-batch-search]').value='';if($('[data-batch-status]'))$('[data-batch-status]').value='active';}
+    const p=pageSummaryBatches(s.batches??[],{query:$('[data-batch-search]')?.value??'',status:$('[data-batch-status]')?.value??'active',page:currentPage,pageSize:Number($('[data-batch-size-list]')?.value??20)});currentPage=p.page;
     for(const id of selected)if(!s.batches.some(b=>b.id===id))selected.delete(id);selectionState(s);
-    const recycled=$('[data-batch-status]').value==='deleted';$('[data-batch-recycle]').textContent=`回收站（${p.deletedTotal}）`;
+    const recycled=$('[data-batch-status]')?.value==='deleted';if($('[data-batch-recycle]'))$('[data-batch-recycle]').textContent=`回收站（${p.deletedTotal}）`;
     const pending=(s.batches??[]).filter(b=>['queued','running','failed','interrupted'].includes(b.status)),latest=[...(s.batches??[])].sort((a,b)=>(b.updatedAt??b.createdAt??0)-(a.updatedAt??a.createdAt??0)).find(b=>b.plan)?.plan;
-    $('[data-batch-plan]').textContent=`待处理总结 ${pending.length} 批${latest?`；最近计划 #${latest.startIndex}–${latest.endIndex}，每 ${latest.batchSize} 楼一批`:''}。`;
+    if($('[data-batch-plan]'))$('[data-batch-plan]').textContent=`待处理总结 ${pending.length} 批${latest?`；最近计划 #${latest.startIndex}–${latest.endIndex}，每 ${latest.batchSize} 楼一批`:''}。`;
     for(const button of panel.querySelectorAll('[data-bulk]'))button.hidden=button.dataset.bulk==='restore'?!recycled:button.dataset.bulk==='delete'&&recycled;
     const signature=JSON.stringify([batchRevision??p,p.items.map(b=>b.id),p.page,p.total,s.busy,s.modules,p.items.map(b=>s.batchVectors?.[b.id]),[...selected]]);if(signature===lastPaint)return;lastPaint=signature;
     const opened=new Set([...panel.querySelectorAll('[data-batch-id][open]')].map(n=>n.dataset.batchId));

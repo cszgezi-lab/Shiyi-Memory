@@ -12,6 +12,7 @@ export function mountKnowledgeView({panel,app,run,host}){
   const $=s=>panel.querySelector?.(s);let drafts=[],stamp='',selectionVersion=0;const previews=new Map(),partsById=new Map(),edits=new Map();
   const fileInput=$('[data-files]');
   function updateFileSelection(){
+    if(!fileInput)return 0;
     const files=Array.from(fileInput.files??[]);
     $('[data-kb-selected]').textContent=files.length?`已选 ${files.length} 个文件：${files.map(f=>f.name).join('、')}`:'尚未选择文件；支持 TXT、MD、JSON，可多选。';
     $('[data-kb-choose]').textContent=files.length?'重新选择文件':'选择文件';
@@ -21,8 +22,8 @@ export function mountKnowledgeView({panel,app,run,host}){
   function invalidate(){selectionVersion++;drafts=[];$('[data-kb-import]').disabled=true;$('[data-kb-preview-list]').textContent='';$('[data-kb-plan]').textContent=updateFileSelection()?'已选择文件，请点击“预览文件”，确认内容后导入。':'先选择文件并预览，确认内容后即可导入。';}
   // Keep the native picker inside the direct user gesture; awaiting run() can
   // lose mobile WebView activation. The host intentionally hides file inputs.
-  $('[data-kb-choose]')?.addEventListener('click',()=>fileInput.click());
-  $('[data-kb-clear]')?.addEventListener('click',()=>{fileInput.value='';invalidate();});
+  $('[data-kb-choose]')?.addEventListener('click',()=>fileInput?.click());
+  $('[data-kb-clear]')?.addEventListener('click',()=>{if(fileInput)fileInput.value='';invalidate();});
   updateFileSelection();
   for(const el of panel.querySelectorAll('[data-files],[data-purpose],[data-kb-size],[data-kb-delimiter],[data-kb-keyword],[data-kb-vector],[data-kb-analysis]'))el.addEventListener('change',invalidate);
   $('[data-purpose]')?.addEventListener('change',()=>{$('[data-knowledge-options]').hidden=$('[data-purpose]').value==='rules';});
@@ -39,13 +40,13 @@ export function mountKnowledgeView({panel,app,run,host}){
       if(input.purpose==='rules'||input.options.autoAnalyze)try{const result=await app.analyzeDocuments([doc.id]);if(result.partial)errors.push(`${doc.name}：字典待补全`);}catch(e){if(e.code==='CANCELED')throw e;errors.push(`${doc.name}：资料分析未完成`);}
       if(input.purpose==='knowledge'&&input.options.vectorEligible)try{const result=await app.buildKnowledgeVectors([doc.id]);if(result.pending)errors.push(`${doc.name}：部分向量未完成`);}catch(e){if(e.code==='CANCELED')throw e;errors.push(`${doc.name}：向量索引未完成`);}
     }
-    fileInput.value='';invalidate();if(errors.length)throw new Error(`文字资料已保存。${errors.join('；')}。请检查对应 API，再在资料下点击继续；不必重新导入。`);
+    fileInput&&(fileInput.value='');invalidate();if(errors.length)throw new Error(`文字资料已保存。${errors.join('；')}。请检查对应 API，再在资料下点击继续；不必重新导入。`);
   },{name:'import'}));
   function paint(s){
     const c=s.settings??{},inherited=c.knowledgeFollowAssistant!==false,model=inherited?(c.assistantFollowSummary?c.providerModel:c.assistantModel):c.knowledgeModel;
-    $('[data-kb-api-status]').textContent='资料分析：'+(inherited?'沿用配置助手（可单独配置）':'独立 API')+' · '+(model||'未配置模型')+'；向量：'+(c.embeddingModel||'未配置模型')+'。';
+    if($('[data-kb-api-status]'))$('[data-kb-api-status]').textContent='资料分析：'+(inherited?'沿用配置助手（可单独配置）':'独立 API')+' · '+(model||'未配置模型')+'；向量：'+(c.embeddingModel||'未配置模型')+'。';
     const signature=JSON.stringify([s.documents,[...previews]]);if(panel.ownerDocument.activeElement?.matches('[data-kb-edit-text]')||stamp===signature)return;stamp=signature;
-    $('[data-documents]').innerHTML=(s.documents??[]).map(d=>`<article class="sy-card" data-kb-doc="${esc(d.id)}"><h4>${esc(d.name)}</h4><p class="sy-help">${d.purpose==='rules'?'配置规则':'世界资料'} · ${d.chars} 字 · ${d.chunks} 段${d.importOptions?.enabled===false?' · 已停用':''}</p><p>关键词：${d.purpose==='rules'?'不参与召回':d.importOptions?.keywordEnabled===false?'未启用':'可检索'}<br>资料分析：${d.analyzed??0}/${d.chunks} 段 · 字典${d.dictionaryStatus==='ready'?'已生成':d.dictionaryStatus==='partial'?'待补全':'待分析'}${d.purpose==='knowledge'?`<br>向量：${d.importOptions?.vectorEligible===false?'未启用':d.vectorStatus?`上次建成 ${d.vectorStatus.indexed}/${d.vectorStatus.total} 条`:'待建立'}`:''}</p><div class="sy-actions"><button type="button" data-kb-read="${esc(d.id)}">查看 / 修改资料</button><button type="button" data-kb-analyze="${esc(d.id)}">继续分析 / 字典</button>${d.purpose==='knowledge'&&d.importOptions?.vectorEligible!==false?`<button type="button" data-kb-build="${esc(d.id)}">继续建索引</button>`:''}<button type="button" data-kb-toggle="${esc(d.id)}">${d.importOptions?.enabled===false?'启用资料':'停用资料'}</button><button type="button" data-remove-doc="${esc(d.id)}">删除资料</button></div>${previews.get(d.id)??''}</article>`).join('')||'<p class="sy-empty">还没有资料库。先选择文件并预览切片。</p>';
+    if($('[data-documents]'))$('[data-documents]').innerHTML=(s.documents??[]).map(d=>`<article class="sy-card" data-kb-doc="${esc(d.id)}"><h4>${esc(d.name)}</h4><p class="sy-help">${d.purpose==='rules'?'配置规则':'世界资料'} · ${d.chars} 字 · ${d.chunks} 段${d.importOptions?.enabled===false?' · 已停用':''}</p><p>关键词：${d.purpose==='rules'?'不参与召回':d.importOptions?.keywordEnabled===false?'未启用':'可检索'}<br>资料分析：${d.analyzed??0}/${d.chunks} 段 · 字典${d.dictionaryStatus==='ready'?'已生成':d.dictionaryStatus==='partial'?'待补全':'待分析'}${d.purpose==='knowledge'?`<br>向量：${d.importOptions?.vectorEligible===false?'未启用':d.vectorStatus?`上次建成 ${d.vectorStatus.indexed}/${d.vectorStatus.total} 条`:'待建立'}`:''}</p><div class="sy-actions"><button type="button" data-kb-read="${esc(d.id)}">查看 / 修改资料</button><button type="button" data-kb-analyze="${esc(d.id)}">继续分析 / 字典</button>${d.purpose==='knowledge'&&d.importOptions?.vectorEligible!==false?`<button type="button" data-kb-build="${esc(d.id)}">继续建索引</button>`:''}<button type="button" data-kb-toggle="${esc(d.id)}">${d.importOptions?.enabled===false?'启用资料':'停用资料'}</button><button type="button" data-remove-doc="${esc(d.id)}">删除资料</button></div>${previews.get(d.id)??''}</article>`).join('')||'<p class="sy-empty">还没有资料库。先选择文件并预览切片。</p>';
   }
   async function loadParts(id,page=1){const d=readViewState(app).documents.find(d=>d.id===id);if(!d)return;page=Math.max(1,Math.min(Math.ceil(d.chunks/3),page));const parts=await app.documentPreview(id,{page,pageSize:3});partsById.set(id,{page,parts});renderParts(id);}
   function renderParts(id,paintNow=true){const v=partsById.get(id),d=readViewState(app).documents.find(d=>d.id===id);if(!v||!d)return;
