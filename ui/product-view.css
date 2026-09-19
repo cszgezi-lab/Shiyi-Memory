@@ -423,6 +423,7 @@
 #shiyi-product-shell .sy-module-meta p{margin:3px 0 0;font-size:13px;overflow-wrap:anywhere}
 #shiyi-product-shell .sy-module-meta p[data-summary-covered]{font-weight:600}
 #shiyi-product-shell .sy-module-actions{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+#shiyi-product-shell .sy-summary-settings{grid-column:1/-1;min-width:0}
 #shiyi-product-shell .sy-summary-module>.sy-help{grid-column:1/-1;margin:2px 0 0}
 #shiyi-product-shell .sy-recent-log{border-top:1px solid var(--sy-border);margin-top:14px;padding-top:10px}
 #shiyi-product-shell .sy-recent-log h3{font-size:15px;margin:0 0 4px}
