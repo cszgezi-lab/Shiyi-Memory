@@ -1,3 +1,5 @@
+import { exportAndroidJson } from './product-android-export.js';
+
 function triggerBrowserExport(blob, name, documentRef) {
   if (!documentRef?.createElement || !documentRef?.body) throw new Error('TT 下载桥和浏览器导出接口均不可用');
   const url = URL.createObjectURL(blob), anchor = documentRef.createElement('a');
@@ -33,10 +35,8 @@ function isPermissionError(error) {
  * texts identify the stage reliably. */
 function saveStageOf(error) {
   const text = messageOf(error);
-  // A throwable from the Android @JavascriptInterface save method comes from the
-  // native Downloads write itself; no other step in that bridge can throw at the
-  // host level, so this is the MediaStore publish step.
-  if (isHostExceptionError(error)) return 'publish_failed';
+  // Java errors can also originate in staging-path validation. The wrapper
+  // alone cannot tell us whether MediaStore was reached.
   if (/Export staging file not found|staging file/i.test(text)) return 'file_missing';
   if (/mkdir|app cache directory|staging directory|readable stream is required|unsupported binary chunk|blob payload is required/i.test(text)) return 'staging_failed';
   if (/did not return a saved path|Failed to create public Downloads entry|Failed to publish public Downloads entry|IS_PENDING|MediaStore/i.test(text)) return 'publish_failed';
@@ -88,14 +88,11 @@ const saveLocationOf = result => normalizeExportResult(result)?.mode === 'androi
  * system file picker plus a copy into the chosen document.  A device where one
  * is broken can still export through the other, so a failed direct save gets one
  * explicit picker attempt instead of only a text fallback. */
-async function withDocumentPickerFallback(downloadBlobWithRuntime, blob, name, host, timeoutMs = 30000) {
+async function withDocumentPickerFallback(blob, name, host, timeoutMs = 30000) {
   const bridge = host?.[BRIDGE_NAME];
   if (!bridge || typeof bridge.copyFileToContentUri !== 'function' || typeof bridge.requestCreateDocumentPicker !== 'function') return null;
-  const direct = bridge.supportsDirectPublicDownloads;
-  try{bridge.supportsDirectPublicDownloads = () => false;}catch{return null;}
-  try { return { result: await withExportTimeout(downloadBlobWithRuntime(blob, name), timeoutMs) }; }
+  try { return { result: await exportAndroidJson(blob, name, host, timeoutMs) }; }
   catch (error) { return { error }; }
-  finally { if (direct === undefined) delete bridge.supportsDirectPublicDownloads; else bridge.supportsDirectPublicDownloads = direct; }
 }
 
 const BRIDGE_NAME = 'TauriTavernAndroidPublicDownloadBridge';
@@ -140,8 +137,8 @@ function withExportTimeout(promise, timeoutMs) {
  *  - false / 'direct' (legacy default): the public-Downloads bridge first,
  *    then the system document picker as a fallback. file_missing on many
  *    Android devices.
- *  - 'picker' (current default): the system document picker first; only fall
- *    back to the direct public-Downloads bridge when the picker is unavailable.
+ *  - 'picker' (UI default): explicit Android document picker, with NO implicit
+ *    direct/browser fallback when the picker is unavailable or fails.
  *    The user gets a real system file picker and the chosen URI is confirmed
  *    by the host, so a "saved" result actually means a file reached storage.
  */
@@ -152,6 +149,9 @@ export async function exportProductJson(data, name, {
   preferBrowser = false,
 } = {}) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  if (preferBrowser === 'picker' && (host?.[BRIDGE_NAME] || /android/i.test(host?.navigator?.userAgent ?? ''))) {
+    return exportAndroidJson(blob, name, host, timeoutMs);
+  }
   // Honour an explicit "browser" preference for callers that want the anchor
   // download path; otherwise enter the bridge path (which can also reach the
   // picker, depending on preferBrowser).
@@ -181,12 +181,9 @@ export async function exportProductJson(data, name, {
       if (useDirect) {
         attempt = await withExportTimeout(downloadBlobWithRuntime(blob, name), timeoutMs);
       } else {
-        // 'picker' (and any non-direct, non-browser value): try the system
-        // picker first.  withDocumentPickerFallback flips
-        // supportsDirectPublicDownloads off on the bridge so downloadBlobWithRuntime
-        // routes through requestCreateDocumentPicker + copyFileToContentUri.
-        // If the bridge has neither of those, fall straight through to direct.
-        pickerFallback = await withDocumentPickerFallback(downloadBlobWithRuntime, blob, name, host, timeoutMs);
+        // Android's explicit picker route returned above. Other hosts retain
+        // their platform export runtime (e.g. iOS native sharing).
+        pickerFallback = await withDocumentPickerFallback(blob, name, host, timeoutMs);
         if(isCancelError(pickerFallback?.error))throw pickerFallback.error;
         if (pickerFallback?.result) attempt = pickerFallback.result;
         else attempt = await withExportTimeout(downloadBlobWithRuntime(blob, name), timeoutMs);
@@ -200,16 +197,20 @@ export async function exportProductJson(data, name, {
       // once before giving up.  Picker already attempted and also failed falls
       // through to the failure reporting below.
       let fallback;
-      if (useDirect) fallback = await withDocumentPickerFallback(downloadBlobWithRuntime, blob, name, host, timeoutMs);
+      if (useDirect) fallback = await withDocumentPickerFallback(blob, name, host, timeoutMs);
       else fallback = pickerFallback;
       if (fallback) {
         if (!fallback.error && confirmedExport(fallback.result)) return {...normalizeExportResult(fallback.result),status:'saved',saved:true,exportAttempt:'picker',saveLocation:'你选择的保存位置',directFailure:true};
         if (isCancelError(fallback.error)) throw Object.assign(new Error('已取消文件导出'),{code:'CANCELED',details:exportDiagnostics({reason:'canceled',exportAttempt:'picker',causeError:fallback.error})});
+        if (fallback.error?.code === 'FILE_EXPORT_FAILED') {
+          fallback.error.details.hostOperations = [...observed, ...(fallback.error.details.hostOperations ?? []).filter(row => !observed.some(prior => prior.operation === row.operation))].slice(0, 8);
+          throw fallback.error;
+        }
       }
       const hostError = fallback?.error ?? error;
       const failedStage = saveStageOf(hostError) ?? saveStage;
       const exportAttempt = fallback ? 'picker_failed' : (useDirect ? 'direct' : 'picker_failed');
-      const details = exportDiagnostics({stage:'export_save_publish',saveStage:failedStage,exportAttempt,causeError:hostError});
+      const details = exportDiagnostics({stage:failedStage?'export_save_publish':'export_native_save',saveStage:failedStage,exportAttempt,causeError:hostError});
       if (isHostExceptionError(error)) {
         throw exportFailure(fallback ? '宿主的原生下载接口抛出 Java 异常，备用保存通道也没能确认文件已保存；请改用“查看／复制文本”导出' : '宿主的原生下载接口抛出 Java 异常，本次没有确认文件已保存；请改用“查看／复制文本”导出','export_host_exception',{...details,saveStage:saveStage??failedStage,causeError:error});
       }

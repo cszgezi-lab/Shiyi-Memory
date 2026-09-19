@@ -345,7 +345,11 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
       try{void Promise.resolve(app.reportError?.(error,{stage:'ui',action:'exportFile'})).catch(()=>{});}catch{/*导出诊断不能反过来阻止失败提示*/}
       throw error;
     }
-    if(result?.saved===true)host.toastr?.success?.(result.exportAttempt==='picker'?`文件已保存到${result.saveLocation??'你选择的保存位置'}`:`文件已保存到${result.saveLocation??'手机 Downloads'}`);
+    if(result?.saved===true){
+      const text=result.exportAttempt==='picker'?`文件已保存到${result.saveLocation??'你选择的保存位置'}`:`文件已保存到${result.saveLocation??'手机 Downloads'}`;
+      if($('[data-status]'))$('[data-status]').textContent=text;
+      feedback(text,'success');host.toastr?.success?.(text);
+    }
     else if(result?.status==='dispatched')host.toastr?.warning?.(result.dispatch==='share-unconfirmed'?'导出未确认保存：已交给系统分享，请确认目标位置已收到文件，或改用日志 → 查看／复制文本。':'导出未确认保存：当前宿主下载通道返回成功但未真正写入文件，请到日志 → 查看／复制文本 自行保存。');
     return result;
   }
