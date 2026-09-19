@@ -166,11 +166,11 @@ export function personaSceneEvidence(messages,identity,name,previous=[]){
   return [...evidence.values()];
 }
 
-export function personaParts(spans,previous){
+export function personaParts(spans,previous,{includeNotes=true}={}){
   if(!spans.length){
     const saved=previous?.composition?.parts?.filter(p=>p.source==='chat');
     if(saved?.length){
-      const carried=clone(saved),extra=previous.composition.notes?.trim();
+      const carried=clone(saved),extra=includeNotes?previous.composition.notes?.trim():'';
       if(extra)for(const p of sourcePersonaBaseline(extra,previous.name,previous.sourceFloors??[]))if(p.text.trim()&&!carried.some(old=>old.text.includes(p.text.trim())))carried.push({...p,title:'增补人物档案'});
       return carried.map((p,i)=>({...p,ref:`B${i+1}`}));
     }
@@ -189,8 +189,8 @@ export function personaParts(spans,previous){
   });
 }
 
-// The first source-only dossier becomes an editable local baseline on its next
-// update. Arbitrary fields survive by text preservation, not a fixed trait list.
+// Source-only dossiers expose an editable baseline for explicit B-ref patches.
+// Complete snapshot updates instead carry still-valid fields in their text.
 function sourcePersonaBaseline(text,name,floors){
   const chunks=text.match(/[^\n。！？]+(?:[。！？]+[”’」』]?|\n|$)|\n/gu)??[text];
   return (chunks.join('')===text?chunks:[text]).map((original,i)=>({source:'chat',key:sha256([name,i,original]).slice(0,24),ref:`B${i+1}`,book:'当前聊天',uid:name,title:'初建人物档案',spanId:'chat-baseline',original,text:original,sourceFloors:[...floors]}));
@@ -210,13 +210,16 @@ export function personaMaterials(records,identity,mentioned,endFloor){
 }
 
 export function composePersona(row,{spans,previous,messages,developmentMessages,identity,name,fail}){
-  const parts=personaParts(spans,previous),byRef=new Map(parts.map(p=>[p.ref,p])),touched=new Set(),changes=[];
+  // Source-only snapshots must not become immutable original-book material.
+  // Explicit local-ref edits and legacy player prose retain their editable
+  // parts; that mode survives later snapshots so arbitrary fields are not lost.
+  const localPatches=!spans.length&&Boolean(row.updates?.length||previous?.composition?.localMode==='patches'||previous?.composition?.changes?.length||previous&&!previous.composition);
+  const parts=spans.length||localPatches?personaParts(spans,previous,{includeNotes:Boolean(row.updates?.length)}):[],byRef=new Map(parts.map(p=>[p.ref,p])),touched=new Set(),changes=[];
   if(!parts.length&&!row.text.trim())throw fail('text','正文新角色须有可独立阅读的档案，不能只返回局部修改');
   const validFloors=floors=>Array.isArray(floors)&&floors.length&&floors.every(f=>messages.some(m=>m.index===f));
   if(row.updates!==undefined&&!Array.isArray(row.updates))throw fail('text','局部修改应为列表');
-  // No source book means no mutable parts. Some models redundantly put edits
-  // to previous.text in updates: never apply those as book edits or let them
-  // block an otherwise complete supplemental dossier.
+  // A first source-only dossier has no mutable parts yet. Redundant edits must
+  // not masquerade as original-book edits or block its complete initial text.
   const ignoredUpdates=parts.length?0:(row.updates??[]).length;
   for(const edit of parts.length?(row.updates??[]):[]){
     const exact=parts.filter(p=>p.source==='chat'&&p.text.trim()===String(edit?.ref??'').trim());
@@ -239,7 +242,7 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   }
   const sceneEvidence=personaSceneEvidence(messages,identity,name,previous?.composition?.sceneEvidence);
   const development=mergePersonaDevelopment(row.development,{previous:previous?.composition?.development??[],messages:developmentMessages??messages.map(m=>({...m,text:qualitySourceSegments(m).map(s=>s.text).join('\n\uFFFC\n')})),identity,name});
-  const notes=row.text.trim(),composition={version:1,parts,notes,examples,sceneEvidence,changes,rejectedExamples,ignoredUpdates,development:development.items,rejectedDevelopment:development.rejected,...(!parts.length?{sourceBaseline:sourcePersonaBaseline(notes,name,row.sourceFloors)}:{})};
+  const notes=row.text.trim(),composition={version:1,parts,notes,examples,sceneEvidence,changes,rejectedExamples,ignoredUpdates,development:development.items,rejectedDevelopment:development.rejected,...(!spans.length?{localMode:localPatches&&parts.length?'patches':'snapshot'}:{}),...(!parts.length?{sourceBaseline:sourcePersonaBaseline(notes,name,row.sourceFloors)}:{})};
   const blocks=[];let last;
   for(const part of parts){const key=JSON.stringify([part.book,part.uid,part.spanId]);if(last?.key!==key){last={key,title:part.title,text:''};blocks.push(last);}last.text+=part.text;}
   const exampleText=examples.map(q=>`第${q.floor}楼${q.to?' 对'+q.to:''}：${q.text}${q.context?'〔'+q.context+'〕':''}`).join('\n');

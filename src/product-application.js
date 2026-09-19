@@ -244,7 +244,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const pages=Math.max(1,Math.ceil(rows.length/20)),current=Math.min(pages,Math.max(1,Math.floor(Number(page)||1)));
     return {rows:rows.slice((current-1)*20,current*20),total:rows.length,page:current,pages};
   }
-  function canMaintainVectors(){return !disposed&&enabled&&!vectorStopped&&!recallReaders&&workspace?.isCurrent()&&!state.stale&&core.settings.vectorEnabled&&core.settings.vectorAutoUpdate&&host.document?.visibilityState!=='hidden'&&host.navigator?.onLine!==false;}
+  function canMaintainVectors(){return !disposed&&enabled&&!vectorStopped&&!recallReaders&&workspace?.isCurrent()&&!state.stale&&core.settings.vectorEnabled&&(core.settings.vectorAutoUpdate||state.batches.some(b=>b.status==='saved'&&b.autoIndex))&&host.document?.visibilityState!=='hidden'&&host.navigator?.onLine!==false;}
   function wakeVectors(){
     if(!canMaintainVectors()||vectorTimer||vectorJob||active||recallBusy)return;
     vectorTimer=setTimeout(()=>{vectorTimer=null;void refreshVectorStatus({schedule:true});},500);vectorTimer.unref?.();
@@ -274,15 +274,20 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         return [b.id,{...covered,failed,status:!covered.total?'empty':!covered.pending?'ready':vectorJob?'updating':failed||jobs.blocked||storageFailure?'error':'pending'}];
       }));
       notify();
-      const retryDelay=vectorRetryDelay(failure.blocked),retryable=cards.filter(c=>entries.get(c.id)?.hash!==hash(c)).map(c=>vectorFailure(c,jobs,hash)).filter(f=>!f||vectorRetryDelay(f)!==null);
-      if(canMaintainVectors()&&coverage.pending&&!storageFailure&&retryDelay!==null&&retryable.length){
+      // The existing bounded maintenance queue also consumes saved-batch jobs.
+      // Their opt-in marker is persisted with the batch, so reloads and service
+      // failures do not lose work. Auto-update off never sweeps unrelated cards.
+      const maintenanceCards=core.settings.vectorAutoUpdate?cards:[...new Map(batches.filter(b=>b.status==='saved'&&b.autoIndex).flatMap(b=>groups.get(b.id)??[]).map(c=>[c.id,c])).values()];
+      const retryDelay=vectorRetryDelay(failure.blocked),retryable=maintenanceCards.filter(c=>entries.get(c.id)?.hash!==hash(c)).map(c=>vectorFailure(c,jobs,hash)).filter(f=>!f||vectorRetryDelay(f)!==null);
+      if(canMaintainVectors()&&!storageFailure&&retryDelay!==null&&retryable.length){
         const wait=Math.max(1500,retryDelay||Math.min(...retryable.map(f=>vectorRetryDelay(f))));
         state.vectorIndex.automatic=true;state.vectorIndex.retryAt=Date.now()+wait;
         if(failure.blocked)state.vectorIndex.message=`向量服务暂不可用；约 ${Math.ceil(wait/1000)} 秒后自动续建。已有记忆保留，无需重新总结。`;
         notify();
         if(schedule&&!vectorJob&&!active&&!recallBusy){
           clearTimeout(vectorTimer);
-          vectorTimer=setTimeout(()=>{vectorTimer=null;if(canMaintainVectors()&&token===epoch&&revision===recallRevision&&!active&&!recallBusy)void logged('vectors',run=>buildVectors({background:true,diagnosticRun:run})).catch(()=>{});},wait);vectorTimer.unref?.();
+          const ids=core.settings.vectorAutoUpdate?null:maintenanceCards.map(c=>c.id);
+          vectorTimer=setTimeout(()=>{vectorTimer=null;if(canMaintainVectors()&&token===epoch&&revision===recallRevision&&!active&&!recallBusy)void logged('vectors',run=>buildVectors({background:true,ids,diagnosticRun:run})).catch(()=>{});},wait);vectorTimer.unref?.();
         }
       }
       return clone(state.vectorIndex);
@@ -665,7 +670,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       op.check();const lastIndex=await core.historyTail();op.check();
       state.autoLastIndex=lastIndex;
       if(missingOnly)batchSize=core.settings.autoSummaryEvery;
-      const ranges=missingOnly?missingSummaryRanges(summaryCoverage(validAutomaticBatches(),{startFloor:state.autoStartFloor??1,lastIndex,keepRecent:core.settings.autoKeepRecent,batchSize}),batchSize):planSummaryRanges({count:count??core.settings.messageCount,startIndex,endIndex,lastIndex,batchSize});
+      const missing=missingOnly?missingSummaryRanges(summaryCoverage(validAutomaticBatches(),{startFloor:state.autoStartFloor??1,lastIndex,keepRecent:core.settings.autoKeepRecent,batchSize}),batchSize):null;
+      const ranges=missingOnly?missing.map(r=>({...r,startIndex:Math.max(r.startIndex,startIndex??r.startIndex),endIndex:Math.min(r.endIndex,endIndex??r.endIndex)})).filter(r=>r.startIndex<=r.endIndex):planSummaryRanges({count:count??core.settings.messageCount,startIndex,endIndex,lastIndex,batchSize});
       if(!ranges.length){summaryFeedback('success','当前可处理楼层没有缺口；没有调用总结模型。',trigger);return {status:'complete',batches:0};}
       let groupId=makeId('summary-group');
       const list=await workspace.read('summary-batches',[]);
@@ -688,7 +694,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         remainingPlanned=planned.length-i-1;
         op.check();const item=planned[i],continuing=resume&&!item.freshStart&&Boolean(item.operationId),operationId=continuing?item.operationId:makeId('product-summary');
         const oldOperation=item.status==='deleted'?null:savedBatchOperation(item);
-        currentBatch={...item,status:'running',freshStart:false,error:null,operationId,previousOperation:oldOperation??null,attempts:batchOperationIds(item).filter(id=>id!==operationId),updatedAt:Date.now()};
+        currentBatch={...item,status:'running',freshStart:false,error:null,operationId,autoIndex:Boolean(core.settings.vectorEnabled),previousOperation:oldOperation??null,attempts:batchOperationIds(item).filter(id=>id!==operationId),updatedAt:Date.now()};
         await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
         // Staged generations survive crashes but are never available for recall.
         if(!continuing)await core.updateMemoryControls({operations:{[operationId]:'pending'}});op.check();
@@ -737,22 +743,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           const risks=new Set(qualityTargets(state.rawRecords,qualitySaved).map(r=>r.id));
           automaticQualityIds.push(...ids.filter(id=>risks.has(id)));
         }
-        // 每批保存后立即给该批记录触发一次向量索引，不再只靠后台维护的
-        // `wakeVectors`：那个通道会在多任务并发时被取消、或者 `vectorAutoUpdate`
-        // 被关闭时静默不做。直接用本批 id 调一次 buildVectors，独立排队，
-        // 用户点完「总结下一批」就能在批次管理看到「索引建立中 N/total」。
-        // 如果已有索引任务在跑（并发），把它延后到本次结束再触发。
-        const postSummaryIds=batchIdsForVector(operationId);
-        if(postSummaryIds.length){
-          const runLater=async()=>{
-            try{
-              if(vectorJob)await vectorJob.done.catch(()=>{});
-              if(!workspace?.isCurrent()||state.stale||disposed)return;
-              await buildVectors({ids:postSummaryIds});
-            }catch(error){void reportError(error,{task:'vectors',stage:'post_summary'});}
-          };
-          void runLater();
-        }
+        // op.finish() wakes the bounded vector queue after releasing the
+        // summary lock. The batch's durable autoIndex marker survives reloads.
       }
       // All source-valid summaries are already durable. Merge is a separate
       // task and cannot mark any of these batches as failed or roll them back.
@@ -1344,15 +1336,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(options.reranker){const rerank=options.reranker;options.reranker=async args=>{try{return await rerank(args);}catch(error){void reportError(error,{task:'recall',stage:'validate',modelRole:'rerank',level:'warning'});throw error;}};}
     return options;
   }
-  // 总结一保存完，把这次产生的记忆记录 id 交给 buildVectors 做即时索引。
-  // 返回空数组表示本批没有可向量化的记忆或向量已禁用。
-  function batchIdsForVector(operationId){
-    if(!core.settings.vectorEnabled)return [];
-    const batch=state.batches.find(b=>b.operationId===operationId);
-    if(!batch)return [];
-    const ids=MEMORY_CATEGORIES.flatMap(k=>batch.records?.[k]??[]).map(r=>r?.id).filter(Boolean);
-    return ids;
-  }
+  // Explicit rebuilds and bounded background batch maintenance share one path.
   async function buildVectors({background=false,rebuild=false,ids=null,diagnosticRun}={}) {
     assertCurrent();if(vectorJob)throw new Error('向量索引正在更新');
     if(recallReaders){if(background)return {level:'info',paused:true};throw new Error('正在准备本轮记忆，请稍后更新索引');}
