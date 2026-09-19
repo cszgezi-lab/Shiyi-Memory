@@ -120,6 +120,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
       <button type="button" data-summary-catchup>补缺口</button>
       <button type="button" data-summary-pause>暂停</button>
     </div>
+    ${kind==='persona'?'<p class="sy-summary-settings sy-help" data-persona-task-status role="status" aria-live="polite"></p>':''}
     ${personaSettings}
     ${kind==='persona'?`<details class="sy-summary-settings" data-summary-persona-batches><summary>人设批次 <small data-persona-batch-count></small></summary><p class="sy-help">失败自动重试最多三次；继续未完成会接回原计划，已完成批次不重跑。候选只有整段完成后才应用。</p><div class="sy-actions"><button type="button" data-persona-resume-batches>继续未完成</button><button type="button" data-persona-pause-batches>暂停任务</button></div><div data-persona-batch-rows></div><div class="sy-actions"><button type="button" data-persona-batch-prev>上一页</button><span data-persona-batch-page></span><button type="button" data-persona-batch-next>下一页</button></div></details>`:''}
     <p class="sy-help" data-summary-legend></p>
@@ -153,13 +154,14 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
    const box=$('[data-summary-modules]');if(!box)return;
    const fallback={eligibleEnd:null,coveredRanges:[],missingRanges:[],coveredFloors:0,missingFloors:0};
    const settings=s.settings??{};
-   const chatFloors=Number.isSafeInteger(s.autoLastIndex)?s.autoLastIndex:null;
+   const observedChatFloors=Number.isSafeInteger(s.autoLastIndex)?s.autoLastIndex:null;
    const rows=[
      {kind:'memory',title:'记忆总结',batches:s.batches??[],batchSize:settings.autoSummaryEvery,keepRecent:settings.autoKeepRecent,startFloor:s.autoStartFloor??1,detail:`事件 ${countOf(s,'events')} · 知情 ${countOf(s,'awarenessChanges')} · 演绎 ${countOf(s,'performanceHints')} · 楼层摘要 ${countOf(s,'summaryView')} · 疑点 ${countOf(s,'conflicts')}`},
      {kind:'persona',title:'动态人设总结',batches:s.dynamicPersona?.batches??[],batchSize:settings.dynamicPersonaEvery,keepRecent:settings.dynamicPersonaKeepRecent,startFloor:s.dynamicPersona?.startFloor??1,detail:`人物 ${personCount(s)} 位 · 关系 ${countOf(s,'relationshipChanges')} · 约定 ${countOf(s,'commitmentChanges')} · 人设变化 ${countOf(s,'personaChanges')}`},
    ];
   for(const row of rows){
     const node=box.querySelector?.(`[data-summary-module="${row.kind}"]`);if(!node)continue;
+    const chatFloors=row.kind==='persona'&&Number.isSafeInteger(s.dynamicPersona?.lastIndex)?s.dynamicPersona.lastIndex:observedChatFloors;
     const plan=autoSummaryPlan(row.batches,{startFloor:row.startFloor,batchSize:row.batchSize,keepRecent:row.keepRecent,lastIndex:chatFloors});
     const {covered,missing,skipped,pending}=summaryProgress(row.batches,{startFloor:row.startFloor,batchSize:row.batchSize,keepRecent:row.keepRecent,lastIndex:chatFloors});
      const next=chatFloors===null?undefined:(plan.ready||plan.nextEnd<=plan.eligibleEnd?{startIndex:plan.nextStart,endIndex:plan.nextEnd}:null);
@@ -204,6 +206,28 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
      if(catchUp){catchUp.hidden=!missing;catchUp.dataset.summaryCatchup=row.kind;}
      const pause=node.querySelector?.('[data-summary-pause]');
      if(pause)pause.hidden=row.kind!=='memory';
+     if(row.kind==='persona'){
+       const d=s.dynamicPersona??{},manual=d.manualPlan,unfinished=['running','paused','failed'].includes(manual?.status);
+       const current=unfinished?manual.items?.find(b=>b.status!=='saved'):(d.batches??[]).find(b=>b.status==='failed'&&b.startIndex===plan.nextStart);
+       const range=current?` #${current.startIndex}–${current.endIndex}`:'';
+       const retrying=current?.retryAt>Date.now()&&(!unfinished||manual.status==='running')&&!(!unfinished&&d.paused);
+       const stopping=d.busy&&d.status==='paused',running=d.busy&&!stopping;
+       const blocked=s.enabled===false?'插件已暂停':s.foregroundBusy?'等待当前聊天回复／注入结束':null;
+       const label=stopping?'正在停止':running?'正在处理':retrying?'等待自动重试':unfinished?(manual.status==='paused'?'已暂停':manual.status==='failed'?'未完成':'已排队'):current||d.status==='failed'?'未完成':d.status==='saved'?'已保存':d.paused?'自动已暂停':settings.dynamicPersonaEnabled?'自动等待':'自动未开启';
+       const status=node.querySelector('[data-persona-task-status]');
+       const progress=unfinished?`已完成 ${manual.items.filter(b=>b.status==='saved').length}/${manual.items.length} 批；候选全部完成后应用。`:'';
+       const failureCode=current?.errorCode??d.failureDetails?.code;
+       const reason=Number.isInteger(d.failureDetails?.status)?`接口返回 HTTP ${d.failureDetails.status}`:({TIMEOUT:'接口响应超时',PROVIDER_HTTP_ERROR:'接口请求失败',PERSONA_RESPONSE_INVALID:'人物回答未通过检查',MODEL_OUTPUT_TRUNCATED:'模型回答被截断',INPUT_BUDGET_EXCEEDED:'本批超过输入预算',HISTORY_UNAVAILABLE:'聊天原文暂未就绪'})[failureCode]??String(current?.message??d.message??'未完成').split(/[。；]/)[0].slice(0,100);
+       const detail=retrying?`${reason}；将在 ${new Date(current.retryAt).toLocaleTimeString()} 自动重试（${Math.min(current.attempts??1,3)}/3）。`:current?.status==='failed'||d.status==='failed'?`${reason}，详情见日志；可直接继续。`:running||d.status==='saved'?d.message:'';
+       const queued=unfinished&&manual.status==='running'||settings.dynamicPersonaEnabled&&!d.paused;
+       status.textContent=`${running?'':`${label}${range}。`}${blocked?`${blocked}${queued?'；恢复后自动接续':''}。`:''}${s.requestQueueNotice?.startsWith('动态人设：')&&running?`${s.requestQueueNotice}。`:''}${detail??''}${progress}`;
+       node.querySelector('[data-summary-state]').textContent=label;
+       nextButton.disabled=Boolean(d.busy)||(!unfinished&&!next);
+       nextButton.textContent=stopping?'等待当前请求退出…':running?'正在处理…':unfinished||current?(retrying?'立即重试':`继续未完成${range}`):next?`总结下一批 #${next.startIndex}–${next.endIndex}`:'没有可总结的批次';
+       catchUp.hidden=unfinished||!missing;catchUp.disabled=Boolean(d.busy);
+       pause.hidden=!d.busy&&!(unfinished&&manual.status==='running')&&!retrying;
+       pause.disabled=stopping;pause.textContent='暂停任务';
+     }
      node.dataset.ready=chatFloors===null?'waiting':'ready';
      void fallback;
    }
@@ -264,7 +288,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
     if(currentPage==='dynamic-persona'){
       dynamicPersonaView?.paint(s);
       const d=s.dynamicPersona,key=JSON.stringify([s.core?.scope,d?.status,d?.message]);
-      if(personaNotice!==key){personaNotice=key;if(d?.message&&['running','saved','failed','paused'].includes(d.status))feedback(d.message,({running:'info',saved:'success',failed:'error',paused:'info'})[d.status]);}
+      if(personaNotice!==key){personaNotice=key;if(d?.message&&['running','saved','failed','paused'].includes(d.status))feedback(d.message,({running:'running',saved:'success',failed:'error',paused:'info'})[d.status]);}
     }
     const memory=currentPage==='memory',recording=currentPage==='recording',recordTab=$('[data-record-tab].active')?.dataset.recordTab;
     if(memory){paintCards();customManagement?.paint(s);}
@@ -322,7 +346,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
    const oldLabel=control?.textContent;if(label){feedback(`${label}中…`,'running');if(control){control.disabled=true;control.textContent=`${label}中…`;}}
    try{const result=await fn();painting.request();if(name.startsWith('test-')&&result?.message)feedback(`${API_INFO[name.slice(5)]?.title??'模型'}：${result.message}`,result.level??'info',true);else if(name==='vectors'&&result?.message)feedback(result.message,result.pending?'warning':'success',true);else if(result?.message&&result?.level&&!isSummary)feedback(result.message,result.level,true);else if(name==='dynamic-persona')feedback(result?.message??'操作已处理；人物生成状态与进度见动态人设页。','info');else if(name==='extraction')feedback('正文提取操作完成；预览和保存状态见当前页面。','success');else if(label&&!isSummary&&!isModels)feedback(`${label}完成`,'success',true);}
    catch(e){void app.reportError?.(e,{stage:'ui'});const text=`${label??'操作'}未完成：${failureText(e)}`;if($('[data-status]'))$('[data-status]').textContent=text;if(!isSummary||before===lastFeedbackId)feedback(text,['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(e?.code)?'info':'error',!['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(e?.code));}
-   finally{if(control&&label){control.disabled=false;control.textContent=oldLabel;}floating?.setBusy(Boolean(readViewState(app).busy)||modelRequests.size>0);}
+   finally{if(control&&label){control.disabled=false;control.textContent=oldLabel;}painting.request();floating?.setBusy(Boolean(readViewState(app).busy)||modelRequests.size>0);}
  }
  function selectedSummary(withFocus=true){return summarySelection({mode:$('[data-range-mode]').value,count:$('[data-count]').value,startIndex:$('[data-start]').value,endIndex:$('[data-end]').value,batchSize:$('[data-batch-size]').value,focus:withFocus?$('[data-focus]').value:''});}
  function syncSummaryRange(){
@@ -364,13 +388,10 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  const saveAutomatic=async()=>{const floor=Number($('[data-auto-start]').value),scope=readViewState(app).core?.scope,patch=collect($('[data-record-panel="automatic"]'));await app.saveSettings(patch);await app.setAutoStartFloor(floor,scope);autoStartDirty=false;};
  actions['auto-catchup']=()=>app.catchUpAutomatic();actions['auto-save']=saveAutomatic;actions['auto-inspect']=()=>app.inspectAutomaticProgress();actions['auto-process']=()=>app.processAutomatic();
  // 扇形卡片上的按钮：记忆走主总结（只补缺口，按已保存的自动设置）；
- // 人设走它自己的手动补建，范围就是卡片算出来的那一段。
- const runPersonaRange=(startIndex,endIndex)=>run(async()=>{
-   $('[data-persona-manual-start]').value=String(startIndex);
-   $('[data-persona-manual-end]').value=String(endIndex);
-   const options={startIndex,endIndex,batchSize:Number($('[data-persona-manual-size]')?.value)||readViewState(app).settings?.dynamicPersonaEvery||10,handoff:$('[data-persona-manual-handoff]')?.checked!==false};
-   await app.previewDynamicPersonaManual(options);
-   await app.startDynamicPersonaManual(options);
+ // 人设入口统一从已保存设置计算，未完成任务原地续做，不读取隐藏表单。
+ panel.addEventListener?.('click',event=>{
+   const button=event.target?.closest?.('[data-summary-module="persona"] [data-summary-pause]');
+   if(button)void run(()=>app.pauseDynamicPersona(),{name:'dynamic-persona',button});
  });
  panel.addEventListener?.('click',event=>{
    const button=event.target?.closest?.('[data-summary-next-batch],[data-summary-catchup]');
@@ -378,11 +399,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
    const kind=button.closest?.('[data-summary-module]')?.dataset.summaryModule;
    const start=Number(button.dataset?.summaryStart??NaN),end=Number(button.dataset?.summaryEnd??NaN);
    if(kind==='persona'){
-     const s=readViewState(app),d=s.dynamicPersona??{};
-     if(['paused','running','failed'].includes(d.manualPlan?.status))return void run(()=>app.setDynamicPersona(true),{name:'dynamic-persona',button});
-     if(Number.isInteger(start)&&Number.isInteger(end))void runPersonaRange(start,end);
-     else void run(async()=>{const plan=await app.inspectDynamicPersona();if(plan.nextStart<=plan.eligibleEnd)await app.startDynamicPersonaManual({startIndex:plan.nextStart,endIndex:plan.eligibleEnd,batchSize:s.settings.dynamicPersonaEvery,handoff:true});},{name:'dynamic-persona',button});
-     return;
+     return void run(()=>app.queueDynamicPersona({catchUp:button.hasAttribute('data-summary-catchup')}),{name:'dynamic-persona',button});
    }
    // 记忆卡的「总结下一批 #start–#end」必须真正调用 summarize：之前只发一条
    // toast 就 return，按钮按了什么都不发生。补走 run() 反馈链路，确保按钮
@@ -394,7 +411,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  // 总结页第二行：动态人设「启用/暂停」按钮直接通过 application 操作；周期设到人设页调整。
  $('[data-persona-enable-inline]')?.addEventListener('click',()=>run(()=>app.setDynamicPersona(true),{name:'dynamic-persona',button:$('[data-persona-enable-inline]')}));
  $('[data-persona-pause-inline]')?.addEventListener('click',()=>run(()=>app.pauseDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-pause-inline]')}));
- $('[data-persona-resume-batches]')?.addEventListener('click',()=>run(()=>app.setDynamicPersona(true),{name:'dynamic-persona',button:$('[data-persona-resume-batches]')}));
+ $('[data-persona-resume-batches]')?.addEventListener('click',()=>run(()=>app.queueDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-resume-batches]')}));
  $('[data-persona-pause-batches]')?.addEventListener('click',()=>run(()=>app.pauseDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-pause-batches]')}));
  $('[data-summary-persona-batches]')?.addEventListener('toggle',()=>paintSummaryModules(readViewState(app)));
  for(const [key,delta] of [['prev',-1],['next',1]])$(`[data-persona-batch-${key}]`)?.addEventListener('click',()=>{personaBatchPage=Math.max(0,personaBatchPage+delta);paintSummaryModules(readViewState(app));});

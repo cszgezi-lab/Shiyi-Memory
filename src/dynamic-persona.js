@@ -396,6 +396,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     check();
     if(!ready&&retry){await load();check();if(job)return {message:'人设任务正在运行，无需重复启动',level:'info'};}
     if(!ready)throw new Error('人物来源尚未验证，请重新加载当前聊天');const bound=currentWorkspace,controller=new AbortController();job=controller;
+    view={...view,status:'running',message:'正在检查人设任务与聊天楼层…'};emit();
     clearTimeout(timer);timer=null;wakePending=false;
     const guard=()=>{check(bound);if(controller.signal.aborted)throw canceled();};
     let key,success=false,settled=false,personaStep='history_tail',modelRequested=false;
@@ -451,9 +452,11 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       if(!retry&&prior?.status==='failed'&&(!prior.retryAt&&!historyFailure(prior)||prior.retryAt>now())){view={status:'failed',message:prior.message};if(prior.retryAt){timer=setTimeout(()=>{timer=null;wake();},Math.max(100,prior.retryAt-now()));timer.unref?.();}return {message:prior.message,phase:prior.retryAt?'waiting':'skipped',level:'warning',diagnostics:{reason:'persona_previous_failure',retryDelayMs:Math.max(0,(prior.retryAt??0)-now()),startIndex:next.nextStart,endIndex:next.nextEnd,modelRequested:false}};}
       personaStep='api_config';const config=clone(settings());client(); // Fail before changing progress when the independent API is unconfigured.
       key=`${next.nextStart}-${next.nextEnd}`;
-      view={...view,status:'running',failureDetails:null,failureStorage:null,message:`${manualId?'手动补建':'更新动态人设'} #${next.nextStart}–${next.nextEnd}（独立 API）`};emit();personaStep='history_range';
+      const taskLabel=`${manualId?'手动补建':'更新动态人设'} #${next.nextStart}–${next.nextEnd}`;
+      const showStep=message=>{view={...view,status:'running',message:`${taskLabel} · ${message}`};emit();};
+      view={...view,failureDetails:null,failureStorage:null};showStep('正在读取正文');personaStep='history_range';
       const range=await readRange({startIndex:next.nextStart,endIndex:next.nextEnd});guard();
-      personaStep='worldbook_read';const sourceHash=sha256(range.messages),world=await worldbook.read();guard();personaStep='prepare_profile';
+      personaStep='worldbook_read';showStep('正在读取人物原设定');const sourceHash=sha256(range.messages),world=await worldbook.read();guard();personaStep='prepare_profile';
       const liveBefore=clone(data.profiles);
       const liveSuppressed=data.profiles.filter(p=>p.deleted&&p.mergedInto);
       const previous=clone(manualId?[...data.manualPlan.workingProfiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)),...data.profiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)&&isProtectedProfile(p))]:data.profiles);
@@ -462,6 +465,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       view={...view,worldbook:{status:world.status??'ready',cardName:world.cardName,books:[...new Set(world.entries?.map(e=>e.book)??[])],entries:world.entries?.length??0,safeFragments:world.spans?.length??0,audit:request.audit,guide:personaSourceGuide({...world,audit:request.audit})}};emit();
       const inputUnits=estimateUnits(JSON.stringify(request.messages));if(inputUnits>config.dynamicPersonaInputUnits)throw Object.assign(new Error(`人设输入约 ${inputUnits} 单位，超过设置的 ${config.dynamicPersonaInputUnits}；未截断正文或改变楼数`),{code:'INPUT_BUDGET_EXCEEDED',details:{stage:'prepare',reason:'input_budget_exceeded',inputUnits,inputLimit:config.dynamicPersonaInputUnits}});
       diagnostic({run,task:'persona',phase:'plan',details:{startIndex:next.nextStart,endIndex:next.nextEnd,sourceCount:range.messages.length,inputUnits,inputLimit:config.dynamicPersonaInputUnits,maxTokens:config.dynamicPersonaOutputTokens,plannedRequests:1,modelRole:'dynamicPersona'}});
+      showStep('正在生成／检查人物档案（独立 API）');
       const fingerprint=sha256({recovery:PERSONA_RECOVERY_VERSION,sourceHash,request:request.messages,model:config.dynamicPersonaModel,endpoint:config.dynamicPersonaEndpoint,output:config.dynamicPersonaOutputTokens,previous});
       const cacheKey=manualId?`persona-result-${manualId}-${key}`:`persona-result-${key}`;
       personaStep='cached_response';const cached=await bound.read(cacheKey,null);guard();
@@ -480,7 +484,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
         retainedSourceSentences:rows.reduce((n,p)=>n+(p.composition?.parts?.length??0),0)}});
       guard();
       if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k])))throw Object.assign(new Error('人设运行期间设置已变化；结果未覆盖旧档案'),{code:'CANCELED'});
-      personaStep='source_verify';const checkRange=await readRange({startIndex:next.nextStart,endIndex:next.nextEnd});guard();if(sourceHash!==sha256(checkRange.messages))throw Object.assign(new Error('人设来源正文已变化'),{code:'SOURCE_INVALIDATED'});
+      personaStep='source_verify';showStep('正在核对来源并保存');const checkRange=await readRange({startIndex:next.nextStart,endIndex:next.nextEnd});guard();if(sourceHash!==sha256(checkRange.messages))throw Object.assign(new Error('人设来源正文已变化'),{code:'SOURCE_INVALIDATED'});
       personaStep='worldbook_verify';const latestWorld=await worldbook.read();guard();if(rows.some(p=>p.bindings.some(b=>!latestWorld.spans.some(s=>s.id===b.id&&s.stage===b.stage||config.dynamicPersonaMvuMode!=='strict'&&s.book===b.book&&s.uid===b.uid&&s.hash===b.hash))))throw Object.assign(new Error('人设阶段或原设定已变化；等待当前阶段重试'),{code:'PERSONA_STAGE_CHANGED',details:{stage:'validate',reason:'persona_stage_changed'}});
       personaStep='profile_save';
       await transact(async()=>{

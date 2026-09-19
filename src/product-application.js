@@ -106,7 +106,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   };
   const apiSettings=createGlobalSettings({getStore:globalStore,onApply:settings=>{core.useGlobalSettings(settings);core.setSessionCredential(effectiveKeys().summary);recallChanged({vectors:true});notify();}});
   const credentials=createCredentialStore({getStore:globalStore});
-  let autoRunning=false;
+  let autoRunning=false,personaLaunch=null,personaCommandVersion=0;
   const state = { credentialSaved:{},credentialErrors:{}, modules:[],moduleSnapshots:[],moduleCurrent:[],mvuPaths:[],mvuStatus:'no_chat', status: 'unbound', message: '开始总结时自动读取 TT 当前聊天', cards: [], documents: [], history: [], batches: [], records: {}, conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };
   const notify = () => { try { if(onInvalidate)onInvalidate();else onChange(publicState()); } catch { /* paint failure must not affect persistence */ } };
   const runtimeLog=createRuntimeLog({getStore:globalStore,onChange:notify});
@@ -156,7 +156,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   const modules=createModuleController({host,core,state,load:loadApiSettings,getGlobal:()=>globalWorkspace,getChat:()=>workspace,check:assertCurrent,notify,refresh,changed:()=>recallChanged({vectors:true})});
   const personaWorldbook=createPersonaWorldbook({host,check:assertCurrent,context:()=>({scope:boundScope,epoch}),stageMode:()=>core.settings.dynamicPersonaMvuMode});
-  const dynamicPersona=createDynamicPersona({settings:()=>core.settings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:()=>core.historyTail(),worldbook:personaWorldbook,client:()=>client('dynamicPersona'),dictionary:()=>activeDictionary(),records:()=>state.records,log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>enabled&&!opening&&!state.stale&&!foregroundBusy()&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
+  const dynamicPersona=createDynamicPersona({settings:()=>core.settings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:()=>core.historyTail(),worldbook:personaWorldbook,client:()=>client('dynamicPersona'),dictionary:()=>activeDictionary(),records:()=>state.records,log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>!personaLaunch&&enabled&&!opening&&!state.stale&&!foregroundBusy()&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
   const resumeAutomaticTasks=()=>{if(host.document?.visibilityState==='hidden')return;queueAutomaticSummary();dynamicPersona.wake();};
   host.document?.addEventListener?.('visibilitychange',resumeAutomaticTasks);host.addEventListener?.('online',resumeAutomaticTasks);
   function activeDictionary(){
@@ -1575,12 +1575,36 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
   async function stop(){await dynamicPersona.pause();vectorStopped=true;clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;automaticPaused=true;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
+  // Main-card commands use the same persisted manual worker, never hidden UI
+  // drafts. Coalesce clicks and reserve scheduling while a plan is prepared.
+  function queueDynamicPersona({catchUp=false}={}){
+    if(personaLaunch)return personaLaunch;
+    const token=epoch,command=personaCommandVersion;
+    const guard=()=>{assertCurrent(token);if(command!==personaCommandVersion||!enabled)throw Object.assign(new Error('人设启动已取消'),{code:'CANCELED'});};
+    const work=logged('persona',async()=>{
+      if(!enabled)throw new Error('插件已暂停，请先启用插件，再更新人设');
+      guard();await dynamicPersona.load();guard();
+      if(dynamicPersona.state.busy)return {message:'人设任务正在运行，无需重复启动',level:'info'};
+      const unfinished=['running','paused','failed'].includes(dynamicPersona.state.manualPlan?.status);
+      if(!unfinished){
+        const plan=await dynamicPersona.inspect();guard();
+        if(catchUp?plan.nextStart>plan.eligibleEnd:!plan.ready)return {message:'尚未凑齐可处理的人设批次；保留楼层不读取，回复结束后自动检查。',level:'info'};
+        await dynamicPersona.createManual({startIndex:plan.nextStart,endIndex:catchUp?plan.eligibleEnd:plan.nextEnd,batchSize:core.settings.dynamicPersonaEvery,handoff:true});guard();
+      }
+      // Creating first preserves whether automatic continuation was enabled.
+      if(!core.settings.dynamicPersonaEnabled)await saveSettings({dynamicPersonaEnabled:true});guard();
+      return dynamicPersona.resumeManual();
+    });
+    personaLaunch=work.finally(()=>{personaLaunch=null;dynamicPersona.wake();notify();});
+    return personaLaunch;
+  }
   // 补一批 / 检查进度 / 立刻处理：包到 logged('summary', ...) 里，
   // 这样按钮点击会立即产生一条「开始 / 完成 / 失败」的运行日志记录，
   // UI 反馈也由 run() 的 feedback 链路驱动，不会再「按了没反应」。
   const application={saveCharacterKeepsake,editPersonProfile,catchUpAutomatic:()=>summarize({missingOnly:true}),inspectAutomaticProgress:()=>logged('summary',async run=>{await inspectAutomaticProgress();runtimeLog.record({run,task:'summary',phase:'complete',level:'success',details:{}});return {batches:0};}),setAutoStartFloor,setAutomatic,processAutomatic:()=>logged('summary',run=>autoSummary({force:true})),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
     inspectDynamicPersona:()=>logged('persona',async run=>{await dynamicPersona.load();const result=await dynamicPersona.inspect();runtimeLog.record({run,task:'persona',phase:'complete',level:'success',details:{}});return result;}),
-    processDynamicPersona:async()=>logged('persona',async run=>{await dynamicPersona.load();return dynamicPersona.process({force:true,retry:true});}),pauseDynamicPersona:()=>dynamicPersona.pause(),setDynamicPersonaStart:floor=>dynamicPersona.setStart(floor),editDynamicPersona:(id,patch)=>dynamicPersona.edit(id,patch),bindDynamicPersona:(name,targetId)=>dynamicPersona.bind(name,targetId),mergeDynamicPersona:(sourceId,targetId)=>dynamicPersona.merge(sourceId,targetId),undoDynamicPersona:id=>dynamicPersona.undo(id),addDynamicPersona:(name,text)=>dynamicPersona.add(name,text),
+    queueDynamicPersona,
+    processDynamicPersona:async()=>logged('persona',async run=>{await dynamicPersona.load();return dynamicPersona.process({force:true,retry:true});}),pauseDynamicPersona:()=>{personaCommandVersion++;return logged('persona',()=>dynamicPersona.pause());},setDynamicPersonaStart:floor=>dynamicPersona.setStart(floor),editDynamicPersona:(id,patch)=>dynamicPersona.edit(id,patch),bindDynamicPersona:(name,targetId)=>dynamicPersona.bind(name,targetId),mergeDynamicPersona:(sourceId,targetId)=>dynamicPersona.merge(sourceId,targetId),undoDynamicPersona:id=>dynamicPersona.undo(id),addDynamicPersona:(name,text)=>dynamicPersona.add(name,text),
     previewDynamicPersonaManual:async options=>{await dynamicPersona.load();return dynamicPersona.previewManual(options);},
     async previewNarrativeExtraction({text,floor,config=core.settings.narrativeExtraction}={}){
       if(typeof text==='string')return narrativePreview({id:'local-preview',text},config);
