@@ -27,7 +27,7 @@ export function dynamicPersonaHTML(){return `<section data-view="dynamic-persona
 <p class="sy-help">正文新角色也能建档；同一人物持续更新，保留有来源的转变缘由、对象与表达语料，不强行给路人编造成长。成长脉络在整份档案中查看和修改，与人物更新共用一次请求。</p>
 <div class="sy-actions"><button type="button" data-persona-tab="auto" aria-pressed="true">自动更新</button><button type="button" data-persona-tab="manual" aria-pressed="false">手动补建</button></div>
 <div class="sy-card" data-persona-auto>
-<div class="sy-actions"><button type="button" data-persona-enable>启用 / 继续自动</button><button type="button" data-persona-pause>暂停自动</button></div>
+    <div class="sy-actions"><button type="button" data-persona-enable>启用 / 继续自动</button><button type="button" data-persona-pause>暂停自动</button><button type="button" data-jump="recording">总结页设置人设周期</button></div>
 <div class="sy-grid">${setting('dynamicPersonaEvery')}${setting('dynamicPersonaKeepRecent')}</div>
 ${field('当前聊天自动起算楼层','<input data-persona-start type="number" min="0" value="1">')}
 <p class="sy-help" data-persona-progress></p>
@@ -49,7 +49,7 @@ ${field('当前聊天自动起算楼层','<input data-persona-start type="number
 <p class="sy-help">更新使用本批正文、已保存的相关心迹与关键台词，以及原书和上一版档案。私人心迹只指导其本人；旧台词保留语境，不覆盖当前关系。设置在自动与手动之间共用，修改后记得保存。</p>
 <div class="sy-actions"><button type="button" data-api-jump="dynamicPersona">人设 API</button><button type="button" data-jump="extraction">正文提取规则</button></div>
 <p class="sy-help">推荐剧情主导：人物随互动成长，MVU 数值只作参考；无 MVU 同样可用，不改变量或脚本。简繁姓名与可确认的简称共同识别，有歧义可在人物编辑或召回字典里校正。</p>
-<details class="sy-card"><summary>共用预设与请求预算 · 可 DIY</summary>${setting('dynamicPersonaMvuMode')}${setting('dynamicPersonaInputUnits')}${setting('dynamicPersonaOutputTokens')}${setting('dynamicPersonaDeadlineMs')}${field('发给人设模型的指导词',`<textarea rows="12" data-persona-prompt>${esc(DYNAMIC_PERSONA_PROMPT)}</textarea>`)}<div class="sy-actions"><button type="button" data-persona-budget-save>保存预设与预算</button><button type="button" data-persona-default>恢复内置预设</button></div></details>
+<details class="sy-card"><summary>共用预设与请求预算 · 可 DIY</summary><p class="sy-help">周期设置（每批多少楼、保留最近多少楼）的输入已放在上方「更新人物 → 自动更新」。本节只放提示词、人物演绎主次与预算。</p>${setting('dynamicPersonaMvuMode')}${setting('dynamicPersonaInputUnits')}${setting('dynamicPersonaOutputTokens')}${setting('dynamicPersonaDeadlineMs')}${field('发给人设模型的指导词',`<textarea rows="12" data-persona-prompt>${esc(DYNAMIC_PERSONA_PROMPT)}</textarea>`)}<div class="sy-actions"><button type="button" data-persona-budget-save>保存预设与预算</button><button type="button" data-persona-default>恢复内置预设</button></div></details>
 <div class="sy-actions"><button type="button" data-persona-disable>关闭动态人设</button><button type="button" data-persona-worldbook-check>检查世界书读取</button><button type="button" data-persona-mirror-retry>同步世界书镜像</button></div>
 <p class="sy-help" data-persona-worldbook-read></p><p class="sy-help" data-persona-worldbook></p>
 <details class="sy-card" data-persona-source-audit><summary>原书条目识别结果（不是已替换清单）</summary><div data-persona-source-audit-list></div></details>
@@ -58,14 +58,16 @@ ${field('当前聊天自动起算楼层','<input data-persona-start type="number
 <details class="sy-card"><summary>本轮动态人设注入</summary><p data-persona-injected-info></p><div class="sy-packet" data-persona-injected-text></div></details>
 <div class="sy-actions"><button type="button" data-persona-profile-prev>上一组人物</button><button type="button" data-persona-profile-next>下一组人物</button><span data-persona-profile-page></span></div><div data-persona-profiles></div>
 <details class="sy-card"><summary>新增 DIY 人物档案</summary>${field('姓名','<input data-persona-new-name>')}${field('完整人物信息','<textarea rows="6" data-persona-new-text></textarea>')}<button type="button" data-persona-add>新增并锁定</button></details>
-<details class="sy-card"><summary>独立更新记录</summary><div data-persona-batches></div><div class="sy-actions"><button type="button" data-persona-prev>上一页</button><button type="button" data-persona-next>下一页</button></div></details></section>`;}
+<details class="sy-card" data-persona-batches-section><summary>批次管理 <small>动态人设独立批次</small></summary><p class="sy-help">按楼层倒序排列；记录每一批人设请求的开始/结束楼层、状态、已生成的档案数和隔离数。不在「总结批次」里管理，本表也不调用模型。</p><div data-persona-batches-list></div></details></section>`;}
 export function mountDynamicPersona({panel,app,run,host=globalThis}){
-  const $=s=>panel.querySelector?.(s),root=$('[data-view="dynamic-persona"]'),drafts=new Map();let stamp='',scope='',page=0,profilePage=0,startDirty=false,promptDirty=false,manualDirty=false,manualPage=0,manualStamp='',previewStamp='',auditStamp='';
+  const $=s=>panel.querySelector?.(s),root=$('[data-view="dynamic-persona"]'),drafts=new Map();let stamp='',scope='',profilePage=0,startDirty=false,promptDirty=false,manualDirty=false,manualPage=0,manualStamp='',previewStamp='',auditStamp='';
   if(!root)return {paint(){},focus(){},select(){},tab(){},dispose(){}};
   $('[data-persona-source-audit]')?.addEventListener('toggle',()=>paint(app.state));
   const bind=(s,fn)=>$(s)?.addEventListener('click',e=>run(fn,{name:'dynamic-persona',button:e.currentTarget}));
   $('[data-persona-start]')?.addEventListener('input',()=>{startDirty=true;});$('[data-persona-prompt]')?.addEventListener('input',()=>{promptDirty=true;});
-  const save=async()=>{const patch={};for(const key of ['dynamicPersonaEvery','dynamicPersonaKeepRecent'])patch[key]=Number($(`[data-setting="${key}"]`).value);await app.setDynamicPersonaStart(Number($('[data-persona-start]').value));await app.saveSettings(patch);startDirty=false;};
+  // 周期设置（每批楼数/保留楼数）输入同时存在人设页「自动更新」和总结页底部；
+  // 此处保存时一并写回 settings 与起算楼层，确保两处的展示同步。
+  const save=async()=>{const patch={dynamicPersonaEvery:Number($('[data-setting="dynamicPersonaEvery"]')?.value),dynamicPersonaKeepRecent:Number($('[data-setting="dynamicPersonaKeepRecent"]')?.value)};await app.saveSettings(patch);await app.setDynamicPersonaStart(Number($('[data-persona-start]').value));startDirty=false;};
   bind('[data-persona-save]',save);bind('[data-persona-enable]',async()=>{await save();await app.setDynamicPersona(true);});bind('[data-persona-pause]',()=>app.pauseDynamicPersona());bind('[data-persona-disable]',()=>app.setDynamicPersona(false));bind('[data-persona-check]',()=>app.inspectDynamicPersona());bind('[data-persona-retry]',()=>app.processDynamicPersona());
   bind('[data-persona-default]',()=>{$('[data-persona-prompt]').value=DYNAMIC_PERSONA_PROMPT;promptDirty=true;});
   bind('[data-persona-budget-save]',async()=>{const patch={dynamicPersonaPrompt:$('[data-persona-prompt]').value,dynamicPersonaMvuMode:$('[data-setting="dynamicPersonaMvuMode"]').value};for(const key of ['dynamicPersonaInputUnits','dynamicPersonaOutputTokens','dynamicPersonaDeadlineMs'])patch[key]=Number($('[data-setting="'+key+'"]').value);await app.saveSettings(patch);promptDirty=false;});
@@ -88,11 +90,10 @@ export function mountDynamicPersona({panel,app,run,host=globalThis}){
   bind('[data-persona-manual-next]',()=>{manualPage++;manualStamp='';paint(app.state);});
   bind('[data-persona-worldbook-check]',()=>app.inspectDynamicPersonaWorldbook());bind('[data-persona-mirror-retry]',()=>app.syncDynamicPersonaWorldbook());
   bind('[data-persona-add]',async()=>{await app.addDynamicPersona($('[data-persona-new-name]').value,$('[data-persona-new-text]').value);$('[data-persona-new-text]').value='';});
-  bind('[data-persona-prev]',()=>{page=Math.max(0,page-1);stamp='';paint(app.state);});bind('[data-persona-next]',()=>{page++;stamp='';paint(app.state);});
   bind('[data-persona-profile-prev]',()=>{profilePage=Math.max(0,profilePage-1);stamp='';paint(app.state);});bind('[data-persona-profile-next]',()=>{profilePage++;stamp='';paint(app.state);});
   function paint(s){
     const d=s.dynamicPersona??{profiles:[],batches:[]},nextScope=JSON.stringify(s.core?.scope);
-    if(scope!==nextScope){scope=nextScope;stamp=manualStamp=previewStamp='';startDirty=promptDirty=manualDirty=false;page=profilePage=manualPage=0;drafts.clear();$('[data-persona-profiles]').replaceChildren();$('[data-persona-manual-start]').value=1;$('[data-persona-manual-end]').value='';$('[data-persona-manual-size]').value=20;$('[data-persona-manual-handoff]').checked=true;clearPreview();}
+    if(scope!==nextScope){scope=nextScope;stamp=manualStamp=previewStamp='';startDirty=promptDirty=manualDirty=false;profilePage=manualPage=0;drafts.clear();$('[data-persona-profiles]').replaceChildren();$('[data-persona-manual-start]').value=1;$('[data-persona-manual-end]').value='';$('[data-persona-manual-size]').value=20;$('[data-persona-manual-handoff]').checked=true;clearPreview();}
     $('[data-persona-status]').textContent=`${s.settings.dynamicPersonaEnabled?'已启用':'未启用'} · ${d.message??'打开聊天后读取档案'}`;
     $('[data-persona-failure]').hidden=!d.failureDetails;
     if(d.failureDetails){const f=d.failureDetails;$('[data-persona-failure-text]').textContent=[PERSONA_STEPS[f.personaStep],f.code,DIAGNOSTIC_REASONS[f.reason],f.errorType,f.modelRequested===false?'本次尚未请求模型':f.modelRequested?'本次已请求模型':null,...(f.stackFrames??[]),d.failureStorage?'失败进度另未保存；原始错误仍保留':null].filter(Boolean).join(' · ');}
@@ -115,7 +116,7 @@ export function mountDynamicPersona({panel,app,run,host=globalThis}){
     $('[data-persona-injected-info]').textContent=d.lastInjection?`替换 ${d.lastInjection.replaced} 份当前人设，补充 ${d.lastInjection.supplemental} 份；只是加入待发请求，不代表模型一定采纳。`:'还没有本轮注入记录。';
     $('[data-persona-injected-text]').textContent=d.lastInjection?.text??'';
     const visible=currentPersonaProfiles((d.profiles??[]).filter(p=>!p.deleted),s.settings.dynamicPersonaMvuMode),pages=Math.max(1,Math.ceil(visible.length/6));profilePage=Math.min(profilePage,pages-1);$('[data-persona-profile-page]').textContent=`${profilePage+1}/${pages} · ${visible.length} 份档案`;
-    const nextStamp=JSON.stringify([d.profiles,d.batches,page,profilePage,s.settings.dynamicPersonaMvuMode]);if(stamp===nextStamp)return;stamp=nextStamp;
+    const nextStamp=JSON.stringify([d.profiles,d.batches,profilePage,s.settings.dynamicPersonaMvuMode]);if(stamp===nextStamp)return;stamp=nextStamp;
     const list=$('[data-persona-profiles]');for(const e of list.querySelectorAll('[data-persona-id]')){if(e.querySelector('[data-persona-editor][open]'))drafts.set(e.dataset.personaId,e);else drafts.delete(e.dataset.personaId);}for(const id of drafts.keys())if(!visible.some(p=>p.id===id))drafts.delete(id);const editing=drafts;
     const cards=[];
     for(const p of visible.slice(profilePage*6,profilePage*6+6)){if(p.deleted)continue;if(editing.has(p.id)){cards.push(editing.get(p.id));continue;}
@@ -131,8 +132,8 @@ export function mountDynamicPersona({panel,app,run,host=globalThis}){
       cards.push(card);
     }
     list.replaceChildren(...cards);
-    const batches=[...(d.batches??[])].sort((a,b)=>b.startIndex-a.startIndex);page=Math.min(page,Math.max(0,Math.ceil(batches.length/10)-1));
-    $('[data-persona-batches]').innerHTML=batches.slice(page*10,page*10+10).map(b=>`<p>#${b.startIndex}–${b.endIndex} · ${b.status==='saved'?`已保存 · ${b.profileCount} 份更新${b.rejectedProfiles?.length?` · 隔离 ${b.rejectedProfiles.length} 份未确认档案`:''}`:`未完成：${esc(b.message??'可重试')}`}</p>`).join('')||'<p class="sy-help">还没有人设更新记录。</p>';
+    const batches=[...(d.batches??[])].sort((a,b)=>b.startIndex-a.startIndex);
+    $('[data-persona-batches-list]').innerHTML=batches.map(b=>`<details class="sy-card" ${b.status==='failed'?'open':''}><summary>#${b.startIndex}–${b.endIndex} · ${b.status==='saved'?`已保存 · ${b.profileCount} 份更新${b.rejectedProfiles?.length?` · 隔离 ${b.rejectedProfiles.length} 份未确认档案`:''}`:b.status==='failed'?`未完成：${esc(b.message??'可重试')}`:b.status}</summary><p class="sy-help">${b.savedAt||b.createdAt?`时间：${new Date(b.savedAt??b.createdAt).toLocaleString()}`:''}${Number.isInteger(b.requestCount)?` · 调用 ${b.requestCount} 次模型`:''}${b.sourceHash?` · 源 hash 已校验`:''}</p>${b.through?`<p class="sy-help">档案推进至 #${b.through}</p>`:''}</details>`).join('')||'<p class="sy-help">还没有人设更新记录。</p>';
   }
   return {paint,focus(idOrName){
     const s=app.state,visible=currentPersonaProfiles((s.dynamicPersona?.profiles??[]).filter(p=>!p.deleted),s.settings.dynamicPersonaMvuMode);

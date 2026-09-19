@@ -141,7 +141,7 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),io
     load,record,async start(task,details={}){await load();const run=++nextRun;record({run,task,phase:'start',details});return run;},
     get state(){return {entries:clone(entries),persistence,limit:RUNTIME_LOG_LIMIT,byteLimit:RUNTIME_LOG_BYTES,droppedEntries,partialRuns:clone(partialRuns),legacyRetentionUnknown,storageFailure:clone(storageFailure)};},
     async flush(){try{await bounded(timer!==null?persist():queue);}catch(error){persistence='pending';storageFailure=safeLogDetails({...errorDiagnostics(error),storageStage:'write',storageArtifact:'runtime_log'});notify();}},
-    async clear(){await load();entries=[];entryBytes=2;droppedEntries=0;partialRuns=[];legacyRetentionUnknown=false;notify();await persist();if(!store||persistence!=='saved')throw new Error('日志清空未通过保存确认，请重试');},
+    async clear(){await load();entries=[];entryBytes=2;droppedEntries=0;partialRuns=[];legacyRetentionUnknown=false;nextId=0;nextRun=0;storageFailure=null;notify();await persist();if(!store||persistence!=='saved')throw new Error('日志清空未通过保存确认，请重试');},
     async export({filter}={}){await load();
       // Drain already-queued error callbacks, not their storage promises. A
       // failed action immediately followed by export must include its error.

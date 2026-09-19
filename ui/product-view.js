@@ -3,7 +3,7 @@ import {dynamicPersonaHTML,mountDynamicPersona} from './product-dynamic-persona.
 import { characterJournalHTML,mountCharacterJournal } from './product-character-journal.js';
 import { frameScheduler, readViewState, reconcileMemoryList } from '../src/product-view-scheduling.js';
 import { memoryListHTML,memoryPage } from './product-management.js';
-import { autoSummaryText,summaryCoverageText,summaryCoverage,autoSummaryPlan } from '../src/product-auto-summary.js';
+import { autoSummaryText,summaryCoverage,autoSummaryPlan } from '../src/product-auto-summary.js';
 import { mountPersonEditor } from './product-profile-editor.js';
 import { knowledgeImportHTML,mountKnowledgeView } from './product-knowledge-view.js';
 import { PRODUCT_SETTING_REGISTRY, PRODUCT_API_SETTING_KEYS } from '../src/product-settings.js';
@@ -100,7 +100,12 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
 /** 总结页顶部：两个主模块各一张扇形进度卡。数字全部由已保存的设置与批次算出：
  * 记忆用自动总结的起点/每批楼数/保留楼数，人设用动态人设自己那一套设置。 */
  function summaryModulesHTML(){
-  return ['memory','persona'].map(kind=>`<section class="sy-summary-module" data-summary-module="${kind}">
+  return ['memory','persona'].map(kind=>{
+    // 人设更新周期设置原本只在动态人设页「更新人物 → 自动更新」。现在也放在总结页
+    // 第二行，但只显示文本（避免在动态人设页和总结页出现两份相同 data-setting 元素，
+    // 否则 mobile 验证会报「data-setting 多于注册项」）；修改周期请到人设页或点下方按钮。
+    const personaSettings=kind==='persona'?`<div class="sy-summary-settings" data-persona-current-settings><p class="sy-help">当前周期：每 <span data-persona-display-every>—</span> 楼一批，保留最近 <span data-persona-display-keep-recent>—</span> 楼。修改周期请到动态人设页或使用下方按钮。</p><div class="sy-actions"><button type="button" data-jump="people">到人设页调整</button><button type="button" data-persona-enable-inline>启用 / 继续自动</button><button type="button" data-persona-pause-inline>暂停自动</button></div></div>`:'';
+    return `<section class="sy-summary-module" data-summary-module="${kind}">
     <div class="sy-pie" data-summary-pie><span data-summary-percent>0%</span></div>
     <div class="sy-module-meta">
       <div class="sy-module-head"><b data-summary-title></b><span class="sy-tag" data-summary-state></span></div>
@@ -114,8 +119,9 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
       <button type="button" data-summary-catchup>补缺口</button>
       <button type="button" data-summary-pause>暂停</button>
     </div>
+    ${personaSettings}
     <p class="sy-help" data-summary-legend></p>
-  </section>`).join('');
+  </section>`;}).join('');
 }
 /** 按楼层把四种状态画成扇形：已总结（实色）、缺口（红）、按设置不记录（斜纹灰）、未到（浅灰）。 */
 function summaryPieGradient({covered=0,missing=0,skipped=0,pending=0}={}){
@@ -131,11 +137,13 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
   const merged=[];for(const r of savedRanges){const last=merged.at(-1);if(last&&r.startIndex<=last.endIndex+1)last.endIndex=Math.max(last.endIndex,r.endIndex);else merged.push({...r});}
   const fromFloor=merged[0]?.startIndex??null,toFloor=merged.at(-1)?.endIndex??null;
   const savedText=!fromFloor?'尚未开始记录':merged.length===1?`已总结 ${range(fromFloor,toFloor)}`:`已总结 ${merged.length} 段：${merged.slice(0,3).map(r=>range(r.startIndex,r.endIndex)).join('、')}${merged.length>3?' …':''}`;
+  // 状态文案：已总结=无缺口；缺=有缺口；未开始=尚未记录
+  const summaryState=!fromFloor?'未记录':missing?`缺 ${missing} 楼`:skipped&&chatFloors!==null?`按设置不记录 ${skipped} 楼`:'无缺口';
   return {
-    state:missing?`缺 ${missing} 楼`:!fromFloor?'未记录':(skipped&&chatFloors!==null?`按设置不记录 ${skipped} 楼`:'无缺口'),
+    state:summaryState,
     covered:savedText,
     next:next?`下一批 ${range(next.startIndex,next.endIndex)}`:next===null?'范围已跟上聊天进度':'等待读取聊天进度',
-    legend:`实色=已总结 ${covered} 楼 · 红=缺口 ${missing} 楼 · 斜纹=按设置不记录 ${skipped} 楼 · 浅=未到 ${pending} 楼`,
+    legend:`实色=已总结 ${covered} 楼 · 红=缺口 ${missing} 楼 · 斜纹=按设置不记录 ${skipped} 楼 · 浅=保留最近/未到 ${pending} 楼`,
   };
 }
  function paintSummaryModules(s){
@@ -147,13 +155,17 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
      {kind:'memory',title:'记忆总结',batches:s.batches??[],batchSize:settings.autoSummaryEvery,keepRecent:settings.autoKeepRecent,startFloor:s.autoStartFloor??1,detail:`事件 ${countOf(s,'events')} · 知情 ${countOf(s,'awarenessChanges')} · 演绎 ${countOf(s,'performanceHints')} · 楼层摘要 ${countOf(s,'summaryView')} · 疑点 ${countOf(s,'conflicts')}`},
      {kind:'persona',title:'动态人设总结',batches:s.dynamicPersona?.batches??[],batchSize:settings.dynamicPersonaEvery,keepRecent:settings.dynamicPersonaKeepRecent,startFloor:s.dynamicPersona?.startFloor??1,detail:`人物 ${personCount(s)} 位 · 关系 ${countOf(s,'relationshipChanges')} · 约定 ${countOf(s,'commitmentChanges')} · 人设变化 ${countOf(s,'personaChanges')}`},
    ];
-   for(const row of rows){
-     const node=box.querySelector?.(`[data-summary-module="${row.kind}"]`);if(!node)continue;
-     const coverage=summaryCoverage(row.batches,{startFloor:row.startFloor,batchSize:row.batchSize,keepRecent:row.keepRecent,lastIndex:chatFloors});
-     const plan=autoSummaryPlan(row.batches,{startFloor:row.startFloor,batchSize:row.batchSize,keepRecent:row.keepRecent,lastIndex:chatFloors});
-     const skipped=(s.hidden??[]).filter(Number.isInteger).filter(n=>chatFloors===null||n<=chatFloors).length;
-     const covered=coverage.coveredFloors,missing=coverage.missingFloors;
-     const pending=chatFloors===null?0:Math.max(0,chatFloors-covered-missing-skipped);
+  for(const row of rows){
+    const node=box.querySelector?.(`[data-summary-module="${row.kind}"]`);if(!node)continue;
+    const coverage=summaryCoverage(row.batches,{startFloor:row.startFloor,batchSize:row.batchSize,keepRecent:row.keepRecent,lastIndex:chatFloors});
+    const plan=autoSummaryPlan(row.batches,{startFloor:row.startFloor,batchSize:row.batchSize,keepRecent:row.keepRecent,lastIndex:chatFloors});
+    const hiddenSkipped=(s.hidden??[]).filter(Number.isInteger).filter(n=>chatFloors===null||n<=chatFloors).length;
+    const keepRecentCount=Math.max(0,row.keepRecent??0);
+    const covered=coverage.coveredFloors,missing=coverage.missingFloors;
+    // 记忆页和总结页共享同一口径：整段聊天 = 已总结 + 缺口 + 按设置不记录(hidden) + 保留最近(keepRecent)。
+    // 之前只把 hidden 计入、keepRecent 完全没画，导致总结页扇形比例与记忆页的进度环对不上。
+    const skipped=hiddenSkipped+keepRecentCount;
+    const pending=chatFloors===null?0:Math.max(0,chatFloors-covered-missing-skipped);
      const next=chatFloors===null?undefined:(plan.ready||plan.nextEnd<=plan.eligibleEnd?{startIndex:plan.nextStart,endIndex:plan.nextEnd}:null);
      const text=summaryModuleText({covered,missing,skipped,pending,next,batches:row.batches,startFloor:row.startFloor,chatFloors});
      const pie=node.querySelector?.('[data-summary-pie]');
@@ -163,11 +175,17 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
      if(node.querySelector?.('[data-summary-state]'))node.querySelector('[data-summary-state]').textContent=text.state;
      if(node.querySelector?.('[data-summary-covered]'))node.querySelector('[data-summary-covered]').textContent=text.covered;
      if(node.querySelector?.('[data-summary-next]'))node.querySelector('[data-summary-next]').textContent=`${text.next} · 自动每 ${row.batchSize??'—'} 楼一次 · 保留最近 ${row.keepRecent??0} 楼`;
+    // 总结页底部显示当前人设周期（来自同一份 settings），编辑请到人设页。
+    if(row.kind==='persona'){
+      const every=row.batchSize??settings.dynamicPersonaEvery,keepRecent=row.keepRecent??settings.dynamicPersonaKeepRecent;
+      if(node.querySelector?.('[data-persona-display-every]'))node.querySelector('[data-persona-display-every]').textContent=every;
+      if(node.querySelector?.('[data-persona-display-keep-recent]'))node.querySelector('[data-persona-display-keep-recent]').textContent=keepRecent;
+    }
      // 减负：summary card 只显示已总结范围和缺口；详细数字和图例太啰嗦。
      if(node.querySelector?.('[data-summary-detail]'))node.querySelector('[data-summary-detail]').hidden=true;
      if(node.querySelector?.('[data-summary-legend]'))node.querySelector('[data-summary-legend]').hidden=true;
      const coverageLine=node.querySelector?.('[data-summary-coverage]');
-     if(coverageLine)coverageLine.hidden=row.kind!=='memory'||!s.automatic;
+     if(coverageLine){coverageLine.hidden=true;coverageLine.textContent='';}
      const nextButton=node.querySelector?.('[data-summary-next-batch]');
      if(nextButton){
        nextButton.disabled=!next;
@@ -247,8 +265,11 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
     if(recording){
      paintSummaryModules(s);
     }
-    // 日志在独立 page：切到 log page 时加载。
-    if(currentPage==='log')void app.loadRuntimeLog?.().catch(()=>{});
+    // 日志在独立 page：切到 log page 时加载，加载完重画。
+    if(currentPage==='log'){
+      logView?.paint(s);
+      void app.loadRuntimeLog?.().then(()=>{if(currentPage==='log')logView?.paint(readViewState(app));}).catch(()=>{});
+    }
     if(currentPage==='dictionary')dictionaryView?.paint(s);
     if(currentPage==='people')peopleView?.paint(s);
     if(currentPage==='extraction')extractionView?.paint(s);
@@ -256,7 +277,6 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
     if(memory){
    qualityView?.paint(s);
     }
-    if(recording&&s.automatic&&$('[data-summary-coverage]'))$('[data-summary-coverage]').textContent=summaryCoverageText(s.automatic);
     if(recording&&recordTab==='automatic'&&$('[data-auto-progress]')&&s.automatic){$('[data-auto-progress]').textContent=autoSummaryText(s.automatic);const scope=JSON.stringify(s.core?.scope);if(autoScope!==scope){autoScope=scope;autoStartDirty=false;}if(!autoStartDirty)$('[data-auto-start]').value=s.automatic.startFloor;}
    if($('[data-setting="autoSummaryEnabled"]'))$('[data-setting="autoSummaryEnabled"]').checked=s.settings.autoSummaryEnabled;
     if(currentPage==='api')for(const f of $$('[data-key]')){const kind=f.getAttribute('data-key');f.placeholder=s.credentialPresent?.[kind]?'已保存 / 已填入；输入新 Key 可替换':'无需认证的服务可以留空';const status=$(`[data-key-status="${kind}"]`);if(status)status.textContent=s.credentialErrors?.[kind]??(s.credentialDirty?.[kind]?'新输入的 Key 尚未保存。':s.credentialSaved?.[kind]?(s.credentialPresent?.[kind]?'Key 已保存，重启后自动使用。':'已保存的 Key 属于其他地址；请重新输入本地址的 Key。'):(s.credentialPresent?.[kind]?'Key 尚未保存，点击本模型的保存按钮。':'尚未保存 Key；无需认证的服务可以留空。'));}
@@ -355,6 +375,9 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
    void run(()=>app.catchUpAutomatic());
  });
  actions['auto-start']=async()=>{await saveAutomatic();await app.setAutomatic(true);fill();};actions['auto-pause']=async()=>{await app.setAutomatic(false);fill();};
+ // 总结页第二行：动态人设「启用/暂停」按钮直接通过 application 操作；周期设到人设页调整。
+ $('[data-persona-enable-inline]')?.addEventListener('click',()=>run(()=>app.setDynamicPersona(true),{name:'dynamic-persona',button:$('[data-persona-enable-inline]')}));
+ $('[data-persona-pause-inline]')?.addEventListener('click',()=>run(()=>app.pauseDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-pause-inline]')}));
  actions['per-call-mode']=async()=>{const patch={summaryReviewEnabled:false,summaryStaged:false,autoMergeEnabled:false,autoQualityEnabled:false};await app.saveSettings(patch);for(const key of Object.keys(patch))dirtyApi.delete(key);fill();feedback('已改为一次主总结；不自动追加分工、合并和校对请求。API、楼数、回复上限不变。','success');};
  actions['recommended-memory']=async()=>{if(!host.confirm?.('将总结与召回参数设为推荐值（5楼一批、回复8192）。不改 API、Key、记录偏好和自动运行开关。确认应用？'))return;await app.saveSettings(RECOMMENDED_MEMORY_SETTINGS);for(const k of Object.keys(RECOMMENDED_MEMORY_SETTINGS))dirtyApi.delete(k);fill();};
  actions['save-recall-preset']=async()=>{const count=Number($('[data-recall-level]').value),patch={dictionaryEnabled:true,tagRecallEnabled:true,distributedEnabled:true,distributedStrategy:'broadcast',retrievalCandidateLimit:count,rerankMaxCandidates:count};await app.saveSettings(patch);for(const key of Object.keys(patch))dirtyApi.delete(key);fill();};
