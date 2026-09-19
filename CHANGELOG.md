@@ -1,5 +1,19 @@
 # 更新记录
 
+## 0.21.38
+
+- **总结页「总结下一批」按钮真的会触发总结**：之前按了记忆卡的「总结下一批 #start–#end」只是弹一条 toast 就 `return`，没有任何模型请求，也没有运行日志记录，看着像是按钮失灵。现在按了直接走 `app.summarize({startIndex,endIndex,missingOnly:true,...})`，按钮按 `run()` 反馈链路立即禁用并显示「总结中…」，运行日志同时留一条「开始 / 完成 / 失败」三段。手动补批和「补缺口」按钮行为不变。
+- **动态人设失败后会自动重试，不再卡在「需要我手动点继续未完成」**：之前一旦批次模型失败（且不是 502/503/429/超时/网络），`retryAt=0` 且没有 `wake()`，永远卡在 `failed`，用户只能手动跑到动态人设页点「继续未完成」。现在自动人设的 `process()` 失败后：
+  - `finish()` 总是再 `wake()` 一次，让定时器到期 / 用户回到前台 / 下一条 `MESSAGE_RECEIVED` 都能再次尝试；
+  - 历史读取类失败走 `deferHistory()` 1.5s/5s/15s 三档退避；
+  - 502/503/429/超时/网络类失败 1 分钟重试，最多 3 次；
+  - 其它通用错误（上下文、模型返回格式等）5 分钟重试，最多 5 次；
+  - 内容过滤、输入预算超限、`PERSONA_RESPONSE_INVALID` 这类永久错误 `retryAt=0` 不自动重试，避免在已知坏的请求上空跑。
+  - 测试同步更新为「持续按退避重试直到恢复」。
+- **手动人设按钮（开始后台补建 / 继续未完成 / 暂停补建 / 放弃本次补建 / 检查世界书 / 同步镜像）终于会写运行日志**：之前这几个按钮只走 `run()` 的 UI 反馈，没有 `logged('persona', ...)` 包装，按了之后运行日志是空的、状态栏停在「正在后台补建」、分不清是死锁还是慢。`startDynamicPersonaManual` / `continueDynamicPersonaManual` / `pauseDynamicPersonaManual` / `discardDynamicPersonaManual` / `inspectDynamicPersonaWorldbook` / `syncDynamicPersonaWorldbook` 全部接入 `logged()`，每次点击都对应运行日志一条「开始 / 完成 / 失败」。
+- **导出失败时不再提示「已交给浏览器下载」**：当原生下载桥失败回退到浏览器 `<a download>` 后，Tauri WebView 在 Android 上 `anchor.click()` 是 no-op，文件根本没落盘，但旧 toast 仍然写「已发出下载请求」误导用户。`download()` 现在在 `dispatched` 状态下显式提示「导出未确认保存：…请到日志 → 查看／复制文本 自行保存」，并把等级从 `info` 改成 `warning`，让用户立刻知道需要走复制文本的兜底。
+- 不改模型、提示词、注入预算、自动周期、API/DIY 预设、原世界书和已有记忆。
+
 ## 0.21.37
 
 - **总结页扇形卡与记忆页同一口径**：之前总结页「记忆」扇形卡只算 `eligible` 窗口内的缺口和已总结，把 `keepRecent` 完全丢掉；而记忆页的进度环是「整段聊天 = 已总结 + 缺口 + 按设置不记录(hidden) + 保留最近(keepRecent)」，导致同一份数据在两个页面看上去比例不一样。现在总结页也把 `keepRecent` 计入「保留最近/未到」那一段，两个扇形卡都按同一份聊天来画。

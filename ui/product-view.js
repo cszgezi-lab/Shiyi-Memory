@@ -339,7 +339,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
       throw error;
     }
     if(result?.saved===true)host.toastr?.success?.(result.exportAttempt==='picker'?`文件已保存到${result.saveLocation??'你选择的保存位置'}`:`文件已保存到${result.saveLocation??'手机 Downloads'}`);
-    else if(result?.status==='dispatched')host.toastr?.info?.(result.dispatch==='share-unconfirmed'?'已交给系统分享；请确认文件已保存到目标位置':'已发出下载请求；在弹出的下载面板里选择保存位置，或直接点“查看／复制文本”自行保存');
+    else if(result?.status==='dispatched')host.toastr?.warning?.(result.dispatch==='share-unconfirmed'?'导出未确认保存：已交给系统分享，请确认目标位置已收到文件，或改用日志 → 查看／复制文本。':'导出未确认保存：当前宿主下载通道返回成功但未真正写入文件，请到日志 → 查看／复制文本 自行保存。');
     return result;
   }
  const actions={open:async()=>{await app.open();fill();},disable:()=>app.disable(),refresh:()=>app.refresh(),summarize:()=>summarize(false),'focus-summary':()=>summarize(true),stop:()=>app.stop(),'assistant-stop':()=>app.stop(),remember:async()=>{await app.remember($('[data-note]')?.value??'',$('[data-people]')?.value??'',{category:$('[data-note-category]')?.value??'events',subject:$('[data-note-subject]')?.value??'',target:$('[data-note-target]')?.value??'',field:$('[data-note-field]')?.value??'',eventRef:$('[data-note-event]')?.value??''});if($('[data-note]'))$('[data-note]').value='';},preview:()=>app.preview($('[data-query]')?.value??''),'preview-online':()=>app.preview($('[data-query]')?.value??'',{online:true}),'vector-status':()=>app.refreshVectorStatus(),'save-settings':()=>app.saveSettings(collect()),'test-summary':()=>app.testConnection('summary'),'test-assistant':()=>app.testConnection('assistant'),'test-embedding':()=>app.testConnection('embedding'),'test-rerank':()=>app.testConnection('rerank'),import:async()=>{for(const f of Array.from($('[data-files]')?.files??[]))await app.addDocument({name:f.name,text:await f.text(),purpose:$('[data-purpose]')?.value});},analyze:()=>app.analyzeDocuments(),assistant:async()=>{await app.assistant($('[data-input]')?.value??'');if($('[data-input]'))$('[data-input]').value='';},beginner:async()=>{await app.analyzeDocuments();await app.assistant('按我导入的配置规则一次性生成完整设置方案，只有必要信息缺失才询问，不需要逐项问卷。');},'new-conversation':async()=>{await app.newConversation();fill();},'delete-conversation':async()=>{if(host.confirm?.('删除当前助手对话？已应用设置和记忆不会删除。')){await app.deleteConversation();fill();}},'restore-hidden':()=>app.restoreHidden(),vectors:()=>app.buildVectors(),undo:async()=>{await app.undoSettings();fill();},'export-config':()=>download(app.exportSettings(),'拾忆-配置.json'),'export-global':async()=>download(await app.exportGlobalBackup(),'拾忆-全局备份.json'),'export-backup':async()=>download(await app.exportBackup(),'拾忆-聊天备份.json')};
@@ -371,7 +371,10 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
      else void run(()=>app.inspectAutomaticProgress());
      return;
    }
-   if(Number.isInteger(start)&&Number.isInteger(end)){feedback(`按已保存的设置总结 #${start}–${end}；只补未记录的楼层。`,'info');return;}
+   // 记忆卡的「总结下一批 #start–#end」必须真正调用 summarize：之前只发一条
+   // toast 就 return，按钮按了什么都不发生。补走 run() 反馈链路，确保按钮
+   // 被禁用、状态行刷新、运行日志记到一条 start/complete/failed。
+   if(Number.isInteger(start)&&Number.isInteger(end))return void run(()=>app.summarize({startIndex:start,endIndex:end,batchSize:end-start+1,missingOnly:true,focus:'',trigger:'manual_card_next'}),{name:'focus-summary',button});
    void run(()=>app.catchUpAutomatic());
  });
  actions['auto-start']=async()=>{await saveAutomatic();await app.setAutomatic(true);fill();};actions['auto-pause']=async()=>{await app.setAutomatic(false);fill();};

@@ -1169,7 +1169,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if (active || state.stale || (!force&&(automaticPaused||!core.settings.autoSummaryEnabled)) || !workspace?.isCurrent()) return;
     const feedbackAtStart = feedbackSequence,op=begin();autoRunning=true;
     try {
-      state.autoLastIndex=await core.historyTail();op.check();const plan=automaticPlan();notify();
+      state.autoLastIndex=await core.historyTail();op.check();
+      const plan=automaticPlan();notify();
       if(!plan.ready){autoHistoryAttempts=0;autoRetryAt=0;if(force)setMessage('还没有满足条件的完整一批；保留楼层不参与自动总结');return;}
       if(core.settings.focusMode==='ask_every'&&!force){setMessage('自动总结等待侧重点，可在手动总结中处理下一批');return;}
       op.finish();
@@ -1575,9 +1576,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const source=range.messages.find(m=>m.index===floor);if(!source)throw Error('没有读到这一楼的原文');
       return {...narrativePreview(source,config),floor};
     },
-    startDynamicPersonaManual:async options=>{if(!enabled)throw new Error('插件已暂停，请先启用插件，再开始手动人设补建');await dynamicPersona.load();await dynamicPersona.createManual(options);await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();},
-    continueDynamicPersonaManual:async()=>{if(!enabled)throw new Error('插件已暂停，请先启用插件，再继续手动人设补建');await dynamicPersona.load();if(['paused','running','failed'].includes(dynamicPersona.state.manualPlan?.status))await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();},
-    pauseDynamicPersonaManual:()=>dynamicPersona.pauseManual(),discardDynamicPersonaManual:()=>dynamicPersona.discardManual(),inspectDynamicPersonaWorldbook:()=>dynamicPersona.inspectWorldbook(),syncDynamicPersonaWorldbook:()=>dynamicPersona.syncMirror(),
+    startDynamicPersonaManual:async options=>logged('persona',async run=>{if(!enabled)throw new Error('插件已暂停，请先启用插件，再开始手动人设补建');await dynamicPersona.load();await dynamicPersona.createManual(options);await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();}),
+    continueDynamicPersonaManual:async()=>logged('persona',async run=>{if(!enabled)throw new Error('插件已暂停，请先启用插件，再继续手动人设补建');await dynamicPersona.load();if(['paused','running','failed'].includes(dynamicPersona.state.manualPlan?.status))await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();}),
+    pauseDynamicPersonaManual:()=>logged('persona',()=>dynamicPersona.pauseManual()),
+    discardDynamicPersonaManual:()=>logged('persona',()=>dynamicPersona.discardManual()),
+    inspectDynamicPersonaWorldbook:()=>logged('persona',()=>dynamicPersona.inspectWorldbook()),
+    syncDynamicPersonaWorldbook:()=>logged('persona',()=>dynamicPersona.syncMirror()),
     async setDynamicPersona(enabledNow){await saveSettings({dynamicPersonaEnabled:enabledNow});if(!enabledNow)dynamicPersona.stop();else {if(!workspace?.isCurrent())await open({enable:enabled});await dynamicPersona.load();await dynamicPersona.resume();}},
     startChatTracking,followCurrentChat,reviewMemory,previewQuality,inspectQualityRecord,saveQualityRecord,undoQuality,readViewState,
     reportError,loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:async options=>{const snapshot=await runtimeLog.export(options);return {...snapshot,pendingDiagnostics:diagnosticJobs.size};},clearRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.clear();},

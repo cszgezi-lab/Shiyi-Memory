@@ -375,7 +375,17 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     if(!ready)throw new Error('人物来源尚未验证，请重新加载当前聊天');const bound=currentWorkspace,controller=new AbortController();job=controller;
     const guard=()=>{check(bound);if(controller.signal.aborted)throw canceled();};
     let key,success=false,settled=false,personaStep='history_tail',modelRequested=false;
-    const finish=()=>{if(settled)return;settled=true;if(job===controller)job=null;emit();if(success||bound!==currentWorkspace||controller.signal.aborted&&!paused)wake();};
+    const finish=()=>{
+      if(settled)return;
+      settled=true;
+      if(job===controller)job=null;
+      emit();
+      // 自动人设：成功、聊天切换、被暂停之外的中止、失败都必须再次 wake()，
+      // 否则失败批次永远卡在「failed」状态，用户必须手动点「继续未完成」。
+      // 失败时 process() 内部已经按 retryAt 设过 timer，这里再 wake() 一次
+      // 让 MESSAGE_RECEIVED、回到前台、定时器到期都能直接触发下一次尝试。
+      if(success||bound!==currentWorkspace||controller.signal.aborted&&!paused||!success)wake();
+    };
     async function fail(error){
       if(error&&typeof error==='object')error.details={...error.details,modelRole:'dynamicPersona',personaStep,modelRequested};
       if(bound!==currentWorkspace||!bound?.isCurrent())return;
@@ -386,9 +396,16 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       }else if(!manualId&&!success&&!controller.signal.aborted){
         const message=view.message,recoverable=historyFailure(error);if(recoverable)deferHistory();
         if(key){const [startIndex,endIndex]=key.split('-').map(Number),attempts=(data.batches.find(b=>b.startIndex===startIndex)?.attempts??0)+1;
-          const retryAt=recoverable?historyRetryAt:attempts<3&&/502|503|429|超时|网络/.test(message)?now()+60000:0;
+          // 模型/接口类失败也要给个自动重试窗口，避免「失败」之后用户必须手动点。
+          // 通用错误给 5 分钟（比 502/429 长，因为多半是上下文或模型侧问题），下次
+          // wake() 会先看 retryAt 是否到期再决定是否真的发起新一次请求。
+          // 但 MODEL_OUTPUT_BLOCKED / PERSONA_RESPONSE_INVALID / INPUT_BUDGET_EXCEEDED
+          // 这类永久错误不应该自动重试，否则会在错误的请求上反复空跑。
+          const transient=/502|503|429|超时|网络/i.test(message);
+          const permanent=/内容被过滤|content_filter|MODEL_OUTPUT_BLOCKED|输入预算|PERSONA_RESPONSE_INVALID|INPUT_BUDGET_EXCEEDED/i.test(message);
+          const retryAt=recoverable?historyRetryAt:permanent?0:attempts<3&&transient?now()+60000:attempts<5?now()+5*60*1000:0;
           await transact(()=>save({...data,batches:[...data.batches.filter(b=>b.startIndex!==startIndex),{startIndex,endIndex,status:'failed',message,errorCode:error?.code??'OPERATION_FAILED',retryAt,attempts}]},bound));
-          if(retryAt&&!recoverable){timer=setTimeout(()=>{timer=null;wake();},60000);timer.unref?.();}
+          if(retryAt&&!recoverable){clearTimeout(timer);timer=setTimeout(()=>{timer=null;wake();},Math.max(1000,retryAt-now()));timer.unref?.();}
         }emit();
       }
       }catch(storageError){
