@@ -5,7 +5,7 @@ import { failureText,productFailure } from '../src/product-feedback.js';
 import { safeValidationIssues, validationIssueText } from '../src/validation-diagnostics.js';
 import {DIAGNOSTIC_REASONS,DIAGNOSTIC_PURPOSES,DIAGNOSTIC_STAGES,DIAGNOSTIC_ACTIONS,UPSTREAM_CODES,UPSTREAM_HINTS,PERSONA_STEPS,errorDiagnostics} from '../src/diagnostics.js';
 
-export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help">保留最近 2000 条，最多 2 MB。记录请求、解析、校验与保存过程；不包含 Key、聊天正文或模型原文。导出当前内存快照，不等待任务或写盘完成，不受筛选和分页影响。</p><div class="sy-actions"><button type="button" data-log-export>导出日志</button><button type="button" data-log-issues-text>只看失败（最近 50 条）</button><button type="button" data-log-text>查看／复制全部文本</button><button type="button" data-log-clear>清空日志</button></div><p data-log-export-status class="sy-help" role="status"></p><details data-log-fallback hidden><summary>日志文本（文件导出不可用时也能复制）</summary><textarea data-log-text-value readonly rows="6" aria-label="日志文本"></textarea><div class="sy-actions"><button type="button" data-log-copy>复制全部文本</button><button type="button" data-log-close>收起文本</button></div></details><label class="sy-field"><span>显示</span><select data-log-filter><option value="all">全部记录</option><option value="issues">失败与警告</option><option value="vectors">向量索引</option><option value="summary">总结</option><option value="merge">事件合并</option><option value="api">API 与助手</option></select></label><p data-log-storage class="sy-help" role="status"></p><div data-log-list></div><div class="sy-batch-pagination" data-log-pager><button type="button" data-log-prev>上一页</button><span data-log-page></span><button type="button" data-log-next>下一页</button></div>`;}
+export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help">保留最近 2000 条，最多 2 MB。记录请求、解析、校验与保存过程；不包含 Key、聊天正文或模型原文。导出当前内存快照，不等待任务或写盘完成，不受筛选和分页影响。</p><div class="sy-actions"><button type="button" data-log-export>导出日志</button><button type="button" data-log-issues-text>只看失败（最近 50 条）</button><button type="button" data-log-text>查看／复制全部文本</button><button type="button" data-log-clear>清空日志</button></div><p data-log-export-status class="sy-help" role="status"></p><details data-log-fallback hidden><summary>日志文本（文件导出不可用时也能复制）</summary><textarea data-log-text-value readonly rows="6" aria-label="日志文本"></textarea><div class="sy-actions"><button type="button" data-log-copy>复制全部文本</button><button type="button" data-log-close>收起文本</button></div></details><label class="sy-field"><span>显示</span><select data-log-filter><option value="all">全部记录</option><option value="issues">失败与警告</option><option value="vectors">向量索引</option><option value="summary">总结</option><option value="merge">事件合并</option><option value="api">API 与助手</option></select></label><label class="sy-field"><span>每页条数</span><select data-log-page-size><option value="10">10 条</option><option value="20">20 条</option><option value="50">50 条</option><option value="120">120 条</option></select></label><p data-log-storage class="sy-help" role="status"></p><div data-log-list></div><div class="sy-batch-pagination" data-log-pager><button type="button" data-log-prev>上一页</button><span data-log-page></span><button type="button" data-log-next>下一页</button></div>`;}
 const fields={readingOriginalChars:'原始正文字符数',readingSafeChars:'安全正文字符数',readingOutputChars:'读取副本字符数',readingFilteredChars:'额外过滤字符数',readingFallbacks:'回退原安全正文的楼数',requestNumber:'向量请求序号',requestItems:'输入片段数',receivedVectors:'返回向量数',inputChars:'本次输入字符数',longestInputChars:'最长片段字符数',vectorDimensions:'向量维度',indexedItems:'已保存索引条数',pendingItems:'未完成索引条数',failedItems:'失败索引条数',batchNumber:'总结批次',childIndex:'内部子批（从 0 计）',sourceCount:'读取消息数',inputLimit:'输入预算',inputUnits:'实际输入估算',elapsedMs:'耗时（毫秒）',status:'HTTP 状态',expected:'应有逐楼摘要',received:'收到摘要条数',covered:'完整对应楼数',invalidRows:'来源无效或多楼合并',duplicateCount:'重复摘要条数',promptTokens:'服务报告输入 Token',completionTokens:'服务报告输出 Token',totalTokens:'服务报告总 Token',reasoningTokens:'其中推理 Token',responseChars:'回复文本字符数',savedBatches:'保存批数'};
 export function runtimeLogSummary(entry){
   // 一条任务一条摘要，一次看到任务名 / 范围 / 结果，避免把技术详情全堆在一行里。
@@ -136,13 +136,13 @@ function detailsHTML(entry){
   return `<p class="sy-log-summary">${esc(runtimeLogSummary(entry))}</p><details class="sy-log-technical"><summary>技术详情（排错用，可导出）</summary>${lines.map(([label,value])=>`<div class="sy-log-detail${['错误','校验问题','校验字段'].includes(label)?' sy-log-wide':''}"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join('')}</details>`;
 }
 export function mountRuntimeLog({panel,app,run,host,download}){
-  const $=s=>panel.querySelector?.(s);let page=1,state=null,signature='';const opened=new Set();
+  const $=s=>panel.querySelector?.(s);let page=1,pageSize=10,state=null,signature='';const opened=new Set();
   function paint(next){
     state=next;const data=state.runtimeLog??{entries:[],persistence:'not_loaded'};
     const filter=$('[data-log-filter]')?.value??'all';
     const selected=[...data.entries].reverse().filter(e=>filter==='all'||filter==='issues'&&['error','warning'].includes(e.level)||filter==='vectors'&&['vectors','knowledge-vectors'].includes(e.task)||filter==='summary'&&e.task==='summary'||filter==='merge'&&e.task==='merge'||filter==='api'&&['transport','connection','models','assistant','knowledge','knowledge-edit'].includes(e.task));
-    // 日志常显在总结页最下面，一页 120 条；刚发生的失败不会掉到第二页，也很少需要翻页。
-    const perPage=120;
+    // 默认一页 10 条，可选 10/20/50/120；最新失败默认就在第 1 页，不会掉到第二页。
+    const perPage=pageSize;
     const pages=Math.max(1,Math.ceil(selected.length/perPage));page=Math.min(page,pages);
     const items=selected.slice((page-1)*perPage,page*perPage);
     const nextSignature=JSON.stringify([items.map(e=>e.id),page,filter,data.persistence,data.droppedEntries]);
@@ -167,6 +167,7 @@ export function mountRuntimeLog({panel,app,run,host,download}){
     $('[data-log-next]')&&($('[data-log-next]').disabled=page===pages);
   }
   $('[data-log-filter]')?.addEventListener('change',()=>{page=1;paint(state??readViewState(app));});
+  $('[data-log-page-size]')?.addEventListener('change',e=>{pageSize=Math.max(1,Number(e.target?.value)||10);page=1;paint(state??readViewState(app));});
   for(const [sel,delta]of [['[data-log-prev]',-1],['[data-log-next]',1]])$(sel)?.addEventListener('click',()=>{page+=delta;paint(state??readViewState(app));});
   let exporting=false;
   const status=text=>{$('[data-log-export-status]').textContent=text;};
