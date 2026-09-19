@@ -166,12 +166,24 @@ export function personaSceneEvidence(messages,identity,name,previous=[]){
   return [...evidence.values()];
 }
 
+export function compactPersonaParts(parts){
+  const seen=new Map(),out=[];
+  for(const part of parts){
+    const key=String(part.text??'').trim();
+    if(part.source!=='chat'||key.length<8){out.push(part);continue;}
+    const i=seen.get(key);
+    if(i===undefined){seen.set(key,out.length);out.push(part);}
+    else out[i]={...out[i],sourceFloors:[...new Set([...(out[i].sourceFloors??[]),...(part.sourceFloors??[])])]};
+  }
+  return out;
+}
 export function personaParts(spans,previous,{includeNotes=true}={}){
   if(!spans.length){
     const saved=previous?.composition?.parts?.filter(p=>p.source==='chat');
     if(saved?.length){
-      const carried=clone(saved),extra=includeNotes?previous.composition.notes?.trim():'';
-      if(extra)for(const p of sourcePersonaBaseline(extra,previous.name,previous.sourceFloors??[]))if(p.text.trim()&&!carried.some(old=>old.text.includes(p.text.trim())))carried.push({...p,title:'增补人物档案'});
+      // notes is a replaceable CURRENT snapshot, not a new immutable baseline
+      // every round. Prior notes are already preserved by version checkpoints.
+      const carried=clone(compactPersonaParts(saved));
       return carried.map((p,i)=>({...p,ref:`B${i+1}`}));
     }
     if(previous?.composition?.sourceBaseline?.length)return clone(previous.composition.sourceBaseline).map((p,i)=>({...p,ref:`B${i+1}`}));
@@ -243,12 +255,17 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   const sceneEvidence=personaSceneEvidence(messages,identity,name,previous?.composition?.sceneEvidence);
   const development=mergePersonaDevelopment(row.development,{previous:previous?.composition?.development??[],messages:developmentMessages??messages.map(m=>({...m,text:qualitySourceSegments(m).map(s=>s.text).join('\n\uFFFC\n')})),identity,name});
   const notes=row.text.trim(),composition={version:1,parts,notes,examples,sceneEvidence,changes,rejectedExamples,ignoredUpdates,development:development.items,rejectedDevelopment:development.rejected,...(!spans.length?{localMode:localPatches&&parts.length?'patches':'snapshot'}:{}),...(!parts.length?{sourceBaseline:sourcePersonaBaseline(notes,name,row.sourceFloors)}:{})};
+  return {text:personaCompositionText(composition,{hasSources:spans.length>0}),composition:clone(composition)};
+}
+
+export function personaCompositionText(composition,{hasSources=false}={}){
+  const {parts=[],notes='',examples=[],sceneEvidence=[],development=[]}=composition;
   const blocks=[];let last;
   for(const part of parts){const key=JSON.stringify([part.book,part.uid,part.spanId]);if(last?.key!==key){last={key,title:part.title,text:''};blocks.push(last);}last.text+=part.text;}
   const exampleText=examples.map(q=>`第${q.floor}楼${q.to?' 对'+q.to:''}：${q.text}${q.context?'〔'+q.context+'〕':''}`).join('\n');
-  const text=[...blocks.map(b=>`【有效设定 · ${b.title}】\n${b.text}`),notes?`【当前剧情变化】\n${notes}`:'',sceneEvidence.length?`【最近外观情境 · 逐字原文，按当时场景理解，不是永久外貌或当前穿着指令】\n${sceneEvidence.map(e=>`第${e.floor}楼：${e.text}`).join('\n')}`:'',examples.length?`【表达语料 · 原话仅供模仿表达，不要求复读；按来源情境理解，旧话不覆盖当前关系】\n${exampleText}`:'',spans.length?'【适用边界】稳定外貌与习惯以保留设定为底稿；当前叙事时点可能处于倒叙，原卡默认时点的年龄、学段、关系不自动适用于当前场景，无明确依据不猜年龄或学校。来源楼号不是故事日期，原话及衣着按来源当时的时间、对象与场景理解；旧阶段语料不证明当前关系。服装描述服从当前场景与最新明确换装，不把旧场景穿着当永久外貌。当前关系以已发生剧情为准，对某人的表达与好感不推广给所有对象，私密心迹不赋予他人知情。':''].filter(Boolean).join('\n\n');
+  const text=[...blocks.map(b=>`【有效设定 · ${b.title}】\n${b.text}`),notes?`【当前剧情变化】\n${notes}`:'',sceneEvidence.length?`【最近外观情境 · 逐字原文，按当时场景理解，不是永久外貌或当前穿着指令】\n${sceneEvidence.map(e=>`第${e.floor}楼：${e.text}`).join('\n')}`:'',examples.length?`【表达语料 · 原话仅供模仿表达，不要求复读；按来源情境理解，旧话不覆盖当前关系】\n${exampleText}`:'',hasSources?'【适用边界】稳定外貌与习惯以保留设定为底稿；当前叙事时点可能处于倒叙，原卡默认时点的年龄、学段、关系不自动适用于当前场景，无明确依据不猜年龄或学校。来源楼号不是故事日期，原话及衣着按来源当时的时间、对象与场景理解；旧阶段语料不证明当前关系。服装描述服从当前场景与最新明确换装，不把旧场景穿着当永久外貌。当前关系以已发生剧情为准，对某人的表达与好感不推广给所有对象，私密心迹不赋予他人知情。':''].filter(Boolean).join('\n\n');
   // Supplemental characters need the same audience/privacy/scene boundaries
   // as original-book characters, rather than losing them when parts is empty.
-  const boundary=spans.length?'':'【适用边界】本人物依据当前聊天正文建立，不代表有原世界书设定。保留仍有效的个性与自由属性；关系、口吻和成长仅适用于所述对象与情境。私密心迹不赋予其他人知情；衣着服从当前场景，旧台词不要求复读，倒叙经历不自动推翻当前状态。';
-  return {text:[text,personaDevelopmentText(development.items),boundary].filter(Boolean).join('\n\n'),composition:clone(composition)};
+  const boundary=hasSources?'':'【适用边界】本人物依据当前聊天正文建立，不代表有原世界书设定。保留仍有效的个性与自由属性；关系、口吻和成长仅适用于所述对象与情境。私密心迹不赋予其他人知情；衣着服从当前场景，旧台词不要求复读，倒叙经历不自动推翻当前状态。';
+  return [text,personaDevelopmentText(development),boundary].filter(Boolean).join('\n\n');
 }

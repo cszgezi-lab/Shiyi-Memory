@@ -17,6 +17,7 @@ import { errorDiagnostics, jsonFailure,installDiagnosticBoundary,diagnosticReque
 import { SummaryResponseError } from './errors.js';
 import { memoryCards, recallMemory, readable, recordDescription, selectRecallCards, prepareRecallIndex, relevantPassage } from './product-memory.js';
 import { RecallIndexCache } from './recall-cache.js';
+import {rerankDocument,createRecallLaneBackoff} from './product-recall-policy.js';
 import { ProductVectorCache, vectorNorm, vectorIndexCoverage } from './product-vector-cache.js';
 import { buildVectorIndex, embeddingVectors, normalizeVectorJobs, vectorJobKey, vectorStagingKey, vectorFailure, vectorFailureCounts,vectorRetryDelay } from './product-vector-indexer.js';
 import { clone, sha256, makeId, estimateUnits, stableStringify, withTimeout } from './utils.js';
@@ -118,6 +119,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     else {queueAutomaticSummary();dynamicPersona.wake();wakeVectors();}
   }
   const recordedErrors=new WeakSet(),diagnosticJobs=new Set(),transportRuns=new Map(),queuedRequests=new Map();
+  const rerankLane=createRecallLaneBackoff();
   function trackDiagnostic(work){const job=Promise.resolve(work).catch(()=>{});diagnosticJobs.add(job);void job.finally(()=>diagnosticJobs.delete(job));return job;}
   function reportError(error,{task='operation',stage='ui',modelRole,action,level='error'}={}){
     if(error&&typeof error==='object'){if(recordedErrors.has(error))return Promise.resolve();recordedErrors.add(error);}
@@ -482,9 +484,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         // not put either the new chat's recall or persona in that old payload.
         if(personaWorldbook.foreignRequest(payload)){await personaWorldbook.finalize(payload,[]);return;}
         const requestEpoch=epoch;
-        await inject(payload);
+        let personaInjection;
+        if(!injectedPayloads.has(payload))try{personaInjection=await dynamicPersona.inject(payload,{enabled});}catch(error){void reportError(error,{task:'persona',stage:'prepare'});}
         if(requestEpoch!==epoch){await personaWorldbook.finalize(payload,[]);return;}
-        try{await dynamicPersona.inject(payload,{enabled});}catch(error){void reportError(error,{task:'persona',stage:'prepare'});}
+        await inject(payload,{dossierPeople:personaInjection?.people??[]});
         }finally{injecting--;providerScheduler.setForeground?.(foregroundBusy());if(!foregroundBusy()){queueAutomaticSummary();dynamicPersona.wake();}}
       }));
       try{bindings.push(hostAdapter.subscribe('WORLDINFO_ENTRIES_LOADED',payload=>enabled?personaWorldbook.applyLoaded(payload,dynamicPersona.profiles()).catch(error=>{void reportError(error,{task:'persona',stage:'prepare'});}):undefined));}catch{/* Optional capability must not disable automatic summary. */}
@@ -1227,10 +1230,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     } finally { recallBusy--; }
   }
   async function knowledgeCards() { return core.settings.knowledgeEnabled ? knowledgeCache.filter(card => !state.hidden.includes(card.id)) : []; }
-  async function preview(query, { online = false, context='',characterContext=context,clock=null,snapshot=null } = {}) {
+  async function preview(query, { online = false, context='',characterContext=context,clock=null,snapshot=null,dossierPeople=[],signal,publish=true } = {}) {
     assertCurrent(); if(state.stale) throw new Error('正文已修改，先重新整理');
     if (recallBusy&&!snapshot) throw new Error('记忆正在更新，请稍后检索');
-    const op=begin(false);recallReaders++;
+    const op=begin(false),abort=()=>op.abort();recallReaders++;
+    signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
     try {
     // Foreground recall owns the cache snapshot. Drain one canceled background
     // checkpoint before loading it; maintenance must not clear a live query.
@@ -1242,13 +1246,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const lookup=context?`${query}\n最近剧情参照：${context}\n当前询问：${query}`:query;
     if(!clock)try{clock=sceneClockFromMessages(await core.sceneMessages?.()??[]);}catch(error){op.check();void reportError(error,{task:'recall',stage:'prepare'});clock={date:null,status:'unavailable',source:'scene'};}
     op.check();
-    const result = await recallMemory(cards, lookup, {...settings,storyDate:clock.date??''}, { ...(online ? await retrievalAdapters(selectRecallCards(cards, settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:snapshot?.dictionary??activeDictionary(),focusQuery:query,characterQuery:[query,characterContext].filter(Boolean).join('\n') });
+    const result = await recallMemory(cards, lookup, {...settings,storyDate:clock.date??''}, { ...(online ? await retrievalAdapters(selectRecallCards(cards, settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:snapshot?.dictionary??activeDictionary(),focusQuery:query,characterQuery:[query,characterContext].filter(Boolean).join('\n'),dossierPeople });
     result.sceneClock=clock;
     op.check(); if (snapshot?safetyRevision!==recallSafetyRevision:revision!==recallRevision) throw new Error('记忆或设置已更新，请重新检索');
-    state.preview = result; notify(); return result;
-    } finally { recallReaders--;op.finish(); }
+    if(publish){state.preview = result; notify();}return result;
+    } finally { signal?.removeEventListener('abort',abort);recallReaders--;op.finish(); }
   }
-  async function inject(payload) {
+  async function inject(payload,{dossierPeople=[]}={}) {
     if (!payload || !Array.isArray(payload.messages) || injectedPayloads.has(payload)) return;
     const log=injectionLog,started=Date.now(),initialToken=epoch;
     const audit=(status,options={})=>{if(log&&core.settings.injectionLogEnabled)log.append({status,budgetUnits:core.settings.retrievalBudgetUnits,elapsedMs:Date.now()-started,...options});};
@@ -1263,15 +1267,18 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const snapshot=committedRecall;
     const messages = payload.messages;
     const {intent:query,context,characterContext}=sceneRecallQuery(messages);
+    const diagnosticRun=await runtimeLog.start('recall'),onlineController=new AbortController();
     try {
       let result;
       try{
-        result = await withTimeout(preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context,characterContext,snapshot,clock:sceneClockFromMessages(messages) }), recallDeadlineMs(), '本轮记忆召回');
+        result = await withTimeout(preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,signal:onlineController.signal,publish:false }), recallDeadlineMs(), '本轮记忆召回');
       }catch(error){
         // 在线部分太慢：这一轮直接用本地检索结果，聊天不因此少一份记忆。
         if(error?.code!=='TIMEOUT')throw error;
+        onlineController.abort();
         runtimeLog.record({run:diagnosticRun,task:'recall',phase:'prepared',level:'warning',details:safeLogDetails({reason:'online_too_slow',stage:'validate',elapsedMs:Date.now()-started,code:'TIMEOUT',modelRole:'embedding'})});
-        result = await preview(query, { online:false,context,characterContext,snapshot,clock:sceneClockFromMessages(messages) });
+        result = await preview(query, { online:false,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,publish:false });
+        result.degraded=true;
       }
       assertCurrent(token); if (revision !== recallSafetyRevision || !enabled || !core.settings.injectionEnabled){audit('changed');return;}
       const role = ['system','user'].includes(core.settings.injectionRole) ? core.settings.injectionRole : 'system';
@@ -1295,7 +1302,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           vectorMs:Number.isFinite(t.vectorMs)?t.vectorMs:0,
           rerankMs:Number.isFinite(t.rerankMs)?t.rerankMs:0,
           localMs:Number.isFinite(t.localMs)?t.localMs:0,
-          totalMs:Number.isFinite(t.totalMs)?t.totalMs:0,
+          totalMs:Number.isFinite(t.recallMs)?t.recallMs:Date.now()-started,
           deadlineMs:Number.isFinite(deadline.nominalAllowanceMs)?deadline.nominalAllowanceMs:0,
           deadlineScope:deadline.scope==='online_stages_shared'?'shared':'per_api',
           vector:result.trace?.vector?.status??'disabled',
@@ -1344,13 +1351,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       try { c = client('rerank'); } catch (error) { failure = error; }
       options.reranker = async ({query,candidates,signal}) => {
         if (failure) throw failure;
-        const documents=candidates.map(x=>{const record=x.record??x,body=recordDescription(record),brief=record.recallSummary;
-          // New records expose a full-search narrative plus a compact brief.
-          // The reranker sees the brief and query-specific evidence, not an
-          // ever-growing entire merged event. Legacy records stay untruncated.
-          return brief?[record.title,brief,relevantPassage(body,brief,query)].filter(Boolean).join('\n'):body;
-        });
-        const result = await withTimeout(c.rerank({model:c.profile.model,query,documents,top_n:candidates.length},{signal}), rerankBudgetMs(), '重排请求');
+        const documents=candidates.map(x=>{const record=x.record??x;return rerankDocument(record,recordDescription(record),query);});
+        const laneKey=sha256({scope:boundScope,url:c.profile.url,model:c.profile.model});
+        const result = await rerankLane(laneKey,()=>withTimeout(c.rerank({model:c.profile.model,query,documents,top_n:candidates.length},{signal}), rerankBudgetMs(), '重排请求'),{signal});
         if (!Array.isArray(result.results) || result.results.length !== candidates.length) throw new Error('重排结果数量不匹配');
         const seen=new Set();
         return result.results.map(item=>{if(!Number.isInteger(item.index)||item.index<0||item.index>=candidates.length||seen.has(item.index))throw new Error('重排索引无效');seen.add(item.index);return {id:candidates[item.index].id,score:item.relevance_score??item.score};});

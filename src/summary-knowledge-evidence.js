@@ -42,6 +42,25 @@ export function normalizeNarrativePartRef(ref,sources){
 
 export const SUMMARY_KNOWLEDGE_EVIDENCE_RULE='原文text中的〔p1〕等是程序段号，不是剧情，段号在每个sourceId/fragmentId内独立编号。知情优先填写acquisitionEvidence:{holder:[{sourceId,fragmentId(仅原文有时),part:数字段号}],content:[{sourceId,fragmentId(仅原文有时),part:数字段号}],access:"该人物实际获知范围与限制"}。holder选择确定获知者/受话者的语境段，可含前文代词指向；content选择具体命题及获知行为段。只能引用本条sourceRefs中的来源，不引用别人的知情或规划。两个数组都不能为空；不要复制长引文，程序回填原文。先判断能看到/听到/读到什么，再写knowledge：闭眼捂耳不能亲历过程，未读通知不能知道内容，看见结果不等于知道行为人，旁白或他人内心不等于角色知道；推断用suspected，转述保留说法，明确不知情用explicitly_unaware，未提及者不要硬造记录。access不是自由编造的解释，必须由所引上下文支持。保留关键事实，不为减少校对而省略知情/不知情；日期、渠道真正未知可填null/unknown而不补造。兼容旧acquisitionEvidence:{quote:逐字原文}；引用代词时提供holder语境，不强求姓名与获知内容在同一句。其他模块按完整正文正常提取，quote不含程序段号。';
 
+// Holder context and disclosure may straddle adjacent supplied floors. Repair
+// a missing bookkeeping ref only when EVERY cited part is valid in this batch;
+// never infer knowledge, expand to unseen chat, or accept a model hash/version.
+export function completeSummaryKnowledgeRefs(record,sources,nativeRefs,options={}){
+ const proof=record.acquisitionEvidence;
+ if(!isPlainObject(proof)||!Array.isArray(proof.holder)||!Array.isArray(proof.content))return record;
+ const refs=[...(record.sourceRefs??[])],same=(a,b)=>a.sourceId===b.sourceId&&(a.fragmentId??null)===(b.fragmentId??null);
+ for(const input of [...proof.holder,...proof.content]){
+  const ref=normalizeNarrativePartRef(input,sources);
+  if(!isPlainObject(ref))return record;
+  const candidates=nativeRefs.filter(r=>same(r,ref));
+  if(candidates.length!==1)return record;
+  if(!refs.some(r=>same(r,ref)))refs.push(clone(candidates[0]));
+ }
+ const candidate={...record,sourceRefs:refs};
+ const bound=bindSummaryKnowledge(candidate,sources,r=>r,options);
+ return bound.knowledgeReview===null?candidate:record;
+}
+
 // Provenance checks, NOT a claim of local natural-language entailment. The
 // model judges perception in the main extraction; this verifies its citations.
 export function bindSummaryKnowledge(record,sources,legacyBind,{readingConfig=''}={}){

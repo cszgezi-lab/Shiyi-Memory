@@ -9,6 +9,7 @@ import {narrativeReading,NARRATIVE_READING_RULE,narrativeCounters} from './narra
 import {personaManualPlan,personaManualPending,personaManualUnfinished} from './dynamic-persona-plan.js';
 import {personaIdentity,personaAliases,foldName,personaTitleNames} from './persona-identity.js';
 import {personaSourceIndex,personaSourceGuide} from './persona-source-index.js';
+import {projectCurrentPersona,personaTimelineFrame} from './persona-current-projection.js';
 import {PERSONA_COMPOSITION_RULE,personaParts,personaMaterials,personaReviewFocus,composePersona,personaSpokenAliases} from './persona-composition.js';
 import {PERSONA_DEVELOPMENT_RULE,personaCharacterCandidates} from './persona-development.js';
 
@@ -171,12 +172,16 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
   const spans=indexed.spans.filter(s=>s.ownerKey&&s.text.trim()&&mentioned.has(s.ownerKey)).map(s=>{
     const person=identity.forTitle(s.name),key=person.key;if(!groups.has(key))groups.set(key,{id:`P${groups.size+1}`,title:s.name,characterId:person.characterId,name:person.name,aliases:[...person.visibleAliases],text:[]});const group=groups.get(key);group.text.push(s.text);return {...s,ref:group.id};
   });
-  const known=currentPersonaProfiles(previous.filter(p=>!p.deleted&&mentioned.has(foldName(p.name))),stageMode);
-  const promptParts=parts=>parts.filter(p=>p.original.trim()).map(p=>({ref:p.ref,title:p.title,text:p.text,original:p.original===p.text?undefined:p.original}));
+  const known=currentPersonaProfiles(previous.filter(p=>!p.deleted&&mentioned.has(foldName(p.name))),stageMode).map(p=>projectCurrentPersona(p,personaTimelineFrame(records)));
+  const promptParts=parts=>parts.filter(p=>p.original.trim()).map(p=>({ref:p.ref,title:p.title,text:p.text}));
   const originals=[...groups.values()].map(g=>({id:g.id,name:g.name,aliases:g.aliases,parts:promptParts(personaParts(spans.filter(s=>s.ownerKey===foldName(g.name)),known.find(p=>foldName(p.name)===foldName(g.name))))}));
   for(const p of known)if(!p.bindings?.length&&!groups.has(foldName(p.name))){const parts=personaParts([],p);if(parts.length)originals.push({name:p.name,source:'chat',aliases:[...(identity.resolve(p.name)?.visibleAliases??[])],parts:promptParts(parts)});}
   const modeRule=(stageMode==='strict'?'当前选择严格MVU阶段兼容：人物演绎限于当前数值阶段，不跨越其明确边界。':'当前选择剧情主导：MVU只作参考，不用数值阶段否定已发生的剧情。previous的最近完整档案继续有效，不因MVU阶段改变自动回退；正文中的共同关系需实际双方确认。')+(readings.length?'\n'+NARRATIVE_READING_RULE:'');
-  return {messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n姓名使用original/previous提供的正式姓名；简称、昵称、简繁写法不创建另一个角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}\n${PERSONA_DEVELOPMENT_RULE}`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),characterCandidates:personaCharacterCandidates(source,identity),original:originals,materials:personaMaterials(records,identity,mentioned,Math.max(...source.map(m=>m.index))),previous:known.map(p=>({name:p.name,aliases:[...(identity.resolve(p.name)?.visibleAliases??[])],text:personaDossierText(p),examples:p.composition?.examples,development:p.composition?.development,locked:p.locked,through:p.through,currentStage:stageMode!=='strict'||!p.bindings?.length||p.bindings.every(b=>spans.some(s=>s.id===b.id&&s.stage===b.stage))})),reviewFocus:personaReviewFocus(source,identity)})}],source,spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
+  const prior=known.map(p=>({name:p.name,aliases:[...(identity.resolve(p.name)?.visibleAliases??[])],
+    // The exact effective baseline is already in original.parts. Sending it
+    // again in previous.text doubles input, not evidence or model attention.
+    text:originals.some(o=>o.name===p.name)&&p.composition?String(p.composition.notes??''):personaDossierText(p),baselineInOriginal:originals.some(o=>o.name===p.name),examples:p.composition?.examples,development:p.composition?.development,locked:p.locked,through:p.through,currentStage:stageMode!=='strict'||!p.bindings?.length||p.bindings.every(b=>spans.some(s=>s.id===b.id&&s.stage===b.stage))}));
+  return {messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n姓名使用original/previous提供的正式姓名；简称、昵称、简繁写法不创建另一个角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}\n${PERSONA_DEVELOPMENT_RULE}\noriginal.parts已完整提供有效底稿；previous.text只提供未重复的当前补充。底稿与补充合读，不因不再重复发送就认为属性丢失。narrativeFrame是已保存原文明确的全局时点；新的明确切换优先，不将原卡默认年龄/学段写成当前状态。`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),narrativeFrame:personaTimelineFrame(records),characterCandidates:personaCharacterCandidates(source,identity),original:originals,materials:personaMaterials(records,identity,mentioned,Math.max(...source.map(m=>m.index))),previous:prior,reviewFocus:personaReviewFocus(source,identity)})}],source,spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
 }
 export function parsePersonaResponse(response,{messages,spans,previous,identity,dictionary,aliases='',stageMode='narrative',preserveSources=false,developmentMessages,diagnostic=()=>{}}){
   const reason=response?.choices?.[0]?.finish_reason;
@@ -247,7 +252,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       timer=setTimeout(()=>{timer=null;wake();},Math.max(100,historyRetryAt-now()));timer.unref?.();
     }
   }
-  const publicData=()=>{const {workingProfiles,...manual}=data.manualPlan??{};return {...data,manualPlan:data.manualPlan?{...manual,stagedProfileCount:workingProfiles?.length??0}:null};};
+  const publicData=()=>{const {workingProfiles,...manual}=data.manualPlan??{};return {...data,profiles:data.profiles.map(p=>projectCurrentPersona(p,personaTimelineFrame(records()))),manualPlan:data.manualPlan?{...manual,stagedProfileCount:workingProfiles?.length??0}:null};};
   const emit=()=>notify({...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()});
   const plan=()=>autoSummaryPlan(data.batches,{startFloor:data.startFloor,batchSize:settings().dynamicPersonaEvery,keepRecent:settings().dynamicPersonaKeepRecent,lastIndex});
   function check(bound=currentWorkspace){if(disposed||bound!==currentWorkspace||!bound?.isCurrent())throw canceled();}
@@ -512,7 +517,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
   async function resume(){check();if(personaManualUnfinished(data.manualPlan)){await transact(()=>save({...data,manualPlan:{...data.manualPlan,resumeAutomatic:true}}));return resumeManual();}await transact(()=>save({...data,paused:false,batches:data.batches.map(b=>b.status==='failed'?{...b,attempts:0,retryAt:now()}:b)}));paused=false;clearTimeout(timer);timer=null;historyAttempts=0;historyRetryAt=0;if(!ready){await load();check();}view={...view,status:'ready',message:'已启用当前聊天的人设后台更新'};emit();wake();}
   async function setStart(floor){check();if(!Number.isSafeInteger(floor)||floor<0)throw new Error('起算楼层必须是非负整数');if(floor===data.startFloor)return;if(job)throw new Error('请先暂停人设任务再更改起算楼层');await transact(()=>save({...data,startFloor:floor}));lastIndex=await historyTail();emit();wake();}
   async function syncMirror(cardName,bound=currentWorkspace){return transact(async()=>{
-    check(bound);try{const name=cardName??(await worldbook.read()).cardName;check(bound);const active=data.profiles.filter(p=>!p.deleted);const mirror=await worldbook.mirror(bound.scope,currentPersonaProfiles(active,settings().dynamicPersonaMvuMode),name);check(bound);await save({...data,mirror},bound);return mirror;}
+    check(bound);try{const name=cardName??(await worldbook.read()).cardName;check(bound);const active=data.profiles.filter(p=>!p.deleted);const mirror=await worldbook.mirror(bound.scope,currentPersonaProfiles(active,settings().dynamicPersonaMvuMode).map(p=>projectCurrentPersona(p,personaTimelineFrame(records()))),name);check(bound);await save({...data,mirror},bound);return mirror;}
     catch(error){check(bound);await save({...data,mirror:{...data.mirror,status:'failed',message:failureText(error)}},bound);throw error;}
   });}
   async function mirrorAfterEdit(){try{await syncMirror();}catch(error){view={...view,message:`人物档案已保存；镜像未更新：${failureText(error)}`};emit();}}
@@ -557,7 +562,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
   });await mirrorAfterEdit();}
   async function undo(id){check();const bound=currentWorkspace;await transact(async()=>{check(bound);const p=data.profiles.find(p=>p.id===id);if(!p?.versionId)throw new Error('没有可恢复的旧版');const version=await bound.read(p.versionId);check(bound);if(version?.kind==='persona-merge'&&version.merge){const restored=new Map(version.profiles.map(row=>[row.id,{...row,locked:true,manual:true}]));await save({...data,profiles:data.profiles.map(row=>restored.get(row.id)??row)},bound);return;}const old=version?.profiles?.find(p=>p.id===id);await save({...data,profiles:old?data.profiles.map(p=>p.id===id?{...old,locked:true,manual:true}:p):data.profiles.filter(p=>p.id!==id)},bound);});await mirrorAfterEdit();}
   async function add(name,text){check();const bound=currentWorkspace;name=String(name??'').trim();text=String(text??'').trim();if(!name||!text||unsafe.test(text))throw new Error('请填写姓名和完整人物信息，不要包含脚本');personaAliases([name]);const identity=personaIdentity({previous:data.profiles,dictionary:dictionary(),aliases:settings().aliases});if(identity.resolve(name)?.profiles.length)throw new Error('已有这个人物的档案，请直接修改（简繁和已确认别称视为同一人）');const id=sha256([foldName(name),'supplement']).slice(0,24);const through=await historyTail();check(bound);lastIndex=through;await transact(()=>save({...data,profiles:[...data.profiles.filter(p=>p.id!==id),{id,name,characterId:sha256(['persona-character',foldName(name)]).slice(0,24),aliases:[],text,bindings:[],stage:'supplement',sourceFloors:[],through,manual:true,locked:true}]},bound));await mirrorAfterEdit();}
-  function profiles(){const rows=ready&&settings().dynamicPersonaEnabled&&currentWorkspace?.isCurrent()?data.profiles.filter(p=>!p.deleted&&(lastIndex===null||p.through<=lastIndex)):[];return currentPersonaProfiles(rows,settings().dynamicPersonaMvuMode);}
+  function profiles(){const rows=ready&&settings().dynamicPersonaEnabled&&currentWorkspace?.isCurrent()?data.profiles.filter(p=>!p.deleted&&(lastIndex===null||p.through<=lastIndex)):[];return currentPersonaProfiles(rows,settings().dynamicPersonaMvuMode).map(p=>projectCurrentPersona(p,personaTimelineFrame(records())));}
   async function inject(payload,{enabled=true}={}){
     if(!Array.isArray(payload?.messages))return;
     const bound=currentWorkspace,available=enabled?profiles():[];const used=new Set((await worldbook.finalize?.(payload,available))?.injected??[]);

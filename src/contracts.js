@@ -5,7 +5,7 @@ import { normalizeTerms, normalizeTags,enrichRetrievalMetadata } from './product
 import { bindCharacterDetails,bindDialogueSources } from './event-consolidation.js';
 import {sourceTimeline,reconcileSourceTimes} from './source-consistency.js';
 import { normalizeFactValidity,bindKnowledgeEvidence } from './memory-evidence.js';
-import {bindSummaryKnowledge} from './summary-knowledge-evidence.js';
+import {bindSummaryKnowledge,completeSummaryKnowledgeRefs} from './summary-knowledge-evidence.js';
 import { completeInnerLife } from './character-journal.js';
 import {
   asArray,
@@ -514,6 +514,7 @@ export function bindDraftBundle(modelOutput, {
       return matched ?? clone(ref);
     });
     delete next.sources;
+    if(category==='awarenessChanges')next=completeSummaryKnowledgeRefs(next,sourceTexts,boundEvidenceRefs,{readingConfig});
     if(['events','relationshipChanges','personaChanges','performanceHints'].includes(category))next=bindDialogueSources(next,{sources:sourceTexts,sourceRefs:boundEvidenceRefs,sourceFloorIndices});
     next=reconcileSourceTimes(next,category,timeline);
     // Display floors are host-derived metadata, never supplied by the model.

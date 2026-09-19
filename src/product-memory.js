@@ -5,6 +5,7 @@ import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, 
 import { hasStoryTime, storyDateOf } from './temporal.js';
 import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts } from './product-recall-packing.js';
 import { factValue, fullCharacterGroups, awarenessSubjectLabel, PERSON_RECORD_CATEGORIES } from './product-person-profiles.js';
+import {foldName} from './persona-identity.js';
 import { compileEventPacket } from './product-event-packet.js';
 import { factValidity, awarenessAssociationSupported } from './memory-evidence.js';
 import { originalSourceText, sourceRecallExcerpt, sourceQuote, evidenceTerms, sourceEvidenceQuery, projectSourceForRecall } from './source-recall-evidence.js';
@@ -271,7 +272,7 @@ export function prepareRecallIndex(cache, cards, settings, { scopeKey, revision,
   if (revision === undefined) throw new Error('recall cache requires a snapshot revision');
   return cache.prepare(selectRecallCards(cards, settings), { scopeKey, revision: { snapshot: revision, persona: settings.personaEnabled, performance: settings.performanceEnabled, knowledge: settings.knowledgeEnabled,journal:settings.journalEnabled,reading:settings.narrativeExtraction??'' }, k1: settings.bm25K1, b: settings.bm25B, signal });
 }
-export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null,focusQuery=query,characterQuery=query } = {}) {
+export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null,focusQuery=query,characterQuery=query,dossierPeople=[] } = {}) {
   const startedAt = globalThis.performance?.now?.() ?? Date.now();
   const selected = selectRecallCards(cards, settings);
   const prepared = indexCache ? await prepareRecallIndex(indexCache, selected, settings, { scopeKey, revision, signal }) : null;
@@ -287,6 +288,11 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     return evidenceExcerpts.get(record.id);
   };
   const characters=fullCharacterGroups(selectRecallCards(cards,settings,{includeAwareness:true}),characterQuery,lexicon);
+  // Only an actually inserted current dossier can replace the full-person lane.
+  // Its historical records remain ordinary searchable candidates, not deleted.
+  const supplied=new Set(dossierPeople.map(foldName));
+  const canonical=name=>{const matches=(lexicon.entries??[]).filter(e=>!e.disabled&&[e.name,...(e.aliases??[])].some(n=>foldName(n)===foldName(name))&&!(e.ambiguous??[]).some(n=>foldName(n)===foldName(name)));return matches.length===1?matches[0].name:name;};
+  characters.groups=characters.groups.filter(g=>!supplied.has(foldName(canonical(g.subject))));
   const fullIds=new Set(characters.groups.flatMap(g=>g.records.map(r=>r.id)));
   const tagLanes=settings.tagRecallEnabled===false?[]:matched.tags.map(tag=>({tag,limit:settings.tagCandidateLimit??4}));
   const categoryLanes=settings.distributedEnabled&&settings.distributedStrategy==='broadcast'
@@ -451,7 +457,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   result.trace.index = prepared?.stats ?? { status: 'uncached', size: selected.length };
   result.trace.dictionary={matched:matched.terms,ambiguous:lexicon.entries.filter(e=>e.ambiguous.length).length};
   result.trace.evidence={quarantinedLinks:selected.reduce((n,c)=>n+(c.associationReviewCount??0),0)};
-  result.trace.characters={mode:'full',people:characters.people,records:characterChosen.length,units:estimateUnits(characterText),truncated:false};
+  result.trace.characters={mode:'full',people:[...new Set(characters.groups.map(g=>g.subject))],records:characterChosen.length,units:estimateUnits(characterText),truncated:false};
   result.trace.knowledgeContext={eventIds:[...knowledgeContext.keys()],units:estimateUnits(contextText),unresolvedRecordIds:unresolvedKnowledge,mode:'explicit_link_brief',extraModelCalls:0};
   for(const event of knowledgeContext.values())decisions.push({id:event.id,title:recordTitle(event),category:'events',status:'selected',detail:'knowledge_context',reason:'解释已注入知情的明确关联事件'});
   result.trace.packing={selected:packed.length+knowledgeContext.size+dialogueCards.length,memorySelected:memoryCount,memoryUnits,expanded:0,excerpts,brief:memoryCount-excerpts,omitted:omitted.length,duplicates:decisions.filter(d=>d.status==='duplicate').length,decisions};
