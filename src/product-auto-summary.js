@@ -33,6 +33,17 @@ export function missingSummaryRanges(coverage,batchSize){
   if(!Number.isSafeInteger(batchSize)||batchSize<1)throw new Error('每批楼数无效');
   return coverage.missingRanges.flatMap(r=>Array.from({length:Math.ceil((r.endIndex-r.startIndex+1)/batchSize)},(_,i)=>({startIndex:r.startIndex+i*batchSize,endIndex:Math.min(r.endIndex,r.startIndex+(i+1)*batchSize-1)})));
 }
+// Display history independently from the moving automatic cursor. Saved floors
+// within keepRecent still count once; reserved unsaved floors are not failures.
+export function summaryProgress(batches=[],options={}){
+  const saved=batches.filter(b=>b.status!=='deleted'&&(b.status==='saved'||b.savedOperationId)&&Number.isSafeInteger(b.startIndex));
+  const startFloor=Math.min(options.startFloor??1,...saved.map(b=>b.startIndex));
+  const all=summaryCoverage(batches,{...options,startFloor,keepRecent:0});
+  const eligible=summaryCoverage(batches,{...options,startFloor});
+  const total=Number.isSafeInteger(options.lastIndex)?Math.max(0,options.lastIndex-startFloor+1):0;
+  const covered=all.coveredFloors,missing=eligible.missingFloors,skipped=Math.max(0,total-covered-missing);
+  return {covered,missing,skipped,pending:0,total,percent:Math.round(covered/Math.max(1,total)*100),ranges:all.coveredRanges};
+}
 export function summaryCoverageText(plan){
   if(plan.lastIndex===null)return '尚未读取最新楼层。检查进度不调用模型；补采会按已保存的自动设置处理缺口。';
   const c=plan.coverage,format=rows=>rows.slice(0,12).map(r=>r.startIndex===r.endIndex?'#'+r.startIndex:'#'+r.startIndex+'–'+r.endIndex).join('、')+(rows.length>12?' 等 '+rows.length+' 段':'');

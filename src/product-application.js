@@ -12,7 +12,7 @@ import { factSubject,factKey,factValue } from './product-person-profiles.js';
 import { sourceKey } from './product-sources.js';
 import { PRODUCT_SETTING_REGISTRY, persistedProductSettings, validateProductPatch, splitProductSettings } from './product-settings.js';
 import { ProviderClient, observeProviderRequests, scheduleProviderRequests } from './provider.js';
-import {createProviderScheduler,shouldPauseProviderBatch} from './provider-scheduler.js';
+import {createProviderScheduler,shouldPauseProviderBatch,backgroundRetryDelay} from './provider-scheduler.js';
 import { errorDiagnostics, jsonFailure,installDiagnosticBoundary,diagnosticRequestId } from './diagnostics.js';
 import { SummaryResponseError } from './errors.js';
 import { memoryCards, recallMemory, readable, recordDescription, selectRecallCards, prepareRecallIndex, relevantPassage } from './product-memory.js';
@@ -80,6 +80,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let recallRevision = 0;
   let recallSafetyRevision = 0, committedRecall = null;
   let autoTimer=null,autoPending=false,autoTask=null,autoHistoryAttempts=0,autoRetryAt=0;
+  let foreground=false,injecting=0,autoFailureCount=0,autoFailureRange='';
   let dictionaryRevision=-1, dictionaryCache=null;
   let recallBusy = 0, moduleSourceBaseline=null;
   let vectorTimer=null,vectorJob=null,vectorCheckVersion=0,vectorStorageFailure=null;
@@ -108,7 +109,14 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const state = { credentialSaved:{},credentialErrors:{}, modules:[],moduleSnapshots:[],moduleCurrent:[],mvuPaths:[],mvuStatus:'no_chat', status: 'unbound', message: '开始总结时自动读取 TT 当前聊天', cards: [], documents: [], history: [], batches: [], records: {}, conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };
   const notify = () => { try { if(onInvalidate)onInvalidate();else onChange(publicState()); } catch { /* paint failure must not affect persistence */ } };
   const runtimeLog=createRuntimeLog({getStore:globalStore,onChange:notify});
-  const stopRequestScheduler=scheduleProviderRequests(fetchImpl,requestScheduler??createProviderScheduler({requestsPerMinute:()=>core.settings.chatRequestsPerMinute}));
+  const providerScheduler=requestScheduler??createProviderScheduler({requestsPerMinute:()=>core.settings.chatRequestsPerMinute});
+  const stopRequestScheduler=scheduleProviderRequests(fetchImpl,providerScheduler);
+  const foregroundBusy=()=>foreground||injecting>0;
+  function markForeground(value){
+    foreground=value;state.foregroundBusy=value;providerScheduler.setForeground?.(foregroundBusy());notify();
+    if(value){clearTimeout(autoTimer);autoTimer=null;vectorJob?.cancel();}
+    else {queueAutomaticSummary();dynamicPersona.wake();wakeVectors();}
+  }
   const recordedErrors=new WeakSet(),diagnosticJobs=new Set(),transportRuns=new Map(),queuedRequests=new Map();
   function trackDiagnostic(work){const job=Promise.resolve(work).catch(()=>{});diagnosticJobs.add(job);void job.finally(()=>diagnosticJobs.delete(job));return job;}
   function reportError(error,{task='operation',stage='ui',modelRole,action,level='error'}={}){
@@ -121,7 +129,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(event.phase==='queued')queuedRequests.set(id,event.details);
     else if(['request','complete','failed','canceled'].includes(event.phase))queuedRequests.delete(id);
     const waiting=queuedRequests.values().next().value;
-    const notice=waiting?`${({summary:'总结',supplement:'辅助整理',assistant:'助手',dynamicPersona:'动态人设'})[waiting.modelRole]??'聊天请求'}：${waiting.reason==='queue_busy'?'等待同一接口上一条请求完成':`接口${waiting.reason==='queue_rpm'?'每分钟限额已满':'异常后冷却'}，本次等待约 ${Math.max(1,Math.ceil(waiting.retryDelayMs/1000))} 秒`}；可停止等待`:'';
+    const notice=waiting?`${({summary:'总结',supplement:'辅助整理',assistant:'助手',dynamicPersona:'动态人设'})[waiting.modelRole]??'聊天请求'}：${waiting.reason==='queue_foreground'?'等待当前聊天回复结束':waiting.reason==='queue_busy'?'等待同一接口上一条请求完成':`接口${waiting.reason==='queue_rpm'?'每分钟限额已满':'异常后冷却'}，本次等待约 ${Math.max(1,Math.ceil(waiting.retryDelayMs/1000))} 秒`}；可停止等待`:'';
     if(state.requestQueueNotice!==notice){state.requestQueueNotice=notice;notify();}
     let run=transportRuns.get(id);
     if(!run){run=runtimeLog.start('transport',{requestId:id,purpose:event.details.purpose});transportRuns.set(id,run);}
@@ -146,7 +154,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   const modules=createModuleController({host,core,state,load:loadApiSettings,getGlobal:()=>globalWorkspace,getChat:()=>workspace,check:assertCurrent,notify,refresh,changed:()=>recallChanged({vectors:true})});
   const personaWorldbook=createPersonaWorldbook({host,check:assertCurrent,context:()=>({scope:boundScope,epoch}),stageMode:()=>core.settings.dynamicPersonaMvuMode});
-  const dynamicPersona=createDynamicPersona({settings:()=>core.settings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:()=>core.historyTail(),worldbook:personaWorldbook,client:()=>client('dynamicPersona'),dictionary:()=>activeDictionary(),records:()=>state.records,log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>enabled&&!opening&&!state.stale&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
+  const dynamicPersona=createDynamicPersona({settings:()=>core.settings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:()=>core.historyTail(),worldbook:personaWorldbook,client:()=>client('dynamicPersona'),dictionary:()=>activeDictionary(),records:()=>state.records,log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>enabled&&!opening&&!state.stale&&!foregroundBusy()&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
   const resumeAutomaticTasks=()=>{if(host.document?.visibilityState==='hidden')return;queueAutomaticSummary();dynamicPersona.wake();};
   host.document?.addEventListener?.('visibilitychange',resumeAutomaticTasks);host.addEventListener?.('online',resumeAutomaticTasks);
   function activeDictionary(){
@@ -244,7 +252,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const pages=Math.max(1,Math.ceil(rows.length/20)),current=Math.min(pages,Math.max(1,Math.floor(Number(page)||1)));
     return {rows:rows.slice((current-1)*20,current*20),total:rows.length,page:current,pages};
   }
-  function canMaintainVectors(){return !disposed&&enabled&&!vectorStopped&&!recallReaders&&workspace?.isCurrent()&&!state.stale&&core.settings.vectorEnabled&&(core.settings.vectorAutoUpdate||state.batches.some(b=>b.status==='saved'&&b.autoIndex))&&host.document?.visibilityState!=='hidden'&&host.navigator?.onLine!==false;}
+  function canMaintainVectors(){return !disposed&&enabled&&!vectorStopped&&!recallReaders&&!foregroundBusy()&&workspace?.isCurrent()&&!state.stale&&core.settings.vectorEnabled&&(core.settings.vectorAutoUpdate||state.batches.some(b=>b.status==='saved'&&b.autoIndex))&&host.document?.visibilityState!=='hidden'&&host.navigator?.onLine!==false;}
   function wakeVectors(){
     if(!canMaintainVectors()||vectorTimer||vectorJob||active||recallBusy)return;
     vectorTimer=setTimeout(()=>{vectorTimer=null;void refreshVectorStatus({schedule:true});},500);vectorTimer.unref?.();
@@ -417,6 +425,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     return Array.isArray(chat)&&chat.length>=moduleSourceBaseline.length&&moduleSourceBaseline.every((old,i)=>{const next=moduleStamp(chat[i]);return Object.keys(old).every(k=>old[k]===next[k]);});
   }
   function invalidate(reason) {
+    if(reason==='CHAT_CHANGED'){foreground=false;state.foregroundBusy=false;providerScheduler.setForeground?.(injecting>0);autoFailureRange='';autoFailureCount=0;}
     dynamicPersona.clear();
     epoch++; abortAll(); moduleSourceBaseline=null;modules.clear();state.cards=state.cards.filter(c=>!c.readonly);state.stale = true; state.preview = null; state.actual = null;
     recallChanged({ clear: true });
@@ -463,7 +472,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try{await dynamicPersona.load();}catch(error){void reportError(error,{task:'persona',stage:'prepare'});state.dynamicPersona={...dynamicPersona.state,message:dynamicPersona.state.message||failureText(error)};}checkOpen();
     await loadKnowledge(); await checkTarget(); enabled = enable;if(enable)automaticPaused=false;
     try {
+      for(const name of ['GENERATION_STARTED','GENERATION_ENDED','GENERATION_STOPPED']){
+        try{bindings.push(hostAdapter.subscribe(name,(_type,_options,dryRun)=>{if(dryRun!==true)markForeground(name==='GENERATION_STARTED');}));}catch{/* Optional on older hosts; injection still has a local guard. */}
+      }
       bindings.push(hostAdapter.subscribe('CHAT_COMPLETION_SETTINGS_READY', async payload => {
+        injecting++;providerScheduler.setForeground?.(true);
+        try{
         // The host can still hold a request prepared before a chat switch. Do
         // not put either the new chat's recall or persona in that old payload.
         if(personaWorldbook.foreignRequest(payload)){await personaWorldbook.finalize(payload,[]);return;}
@@ -471,6 +485,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         await inject(payload);
         if(requestEpoch!==epoch){await personaWorldbook.finalize(payload,[]);return;}
         try{await dynamicPersona.inject(payload,{enabled});}catch(error){void reportError(error,{task:'persona',stage:'prepare'});}
+        }finally{injecting--;providerScheduler.setForeground?.(foregroundBusy());if(!foregroundBusy()){queueAutomaticSummary();dynamicPersona.wake();}}
       }));
       try{bindings.push(hostAdapter.subscribe('WORLDINFO_ENTRIES_LOADED',payload=>enabled?personaWorldbook.applyLoaded(payload,dynamicPersona.profiles()).catch(error=>{void reportError(error,{task:'persona',stage:'prepare'});}):undefined));}catch{/* Optional capability must not disable automatic summary. */}
       // TT awaits event listeners. Never attach the model's lifetime to the
@@ -563,6 +578,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     await loadApiSettings();await apiSettings.save(validateProductPatch(patch));
     if(!core.settings.injectionEnabled)await clearPrompt();
     if(patch.dynamicPersonaEnabled===false)await dynamicPersona.pause();
+    queueAutomaticSummary();dynamicPersona.wake();
     setMessage('全局设置已保存，所有聊天共用');return {status:'saved',settings:core.settings};
   }
   async function saveApi(kind,patch,{keyValue}={}){
@@ -694,7 +710,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         remainingPlanned=planned.length-i-1;
         op.check();const item=planned[i],continuing=resume&&!item.freshStart&&Boolean(item.operationId),operationId=continuing?item.operationId:makeId('product-summary');
         const oldOperation=item.status==='deleted'?null:savedBatchOperation(item);
-        currentBatch={...item,status:'running',freshStart:false,error:null,operationId,autoIndex:Boolean(core.settings.vectorEnabled),previousOperation:oldOperation??null,attempts:batchOperationIds(item).filter(id=>id!==operationId),updatedAt:Date.now()};
+        currentBatch={...item,status:'running',freshStart:!continuing,error:null,operationId,autoIndex:Boolean(core.settings.vectorEnabled),previousOperation:oldOperation??null,attempts:batchOperationIds(item).filter(id=>id!==operationId),updatedAt:Date.now()};
         await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
         // Staged generations survive crashes but are never available for recall.
         if(!continuing)await core.updateMemoryControls({operations:{[operationId]:'pending'}});op.check();
@@ -705,6 +721,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         state.progress=`第 ${i+1}/${planned.length} 批 · 已读取 #${item.startIndex}–${item.endIndex}，共 ${range.count} 楼`;
         runtimeLog.record({run:diagnosticRun,task:'summary',phase:'range',details:{batchNumber:displayNumber,startIndex:item.startIndex,endIndex:item.endIndex,sourceCount:range.count,...range.readStats}});
         summaryFeedback('running',`正在总结 ${state.progress}`,trigger);
+        currentBatch={...currentBatch,freshStart:false};
+        await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
         const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,resume:continuing,excludeOperations:currentBatch.attempts,requireFloorSummaries:true,onDiagnostic:event=>{
           // A settings edit during the request applies to future work. It must
           // not append another paid review/merge after a two-pass generation.
@@ -735,7 +753,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]).catch(error=>{bookkeepingWarning=true;runtimeLog.record({run:diagnosticRun,task:'summary',phase:'checkpoint_warning',level:'warning',details:{...errorDiagnostics(error),storageArtifact:'checkpoint'}});});
         saved++;state.savedThrough=Math.max(state.savedThrough,item.endIndex);state.stale=false;
         // 保存之后把「起算楼层」推到真正已记录的位置；失败只记日志，绝不影响已保存的记忆。
-        try{await syncAutoStartFloor();}catch(error){void reportError(error,{task:'summary',stage:'auto_start_floor'});}
+        try{await syncAutoStartFloor(diagnosticRun);}catch(error){void reportError(error,{task:'summary',stage:'background'});}
         await workspace.write('ui',{savedThrough:state.savedThrough}).catch(error=>{bookkeepingWarning=true;void reportError(error,{task:'storage',stage:'storage'});});await refresh({summaryCommit:true});currentBatch=null;
         publishMs+=Date.now()-publishingAt;
         if(core.settings.autoQualityEnabled&&!usedVerification&&!core.settings.summaryReviewEnabled){
@@ -1094,7 +1112,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
    * point rolls it back to the first deleted floor, so the old automatic
    * behaviour (deleted coverage becomes pending again) still holds. It only ever
    * moves past floors a saved batch covers, or back onto a deleted one. */
-  async function syncAutoStartFloor(){
+  async function syncAutoStartFloor(diagnosticRun){
     if(!workspace)return null;
     const start=state.autoStartFloor??1;
     const batchSize=core.settings.autoSummaryEvery,keepRecent=core.settings.autoKeepRecent;
@@ -1129,7 +1147,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function setAutomatic(enabledNow){
     if(enabledNow&&active)throw new Error('请等当前任务结束后启用自动总结');
-    if(enabledNow){automaticPaused=false;autoHistoryAttempts=0;autoRetryAt=0;}
+    if(enabledNow){automaticPaused=false;autoHistoryAttempts=0;autoRetryAt=0;autoFailureCount=0;}
     else {autoPending=false;clearTimeout(autoTimer);autoTimer=null;}
     await saveSettings({autoSummaryEnabled:enabledNow});
     if(!enabledNow&&autoRunning){active?.abort();await core.cancelSummary();}
@@ -1145,12 +1163,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     autoPending=true;wakeAutomaticSummary();
   }
   function wakeAutomaticSummary(){
-    if(!autoPending||autoTimer!==null||autoTask||active||opening||disposed||state.stale||automaticPaused||!enabled||!core.settings.autoSummaryEnabled||host.document?.visibilityState==='hidden'||!workspace?.isCurrent())return;
+    if(!autoPending||autoTimer!==null||autoTask||active||opening||disposed||state.stale||automaticPaused||foregroundBusy()||!enabled||!core.settings.autoSummaryEnabled||host.document?.visibilityState==='hidden'||!workspace?.isCurrent())return;
     const token=epoch,version=cancelVersion;
     autoTimer=setTimeout(()=>{
       autoTimer=null;
       if(token!==epoch||version!==cancelVersion||disposed){autoPending=false;return;}
-      if(active||opening)return;
+      if(active||opening||foregroundBusy())return;
       autoPending=false;
       autoTask=(async()=>{await syncModulesQuietly();if(token===epoch&&version===cancelVersion&&!disposed)await autoSummary();})()
         .catch(error=>{if(!disposed)void reportError(error,{task:'background',stage:'background'});})
@@ -1158,16 +1176,19 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     },Math.max(0,autoRetryAt-Date.now()));
   }
   async function autoSummary({force=false}={}) {
-    if (active || state.stale || (!force&&(automaticPaused||!core.settings.autoSummaryEnabled)) || !workspace?.isCurrent()) return;
+    if (active || state.stale || foregroundBusy() || (!force&&(automaticPaused||!core.settings.autoSummaryEnabled)) || !workspace?.isCurrent()) return;
     const feedbackAtStart = feedbackSequence,op=begin();autoRunning=true;
     try {
       state.autoLastIndex=await core.historyTail();op.check();
       const plan=automaticPlan();notify();
+      const rangeKey=`${plan.nextStart}-${plan.nextEnd}`;
+      if(autoFailureRange!==rangeKey){autoFailureRange=rangeKey;autoFailureCount=0;}
+      if(!force&&autoFailureCount>3)return;
       if(!plan.ready){autoHistoryAttempts=0;autoRetryAt=0;if(force)setMessage('还没有满足条件的完整一批；保留楼层不参与自动总结');return;}
       if(core.settings.focusMode==='ask_every'&&!force){setMessage('自动总结等待侧重点，可在手动总结中处理下一批');return;}
       op.finish();
-      await summarize({startIndex:plan.nextStart,endIndex:plan.nextEnd,batchSize:plan.batchSize,trigger:'auto'});
-      autoHistoryAttempts=0;autoRetryAt=0;
+      await summarize({startIndex:plan.nextStart,endIndex:plan.nextEnd,batchSize:plan.batchSize,trigger:'auto',resume:true});
+      autoHistoryAttempts=0;autoRetryAt=0;autoFailureCount=0;
       if(!force)queueAutomaticSummary();
     }catch(error){
       if(!force&&!op.signal.aborted&&op.token===epoch&&error?.code==='HISTORY_UNAVAILABLE'){
@@ -1175,6 +1196,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         if(autoHistoryAttempts<=3)autoPending=true;
         summaryFeedback('warning',autoHistoryAttempts<=3?'聊天原文暂未就绪，自动总结稍后重读；已有记忆保留':'聊天原文仍不可读，等待下一次回复完成或回到前台再试；已有记忆保留','auto');
         runtimeLog.record({task:'background',phase:'waiting',details:{...errorDiagnostics(error),reason:'history_retry_wait',retryDelayMs:delay,historyReadAttempts:autoHistoryAttempts}});
+      }else if(!force&&!op.signal.aborted&&op.token===epoch){
+        const delay=backgroundRetryDelay(error,++autoFailureCount);
+        autoRetryAt=delay?Date.now()+delay:0;if(delay)autoPending=true;else autoFailureCount=4;
+        summaryFeedback('warning',delay?`本批未完成：${failureText(error)} ${Math.ceil(delay/1000)} 秒后自动重试（${autoFailureCount}/3）；已保存内容不重做。`:`自动总结暂缓：${failureText(error)} 可从总结页重试；已有记忆保留。`,'auto');
+        if(delay)runtimeLog.record({task:'background',phase:'retry_wait',details:{...errorDiagnostics(error),retryDelayMs:delay}});
       }else if(!op.signal.aborted&&op.token===epoch&&feedbackSequence===feedbackAtStart)summaryFeedback('error',`自动总结未完成：${failureText(error)}`,'auto');
       if(force)throw error;
     }

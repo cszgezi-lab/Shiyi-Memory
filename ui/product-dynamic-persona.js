@@ -102,7 +102,7 @@ export function mountDynamicPersona({panel,app,run,host=globalThis}){
     if(!manualDirty&&d.lastIndex!==null&&d.lastIndex!==undefined)$('[data-persona-manual-end]').value=d.lastIndex;
     const manual=d.manualPlan,items=manual?.items??[],saved=items.filter(b=>b.status==='saved').length,unfinished=['paused','running','failed'].includes(manual?.status);
     $('[data-persona-manual-status]').textContent=manual?`#${manual.startIndex}–${manual.endIndex} · ${{paused:'已暂停',running:'正在后台补建',failed:'本批未完成，可继续',completed:'已完成并应用',discarded:'已放弃，原档案保留'}[manual.status]??manual.status} · ${saved}/${items.length} 批。${unfinished?'候选进度已保存；全部完成前继续使用原人物档案。':''}${manual.message??''}`:'还没有手动人设计划。';
-    $('[data-persona-manual-continue]').disabled=!unfinished||Boolean(d.busy)||manual?.status==='running';
+    $('[data-persona-manual-continue]').disabled=!unfinished||Boolean(d.busy)||(manual?.status==='running'&&!manual.items.some(b=>b.status==='failed'));
     $('[data-persona-manual-pause]').disabled=manual?.status!=='running';
     $('[data-persona-manual-discard]').disabled=!unfinished||Boolean(d.busy);
     const manualPages=Math.max(1,Math.ceil(items.length/10));manualPage=Math.min(manualPage,manualPages-1);

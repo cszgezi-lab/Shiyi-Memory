@@ -92,7 +92,7 @@ async function withDocumentPickerFallback(downloadBlobWithRuntime, blob, name, h
   const bridge = host?.[BRIDGE_NAME];
   if (!bridge || typeof bridge.copyFileToContentUri !== 'function' || typeof bridge.requestCreateDocumentPicker !== 'function') return null;
   const direct = bridge.supportsDirectPublicDownloads;
-  bridge.supportsDirectPublicDownloads = () => false;
+  try{bridge.supportsDirectPublicDownloads = () => false;}catch{return null;}
   try { return { result: await withExportTimeout(downloadBlobWithRuntime(blob, name), timeoutMs) }; }
   catch (error) { return { error }; }
   finally { if (direct === undefined) delete bridge.supportsDirectPublicDownloads; else bridge.supportsDirectPublicDownloads = direct; }
@@ -105,15 +105,18 @@ const BRIDGE_NAME = 'TauriTavernAndroidPublicDownloadBridge';
  * copy fail for different reasons; this tells them apart. */
 const BRIDGE_OPERATIONS = ['saveFileToDownloads', 'requestCreateDocumentPicker', 'copyFileToContentUri'];
 function trackHostOperations(bridge, onError) {
-  if (!bridge || typeof bridge !== 'object') return;
+  const restore=[];
+  if (!bridge || typeof bridge !== 'object') return ()=>{};
   for (const key of BRIDGE_OPERATIONS) {
     const original = bridge[key];
     if (typeof original !== 'function') continue;
-    bridge[key] = function tracked(...args) {
+    const tracked = function(...args) {
       try { return original.apply(bridge, args); }
       catch (error) { try { onError(key, error); } catch { /* attribution must not mask the host error */ } throw error; }
     };
+    try{bridge[key]=tracked;if(bridge[key]===tracked)restore.push(()=>{if(bridge[key]===tracked)bridge[key]=original;});}catch{/* A read-only native bridge must still be callable. */}
   }
+  return ()=>{for(const undo of restore)try{undo();}catch{/* Native ownership may change during export. */}};
 }
 /** Reject a promise if the host never answers, so a save that silently never
  * completes is reported instead of leaving the UI waiting forever. */
@@ -165,11 +168,12 @@ export async function exportProductJson(data, name, {
     }
     const bridge = host[BRIDGE_NAME];
     const observed = [];
-    trackHostOperations(bridge, (operation, error) => {
+    const restoreTracking=trackHostOperations(bridge, (operation, error) => {
       try { if (observed.length < 8) observed.push({ operation, reason: saveStageOf(error) ?? 'unclassified', errorType: error?.name }); }
       catch { /* diagnostics only */ }
     });
     const exportDiagnostics = extra => ({ ...extra, exportBytes: blob.size, ...(observed.length ? { hostOperations: observed } : {}) });
+    try{
     const useDirect = preferBrowser === false || preferBrowser === 'direct';
     let attempt;
     let pickerFallback;
@@ -183,6 +187,7 @@ export async function exportProductJson(data, name, {
         // routes through requestCreateDocumentPicker + copyFileToContentUri.
         // If the bridge has neither of those, fall straight through to direct.
         pickerFallback = await withDocumentPickerFallback(downloadBlobWithRuntime, blob, name, host, timeoutMs);
+        if(isCancelError(pickerFallback?.error))throw pickerFallback.error;
         if (pickerFallback?.result) attempt = pickerFallback.result;
         else attempt = await withExportTimeout(downloadBlobWithRuntime(blob, name), timeoutMs);
       }
@@ -217,6 +222,7 @@ export async function exportProductJson(data, name, {
     }
     if(confirmedExport(attempt))return {...normalizeExportResult(attempt),status:'saved',saved:true,exportAttempt:useDirect?'direct':'picker',saveLocation:saveLocationOf(attempt),...exportDiagnostics({})};
     return {...normalizeExportResult(attempt),status:'dispatched',saved:false,exportAttempt:useDirect?'direct':'picker',reason:'export_dispatched_unconfirmed',dispatch:dispatchOnly(attempt),...exportDiagnostics({})};
+    }finally{restoreTracking();}
   }
   return {...triggerBrowserExport(blob,name,documentRef),reason:'export_dispatched_unconfirmed',stage:'export_dispatch',exportAttempt:'browser',dispatch:'browser-fallback'};
 }

@@ -11,6 +11,15 @@ export function providerQueueScope(url,headers){
 }
 
 const canceled=()=>new ShiyiError('request canceled','CANCELED',{stage:'queue',reason:'canceled'});
+// A logical task gets three retries, not three attempts. Safety/configuration
+// failures require intervention; another model response may repair output shape.
+export function backgroundRetryDelay(error, failures){
+  const code=error?.code??'',d=error?.details??{},status=Number(d.status);
+  if(['content_blocked','context_limit'].includes(d.upstreamHint)||['insufficient_quota','invalid_api_key','api_key_missing','context_length_exceeded','model_not_found','invalid_request_error','outbound_host_denied'].includes(d.upstreamCode))return 0;
+  if([400,401,403,404,413,422].includes(status))return 0;
+  const retryable=[408,429,500,502,503,504].includes(status)||code.startsWith('network.')||['TIMEOUT','PROVIDER_REQUEST_FAILED','PERSONA_RESPONSE_INVALID','PERSONA_STAGE_CHANGED','SUMMARY_RESPONSE_ERROR','VALIDATION_ERROR','MODEL_OUTPUT_TRUNCATED'].includes(code);
+  return retryable&&failures<=3?Math.max([60000,120000,300000][failures-1]??0,Number(d.retryAfterMs)||0):0;
+}
 // A service outage is not a bad record. Optional batch consumers persist the
 // failed item, then leave unattempted items pending instead of probing each one.
 export function shouldPauseProviderBatch(error){
@@ -19,7 +28,7 @@ export function shouldPauseProviderBatch(error){
     ['TIMEOUT','PROVIDER_REQUEST_FAILED','PROVIDER_FETCH_UNAVAILABLE','PROVIDER_PROFILE_INVALID','MODEL_UNAVAILABLE'].includes(code)||code.startsWith('network.');
 }
 export function createProviderScheduler({requestsPerMinute=()=>0,now=()=>Date.now(),schedule=scheduleDeadline}={}){
-  const lanes=new Map();let disposed=false;
+  const lanes=new Map();let disposed=false,foreground=false;
   function sweep(){for(const [key,lane] of lanes)if(!lane.active&&!lane.pending.length&&lane.cooldownUntil<=now()&&lane.starts.every(t=>t<=now()-60000)){lane.stop?.();lanes.delete(key);}}
   function pump(lane){
     lane.stop?.();lane.stop=null;
@@ -28,14 +37,14 @@ export function createProviderScheduler({requestsPerMinute=()=>0,now=()=>Date.no
     const rpm=Math.max(0,Math.floor(Number(requestsPerMinute())||0));
     const rateUntil=rpm&&lane.starts.length>=rpm?lane.starts[lane.starts.length-rpm]+60000:0;
     const until=Math.max(rateUntil,lane.cooldownUntil);
-    const reason=lane.active?'queue_busy':until>now()?(lane.cooldownUntil>=rateUntil?'queue_cooldown':'queue_rpm'):null;
+    const reason=foreground?'queue_foreground':lane.active?'queue_busy':until>now()?(lane.cooldownUntil>=rateUntil?'queue_cooldown':'queue_rpm'):null;
     if(reason){
       lane.pending.forEach((item,i)=>{
         const details={stage:'queue',reason,queuePosition:i+1,queueWaitMs:Math.max(0,now()-item.queuedAt),retryDelayMs:Math.max(0,until-now())};
         const signature=`${reason}:${i}:${until}`;
         if(item.notified!==signature){item.notified=signature;try{item.onWait?.(details);}catch{/* diagnostics cannot prevent dispatch */}}
       });
-      if(!lane.active)lane.stop=schedule(Math.max(1,until-now()),()=>pump(lane));
+      if(!foreground&&!lane.active)lane.stop=schedule(Math.max(1,until-now()),()=>pump(lane));
       return;
     }
     const item=lane.pending.shift();item.signal?.removeEventListener('abort',item.abort);
@@ -58,6 +67,7 @@ export function createProviderScheduler({requestsPerMinute=()=>0,now=()=>Date.no
     pump(lane);
   }
   return {
+    setForeground(value){foreground=Boolean(value);for(const lane of lanes.values())pump(lane);},
     acquire(key,{signal,onWait}={}){
       if(disposed||signal?.aborted)return Promise.reject(canceled());
       sweep();

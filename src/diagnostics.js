@@ -1,6 +1,7 @@
 // Shared, content-free diagnostics. Never serialize Error.message, API bodies,
 // headers, URLs, user filenames or arbitrary server error objects into exports.
 export const DIAGNOSTIC_REASONS = Object.freeze({
+  queue_foreground:'正在生成聊天回复，后台请求等待本轮结束',
   log_io_timeout:'日志存储响应超时；本次保留在内存，不阻止任务或日志导出',
   export_module_unavailable:'宿主文件导出接口加载失败，可复制日志文本',
   export_permission_denied:'系统拒绝保存文件的权限，可复制日志文本',
