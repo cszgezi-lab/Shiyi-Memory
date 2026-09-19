@@ -64,7 +64,7 @@ function safeEntry(value) {
 /** Fields a phone-sized failure report actually needs. Everything else (stack
  * frames, nested cause chains, validation issue lists) is what made even a
  * filtered export tens of thousands of characters long. */
-const COMPACT_KEYS=['reason','stage','saveStage','exportAttempt','exportBytes','hostOperations','code','errorType','causeErrorType','personaStep','modelRequested','modelRole','status','upstreamCode','upstreamHint','startIndex','endIndex','retryDelayMs','stackFrames','validationIssues'];
+const COMPACT_KEYS=['reason','stage','saveStage','exportAttempt','exportBytes','hostOperations','code','errorType','causeErrorType','personaStep','personaIssue','personaField','profileIndex','editIndex','recoveryExhausted','modelRequested','modelRole','status','upstreamCode','upstreamHint','startIndex','endIndex','retryDelayMs','stackFrames','validationIssues'];
 /** Local bounded diagnostics. Never accepts prompts, response bodies, keys or URLs. */
 export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),ioWaitMs=1000} = {}) {
   let entries=[],store,loaded=false,loading,queue=Promise.resolve(),nextRun=0,nextId=0,persistence='not_loaded';

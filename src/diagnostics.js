@@ -1,3 +1,4 @@
+import {PERSONA_ISSUES} from './persona-validation.js';
 // Shared, content-free diagnostics. Never serialize Error.message, API bodies,
 // headers, URLs, user filenames or arbitrary server error objects into exports.
 export const DIAGNOSTIC_REASONS = Object.freeze({
@@ -23,6 +24,7 @@ export const DIAGNOSTIC_REASONS = Object.freeze({
   history_retry_wait:'等待聊天原文就绪后重读；这不是模型调用成功',
   persona_waiting:'楼层尚未满足自动人设周期，未调用模型',
   persona_previous_failure:'上一批尚未恢复，本次没有调用人设模型',
+  persona_recovery_upgraded:'恢复协议已更新，重新排入旧的回答失败批次；已保存结果不重做',
   persona_host_binding:'忽略模型填写的旧绑定字段；由程序按唯一人物身份绑定本次已提供的原设定',
   persona_fields:'动态人设的姓名、正文格式或来源楼层不合要求，旧档案保留',persona_character:'人设姓名未在本批原文或既有档案中确认',persona_binding:'所选原设定无法确认属于当前人物，未替换原书',persona_duplicate:'同一人物阶段被重复返回，未覆盖旧档案',persona_stage_changed:'原设定或MVU当前阶段已改变，本批旧阶段回答未应用',
   queue_busy:'等待同一接口的上一条聊天请求完成',queue_cooldown:'接口异常后冷却等待',queue_rpm:'等待每分钟请求名额',
@@ -95,6 +97,8 @@ files.add('quality-response.js');
 files.add('product-memory-quality.js');
 files.add('product-quality-evidence.js');
 files.add('product-knowledge-review.js');
+files.add('persona-composition.js');
+files.add('persona-response-recovery.js');
 const verificationCodes=new Set(['invalid_shape','missing_evidence','quote_not_in_source','protected_or_unknown_field','source_mismatch','source_removal','unknown_or_duplicate_target','unknown_category','missing_sources','duplicate_id']);
 const verificationPath=/^(?:verification|reviewedSourceIds|reviews|checks|updates|repartitions|(?:edits|splitEvents|updates|additions|repartition)\[\d{1,6}\](?:\.events\[\d{1,6}\])?(?:\.(?:value|sources)|\.evidence\[\d{1,6}\]\.(?:sourceId|quote))?)$/;
 let sequence=0;
@@ -139,6 +143,9 @@ export function safeDiagnosticFields(value={}){
   if(errorTypes.has(value?.errorType))result.errorType=value.errorType;
   if(errorTypes.has(value?.causeErrorType))result.causeErrorType=value.causeErrorType;
   if(['name','text','sourceFloors'].includes(value?.personaField))result.personaField=value.personaField;
+  if(Object.hasOwn(PERSONA_ISSUES,value?.personaIssue))result.personaIssue=value.personaIssue;
+  if(Number.isSafeInteger(value?.editIndex)&&value.editIndex>=0)result.editIndex=value.editIndex;
+  if(typeof value?.recoveryExhausted==='boolean')result.recoveryExhausted=value.recoveryExhausted;
   for(const key of ['profileIndex','personaProfiles','personaBindings'])if(Number.isSafeInteger(value?.[key])&&value[key]>=0)result[key]=value[key];
   if(typeof value?.legacyBindingsIgnored==='boolean')result.legacyBindingsIgnored=value.legacyBindingsIgnored;
   if(Object.hasOwn(UPSTREAM_CODES,value?.upstreamCode))result.upstreamCode=value.upstreamCode;

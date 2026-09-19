@@ -15,6 +15,7 @@ const canceled=()=>new ShiyiError('request canceled','CANCELED',{stage:'queue',r
 // failures require intervention; another model response may repair output shape.
 export function backgroundRetryDelay(error, failures){
   const code=error?.code??'',d=error?.details??{},status=Number(d.status);
+  if(d.recoveryExhausted===true)return 0;
   if(['content_blocked','context_limit'].includes(d.upstreamHint)||['insufficient_quota','invalid_api_key','api_key_missing','context_length_exceeded','model_not_found','invalid_request_error','outbound_host_denied'].includes(d.upstreamCode))return 0;
   if([400,401,403,404,413,422].includes(status))return 0;
   const retryable=[408,429,500,502,503,504].includes(status)||code.startsWith('network.')||['TIMEOUT','PROVIDER_REQUEST_FAILED','PERSONA_RESPONSE_INVALID','PERSONA_STAGE_CHANGED','SUMMARY_RESPONSE_ERROR','VALIDATION_ERROR','MODEL_OUTPUT_TRUNCATED'].includes(code);

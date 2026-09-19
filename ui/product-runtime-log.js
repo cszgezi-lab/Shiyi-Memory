@@ -3,6 +3,7 @@ import { LOG_TASKS, LOG_PHASES, safeLogDetails } from '../src/product-runtime-lo
 import { esc } from '../src/product-settings-ui.js';
 import { failureText,productFailure } from '../src/product-feedback.js';
 import { safeValidationIssues, validationIssueText } from '../src/validation-diagnostics.js';
+import {PERSONA_ISSUES} from '../src/persona-validation.js';
 import {DIAGNOSTIC_REASONS,DIAGNOSTIC_PURPOSES,DIAGNOSTIC_STAGES,DIAGNOSTIC_ACTIONS,UPSTREAM_CODES,UPSTREAM_HINTS,PERSONA_STEPS,errorDiagnostics} from '../src/diagnostics.js';
 
 export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help">保留最近 2000 条，最多 2 MB。记录请求、解析、校验与保存过程；不包含 Key、聊天正文或模型原文。导出当前内存快照，不等待任务或写盘完成，不受筛选和分页影响。</p><div class="sy-actions"><button type="button" data-log-export>导出日志</button><button type="button" data-log-issues-text>只看失败（最近 50 条）</button><button type="button" data-log-text>查看／复制全部文本</button><button type="button" data-log-clear>清空日志</button></div><p data-log-export-status class="sy-help" role="status"></p><details data-log-fallback hidden><summary>日志文本（文件导出不可用时也能复制）</summary><textarea data-log-text-value readonly rows="6" aria-label="日志文本"></textarea><div class="sy-actions"><button type="button" data-log-copy>复制全部文本</button><button type="button" data-log-close>收起文本</button></div></details><label class="sy-field"><span>显示</span><select data-log-filter><option value="all">全部记录</option><option value="issues">失败与警告</option><option value="vectors">向量索引</option><option value="summary">总结</option><option value="merge">事件合并</option><option value="api">API 与助手</option></select></label><label class="sy-field"><span>每页条数</span><select data-log-page-size><option value="10">10 条</option><option value="20">20 条</option><option value="50">50 条</option><option value="120">120 条</option></select></label><p data-log-storage class="sy-help" role="status"></p><div data-log-list></div><div class="sy-batch-pagination" data-log-pager><button type="button" data-log-prev>上一页</button><span data-log-page></span><button type="button" data-log-next>下一页</button></div>`;}
@@ -70,6 +71,8 @@ function detailsHTML(entry){
   if(d.reason)lines.push(['具体原因',DIAGNOSTIC_REASONS[d.reason]]);
   if(d.personaField)lines.push(['人设检查字段',({name:'人物姓名',text:'档案正文',sourceFloors:'原文楼号'})[d.personaField]]);
   if(Number.isSafeInteger(d.profileIndex))lines.push(['回答中第几份档案',d.profileIndex+1]);
+  if(PERSONA_ISSUES[d.personaIssue])lines.push(['人物检查原因',PERSONA_ISSUES[d.personaIssue]]);
+  if(Number.isSafeInteger(d.editIndex))lines.push(['档案中第几项修改',d.editIndex+1]);
   if(Number.isSafeInteger(d.personaProfiles))lines.push(['通过检查的人物档案',d.personaProfiles]);
   if(Number.isSafeInteger(d.personaBindings))lines.push(['程序确认的原设定片段',d.personaBindings]);
   if(d.streaming!==undefined)lines.push(['流式接收',d.streaming?'是':'否']);

@@ -227,16 +227,17 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   // parts; that mode survives later snapshots so arbitrary fields are not lost.
   const localPatches=!spans.length&&Boolean(row.updates?.length||previous?.composition?.localMode==='patches'||previous?.composition?.changes?.length||previous&&!previous.composition);
   const parts=spans.length||localPatches?personaParts(spans,previous,{includeNotes:Boolean(row.updates?.length)}):[],byRef=new Map(parts.map(p=>[p.ref,p])),touched=new Set(),changes=[];
-  if(!parts.length&&!row.text.trim())throw fail('text','正文新角色须有可独立阅读的档案，不能只返回局部修改');
+  if(!parts.length&&!row.text.trim())throw fail('text','正文新角色须有可独立阅读的档案，不能只返回局部修改','persona_fields',{personaIssue:'empty_profile'});
   const validFloors=floors=>Array.isArray(floors)&&floors.length&&floors.every(f=>messages.some(m=>m.index===f));
-  if(row.updates!==undefined&&!Array.isArray(row.updates))throw fail('text','局部修改应为列表');
+  if(row.updates!==undefined&&!Array.isArray(row.updates))throw fail('text','局部修改应为列表','persona_fields',{personaIssue:'invalid_updates'});
   // A first source-only dossier has no mutable parts yet. Redundant edits must
   // not masquerade as original-book edits or block its complete initial text.
   const ignoredUpdates=parts.length?0:(row.updates??[]).length;
-  for(const edit of parts.length?(row.updates??[]):[]){
+  for(const [editIndex,edit] of (parts.length?(row.updates??[]):[]).entries()){
     const exact=parts.filter(p=>p.source==='chat'&&p.text.trim()===String(edit?.ref??'').trim());
     const part=byRef.get(String(edit?.ref??''))??(exact.length===1?exact[0]:null);
-    if(!part||touched.has(part.key)||typeof edit.text!=='string'||!edit.text.trim()||!validFloors(edit.sourceFloors)||/<%|%>|<\/?script\b|\{\{|@@|\[\[SHIYI_PERSONA:/i.test(edit.text))throw fail('text','局部修改没有唯一对应本人物原文或本批依据，原档案保留');
+    const issue=!part?'unknown_ref':touched.has(part.key)?'duplicate_ref':typeof edit?.text!=='string'||!edit.text.trim()?'empty_edit':!validFloors(edit.sourceFloors)?'invalid_edit_floors':/<%|%>|<\/?script\b|\{\{|@@|\[\[SHIYI_PERSONA:/i.test(edit.text)?'unsafe_edit':null;
+    if(issue)throw fail('text','局部修改没有唯一对应本人物原文或本批依据，原档案保留','persona_fields',{personaIssue:issue,editIndex});
     touched.add(part.key);const before=part.text;part.text=edit.text+(/\n$/.test(part.original)&&!edit.text.endsWith('\n')?'\n':'');part.sourceFloors=[...new Set(edit.sourceFloors)];
     if(before!==part.text)changes.push({title:part.title,before,after:part.text,sourceFloors:part.sourceFloors});
   }

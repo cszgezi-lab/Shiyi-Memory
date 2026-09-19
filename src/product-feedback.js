@@ -1,4 +1,5 @@
 import { humanValidationIssueText } from './validation-diagnostics.js';
+import {PERSONA_ISSUES} from './persona-validation.js';
 import { upstreamErrorCode,upstreamErrorHint,PERSONA_STEPS,DIAGNOSTIC_REASONS } from './diagnostics.js';
 
 const NETWORK = {
@@ -92,8 +93,9 @@ export function productFailure(error) {
     message+= ' 故事记忆已保存的部分不受影响；请在批次或召回页补建未完成索引，只调用向量模型，不重新总结。';
   }
   if(error?.details?.modelRole==='dynamicPersona'&&message){
-    const field=({name:'姓名无法唯一对应本批人物',text:'正文为空或含脚本标记',sourceFloors:'来源楼号缺失或不在本批原文中'})[error.details.personaField];
-    if(code==='PERSONA_RESPONSE_INVALID'&&field)message=`第${Number.isSafeInteger(error.details.profileIndex)?error.details.profileIndex+1:'?'}份人设：${field}。旧档案与后续队列保留；请在手动补建中继续未完成，自动更新可重试下一批。`;
+    const field=PERSONA_ISSUES[error.details.personaIssue]??({name:'姓名无法唯一对应本批人物',text:'档案正文或局部修改未通过检查',sourceFloors:'来源楼号缺失或不在本批原文中'})[error.details.personaField];
+    if(code==='PERSONA_RESPONSE_INVALID'&&field)message=`第${Number.isSafeInteger(error.details.profileIndex)?error.details.profileIndex+1:'?'}份人设${Number.isSafeInteger(error.details.editIndex)?`的第${error.details.editIndex+1}项修改`:''}：${field}。旧档案与有效候选保留；自动恢复只处理未完成部分，也可在总结页继续。`;
+    if(code==='MODEL_OUTPUT_TRUNCATED'&&error.details.recoveryExhausted)message='人设回答拆小后仍被截断，已停止重复相同请求；原档案与已完成候选保留。请检查服务输出能力或人设回复预算后继续，本批尚未应用。';
     message=message.replace('在批次管理中继续未完成任务即可，不必重新总结成功批次。','手动补建请点“继续未完成”；自动更新可重试下一批。无需重做主总结。').replace('提高总结输入预算','调整人设输入预算');
   }
   if(!message&&error?.details?.personaStep)message='此步骤发生本地异常，旧档案保留；具体阶段与错误类型已记录。';
