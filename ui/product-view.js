@@ -300,7 +300,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
    try{const value=selectedSummary(false);preview.textContent=mode==='range'?`本次：#${value.startIndex}–${value.endIndex}，共 ${value.endIndex-value.startIndex+1} 楼，每 ${value.batchSize} 楼一批。`:`本次：最近 ${value.count} 楼，每 ${value.batchSize} 楼一批。`;}catch{preview.textContent=mode==='range'?'请填写起止楼层。':'请填写楼数与每批楼数。';}
  }
  function summarize(withFocus){return app.summarize(selectedSummary(withFocus));}
- async function download(data,name,{preferBrowser=true}={}){
+ async function download(data,name,{preferBrowser=false}={}){
     // Only a host-confirmed save may be reported as success. A dispatched
     // payload (anchor / TT download-bridge hand-off) is explicitly unconfirmed,
     // and a failure must stay a failure while the text exit stays usable.
@@ -313,7 +313,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
       try{void Promise.resolve(app.reportError?.(error,{stage:'ui',action:'exportFile'})).catch(()=>{});}catch{/*导出诊断不能反过来阻止失败提示*/}
       throw error;
     }
-    if(result?.saved===true)host.toastr?.success?.(result.exportAttempt==='picker'?`文件已保存到${result.saveLocation??'手机 Downloads'}（系统直存失败，已改用文件选择器）`:`文件已保存到${result.saveLocation??'手机 Downloads'}`);
+    if(result?.saved===true)host.toastr?.success?.(result.exportAttempt==='picker'?`文件已保存到${result.saveLocation??'你选择的保存位置'}`:`文件已保存到${result.saveLocation??'手机 Downloads'}`);
     else if(result?.status==='dispatched')host.toastr?.info?.(result.dispatch==='share-unconfirmed'?'已交给系统分享；请确认文件已保存到目标位置':'已发出下载请求；在弹出的下载面板里选择保存位置，或直接点“查看／复制文本”自行保存');
     return result;
   }

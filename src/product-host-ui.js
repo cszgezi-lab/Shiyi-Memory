@@ -2,7 +2,9 @@ function triggerBrowserExport(blob, name, documentRef) {
   if (!documentRef?.createElement || !documentRef?.body) throw new Error('TT 下载桥和浏览器导出接口均不可用');
   const url = URL.createObjectURL(blob), anchor = documentRef.createElement('a');
   try {
-    anchor.href = url; anchor.download = name; documentRef.body.appendChild(anchor); anchor.click();
+    anchor.href = url; anchor.download = name; anchor.rel = 'noopener';
+    documentRef.body.appendChild(anchor);
+    anchor.click();
     // An anchor click only hands the payload to the host/browser download path.
     // It never proves that a file reached storage, so this result is reported as
     // "已派发" and can never be promoted to a save confirmation.
@@ -123,86 +125,98 @@ function withExportTimeout(promise, timeoutMs) {
   ]);
 }
 
-/** Use TT's export runtime so Android saves through its native Downloads bridge.
+/** Use TT's export runtime so Android saves through the native Downloads bridge.
  * Resolution contract: the promise only resolves when the host itself confirmed
  * a save (`saved:true`); every other outcome resolves as `status:'dispatched'`
  * (the payload was handed to a host path that cannot confirm storage) or rejects
- * with a classified FILE_EXPORT_FAILED / CANCELED error. */
+ * with a classified FILE_EXPORT_FAILED / CANCELED error.
+ *
+ * preferBrowser:
+ *  - true / 'browser': plain anchor.click() Web download. Works in desktop
+ *    browsers but often silently does nothing in Tauri WebView on Android.
+ *  - false / 'direct' (legacy default): the public-Downloads bridge first,
+ *    then the system document picker as a fallback. file_missing on many
+ *    Android devices.
+ *  - 'picker' (current default): the system document picker first; only fall
+ *    back to the direct public-Downloads bridge when the picker is unavailable.
+ *    The user gets a real system file picker and the chosen URI is confirmed
+ *    by the host, so a "saved" result actually means a file reached storage.
+ */
 export async function exportProductJson(data, name, {
   host = globalThis, documentRef = globalThis.document,
   loadExporter = () => import('/scripts/file-export.js'),
   timeoutMs = 30000,
-  // Default to the browser anchor download path: Android's native Downloads
-  // bridge is unstable (Java exceptions / file_missing), and the browser anchor
-  // reliably fires the system share/save sheet that lets the user pick a real
-  // location. Callers that need the native bridge can pass {preferBrowser:false}.
-  preferBrowser = true,
+  preferBrowser = false,
 } = {}) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  // The diagnostics files (logs, settings, presets) mostly need to leave the
-  // app so the user can save them somewhere external; the native Downloads path
-  // frequently fails on Android. Honour explicit caller requests, otherwise
-  // pick the safer browser path.
-  if (preferBrowser) return triggerBrowserExport(blob, name, documentRef);
+  // Honour an explicit "browser" preference for callers that want the anchor
+  // download path; otherwise enter the bridge path (which can also reach the
+  // picker, depending on preferBrowser).
+  if (preferBrowser === true || preferBrowser === 'browser') {
+    try { return await triggerBrowserExport(blob, name, documentRef); }
+    catch { /* fall through to the bridge path */ }
+  }
   if (host?.__TAURITAVERN__?.api) {
     let downloadBlobWithRuntime;
     try{({downloadBlobWithRuntime}=await loadExporter());if(typeof downloadBlobWithRuntime!=='function')throw new Error('missing exporter');}
     catch(error){
-      try{return {...triggerBrowserExport(blob,name,documentRef),nativeAttempt:'unavailable',reason:'export_module_unavailable',stage:'export_load'};}
+      try{return {...await triggerBrowserExport(blob,name,documentRef),nativeAttempt:'unavailable',reason:'export_module_unavailable',stage:'export_load'};}
       catch(fallbackError){throw exportFailure('当前 TT 文件导出接口不可用；日志可使用“查看／复制文本”导出','export_module_unavailable',{stage:'exporter_load',causeError:error,fallbackError});}
     }
     const bridge = host[BRIDGE_NAME];
     const observed = [];
-    // Attribution must never mask the real host failure: a bug while recording
-    // the failing operation is swallowed, not rethrown over the host error.
     trackHostOperations(bridge, (operation, error) => {
       try { if (observed.length < 8) observed.push({ operation, reason: saveStageOf(error) ?? 'unclassified', errorType: error?.name }); }
       catch { /* diagnostics only */ }
     });
     const exportDiagnostics = extra => ({ ...extra, exportBytes: blob.size, ...(observed.length ? { hostOperations: observed } : {}) });
+    const useDirect = preferBrowser === false || preferBrowser === 'direct';
     let attempt;
+    let pickerFallback;
     try{
-      attempt = await withExportTimeout(downloadBlobWithRuntime(blob, name), timeoutMs);
+      if (useDirect) {
+        attempt = await withExportTimeout(downloadBlobWithRuntime(blob, name), timeoutMs);
+      } else {
+        // 'picker' (and any non-direct, non-browser value): try the system
+        // picker first.  withDocumentPickerFallback flips
+        // supportsDirectPublicDownloads off on the bridge so downloadBlobWithRuntime
+        // routes through requestCreateDocumentPicker + copyFileToContentUri.
+        // If the bridge has neither of those, fall straight through to direct.
+        pickerFallback = await withDocumentPickerFallback(downloadBlobWithRuntime, blob, name, host, timeoutMs);
+        if (pickerFallback?.result) attempt = pickerFallback.result;
+        else attempt = await withExportTimeout(downloadBlobWithRuntime(blob, name), timeoutMs);
+      }
     }
     catch(error){
       const saveStage=saveStageOf(error);
       if(isCancelError(error))throw Object.assign(new Error('已取消文件导出'),{code:'CANCELED',details:exportDiagnostics({reason:'canceled',...(saveStage?{saveStage}:{}),causeError:error})});
-      if(isPermissionError(error))throw exportFailure('系统拒绝文件保存权限；日志可使用“查看／复制文本”','export_permission_denied',{stage:'export_save_publish',saveStage,exportAttempt:'direct',...exportDiagnostics({causeError:error})});
-      // The direct public-Downloads save failed.  Try the system picker before
-      // giving up: it writes through a user-chosen document URI instead of the
-      // MediaStore Downloads collection that just failed, so a device where only
-      // the direct path is broken can still export a file.
-      const fallback = await withDocumentPickerFallback(downloadBlobWithRuntime, blob, name, host, timeoutMs);
+      if(isPermissionError(error))throw exportFailure('系统拒绝文件保存权限；日志可使用“查看／复制文本”','export_permission_denied',{stage:'export_save_publish',saveStage,exportAttempt:useDirect?'direct':'picker',...exportDiagnostics({causeError:error})});
+      // Direct failed and the picker fallback did not run yet: try the picker
+      // once before giving up.  Picker already attempted and also failed falls
+      // through to the failure reporting below.
+      let fallback;
+      if (useDirect) fallback = await withDocumentPickerFallback(downloadBlobWithRuntime, blob, name, host, timeoutMs);
+      else fallback = pickerFallback;
       if (fallback) {
         if (!fallback.error && confirmedExport(fallback.result)) return {...normalizeExportResult(fallback.result),status:'saved',saved:true,exportAttempt:'picker',saveLocation:'你选择的保存位置',directFailure:true};
         if (isCancelError(fallback.error)) throw Object.assign(new Error('已取消文件导出'),{code:'CANCELED',details:exportDiagnostics({reason:'canceled',exportAttempt:'picker',causeError:fallback.error})});
       }
       const hostError = fallback?.error ?? error;
-      // 归因按「最后真正失败的那一步」算：直存先失败、备用通道又失败时，
-      // 之前用的是直存的阶段，会把备用通道的失败阶段说错。
       const failedStage = saveStageOf(hostError) ?? saveStage;
-      const exportAttempt = fallback ? 'picker_failed' : 'direct';
+      const exportAttempt = fallback ? 'picker_failed' : (useDirect ? 'direct' : 'picker_failed');
       const details = exportDiagnostics({stage:'export_save_publish',saveStage:failedStage,exportAttempt,causeError:hostError});
       if (isHostExceptionError(error)) {
         throw exportFailure(fallback ? '宿主的原生下载接口抛出 Java 异常，备用保存通道也没能确认文件已保存；请改用“查看／复制文本”导出' : '宿主的原生下载接口抛出 Java 异常，本次没有确认文件已保存；请改用“查看／复制文本”导出','export_host_exception',{...details,saveStage:saveStage??failedStage,causeError:error});
       }
       if (isHostExceptionError(hostError)) throw exportFailure('宿主的原生下载接口抛出 Java 异常，备用保存通道也没能确认文件已保存；请改用“查看／复制文本”导出','export_host_exception',details);
-      // 宿主连暂存文件都没写成：这一步在调用原生桥之前，报清楚比笼统说“保存失败”有用。
       if (failedStage==='staging_failed') throw exportFailure('宿主在写入导出暂存文件时失败，文件没有保存；请改用“查看／复制文本”导出','export_stage_write_failed',{...details,stage:'export_save_copy'});
-      // A missing staging file means the failed step is known before the bridge
-      // call; report it as its own reason instead of a generic native failure.
       if (failedStage==='file_missing') throw exportFailure('宿主找不到本次导出的暂存文件，文件没有保存；请改用“查看／复制文本”导出','export_stage_file_missing',{...details,stage:'export_save_verify'});
-      // A picker attempt that also failed is a definite failure: the anchor path
-      // cannot help on Android, so do not degrade it into a vague "dispatched".
       if (fallback) throw exportFailure('宿主直存和系统文件选择器都没能保存文件；请改用“查看／复制文本”导出','export_native_failed',details);
-      // A generic native failure without a picker channel cannot be confirmed as
-      // a save.  Offer the host-owned dispatch path when it exists, but report it
-      // as unconfirmed rather than pretending the file was stored.
       try{return {...triggerBrowserExport(blob,name,documentRef),nativeAttempt:'failed',reason:'export_native_failed',stage:'export_save_publish',...(failedStage?{saveStage:failedStage}:{}),exportAttempt,status:'dispatched',saved:false,dispatch:'browser-fallback'};}
       catch(fallbackError){throw exportFailure('宿主保存文件失败；本次没有确认文件已保存，可复制文本导出','export_native_failed',{...details,fallbackError});}
     }
-    if(confirmedExport(attempt))return {...normalizeExportResult(attempt),status:'saved',saved:true,exportAttempt:'direct',saveLocation:saveLocationOf(attempt),...exportDiagnostics({})};
-    return {...normalizeExportResult(attempt),status:'dispatched',saved:false,exportAttempt:'direct',reason:'export_dispatched_unconfirmed',dispatch:dispatchOnly(attempt),...exportDiagnostics({})};
+    if(confirmedExport(attempt))return {...normalizeExportResult(attempt),status:'saved',saved:true,exportAttempt:useDirect?'direct':'picker',saveLocation:saveLocationOf(attempt),...exportDiagnostics({})};
+    return {...normalizeExportResult(attempt),status:'dispatched',saved:false,exportAttempt:useDirect?'direct':'picker',reason:'export_dispatched_unconfirmed',dispatch:dispatchOnly(attempt),...exportDiagnostics({})};
   }
   return {...triggerBrowserExport(blob,name,documentRef),reason:'export_dispatched_unconfirmed',stage:'export_dispatch',exportAttempt:'browser',dispatch:'browser-fallback'};
 }

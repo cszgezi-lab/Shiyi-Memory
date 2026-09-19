@@ -1,25 +1,5 @@
 # 更新记录
 
-## 0.21.33
-
-- **修 Android 导出经常失败的问题**：之前的导出在 Android 上会走宿主的原生 Downloads 桥（`saveFileToDownloads` / `requestCreateDocumentPicker`），这条路径在很多设备上抛 Java 异常或 `file_missing`，导致「配置 / 全局备份 / 聊天备份 / 注入日志 / 总结预设 / 正文提取 / 扩展区块」这一系列导出按钮点了之后看不到文件，或者弹出失败提示。现在统一改为「浏览器下载 / 分享」路径（`anchor.download` 触发系统的下载/分享面板，用户自己选保存位置），不再依赖那条不稳的原生桥；`download()` 默认就是这条路径，需要原生桥的调用方可以显式传 `{preferBrowser:false}`。提示文案也同步改成「已发出下载请求；在弹出的下载面板里选择保存位置，或直接点"查看／复制文本"自行保存」。
-
-## 0.21.32
-
-- **修 paint 阶段和 mount 阶段的 null-deref 崩溃**：经过 JSDOM 自动化挂载测试，发现并修复了以下启动/渲染崩溃：
-  - `product-extraction-view.js`：mount 时 `panel.querySelector('[data-view="extraction"]')` 返回 null 导致后续全崩 → 加 `?.` 并 early return
-  - `product-character-journal.js`：mount 时对缺失的 `[data-keepsake="dialogue"]` 或 `[data-keepsake="diary"]` 元素调用 `querySelector` → 加 `?.` 并 continue
-  - `product-people-view.js`：mount 时根元素缺失 → 加 `?.` 并 early return
-  - `product-summary-presets.js`：mount 时根元素缺失 → 加 `?.` 并 early return
-  - `product-quality-view.js`：mount 时 `$('[data-quality-optional]').before(...)` 元素不存在 → 改为 `?.before()`
-  - `product-knowledge-view.js`：mount 时 `$('[data-files]')` 返回 null 导致 `.files` 访问崩溃 → 加 null 检查
-  - `product-dynamic-persona.js`：mount 时 `root.querySelectorAll(...)` 中 root 为 null → 加 early return
-  - `product-runtime-log.js`、`product-batch-list.js`、`product-merge-view.js`、`product-injection-log.js`、`product-knowledge-view.js`：paint 函数中对缺失元素的 `.value`、`.textContent`、`.innerHTML`、`.disabled` 赋值 → 加 null guards
-
-## 0.21.31
-
-- **修 0.21.30 启动时报 `Cannot read properties of null (reading 'addEventListener')` 的问题**：部分视图（召回、批次、合并、日志、正文提取、字典、人设、世界、注入、人物、心迹、助手预设、设置等）的 mount 阶段会去找面板里的元素并直接挂监听；只要那一步查询返回 null，扩展整体就会立刻挂掉，留下一个红框错误条。这次给所有挂监听的位置都补了可选链，元素不存在时安静跳过，插件不再因为某一处缺元素就整页崩。
-
 ## 0.21.30
 
 - **修复 0.21.29 一进创建阶段就崩溃的问题**：保存批次后曾误调一个不存在的 `wakeVectors()` 函数，扩展加载时立即抛 ReferenceError 整个挂掉。已移除那一行，保存-写入-刷新这条主路径不再受影响。
