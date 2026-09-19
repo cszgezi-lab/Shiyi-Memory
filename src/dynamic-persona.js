@@ -77,6 +77,27 @@ export function mergePersonaProfiles(primary,secondary){
     protected:true,
   };
 };
+/** Routine overlay when the same dossier gets a fresh batch update.  Keeps
+ * every accumulated field from `prior` (text, composition, bindings, examples,
+ * sourceFloors, manual, locked) and treats `update` only as the latest snapshot
+ * to merge on top.  Unlike `mergePersonaProfiles` it does not promote the
+ * profile to protected / mergedFrom, and it does not require the two ids to
+ * differ — by construction they are the same person in the same dossier. */
+export function overlayPersonaProfile(prior,update){
+  if(!prior||!update||prior.id!==update.id)throw new Error('overlay 需要同一份人物档案');
+  return {...prior,
+    name:prior.name??update.name,
+    aliases:[...new Set([...(prior.aliases??[]),...(update.aliases??[])].filter(name=>foldName(name)!==foldName(prior.name)))],
+    text:mergeTextBlocks(prior.text,update.text),
+    composition:mergeComposition(prior.composition,update.composition),
+    bindings:mergeList(prior.bindings,update.bindings),
+    sourceFloors:[...new Set([...(prior.sourceFloors??[]),...(update.sourceFloors??[])].filter(Number.isInteger))].sort((a,b)=>a-b),
+    through:Math.max(prior.through??-1,update.through??-1),
+    // Auto update must never re-introduce a `deleted` flag (a merge can set it
+    // to false).  Leave the field undefined to match the original behaviour.
+    deleted:undefined,
+  };
+};
 /** Player-authored dossier text that a staged manual rebuild must not overwrite.
  * Legacy merge targets carry manual:true without the new marker and are still
  * treated as protected unless the player explicitly locked them. */
@@ -419,7 +440,12 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       await transact(async()=>{
         guard();const base=data.profiles;
         const versionId=makeId('persona-version');await bound.write(versionId,{profiles:previous,through:next.nextEnd});guard();
-        const profiles=[...base];for(const row of rows){const i=profiles.findIndex(p=>p.id===row.id);if(i>=0&&(profiles[i].locked||stableStringify(profiles[i])!==stableStringify(previous.find(p=>p.id===row.id))))continue;const item={...row,through:next.nextEnd,sourceHash,versionId,manual:false};if(i<0)profiles.push(item);else profiles[i]=item;}
+        // 自动人设每次只更新一段正文，但要保留前面所有批次的累积档案与原设定：
+        // 用 `overlayPersonaProfile` 把模型返回的 `row` 当作「本次新增」叠加到
+        // 上一版 `prior` 上，而不是 `profiles[i]=item` 这样直接覆盖。这样每次
+        // 总结后看到的是「在原档案上缓慢修改并叠加」，而不是「最新一次」。
+        // 锁定档案跳过本次更新。
+        const profiles=[...base];for(const row of rows){const i=profiles.findIndex(p=>p.id===row.id);if(i<0){profiles.push({...row,through:next.nextEnd,sourceHash,versionId,manual:false});continue;}const prior=profiles[i];if(prior.locked||stableStringify(prior)!==stableStringify(previous.find(p=>p.id===row.id)))continue;const merged=overlayPersonaProfile(prior,row);profiles[i]={...merged,through:next.nextEnd,sourceHash,versionId};}
         const batch={startIndex:next.nextStart,endIndex:next.nextEnd,status:'saved',sourceHash,versionId,profileCount:rows.length,requestCount:cached?.fingerprint===fingerprint?0:1,...(rejectedProfiles.length?{rejectedProfiles}:{})};
         if(manualId){
           if(data.manualPlan?.id!==manualId||data.manualPlan.status!=='running')throw canceled();

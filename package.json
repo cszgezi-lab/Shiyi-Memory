@@ -1,0 +1,17 @@
+{
+  "name": "shiyi-memory",
+  "version": "0.21.36",
+  "private": true,
+  "description": "拾忆：TT 聊天记忆、时间与知情参考、自然语言配置助手",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:watch": "node --test --watch",
+    "verify:release": "node tools/verify-release.mjs",
+    "probe": "node src/probe-cli.js --mode=synthetic",
+    "build": "node tools/build-release.mjs"
+  }
+}

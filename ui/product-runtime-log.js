@@ -8,27 +8,26 @@ import {DIAGNOSTIC_REASONS,DIAGNOSTIC_PURPOSES,DIAGNOSTIC_STAGES,DIAGNOSTIC_ACTI
 export function runtimeLogHTML(){return `<h3>运行日志</h3><p class="sy-help">保留最近 2000 条，最多 2 MB。记录请求、解析、校验与保存过程；不包含 Key、聊天正文或模型原文。导出当前内存快照，不等待任务或写盘完成，不受筛选和分页影响。</p><div class="sy-actions"><button type="button" data-log-export>导出日志</button><button type="button" data-log-issues-text>只看失败（最近 50 条）</button><button type="button" data-log-text>查看／复制全部文本</button><button type="button" data-log-clear>清空日志</button></div><p data-log-export-status class="sy-help" role="status"></p><details data-log-fallback hidden><summary>日志文本（文件导出不可用时也能复制）</summary><textarea data-log-text-value readonly rows="6" aria-label="日志文本"></textarea><div class="sy-actions"><button type="button" data-log-copy>复制全部文本</button><button type="button" data-log-close>收起文本</button></div></details><label class="sy-field"><span>显示</span><select data-log-filter><option value="all">全部记录</option><option value="issues">失败与警告</option><option value="vectors">向量索引</option><option value="summary">总结</option><option value="merge">事件合并</option><option value="api">API 与助手</option></select></label><p data-log-storage class="sy-help" role="status"></p><div data-log-list></div><div class="sy-batch-pagination" data-log-pager><button type="button" data-log-prev>上一页</button><span data-log-page></span><button type="button" data-log-next>下一页</button></div>`;}
 const fields={readingOriginalChars:'原始正文字符数',readingSafeChars:'安全正文字符数',readingOutputChars:'读取副本字符数',readingFilteredChars:'额外过滤字符数',readingFallbacks:'回退原安全正文的楼数',requestNumber:'向量请求序号',requestItems:'输入片段数',receivedVectors:'返回向量数',inputChars:'本次输入字符数',longestInputChars:'最长片段字符数',vectorDimensions:'向量维度',indexedItems:'已保存索引条数',pendingItems:'未完成索引条数',failedItems:'失败索引条数',batchNumber:'总结批次',childIndex:'内部子批（从 0 计）',sourceCount:'读取消息数',inputLimit:'输入预算',inputUnits:'实际输入估算',elapsedMs:'耗时（毫秒）',status:'HTTP 状态',expected:'应有逐楼摘要',received:'收到摘要条数',covered:'完整对应楼数',invalidRows:'来源无效或多楼合并',duplicateCount:'重复摘要条数',promptTokens:'服务报告输入 Token',completionTokens:'服务报告输出 Token',totalTokens:'服务报告总 Token',reasoningTokens:'其中推理 Token',responseChars:'回复文本字符数',savedBatches:'保存批数'};
 export function runtimeLogSummary(entry){
-  const d=entry.details??{},parts=[];
-  if(d.modelRequested===false)parts.push('本次未调用模型');
-  if(d.lastIndex!==undefined)parts.push(`最新 #${d.lastIndex}，保留最近 ${d.keepRecent??0} 楼`);
-  if(d.startIndex!==undefined)parts.push(`第 ${d.startIndex}–${d.endIndex??d.startIndex} 楼`);
-  if(entry.phase==='reading')parts.push(`读取副本 ${d.readingOutputChars??0} 字符，额外过滤 ${d.readingFilteredChars??0} 字符${d.readingFallbacks?`；${d.readingFallbacks} 楼使用原安全正文，可在设置→正文提取预览原因`:''}`);
-  if(entry.task==='vectors'&&entry.phase==='retry_wait')parts.push(`向量服务暂不可用，约 ${Math.max(1,Math.ceil((d.retryDelayMs??0)/1000))} 秒后自动续建；无需重新总结`);
-  else if(d.code)parts.push(productFailure({code:d.code,details:{...d,...(['vectors','knowledge-vectors'].includes(entry.task)?{purpose:'embeddings'}:{})}}).message);
-  else parts.push(LOG_PHASES[entry.phase]??'操作记录');
-  if(d.sourceTimeCorrections)parts.push(`对照原文场景修正 ${d.sourceTimeCorrections} 处日期错位；未调用校对模型`);
-  if(d.savedBatches!==undefined)parts.push(`本次已保存 ${d.savedBatches} 批`);
-  if(d.pendingBatches!==undefined)parts.push(`另有 ${d.pendingBatches} 批待处理`);
-  if(d.plannedBatches!==undefined)parts.push(`计划 ${d.plannedBatches} 批，每批 ${d.batchSize} 楼`);
-  if(d.indexedItems!==undefined)parts.push(`索引已建 ${d.indexedItems} 条，待建 ${d.pendingItems??0} 条${d.failedItems?`（其中 ${d.failedItems} 条失败）`:''}`);
-  // 本轮注入准备花了多久、花在哪一步：这是“回复为什么慢”的直接答案。
-  if(entry.task==='recall'&&d.elapsedMs!==undefined){
-    const sec=value=>String((value/1000).toFixed(2))+' 秒';
-    const limit=d.deadlineMs?'；在线等待上限 '+String(Math.round(d.deadlineMs/1000))+' 秒（'+(d.deadlineScope==='shared'?'共享':'各接口独立')+'）':'';
-    parts.push('本轮准备注入了 '+sec(d.elapsedMs)+'：本地检索 '+sec(d.localMs??0)+'、向量 '+sec(d.vectorMs??0)+'、重排 '+sec(d.rerankMs??0)+limit);
+  // 一条任务一条摘要，一次看到任务名 / 范围 / 结果，避免把技术详情全堆在一行里。
+  const d=entry.details??{};
+  const range=d.startIndex!==undefined?` · #${d.startIndex}–${d.endIndex??d.startIndex}`:'';
+  const batch=d.batchNumber!==undefined?` · 第 ${d.batchNumber} 批`:'';
+  const tail=[];
+  if(d.sourceTimeCorrections){
+    tail.push(`对照原文场景修正 ${d.sourceTimeCorrections} 处日期错位；未调用校对模型`);
   }
-  if(d.elapsedMs!==undefined&&entry.task!=='recall'){const seconds=Math.round(d.elapsedMs/1000);parts.push(`${entry.task==='summary'&&['failed','complete'].includes(entry.phase)?'整轮累计（非单次请求）':'耗时'}：${seconds>=60?`${Math.floor(seconds/60)} 分 ${seconds%60} 秒`:`${seconds} 秒`}`);}
-  return parts.map(p=>p.replace(/[。；]+$/u,'')).join('。');
+  if(d.code){
+    // 失败时把可读失败原因放第一行；其余字段（耗时、已保存批数等）放后两行
+    tail.push(productFailure({code:d.code,details:{...d,...(['vectors','knowledge-vectors'].includes(entry.task)?{purpose:'embeddings'}:{})}}).message);
+  }
+  if(d.savedBatches!==undefined)tail.push(`本次已保存 ${d.savedBatches} 批${d.pendingBatches?`，另有 ${d.pendingBatches} 批待处理`:''}`);
+  if(d.plannedBatches!==undefined)tail.push(`计划 ${d.plannedBatches} 批，每批 ${d.batchSize} 楼`);
+  if(d.indexedItems!==undefined)tail.push(`索引已建 ${d.indexedItems} 条，待建 ${d.pendingItems??0} 条${d.failedItems?`（${d.failedItems} 条失败）`:''}`);
+  if(d.elapsedMs!==undefined){
+    const sec=Math.round(d.elapsedMs/1000);
+    tail.push(sec>=60?`耗时 ${Math.floor(sec/60)} 分 ${sec%60} 秒`:`耗时 ${sec} 秒`);
+  }
+  return `${LOG_TASKS[entry.task]??entry.task} · ${LOG_PHASES[entry.phase]??'操作记录'}${range}${batch}。${tail.join('；')||'无附加信息'}`.replace(/[。；]+$/u,'')+'。';
 }
 function detailsHTML(entry){
   const d=entry.details,lines=[];

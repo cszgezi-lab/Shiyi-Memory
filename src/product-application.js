@@ -737,6 +737,22 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           const risks=new Set(qualityTargets(state.rawRecords,qualitySaved).map(r=>r.id));
           automaticQualityIds.push(...ids.filter(id=>risks.has(id)));
         }
+        // 每批保存后立即给该批记录触发一次向量索引，不再只靠后台维护的
+        // `wakeVectors`：那个通道会在多任务并发时被取消、或者 `vectorAutoUpdate`
+        // 被关闭时静默不做。直接用本批 id 调一次 buildVectors，独立排队，
+        // 用户点完「总结下一批」就能在批次管理看到「索引建立中 N/total」。
+        // 如果已有索引任务在跑（并发），把它延后到本次结束再触发。
+        const postSummaryIds=batchIdsForVector(operationId);
+        if(postSummaryIds.length){
+          const runLater=async()=>{
+            try{
+              if(vectorJob)await vectorJob.done.catch(()=>{});
+              if(!workspace?.isCurrent()||state.stale||disposed)return;
+              await buildVectors({ids:postSummaryIds});
+            }catch(error){void reportError(error,{task:'vectors',stage:'post_summary'});}
+          };
+          void runLater();
+        }
       }
       // All source-valid summaries are already durable. Merge is a separate
       // task and cannot mark any of these batches as failed or roll them back.
@@ -1327,6 +1343,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(options.reranker){const rerank=options.reranker;options.reranker=async args=>{try{return await rerank(args);}catch(error){void reportError(error,{task:'recall',stage:'validate',modelRole:'rerank',level:'warning'});throw error;}};}
     return options;
   }
+  // 总结一保存完，把这次产生的记忆记录 id 交给 buildVectors 做即时索引。
+  // 返回空数组表示本批没有可向量化的记忆或向量已禁用。
+  function batchIdsForVector(operationId){
+    if(!core.settings.vectorEnabled)return [];
+    const batch=state.batches.find(b=>b.operationId===operationId);
+    if(!batch)return [];
+    const ids=MEMORY_CATEGORIES.flatMap(k=>batch.records?.[k]??[]).map(r=>r?.id).filter(Boolean);
+    return ids;
+  }
   async function buildVectors({background=false,rebuild=false,ids=null,diagnosticRun}={}) {
     assertCurrent();if(vectorJob)throw new Error('向量索引正在更新');
     if(recallReaders){if(background)return {level:'info',paused:true};throw new Error('正在准备本轮记忆，请稍后更新索引');}
@@ -1536,8 +1561,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
   async function stop(){await dynamicPersona.pause();vectorStopped=true;clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;automaticPaused=true;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
-  const application={saveCharacterKeepsake,editPersonProfile,catchUpAutomatic:()=>summarize({missingOnly:true}),inspectAutomaticProgress,setAutoStartFloor,setAutomatic,processAutomatic:()=>autoSummary({force:true}),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
-    inspectDynamicPersona:()=>dynamicPersona.inspect(),processDynamicPersona:async()=>{await dynamicPersona.load();return dynamicPersona.process({force:true,retry:true});},pauseDynamicPersona:()=>dynamicPersona.pause(),setDynamicPersonaStart:floor=>dynamicPersona.setStart(floor),editDynamicPersona:(id,patch)=>dynamicPersona.edit(id,patch),bindDynamicPersona:(name,targetId)=>dynamicPersona.bind(name,targetId),mergeDynamicPersona:(sourceId,targetId)=>dynamicPersona.merge(sourceId,targetId),undoDynamicPersona:id=>dynamicPersona.undo(id),addDynamicPersona:(name,text)=>dynamicPersona.add(name,text),
+  // 补一批 / 检查进度 / 立刻处理：包到 logged('summary', ...) 里，
+  // 这样按钮点击会立即产生一条「开始 / 完成 / 失败」的运行日志记录，
+  // UI 反馈也由 run() 的 feedback 链路驱动，不会再「按了没反应」。
+  const application={saveCharacterKeepsake,editPersonProfile,catchUpAutomatic:()=>summarize({missingOnly:true}),inspectAutomaticProgress:()=>logged('summary',async run=>{await inspectAutomaticProgress();runtimeLog.record({run,task:'summary',phase:'complete',level:'success',details:{}});return {batches:0};}),setAutoStartFloor,setAutomatic,processAutomatic:()=>logged('summary',run=>autoSummary({force:true})),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
+    inspectDynamicPersona:()=>logged('persona',async run=>{await dynamicPersona.load();const result=await dynamicPersona.inspect();runtimeLog.record({run,task:'persona',phase:'complete',level:'success',details:{}});return result;}),
+    processDynamicPersona:async()=>logged('persona',async run=>{await dynamicPersona.load();return dynamicPersona.process({force:true,retry:true});}),pauseDynamicPersona:()=>dynamicPersona.pause(),setDynamicPersonaStart:floor=>dynamicPersona.setStart(floor),editDynamicPersona:(id,patch)=>dynamicPersona.edit(id,patch),bindDynamicPersona:(name,targetId)=>dynamicPersona.bind(name,targetId),mergeDynamicPersona:(sourceId,targetId)=>dynamicPersona.merge(sourceId,targetId),undoDynamicPersona:id=>dynamicPersona.undo(id),addDynamicPersona:(name,text)=>dynamicPersona.add(name,text),
     previewDynamicPersonaManual:async options=>{await dynamicPersona.load();return dynamicPersona.previewManual(options);},
     async previewNarrativeExtraction({text,floor,config=core.settings.narrativeExtraction}={}){
       if(typeof text==='string')return narrativePreview({id:'local-preview',text},config);

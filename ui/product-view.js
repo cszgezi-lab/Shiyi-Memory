@@ -118,17 +118,22 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
   </section>`).join('');
 }
 /** 按楼层把四种状态画成扇形：已总结（实色）、缺口（红）、按设置不记录（斜纹灰）、未到（浅灰）。 */
- function summaryPieGradient({covered=0,missing=0,skipped=0,pending=0}={}){
+function summaryPieGradient({covered=0,missing=0,skipped=0,pending=0}={}){
   const total=Math.max(1,covered+missing+skipped+pending);
   const at=value=>value/total*360;
   const a=at(covered),b=a+at(missing),c=b+at(skipped),d=c+at(pending);
   return `conic-gradient(var(--sy-accent) 0deg ${a}deg,#b04a3a ${a}deg ${b}deg,color-mix(in srgb,currentColor 22%,transparent) ${b}deg ${c}deg,color-mix(in srgb,currentColor 8%,transparent) ${c}deg ${d}deg)`;
 }
- function summaryModuleText({covered,missing,skipped,pending,next}){
+function summaryModuleText({covered,missing,skipped,pending,next,batches=[],startFloor=1,chatFloors=null}){
   const range=(a,b)=>a===b?`#${a}`:`#${a}–${b}`;
+  // 已总结范围：直接从已保存批次算，挡住窗口外的批次也算「已总结」（这样不会显示 0%）。
+  const savedRanges=batches.filter(b=>b.status!=='deleted'&&(b.status==='saved'||b.savedOperationId)&&Number.isSafeInteger(b.startIndex)&&Number.isSafeInteger(b.endIndex)).map(b=>({startIndex:b.startIndex,endIndex:b.endIndex})).sort((a,b)=>a.startIndex-b.startIndex);
+  const merged=[];for(const r of savedRanges){const last=merged.at(-1);if(last&&r.startIndex<=last.endIndex+1)last.endIndex=Math.max(last.endIndex,r.endIndex);else merged.push({...r});}
+  const fromFloor=merged[0]?.startIndex??null,toFloor=merged.at(-1)?.endIndex??null;
+  const savedText=!fromFloor?'尚未开始记录':merged.length===1?`已总结 ${range(fromFloor,toFloor)}`:`已总结 ${merged.length} 段：${merged.slice(0,3).map(r=>range(r.startIndex,r.endIndex)).join('、')}${merged.length>3?' …':''}`;
   return {
-    state:missing?`缺 ${missing} 楼`:'无缺口',
-    covered:covered?`已总结 ${range(1,covered)}`:'尚未开始记录',
+    state:missing?`缺 ${missing} 楼`:!fromFloor?'未记录':(skipped&&chatFloors!==null?`按设置不记录 ${skipped} 楼`:'无缺口'),
+    covered:savedText,
     next:next?`下一批 ${range(next.startIndex,next.endIndex)}`:next===null?'范围已跟上聊天进度':'等待读取聊天进度',
     legend:`实色=已总结 ${covered} 楼 · 红=缺口 ${missing} 楼 · 斜纹=按设置不记录 ${skipped} 楼 · 浅=未到 ${pending} 楼`,
   };
@@ -150,7 +155,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
      const covered=coverage.coveredFloors,missing=coverage.missingFloors;
      const pending=chatFloors===null?0:Math.max(0,chatFloors-covered-missing-skipped);
      const next=chatFloors===null?undefined:(plan.ready||plan.nextEnd<=plan.eligibleEnd?{startIndex:plan.nextStart,endIndex:plan.nextEnd}:null);
-     const text=summaryModuleText({covered,missing,skipped,pending,next});
+     const text=summaryModuleText({covered,missing,skipped,pending,next,batches:row.batches,startFloor:row.startFloor,chatFloors});
      const pie=node.querySelector?.('[data-summary-pie]');
      if(pie)pie.style.background=summaryPieGradient({covered,missing,skipped,pending});
      if(node.querySelector?.('[data-summary-percent]'))node.querySelector('[data-summary-percent]').textContent=`${Math.round(covered/Math.max(1,covered+missing+skipped+pending)*100)}%`;
