@@ -46,7 +46,8 @@ export function markMemoryStates(cards,{dictionary}={}){
     if(old.epistemicStatus==='user_asserted'&&r.epistemicStatus!=='user_asserted')continue;
     if(r.epistemicStatus==='unknown'||['character_claim','inferred','uncertain','rumor'].includes(r.epistemicStatus)&&r.epistemicStatus!==old.epistemicStatus)continue;
     if(r.category==='commitmentChanges'){
-      if(!['proposed','accepted',...closed].includes(r.state)||closed.has(old.state))continue;
+      if(!['proposed','accepted',...closed].includes(r.state))continue;
+      if(closed.has(old.state)&&!(r.correctionOf===old.id&&r.state===old.state))continue;
       if(old.state==='accepted'&&r.state==='proposed')continue;
       if(stableStringify(old.temporal?.plannedFor??null)!==stableStringify(r.temporal?.plannedFor??null))continue;
     }

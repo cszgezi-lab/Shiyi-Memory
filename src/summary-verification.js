@@ -232,7 +232,7 @@ export function verificationRequest(request,draft,{validationIssues=[],pending=[
   const {claimChecks,...prior}=deltaVerificationRequest(request,draft,{validationIssues,pending});
   const stateCategories=['relationshipChanges','commitmentChanges'];
   const needsStateLinks=category=>(request.relevantRecords?.[category]?.length??0)>0||(draft[category]??[]).some(r=>r.completionOf||r.correctionOf||r.supersedes);
-  const stateFields=new Set(['supersedes','completionOf','context','scope','conditions']);
+  const stateFields=new Set(['supersedes','completionOf','correctionOf','context','scope','conditions']);
   // Indexed edits do not need opaque storage IDs. Keep an ID only when another
   // record references it; preserve every narrative, property and source locator.
   const referenced=new Set();

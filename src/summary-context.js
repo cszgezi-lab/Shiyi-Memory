@@ -2,6 +2,8 @@ import { clone, estimateUnits, stableStringify } from './utils.js';
 import { tokenizeChinese } from './retrieval.js';
 import { sourceTimeline } from './source-consistency.js';
 import {markMemoryStates} from './memory-current-state.js';
+import {explicitSubjectNames} from './product-person-profiles.js';
+import {foldName} from './name-fold.js';
 
 // Storage proofs stay in the repository. Model context needs exact identifiers,
 // meaningful fields and source locators, not repeated hashes and old revisions.
@@ -44,8 +46,20 @@ export function selectSummaryContext(records, messages, {budgetUnits=6000, maxRe
     }
   }
   candidates.sort((a,b)=>b.score-a.score || String(a.record.id).localeCompare(String(b.record.id)));
-  let usedUnits=0,count=0;
-  for (const item of candidates) {
+  // High-scoring long events must not evict every same-participant current
+  // relationship/promise ID. Reserve at most a third of the EXISTING budget,
+  // one per directional pair/category, then use normal relevance ordering.
+  const folded=foldName(query),reserved=[],groups=new Set();let reservedUnits=0;
+  for(const item of candidates){
+    if(!['relationshipChanges','commitmentChanges'].includes(item.category))continue;
+    const r=item.record,names=explicitSubjectNames(item.category==='commitmentChanges'?r.participants??r.subject:[r.from??r.subject,r.to??r.object]);
+    if(names.length<2||!names.every(n=>foldName(n)&&folded.includes(foldName(n))))continue;
+    const pair=names.map(foldName),group=JSON.stringify([item.category,item.category==='commitmentChanges'?pair.sort():pair]);
+    if(groups.has(group)||reserved.length>=Math.min(12,maxRecords)||reservedUnits+item.units>budgetUnits/3)continue;
+    groups.add(group);reserved.push(item);reservedUnits+=item.units;
+  }
+  const prioritized=new Set(reserved);let usedUnits=0,count=0;
+  for (const item of [...reserved,...candidates.filter(c=>!prioritized.has(c))]) {
     if (count>=maxRecords) break;
     if (usedUnits+item.units>budgetUnits) continue;
     selected[item.category].push(item.record);usedUnits+=item.units;count++;

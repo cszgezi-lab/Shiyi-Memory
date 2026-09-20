@@ -15,7 +15,8 @@ import {editPersonaCasting,inferPersonaCasting,PERSONA_CASTING_RULE,rememberPers
 import {projectCurrentPersona,personaTimelineFrame} from './persona-current-projection.js';
 import {PERSONA_COMPOSITION_RULE,personaParts,personaMaterials,personaReviewFocus,composePersona,personaSpokenAliases,personaCompositionText} from './persona-composition.js';
 import {createPersonaRefinement} from './persona-refinement.js';
-import {PERSONA_DEVELOPMENT_RULE,PERSONA_IMPACT_RULE,personaCharacterCandidates} from './persona-development.js';
+import {PERSONA_DEVELOPMENT_RULE,PERSONA_IMPACT_RULE as PERSONA_IMPACT_BASE,PERSONA_CURRENT_ARC_RULE,personaCharacterCandidates} from './persona-development.js';
+const PERSONA_IMPACT_RULE=`${PERSONA_IMPACT_BASE}\n${PERSONA_CURRENT_ARC_RULE}`;
 import {PERSONA_RECOVERY_VERSION} from './persona-validation.js';
 import {recoverPersonaBatch} from './persona-response-recovery.js';
 

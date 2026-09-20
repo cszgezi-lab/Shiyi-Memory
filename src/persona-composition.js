@@ -223,6 +223,24 @@ export function personaMaterials(records,identity,mentioned,endFloor){
   return [...latest.values()];
 }
 
+// Keep source quotes in storage; select a small diverse reading projection.
+// Only an explicitly linked arc can retire its old expression automatically.
+export function currentPersonaExamples(examples,development=[],limit=6){
+  const arcs=new Map(development.map(d=>[d.key,d])),seen=new Set(),groups=new Map(),pool=[];
+  for(const q of [...examples].sort((a,b)=>b.floor-a.floor)){
+    const arc=arcs.get(q.developmentKey);
+    if(q.status==='historical'||arc&&q.floor<arc.floor||seen.has(q.text))continue;
+    seen.add(q.text);pool.push(q);
+  }
+  const selected=[],rest=[];
+  for(const q of pool){
+    const group=JSON.stringify([foldName(q.to??''),q.context??'']),count=groups.get(group)??0;
+    if(count>=2){rest.push(q);continue;}
+    groups.set(group,count+1);selected.push(q);
+  }
+  return [...selected,...rest].slice(0,limit);
+}
+
 export function composePersona(row,{spans,previous,messages,developmentMessages,identity,name,fail}){
   // Source-only snapshots must not become immutable original-book material.
   // Explicit local-ref edits and legacy player prose retain their editable
@@ -257,12 +275,31 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   }
   const sceneEvidence=personaSceneEvidence(messages,identity,name,previous?.composition?.sceneEvidence);
   const development=mergePersonaDevelopment(row.development,{previous:previous?.composition?.development??[],messages:developmentMessages??messages.map(m=>({...m,text:qualitySourceSegments(m).map(s=>s.text).join('\n\uFFFC\n')})),identity,name});
-  const notes=row.text.trim(),composition={version:1,retiredParts:clone(previous?.composition?.retiredParts??[]),parts,notes,examples,sceneEvidence,changes,rejectedExamples,ignoredUpdates,development:development.items,rejectedDevelopment:development.rejected,...(!spans.length?{localMode:localPatches&&parts.length?'patches':'snapshot'}:{}),...(!parts.length?{sourceBaseline:sourcePersonaBaseline(notes,name,row.sourceFloors)}:{})};
+  for(const q of examples){
+    const supplied=(Array.isArray(row.examples)?row.examples:[]).find(e=>e?.floor===q.floor&&unwrappedPersonaQuote(e.text)===q.text);
+    const arc=development.items.find(d=>d.key===supplied?.developmentKey&&d.floor===q.floor&&d.evidence.includes(q.text));
+    if(arc)q.developmentKey=arc.key;
+  }
+  // A model can identify a change yet forget examples. Recover only complete,
+  // explicitly attributed utterances INSIDE that accepted change's evidence;
+  // never choose another nearby speaker, a private thought, or invent speech.
+  for(const arc of development.items){
+    const old=previous?.composition?.development?.find(d=>d.key===arc.key);
+    if(old?.floor===arc.floor||!messages.some(m=>m.index===arc.floor))continue;
+    const quotes=[...arc.evidence.matchAll(/[“「『"]([^“”「」『』"\n]+)[”」』"]/gu)].map(m=>m[1]);
+    for(const text of quotes.filter(text=>hasPersonaSpeechEvidence(arc.evidence,text,name,identity)).slice(-2)){
+      const existing=examples.find(q=>q.floor===arc.floor&&q.text===text);
+      if(existing){existing.developmentKey=arc.key;continue;}
+      examples.push({text,floor:arc.floor,to:arc.target,context:arc.scope??'',kind:'source_quote',developmentKey:arc.key});
+    }
+  }
+  const notes=row.text.trim(),composition={version:1,retiredParts:clone(previous?.composition?.retiredParts??[]),parts,notes,examples:currentPersonaExamples(examples,development.items),sceneEvidence,changes,rejectedExamples,ignoredUpdates,development:development.items,rejectedDevelopment:development.rejected,...(!spans.length?{localMode:localPatches&&parts.length?'patches':'snapshot'}:{}),...(!parts.length?{sourceBaseline:sourcePersonaBaseline(notes,name,row.sourceFloors)}:{})};
   return {text:personaCompositionText(composition,{hasSources:spans.length>0}),composition:clone(composition)};
 }
 
 export function personaCompositionText(composition,{hasSources=false}={}){
-  const {parts=[],notes='',examples=[],sceneEvidence=[],development=[]}=composition;
+  const {parts=[],notes='',sceneEvidence=[],development=[]}=composition;
+  const examples=currentPersonaExamples(composition.examples??[],development);
   const blocks=[];let last;
   const focus=(composition.reviewFocus??[]).filter(q=>!examples.some(e=>e.floor===q.floor&&e.text===q.quote));
   for(const part of parts){if(part.status==='historical')continue;const key=JSON.stringify([part.book,part.uid,part.spanId]);if(last?.key!==key){last={key,title:part.title,text:''};blocks.push(last);}last.text+=part.text;}
