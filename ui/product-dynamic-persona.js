@@ -30,7 +30,7 @@ ${field('当前聊天自动起算楼层','<input data-persona-start type="number
 <div class="sy-actions"><button type="button" data-persona-save>保存设置</button></div>
 </div>
 <div class="sy-card" data-persona-manual hidden>
-<h4>旧聊天 · 手动补建</h4><p class="sy-help">按所选楼层分批补建，全部完成后应用；预览不调用模型。</p>
+<h4>旧聊天 · 手动补建 / 重建</h4><p class="sy-help">重建已有范围会重新生成该范围的人设；全部完成后应用，预览不调用模型。</p>
 <div class="sy-grid">${field('从哪一楼','<input type="number" min="0" value="1" data-persona-manual-start>')}${field('到哪一楼','<input type="number" min="0" data-persona-manual-end>')}${field('每批多少楼','<input type="number" min="1" max="200" value="20" data-persona-manual-size>')}</div>
 <label><input type="checkbox" checked data-persona-manual-handoff> 完成后衔接自动起点（不改变自动开关）</label>
 <div class="sy-actions"><button type="button" data-persona-manual-preview>预览补建计划</button><button type="button" data-persona-manual-start-run disabled>开始后台补建</button></div>
@@ -72,7 +72,9 @@ export function mountDynamicPersona({panel,app,run,host=globalThis}){
   });
   bind('[data-persona-manual-preview]',async()=>{const options=manualOptions();if(['start','end','size'].some(k=>$('[data-persona-manual-'+k+']').value===''))throw Error('请填写起止楼层与每批楼数');
     const preview=await app.previewDynamicPersonaManual(options);if(JSON.stringify(manualOptions())!==JSON.stringify(options))return;
-    previewStamp=JSON.stringify(options);$('[data-persona-manual-preview-text]').textContent=`#${preview.startIndex}–${preview.endIndex} · 每批 ${preview.batchSize} 楼 · 共 ${preview.plannedRequests} 批，正常 ${preview.plannedRequests} 次人设请求。${preview.replaces?'完成后替换 '+preview.replaces+' 个旧人设批次。':''}失败只重试未完成部分；主总结保留。`;$('[data-persona-manual-start-run]').disabled=false;
+    const mode=preview.mode==='clean'?(preview.full?'从空动态档案开始，旧正文（含手工正文/锁定档案）全部重建。':`保留截至 #${preview.startIndex-1} 的状态，旧 #${preview.startIndex} 起的人设内容（含手工正文）不作底稿。`):'接续已有档案。';
+    const prefix=preview.prefix?`需先补算 #${preview.prefix.startIndex}–${preview.prefix.endIndex}，以准确恢复起点前状态（已计入请求数）。`:'';
+    previewStamp=JSON.stringify(options);$('[data-persona-manual-preview-text]').textContent=`#${preview.startIndex}–${preview.endIndex} · 每批 ${preview.batchSize} 楼 · 共 ${preview.plannedRequests} 批，正常 ${preview.plannedRequests} 次人设请求。${mode}${prefix}${preview.mode==='clean'?'性别、定位、别名修正保留；旧档案先备份，全部完成后替换。':''}失败只重试未完成部分；主总结保留。`;$('[data-persona-manual-start-run]').disabled=false;
   });
   bind('[data-persona-manual-start-run]',async()=>{if(!previewStamp||previewStamp!==JSON.stringify(manualOptions()))throw Error('请先预览当前范围');const result=await app.startDynamicPersonaManual(manualOptions());clearPreview();$('[data-persona-manual-preview-text]').textContent='计划已保存，后台进度见下方；无需重复新建。';return result;});
   bind('[data-persona-manual-pause]',()=>app.pauseDynamicPersonaManual());bind('[data-persona-manual-continue]',()=>app.continueDynamicPersonaManual());

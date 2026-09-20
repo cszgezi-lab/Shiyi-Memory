@@ -7,6 +7,7 @@ import {backgroundRetryDelay} from './provider-scheduler.js';
 import {qualitySourceSegments} from './source-evidence.js';
 import {narrativeReading,NARRATIVE_READING_RULE,narrativeCounters} from './narrative-reading.js';
 import {personaManualPlan,personaManualPending,personaManualUnfinished} from './dynamic-persona-plan.js';
+import {personaRebuildPlan,personaRebuildIdentities,personaRebuildIdentity,personaRebuildSeed,personaRebuildLiveHash} from './persona-rebuild.js';
 import {personaIdentity,personaAliases,foldName,personaTitleNames} from './persona-identity.js';
 import {personaSourceIndex,personaSourceGuide} from './persona-source-index.js';
 import {rebindPersonaSources} from './persona-source-rebind.js';
@@ -169,16 +170,17 @@ export function personaDossierText(profile){
   if(!blocks.length)blocks.push(String(profile.text??'').trim());
   return blocks.filter(Boolean).join('\n\n');
 }
-export function personaRequest({messages,world,previous,prompt,dictionary,aliases='',stageMode='narrative',records={},readingConfig=''}){
+export function personaRequest({messages,world,previous,prompt,dictionary,aliases='',stageMode='narrative',records={},readingConfig='',identityProfiles=[],materialsThrough=Infinity}){
   const readings=[];
   const source=messages.map(m=>{if(readingConfig||/<\/?sy_(?:context|private)\b/i.test(m.text??'')){const r=narrativeReading(m,readingConfig);readings.push(r);return {...m,text:r.chunks.map(p=>p.text).join('\n')};}return {...m,text:qualitySourceSegments(m).map(s=>s.text).join('')};});
   const text=source.map(m=>m.text).join('\n');
-  const indexed=personaSourceIndex(world,{previous,dictionary,aliases,source:text}),identity=indexed.identity;
+  const endFloor=Math.max(-1,...source.map(m=>m.index)),frame=personaTimelineFrame(records,endFloor);
+  const indexed=personaSourceIndex(world,{previous:[...identityProfiles,...previous],dictionary,aliases,source:text}),identity=indexed.identity;
   const mentioned=new Set(identity.mentions(text).map(p=>p.key)),groups=new Map();
   const spans=indexed.spans.filter(s=>s.ownerKey&&s.text.trim()&&mentioned.has(s.ownerKey)).map(s=>{
     const person=identity.forTitle(s.name),key=person.key;if(!groups.has(key))groups.set(key,{id:`P${groups.size+1}`,title:s.name,characterId:person.characterId,name:person.name,aliases:[...person.visibleAliases],text:[]});const group=groups.get(key);group.text.push(s.text);return {...s,ref:group.id};
   });
-  const known=currentPersonaProfiles(previous.filter(p=>!p.deleted&&mentioned.has(foldName(p.name))),stageMode).map(p=>projectCurrentPersona(p,personaTimelineFrame(records)));
+  const known=currentPersonaProfiles(previous.filter(p=>!p.deleted&&mentioned.has(foldName(p.name))),stageMode).map(p=>projectCurrentPersona(p,frame));
   const promptParts=parts=>parts.filter(p=>p.original.trim()&&p.status!=='historical').map(p=>({ref:p.ref,title:p.title,text:p.text}));
   const originals=[...groups.values()].map(g=>({id:g.id,name:g.name,aliases:g.aliases,parts:promptParts(personaParts(spans.filter(s=>s.ownerKey===foldName(g.name)),known.find(p=>foldName(p.name)===foldName(g.name))))}));
   for(const p of known)if(!p.bindings?.length&&!groups.has(foldName(p.name))){const parts=personaParts([],p);if(parts.length)originals.push({name:p.name,source:'chat',aliases:[...(identity.resolve(p.name)?.visibleAliases??[])],parts:promptParts(parts)});}
@@ -187,7 +189,7 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
     // The exact effective baseline is already in original.parts. Sending it
     // again in previous.text doubles input, not evidence or model attention.
     text:originals.some(o=>o.name===p.name)&&p.composition?String(p.composition.notes??''):personaDossierText(p),baselineInOriginal:originals.some(o=>o.name===p.name),examples:p.composition?.examples,development:p.composition?.development,locked:p.locked,through:p.through,currentStage:stageMode!=='strict'||!p.bindings?.length||p.bindings.every(b=>spans.some(s=>s.id===b.id&&s.stage===b.stage))}));
-  return {messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n${PERSONA_CASTING_RULE}\n姓名使用original/previous提供的正式姓名；简称、昵称、简繁写法不创建另一个角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}\n${PERSONA_DEVELOPMENT_RULE}\n${PERSONA_IMPACT_RULE}\noriginal.parts已完整提供有效底稿；previous.text只提供未重复的当前补充。底稿与补充合读，不因不再重复发送就认为属性丢失。narrativeFrame是已保存原文明确的全局时点；新的明确切换优先，不将原卡默认年龄/学段写成当前状态。`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),narrativeFrame:personaTimelineFrame(records),characterCandidates:personaCharacterCandidates(source,identity),original:originals,materials:personaMaterials(records,identity,mentioned,Math.max(...source.map(m=>m.index))),previous:prior,reviewFocus:personaReviewFocus(source,identity)})}],source,spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
+  return {messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n${PERSONA_CASTING_RULE}\n姓名使用original/previous提供的正式姓名；简称、昵称、简繁写法不创建另一个角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}\n${PERSONA_DEVELOPMENT_RULE}\n${PERSONA_IMPACT_RULE}\noriginal.parts已完整提供有效底稿；previous.text只提供未重复的当前补充。底稿与补充合读，不因不再重复发送就认为属性丢失。narrativeFrame是已保存原文明确的全局时点；新的明确切换优先，不将原卡默认年龄/学段写成当前状态。`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),narrativeFrame:frame,characterCandidates:personaCharacterCandidates(source,identity),original:originals,materials:personaMaterials(records,identity,mentioned,Math.min(endFloor,materialsThrough)),previous:prior,reviewFocus:personaReviewFocus(source,identity)})}],source,spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
 }
 export function parsePersonaResponse(response,{messages,spans,previous,identity,dictionary,aliases='',stageMode='narrative',preserveSources=false,developmentMessages,diagnostic=()=>{},collectFailures=false}){
   const reason=response?.choices?.[0]?.finish_reason;
@@ -299,6 +301,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     stop({preserveManual:true});ready=false;currentWorkspace=bound;scopeKey=stableStringify(bound.scope);const saved=await bound.read('dynamic-persona',null);check(bound);
     if(saved&&saved.version!==1)throw new Error('人物档案版本无法读取，未覆盖');
     data=saved??initial();
+    const rebuildUnedited=data.manualPlan?.mode==='clean'&&data.manualPlan.liveHash===personaRebuildLiveHash(data.profiles);
     for(const p of data.profiles)if(Object.values(p.casting?.manual??{}).some(Boolean))data={...data,castingOverrides:rememberPersonaCasting(data.castingOverrides,p)};
     if(!saved&&!settings().dynamicPersonaEnabled){paused=false;ready=true;view={status:'ready',message:'动态人设尚未启用；不会调用人设 API'};emit();return;}
     let loadStep='history_tail';
@@ -325,10 +328,11 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
         if(!range||b.sourceHash!==sha256(range.messages)){
           const version=await bound.read(b.versionId,null);check(bound);
           if(!version?.profiles)throw new Error('手动人设恢复点缺失，旧档案保留；请放弃后重新建立计划');
-          await save({...data,manualPlan:{...manual,status:'paused',message:`#${b.startIndex} 起原文已变，请继续补建重新读取`,workingProfiles:version.profiles,items:manual.items.map((row,n)=>n<i?row:{startIndex:row.startIndex,endIndex:row.endIndex,status:'pending'})}},bound);break;
+          await save({...data,manualPlan:{...manual,status:'paused',message:`#${b.startIndex} 起原文已变，请继续补建重新读取`,workingProfiles:version.profiles,items:manual.items.map((row,n)=>n<i?row:{startIndex:row.startIndex,endIndex:row.endIndex,status:'pending',...(row.kind?{kind:row.kind}:{})})}},bound);break;
         }
       }
     }
+    if(rebuildUnedited&&Number.isFinite(invalidFrom)&&data.manualPlan?.mode==='clean')await save({...data,manualPlan:{...data.manualPlan,liveHash:personaRebuildLiveHash(data.profiles)}},bound);
     await restoreResponseFailures(bound);
     paused=Boolean(data.paused);ready=true;historyAttempts=0;historyRetryAt=0;view={status:paused?'paused':'ready',message:paused?'此聊天的人设更新已暂停，已保存人设仍可注入':Number.isFinite(invalidFrom)?`#${invalidFrom} 起原文已变，更晚的自动人设已撤回；会按独立周期重建`:'已加载当前聊天的动态人设'};emit();wake();
     // Reading the bound world books and reporting which entries belong to which
@@ -362,39 +366,36 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     });emit();return clone(view.worldbook);}
   async function previewManual(options){
     check();const bound=currentWorkspace;lastIndex=await historyTail();check(bound);
-    const next=personaManualPlan(options,lastIndex),saved=data.batches.filter(b=>b.status==='saved').sort((a,b)=>a.startIndex-b.startIndex),affected=saved.filter(b=>b.endIndex>=next.startIndex);
-    if(affected.length&&affected[0].startIndex<next.startIndex)throw new Error(`起点落在已有人设批次中间，请从 #${affected[0].startIndex} 开始重建`);
-    const through=Math.max(-1,...saved.map(b=>b.endIndex));
-    if(through>next.endIndex)throw new Error(`已有动态人设依据至 #${through}，请把补建终点包含至该楼，避免旧剧情覆盖较新档案`);
-    emit();return {...next,replaces:affected.length,plannedRequests:next.items.length};
+    const next=personaRebuildPlan(personaManualPlan(options,lastIndex),data);
+    emit();return next;
   }
   async function createManual(options){
     check();if(job)throw new Error('请先暂停正在运行的人设任务，再开始手动补建');
     const replacingFailed=personaManualUnfinished(data.manualPlan)&&data.manualPlan.items?.some(b=>b.status==='failed');
     if(personaManualUnfinished(data.manualPlan)&&!replacingFailed)throw new Error('已有未完成的手动计划，请继续或暂停后再新建');
     const bound=currentWorkspace,previousPlanId=data.manualPlan?.id,next=await previewManual(options);check(bound);client();
-    const affected=data.batches.filter(b=>b.status==='saved'&&b.endIndex>=next.startIndex).sort((a,b)=>a.startIndex-b.startIndex);
+    const liveHash=personaRebuildLiveHash(data.profiles),identities=personaRebuildIdentities(data.profiles,data.personaIdentities);
     let workingProfiles=data.profiles;
-    if(affected.length){const version=await bound.read(affected[0].versionId,null);check(bound);if(!version?.profiles)throw new Error('原人设批次缺少重建前的版本，未清空旧档案；请保留档案并选择后续范围');workingProfiles=version.profiles;}
-    // A rebuilt range starts from an older version snapshot.  Keep the player's
-    // current protected dossiers (manual edits and merge targets) and drop any
-    // stale copy of them from that snapshot, so the staged rebuild can neither
-    // revert them nor create a second dossier for the same person.  An already
-    // absorbed dossier is restored into that snapshot, because rebuilding the
-    // range it came from must not resurrect it as a second active character.
-    const protectedIds=new Set(data.profiles.filter(isProtectedProfile).map(p=>p.id));
-    const absorbed=new Map();
-    for(const row of data.profiles.filter(p=>p.deleted&&p.mergedInto))absorbed.set(row.id,row);
-    if(affected.length&&(protectedIds.size||absorbed.size)){
-      const restored=data.profiles.filter(p=>protectedIds.has(p.id)||absorbed.has(p.id));
-      workingProfiles=[...workingProfiles.filter(p=>!protectedIds.has(p.id)&&!absorbed.has(p.id)),...restored];
+    if(next.mode==='clean'){
+      const version=next.full?{profiles:[]}:await bound.read(next.baseVersionId,null);check(bound);
+      if(!Array.isArray(version?.profiles))throw new Error('原人设批次缺少重建前的版本，未清空旧档案；请从第1楼干净重建');
+      workingProfiles=personaRebuildSeed(version.profiles,next,identities,mergePersonaProfiles);
     }
-    // Preview/version reads yield to the automatic timer. Recheck immediately
-    // before reserving the worker; never stage from under an in-flight update.
+    // Reads yield to the automatic timer and manual edits. Reserve the worker
+    // only if the snapshot used to plan this replay is still current.
     if(job)throw new Error('自动人设任务刚开始，请先暂停，再开始手动补建');
-    clearTimeout(timer);timer=null;paused=true;
-    const manualPlan={...next,id:makeId('persona-manual'),status:'paused',resumeAutomatic:Boolean(settings().dynamicPersonaEnabled&&!data.paused),workingProfiles:clone(workingProfiles.map(p=>applyPersonaCasting(p,data.castingOverrides)))};
-    await transact(async()=>{check(bound);if(data.manualPlan?.id!==previousPlanId)throw new Error('已有新的手动计划，请先查看当前进度');if(replacingFailed){await bound.write(`persona-manual-archive-${data.manualPlan.id}`,data.manualPlan);check(bound);}return save({...data,paused:true,manualPlan},bound);});view={...view,status:'paused',message:`手动计划已保存：#${next.startIndex}–${next.endIndex}，共${next.items.length}批；自动更新已暂停`};emit();return clone(next);
+    clearTimeout(timer);timer=null;refinement.interrupt();paused=true;
+    const id=makeId('persona-manual'),archiveId=next.mode==='clean'?`persona-rebuild-archive-${id}`:null;
+    const manualPlan={...next,id,status:'paused',resumeAutomatic:Boolean(settings().dynamicPersonaEnabled&&!data.paused),workingProfiles:clone(workingProfiles.map(p=>applyPersonaCasting(p,data.castingOverrides))),
+      ...(archiveId?{archiveId,liveHash,identityProfiles:identities}:{})};
+    await transact(async()=>{
+      check(bound);if(data.manualPlan?.id!==previousPlanId)throw new Error('已有新的手动计划，请先查看当前进度');
+      if(personaRebuildLiveHash(data.profiles)!==liveHash)throw new Error('人物档案刚有变化，请重新预览后建立计划');
+      if(replacingFailed){await bound.write(`persona-manual-archive-${data.manualPlan.id}`,data.manualPlan);check(bound);}
+      if(archiveId){await bound.write(archiveId,{kind:'persona-clean-rebuild',state:clone(data)});check(bound);}
+      return save({...data,paused:true,manualPlan},bound);
+    });
+    view={...view,status:'paused',message:`手动计划已保存：#${next.startIndex}–${next.endIndex}，共${next.items.length}批；${next.mode==='clean'?'旧档案已备份，全部完成后切换':'自动更新已暂停'}`};emit();return clone(next);
   }
   async function resumeManual(){
     check();if(job)return {message:'人设任务正在运行'};
@@ -402,6 +403,10 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     if(!settings().dynamicPersonaEnabled)throw new Error('动态人设已关闭，请先启用后继续手动计划');
     const bound=currentWorkspace;client();lastIndex=await historyTail();check(bound);
     if(data.manualPlan.endIndex>lastIndex)throw new Error(`手动终点已超出当前聊天 #${lastIndex}，原档案保留；请放弃计划后重选范围`);
+    if(data.manualPlan.mode==='clean')for(const b of data.manualPlan.prefixBatches){
+      const source=await readRange({startIndex:b.startIndex,endIndex:b.endIndex});check(bound);
+      if(sha256(source.messages)!==b.sourceHash)throw new Error(`保留范围 #${b.startIndex}–${b.endIndex} 原文已变化，请放弃计划并把重建起点提前至 #${b.startIndex}`);
+    }
     await transact(()=>save({...data,paused:true,manualPlan:{...data.manualPlan,status:'running',message:'',items:data.manualPlan.items.map(b=>b.status==='failed'?{...b,status:'pending',attempts:0,retryAt:0}:b)}},bound));paused=true;
     clearTimeout(timer);timer=null;historyAttempts=0;historyRetryAt=0;
     view={...view,status:'running',message:'手动人设已排队，后台补建完成前继续使用原档案'};emit();wake();return {message:view.message,level:'info'};
@@ -494,10 +499,14 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       view={...view,failureDetails:null,failureStorage:null};showStep('正在读取正文');personaStep='history_range';
       const range=await readRange({startIndex:next.nextStart,endIndex:next.nextEnd});guard();
       personaStep='worldbook_read';showStep('正在读取人物原设定');const sourceHash=sha256(range.messages),world=await worldbook.read();guard();personaStep='prepare_profile';
+      const clean=manualId&&data.manualPlan.mode==='clean';
+      const assertCleanUnchanged=()=>{if(clean&&data.manualPlan.liveHash!==personaRebuildLiveHash(data.profiles))throw Object.assign(new Error('重建期间人物档案已被编辑；新编辑和旧档案均保留，请放弃候选并重新预览范围'),{code:'PERSONA_REBUILD_CONFLICT'});};
+      assertCleanUnchanged();
       const liveBefore=clone(data.profiles);
       const liveSuppressed=data.profiles.filter(p=>p.deleted&&p.mergedInto);
-      const previous=clone(manualId?[...data.manualPlan.workingProfiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)),...data.profiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)&&isProtectedProfile(p))]:data.profiles);
-      const request=personaRequest({messages:range.messages,world,previous,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction});
+      const previous=clone(manualId?(clean?data.manualPlan.workingProfiles:[...data.manualPlan.workingProfiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)),...data.profiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)&&isProtectedProfile(p))]):data.profiles);
+      const replayContext={identityProfiles:clean?data.manualPlan.identityProfiles:personaRebuildIdentities(data.profiles,data.personaIdentities),...(clean?{materialsThrough:data.manualPlan.replaceFrom-1}:{})};
+      const request=personaRequest({messages:range.messages,world,previous,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction,...replayContext});
       if(request.readingReport)diagnostic({run,task:'persona',phase:'reading',level:request.readingReport.readingFallbacks?'warning':'info',details:request.readingReport});
       view={...view,worldbook:{status:world.status??'ready',cardName:world.cardName,books:[...new Set(world.entries?.map(e=>e.book)??[])],entries:world.entries?.length??0,safeFragments:world.spans?.length??0,audit:request.audit,guide:personaSourceGuide({...world,audit:request.audit})}};emit();
       const inputUnits=estimateUnits(JSON.stringify(request.messages));if(inputUnits>config.dynamicPersonaInputUnits)throw Object.assign(new Error(`人设输入约 ${inputUnits} 单位，超过设置的 ${config.dynamicPersonaInputUnits}；未截断正文或改变楼数`),{code:'INPUT_BUDGET_EXCEEDED',details:{stage:'prepare',reason:'input_budget_exceeded',inputUnits,inputLimit:config.dynamicPersonaInputUnits}});
@@ -508,7 +517,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       personaStep='cached_response';const cached=await bound.read(cacheKey,null);guard();
       const recoveryGuard=()=>{guard();if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k])))throw canceled();};
       const rows=await recoverPersonaBatch({messages:range.messages,previous,fingerprint,cached,inputLimit:config.dynamicPersonaInputUnits,guard:recoveryGuard,
-        makeRequest:(messages,previous)=>personaRequest({messages,world,previous,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction}),
+        makeRequest:(messages,previous)=>personaRequest({messages,world,previous,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction,...replayContext}),
         send:async messages=>{personaStep='model_request';modelRequested=true;return client().chatCompletions({model:config.dynamicPersonaModel,messages,stream:true,...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})},{signal:controller.signal});},
         parse:(response,{messages,previous,request})=>{personaStep='parse_profile';return parsePersonaResponse(response,{messages,spans:request.spans,previous,identity:request.identity,developmentMessages:request.source,stageMode:config.dynamicPersonaMvuMode,preserveSources:true,collectFailures:true,diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});},
         save:value=>bound.write(cacheKey,value),diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});
@@ -525,26 +534,27 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       personaStep='worldbook_verify';const latestWorld=await worldbook.read();guard();if(rows.some(p=>p.bindings.some(b=>!latestWorld.spans.some(s=>s.id===b.id&&s.stage===b.stage||config.dynamicPersonaMvuMode!=='strict'&&s.book===b.book&&s.uid===b.uid&&s.hash===b.hash))))throw Object.assign(new Error('人设阶段或原设定已变化；等待当前阶段重试'),{code:'PERSONA_STAGE_CHANGED',details:{stage:'validate',reason:'persona_stage_changed'}});
       personaStep='profile_save';
       await transact(async()=>{
-        guard();const base=manualId?data.manualPlan.workingProfiles:data.profiles;
+        guard();assertCleanUnchanged();const base=manualId?data.manualPlan.workingProfiles:data.profiles;
         const versionId=makeId('persona-version');await bound.write(versionId,{profiles:previous,through:next.nextEnd});guard();
         const profiles=clone(base);
         // Compare concurrent edits against the LIVE pre-request snapshot, not
         // against a staged dossier from an earlier batch. Carry edits/deletes
         // into the candidate even when the model did not return that person.
         const changed=new Set();
-        for(const live of data.profiles){
+        for(const live of clean?[]:data.profiles){
           if(stableStringify(live)===stableStringify(liveBefore.find(p=>p.id===live.id)))continue;
           changed.add(live.id);const i=profiles.findIndex(p=>p.id===live.id);
           if(i<0)profiles.push(clone(live));else profiles[i]=clone(live);
         }
-        for(const row of rows){
+        for(const result of rows){
+          const row=personaRebuildIdentity(result,replayContext.identityProfiles);
           const i=profiles.findIndex(p=>p.id===row.id),prior=profiles[i];
           if(changed.has(row.id)||prior?.locked||prior?.deleted)continue;
           const merged=applyPersonaCasting(prior?overlayPersonaProfile(prior,row):{...row,manual:false},data.castingOverrides);
           const item={...merged,through:next.nextEnd,sourceHash,versionId};
           if(i<0)profiles.push(item);else profiles[i]=item;
         }
-        const batch={startIndex:next.nextStart,endIndex:next.nextEnd,status:'saved',sourceHash,versionId,profileCount:rows.length,requestCount:rows.requestCount,...(rejectedProfiles.length?{rejectedProfiles}:{})};
+        const batch={startIndex:next.nextStart,endIndex:next.nextEnd,status:'saved',sourceHash,versionId,...(pending?.kind?{kind:pending.kind}:{}),profileCount:rows.length,requestCount:rows.requestCount,...(rejectedProfiles.length?{rejectedProfiles}:{})};
         if(manualId){
           if(data.manualPlan?.id!==manualId||data.manualPlan.status!=='running')throw canceled();
           const items=data.manualPlan.items.map(b=>b.startIndex===next.nextStart?batch:b),completed=items.every(b=>b.status==='saved');
@@ -554,12 +564,21 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
           // is matched by id first and by canonical name second, because a
           // rebuild that started from a pre-merge snapshot can compute a new id
           // for a person who already has a protected canonical dossier.
-          const protectedProfiles=data.profiles.filter(isProtectedProfile);
+          const protectedProfiles=clean?[]:data.profiles.filter(isProtectedProfile);
           const sameProfile=(p,pk)=>Boolean(p)&&(p.id===pk.id||foldName(p.name)===foldName(pk.name)||(p.aliases??[]).some(alias=>foldName(alias)===foldName(pk.name)));
           const merged=[...profiles.map(p=>{const kept=protectedProfiles.find(m=>sameProfile(p,m));return kept?.locked?clone(kept):kept?{...p,text:kept.text,composition:kept.composition,aliases:kept.aliases,aliasPolicy:kept.aliasPolicy,manual:kept.manual,locked:kept.locked,protected:true}:p;}),...protectedProfiles.filter(m=>!profiles.some(p=>sameProfile(p,m)))].map(p=>applyPersonaCasting(p,data.castingOverrides));
-          const manualPlan={...data.manualPlan,items,status:completed?'completed':'running',workingProfiles:completed?[]:merged};
+          const manualPlan={...data.manualPlan,items,status:completed?'completed':'running',workingProfiles:completed?[]:merged,...(clean&&completed?{liveHash:personaRebuildLiveHash(merged)}:{})};
           const continueAuto=completed&&manualPlan.resumeAutomatic===true;
-          await save({...data,paused:!continueAuto,manualPlan,...(completed?{profiles:merged,batches:[...data.batches.filter(b=>b.endIndex<manualPlan.startIndex),...items],startFloor:manualPlan.handoff?manualPlan.endIndex+1:data.startFloor}:{})},bound);
+          if(clean&&completed){
+            // Verify the kept prefix and already saved candidate inputs once
+            // before switching; never commit a mix of edited source revisions.
+            for(const b of [...manualPlan.prefixBatches,...items]){
+              const source=await readRange({startIndex:b.startIndex,endIndex:b.endIndex});guard();
+              if(sha256(source.messages)!==b.sourceHash)throw Object.assign(new Error('重建前缀或已完成批次原文已变化，未应用候选；请重新加载核对后继续或重新建计划'),{code:'SOURCE_INVALIDATED'});
+            }
+            assertCleanUnchanged();
+          }
+          await save({...data,paused:!continueAuto,manualPlan,...(completed?{profiles:merged,batches:[...data.batches.filter(b=>b.endIndex<(manualPlan.replaceFrom??manualPlan.startIndex)),...items],...(clean?{personaIdentities:manualPlan.identityProfiles,refinement:{version:1,queue:[],last:{},status:'idle',message:'旧精修任务已随干净重建撤回',revision:(data.refinement?.revision??0)+1}}:{}),startFloor:manualPlan.handoff?manualPlan.endIndex+1:data.startFloor}:{})},bound);
           if(continueAuto){paused=false;wakePending=true;}
         }else await save({...data,profiles,batches:[...data.batches.filter(b=>b.startIndex!==next.nextStart),batch]},bound);
         success=true;

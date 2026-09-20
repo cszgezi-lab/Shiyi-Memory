@@ -6,10 +6,11 @@ import {qualitySourceSegments} from './source-evidence.js';
 const cache=new WeakMap(),frameCache=new WeakMap();
 const stagePattern=/(?:国中|初中|高中|大学)[一二三四1-4]年级/g;
 const sameStage=s=>s.replace('国中','初中').replace(/[1234]/g,c=>'一二三四'[Number(c)-1]);
-export function personaTimelineFrame(records={}){
- if(frameCache.has(records))return frameCache.get(records);
+export function personaTimelineFrame(records={},endFloor=Infinity){
+ const cached=frameCache.get(records);if(cached?.endFloor===endFloor)return cached.frame;
  let frame=null;
  for(const row of records.summaryView??[]){
+  if(!Number.isSafeInteger(row.floorIndex)||row.floorIndex>endFloor)continue;
   const text=row.originalSource?.text??'';
   // Only an explicit global narrative frame, never a guessed age, isolated
   // school mention, a date calculation, or a character remembering school.
@@ -23,7 +24,7 @@ export function personaTimelineFrame(records={}){
   }
  }
  const result=frame?.stage?frame:null;
- frameCache.set(records,result);return result;
+ frameCache.set(records,{endFloor,frame:result});return result;
 }
 export function projectCurrentPersona(profile,frame=null){
  if(!profile?.composition||profile.manual||profile.locked)return profile;
