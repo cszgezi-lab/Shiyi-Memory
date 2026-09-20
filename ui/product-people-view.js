@@ -5,6 +5,7 @@ import { characterKeepsakes } from '../src/character-journal.js';
 import { characterRecordSubjects, explicitSubjectNames, factKey } from '../src/product-person-profiles.js';
 import { sourceLabel, recordTitle, epistemicLabel } from '../src/product-narrative.js';
 import { esc } from '../src/product-settings-ui.js';
+import {PERSONA_GENDERS,PERSONA_ROLES,personaCasting,personaCastingLabel} from '../src/persona-casting.js';
 
 const PAGE_SIZE = 6;
 const nameKey = name => foldName(name).trim();
@@ -16,6 +17,20 @@ const preview = (value, limit = 280) => {
 /** Newest first, using the same floor evidence the rest of the page reports. */
 const newestFirst = rows => [...rows].sort((a, b) => floorOf(b) - floorOf(a));
 const floorOf = record => Math.max(-1, ...(record?.sourceFloors ?? []).filter(Number.isInteger), Number.isInteger(record?.floorIndex) ? record.floorIndex : -1);
+
+/** Relationship records are evidence-bearing stages, not nineteen simultaneous
+ * current relationships. Group only for reading; every source row stays stored,
+ * editable and recoverable inside the collapsed history. */
+export function relationshipThreads(rows = [], resolve = nameKey) {
+  const groups = new Map();
+  for (const row of newestFirst(rows)) {
+    const endpoints = [row.from ?? row.subject, row.to ?? row.object].filter(v => typeof v === 'string' && v.trim()).map(resolve).filter(Boolean).sort();
+    const key = endpoints.length === 2 ? endpoints.join('\u0000') : `record:${row.id}`;
+    if (!groups.has(key)) groups.set(key, { key, rows: [] });
+    groups.get(key).rows.push(row);
+  }
+  return [...groups.values()].map(group => ({ ...group, latest: group.rows[0] }));
+}
 
 /** A disposable reading projection. No writes, identity merges or new records. */
 export function peopleGroups(snapshot = {}) {
@@ -101,6 +116,7 @@ export function peopleGroups(snapshot = {}) {
     profiles: currentPersonaProfiles(group.profiles, settings.dynamicPersonaMvuMode),
     fieldCount: new Set(group.facts.map(factKey).filter(k => k != null)).size,
     relationships: newestFirst(group.relationships),
+    relationshipThreads: relationshipThreads(group.relationships, name => identity.resolve(name)?.key ?? nameKey(name)),
     commitments: newestFirst(group.commitments),
     personaChanges: newestFirst(group.personaChanges),
   })).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
@@ -214,6 +230,11 @@ const fieldGroup = (title, count, rows, empty, { category = '', add = '' } = {})
 export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], editing = '') {
   if (!group) return '<p class="sy-person-empty">还没有人物。整理一段聊天后会自动出现，也可以直接新建一个角色。</p>';
   const profileId = group.profiles[0]?.id ?? '';
+  const profile=group.profiles[0];
+  const reviewRows=(profile?.reviewSuggestions??[]).map(s=>`<div class="sy-card"><div class="sy-packet">${esc(profile.composition?.parts?.find(p=>p.key===s.key)?.text??'片段已变化')}</div><p>${esc(s.reason)}</p><p class="sy-help">第${esc(s.evidence.floor)}楼依据：${esc(s.evidence.quote)}</p><button type="button" data-persona-history="${esc(s.key)}" data-profile="${esc(profile.id)}" data-history-value="true">确认移入历史（不删除）</button></div>`).join('');
+  const archived=(profile?.composition?.parts??[]).filter(p=>p.status==='historical').map(p=>`<div class="sy-card"><div class="sy-packet">${esc(p.text)}</div><button type="button" data-persona-history="${esc(p.key)}" data-profile="${esc(profile.id)}" data-history-value="false">恢复当前设定</button></div>`).join('');
+  const casting=personaCasting(group.profiles[0]?.casting);
+  const options=(values,current)=>Object.entries(values).map(([value,label])=>`<option value="${value}"${value===current?' selected':''}>${label}</option>`).join('');
   const profileRows = group.profiles.slice(0, 2).map(p => personFieldRow({
     label: p.locked ? '整份档案 · 已锁定' : `整份档案 · ${Number.isInteger(p.through) ? `依据至 #${p.through}` : '已保存'}`,
     value: p.text, source: `${sourceText(p)}${[...new Map((p.bindings ?? []).map(b => [JSON.stringify([b.book, b.uid]), b])).values()].slice(0, 4).map(b => `${b.book} · ${b.originalName ?? b.name}（原书只读）`).join(' · ')}`, category: 'dynamic-persona', id: p.id, clamp: 3,
@@ -224,6 +245,12 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
   const personRows = (rows, category) => rows.map(record => personFieldRow({
     label: recordTitle(record), value: recordDescription(record), source: sourceText(record), category, id: record.id, clamp: 3,
   })).join('');
+  const relationThreads = group.relationshipThreads ?? relationshipThreads(group.relationships ?? []);
+  const relationshipRows = relationThreads.map(thread => {
+    const current = personRows([thread.latest], 'relationshipChanges');
+    const older = thread.rows.slice(1);
+    return `${current}${older.length ? `<details class="sy-relationship-history"><summary>过往 ${older.length} 条关系变化（保留来源，可逐条修改）</summary>${personRows(older, 'relationshipChanges')}</details>` : ''}`;
+  }).join('');
   const diaryRows = group.diaries.slice(0, 3).map(r => `${personFieldRow({
     label: `${r.data.stage ?? '未注明阶段'} · ${r.record.innerLifeHistorical || r.data.status === 'historical' ? '过去阶段' : '按记录情境适用'}`,
     value: r.data.text,
@@ -234,20 +261,22 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
     value: r.data.text,
     source: `${sourceText(r.record)}${r.data.provenance === 'user_authored' ? ' · 用户编写，非核对原话' : ''}`, category: 'dialogue', id: r.id, clamp: 3,
   })}${editing === r.id ? personEntryEditor(r, 'dialogue') : ''}`).join('');
-  const stats = `${group.fieldCount} 项属性 · 关系 ${group.relationships?.length ?? 0} · 约定 ${group.commitments?.length ?? 0} · 人设变化 ${group.personaChanges?.length ?? 0} · 心迹 ${group.diaries.length} · 台词 ${group.dialogues.length}`;
+  const stats = `${group.fieldCount} 项属性 · 关系 ${relationThreads.length} 组${(group.relationships?.length ?? 0) > relationThreads.length ? `（${group.relationships.length} 条历程）` : ''} · 约定 ${group.commitments?.length ?? 0} · 人设变化 ${group.personaChanges?.length ?? 0} · 心迹 ${group.diaries.length} · 台词 ${group.dialogues.length}`;
   return `<div class="sy-person-head">
       <h4 data-people-title tabindex="-1">${esc(group.name)}</h4>
+      ${profileId?`<details data-people-casting="${esc(profileId)}"><summary><span class="sy-casting-badge sy-casting-${casting.role}">${esc(personaCastingLabel(casting))}</span> · 调整定位</summary><div class="sy-grid"><label>性别<select data-casting-gender>${options(PERSONA_GENDERS,casting.gender)}</select></label><label>剧情定位<select data-casting-role>${options(PERSONA_ROLES,casting.role)}</select></label></div><label><input type="checkbox" data-casting-player${casting.playerControlled?' checked':''}>由玩家扮演（降低自动精修频率）</label><button type="button" data-casting-save>保存定位</button></details>`:''}
       <p class="sy-help">${group.aliases.length ? `别称：${esc(group.aliases.join('、'))} · ` : ''}${esc(stats)}</p>
       <div class="sy-actions sy-person-bar"><button type="button" data-people-rename>改名</button><button type="button" data-people-merge-open>合并档案</button><button type="button" class="danger" data-people-remove>删除</button></div>
     </div>
     ${group.ambiguous ? '<p class="sy-help" role="status">此称呼对应多人，暂不归入任何人的档案。请从全部记录核对姓名或在召回字典中确认别称。</p>' : ''}
     ${personaBindHTML(group, allProfiles)}
+    ${reviewRows||archived?`<details class="sy-card"><summary>人设整理建议与历史</summary>${reviewRows}${archived?`<details><summary>已移入历史</summary>${archived}</details>`:''}</details>`:''}
     ${peopleMergeHTML(allProfiles, group.ambiguous ? group.name : '')}
     ${fieldGroup('人物属性', group.fieldCount, factRows, '还没有属性记录。', { category: 'entityFactChanges', add: 'attribute' })}
     <div class="sy-persona-block" data-people-persona-block>
       ${fieldGroup('动态人设', group.profiles.length, profileRows, '还没有动态人设档案。', { category: 'dynamic-persona' })}
     </div>
-    ${fieldGroup('关系', group.relationships?.length ?? 0, personRows(group.relationships ?? [], 'relationshipChanges'), '还没有关系记录。', { category: 'relationshipChanges', add: 'relationship' })}
+    ${fieldGroup('关系', relationThreads.length, relationshipRows, '还没有关系记录。', { category: 'relationshipChanges', add: 'relationship' })}
     ${fieldGroup('约定', group.commitments?.length ?? 0, personRows(group.commitments ?? [], 'commitmentChanges'), '还没有约定。', { category: 'commitmentChanges', add: 'commitment' })}
     ${fieldGroup('人设变化', group.personaChanges?.length ?? 0, personRows(group.personaChanges ?? [], 'personaChanges'), '还没有人设变化。', { category: 'personaChanges', add: 'persona' })}
     ${fieldGroup('角色心迹', group.diaries.length, diaryRows, '还没有心迹。', { category: 'diary' })}
@@ -354,6 +383,12 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
   root.addEventListener('click', event => {
     const button = event.target.closest('button');
     if (!button || button.disabled) return;
+    if(button.hasAttribute('data-persona-history')){void run(()=>app.setDynamicPersonaPartHistorical(button.dataset.profile,button.dataset.personaHistory,button.dataset.historyValue==='true'),{name:'dynamic-persona',button});return;}
+    if(button.hasAttribute('data-casting-save')){
+      const box=button.closest('[data-people-casting]');
+      if(box)void run(()=>app.editDynamicPersona(box.dataset.peopleCasting,{casting:{gender:box.querySelector('[data-casting-gender]').value,role:box.querySelector('[data-casting-role]').value,playerControlled:box.querySelector('[data-casting-player]').checked}}),{name:'dynamic-persona',button});
+      return;
+    }
     if (button.hasAttribute('data-people-key')) {
       selected = button.dataset.peopleKey; draw();
       const title = $('[data-people-title]');

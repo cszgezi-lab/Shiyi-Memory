@@ -2,7 +2,7 @@ import { validateProductPatch } from './product-settings.js';
 import { ProviderClient, resolveProviderEndpoint } from './provider.js';
 import { modelListFailure } from './product-feedback.js';
 
-export const API_KINDS = Object.freeze(['summary', 'supplement', 'assistant', 'embedding', 'rerank','dynamicPersona','knowledge']);
+export const API_KINDS = Object.freeze(['summary', 'supplement', 'assistant', 'embedding', 'rerank','dynamicPersona','personaReview','knowledge']);
 export function productApiProfile(settings, kind, keys = {}, patch = {}) {
   if (!API_KINDS.includes(kind)) throw new Error('未知模型用途');
   const s = { ...settings, ...validateProductPatch(patch) };
@@ -11,7 +11,7 @@ export function productApiProfile(settings, kind, keys = {}, patch = {}) {
   const prefix = effectiveKind === 'summary' ? 'provider' : effectiveKind;
   return { endpoint: s[`${prefix}Endpoint`], model: kind==='supplement'&&s.supplementFollowSummary?(s.supplementModel||s.providerModel):s[`${prefix}Model`],
     endpointMode: s[`${prefix}EndpointMode`], authMode: s[`${prefix}AuthMode`],
-    apiKey: keys[effectiveKind] ?? '', timeoutMs: kind==='dynamicPersona'?s.dynamicPersonaDeadlineMs:['summary','supplement'].includes(kind)?(s.summaryDeadlineMs??s.deadlineMs):s.deadlineMs };
+    apiKey: keys[effectiveKind] ?? '', timeoutMs: kind==='personaReview'?s.personaReviewDeadlineMs:kind==='dynamicPersona'?s.dynamicPersonaDeadlineMs:['summary','supplement'].includes(kind)?(s.summaryDeadlineMs??s.deadlineMs):s.deadlineMs };
 }
 
 // Model discovery is a separate GET, never a change to the saved inference URL.

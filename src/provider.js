@@ -160,7 +160,7 @@ export class ProviderClient {
     let lease,networkStarted;
     try {
       const scheduler=resource==='chat'?schedulers.get(this.fetch):null;
-      if(scheduler)lease=await scheduler.acquire(providerQueueScope(resolveProviderEndpoint(this.profile,resource),buildProviderHeaders(this.profile,headers)),{signal,onWait:details=>emit('queued',details)});
+      if(scheduler)lease=await scheduler.acquire(providerQueueScope(resolveProviderEndpoint(this.profile,resource),buildProviderHeaders(this.profile,headers)),{signal,onWait:details=>emit('queued',details),...(this.modelRole==='personaReview'?{rpmLimit:5,priority:-1}:{})});
       networkStarted=Date.now();
       emit('request',{stage:'request',...requestMeta,queueWaitMs:lease?.queueWaitMs??0,maxTokens:payload?.max_tokens??0,timeoutMs:timeoutMs??this.profile.timeoutMs});
       return await this.performRequest(resource,payload,{signal,timeoutMs,headers,method,emit});

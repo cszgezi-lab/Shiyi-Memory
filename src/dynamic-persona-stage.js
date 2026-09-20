@@ -25,11 +25,14 @@ export function stageCondition(expression,data){
 }
 export function personaSpans(entry,data={}, {allBranches=false}={}){
   const content=String(entry.content??''),identity=`${entry.book}:${entry.uid}`,hash=sha256(content);
+  // Display placeholders contain no logic. Keep raw offsets/hashes intact;
+  // masking is exclusively for classification, never template execution.
+  const syntax=content.replace(/(?<!\{)\{\{(?:user|char)\}\}(?!\})/gi,'');
   // Preserve code-bearing and malformed templates rather than classifying them
   // as plain prose. Only the fully recognized branch grammar is replaceable.
   if(/<\/?script\b/i.test(content)||/<%|%>/.test(content.replace(/<%[\s\S]*?%>/g,'')))return [];
-  if(!/<%|\{\{|@@/.test(content))return [{id:sha256([identity,hash,0]).slice(0,24),book:entry.book,uid:entry.uid,name:entry.name,start:0,end:content.length,text:content,hash,stage:'static'}];
-  if(/\{\{|@@/.test(content))return [];
+  if(!/<%|\{\{|@@/.test(syntax))return [{id:sha256([identity,hash,0]).slice(0,24),book:entry.book,uid:entry.uid,name:entry.name,start:0,end:content.length,text:content,hash,stage:'static'}];
+  if(/\{\{|@@/.test(syntax))return [];
   let cursor=0,valid=true;const stack=[],spans=[];
   // allBranches is for local request substitution only, never model input.
   // Replace prose in every recognized branch; the host still runs its original

@@ -438,3 +438,8 @@
 #shiyi-product-shell .sy-feature-switches button[aria-pressed="true"]::before{content:'✓'}
 #shiyi-product-shell .sy-feature-switches button:focus-visible{outline:2px solid currentColor;outline-offset:2px}
 #shiyi-product-shell .sy-feature-switches button:disabled{opacity:.65;cursor:wait}
+:root .sy-casting-badge{display:inline-block;padding:2px 8px;border-radius:12px;background:#e8ecf0;color:#334155;font-size:12px;border:1px solid #b8c1cc}
+:root .sy-casting-lead{background:#ede3ff;color:#573281;border-color:#baa1d7}
+:root .sy-casting-core{background:#dff1ef;color:#215d57;border-color:#95c7c0}
+:root .sy-casting-support{background:#e2edfa;color:#2b5282;border-color:#a1badb}
+:root .sy-casting-guest{background:#f4eee1;color:#755d2f;border-color:#cebe9b}

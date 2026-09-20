@@ -113,6 +113,7 @@ export function settingsSection(kind) {
 }
 
 export const API_INFO = Object.freeze({
+  personaReview:{prefix:'personaReview',title:'人设辅助精修（可选）',help:'每批最多选择一个重要且需要整理的人物，独立配置快速模型；默认不启用，不改变动态人设主模型。',resource:'/chat/completions'},
   knowledge: {prefix:'knowledge',title:'知识库分析模型',help:'导入世界书或资料后提取人物、别称与检索标签。原文由本机解析并完整保存；向量索引使用单独的向量 API。',resource:'/chat/completions'},
   summary: { prefix:'provider', title:'总结模型', help:'整理你选择的聊天楼层，提取事件、人物、关系与知情者。不会替代主聊天模型。', resource:'/chat/completions' },
   dynamicPersona: {prefix:'dynamicPersona',title:'动态人设模型',help:'独立后台任务，有自己的开关和楼层周期，不沿用总结 API。可选择你服务商提供的 Flash 模型。',resource:'/chat/completions'},
@@ -122,7 +123,7 @@ export const API_INFO = Object.freeze({
   rerank: { prefix:'rerank', title:'重排模型', help:'从候选记忆里挑出更相关的内容，让注入更精简。', resource:'/rerank' },
 });
 export function apiSettingsHTML() {
-  return Object.entries(API_INFO).sort(([a],[b])=>['summary','dynamicPersona','supplement','assistant','knowledge','embedding','rerank'].indexOf(a)-['summary','dynamicPersona','supplement','assistant','knowledge','embedding','rerank'].indexOf(b)).map(([kind, {prefix, title, help, resource}]) => `<section class="sy-card sy-api-card" data-api-card="${kind}"><div class="sy-top"><h4>${title}</h4>${['embedding','rerank'].includes(kind) ? button(`recommend-${kind}`, '补齐推荐值') : ''}</div><p class="sy-help">${help}</p>
+  return Object.entries(API_INFO).sort(([a],[b])=>['summary','dynamicPersona','personaReview','supplement','assistant','knowledge','embedding','rerank'].indexOf(a)-['summary','dynamicPersona','personaReview','supplement','assistant','knowledge','embedding','rerank'].indexOf(b)).map(([kind, {prefix, title, help, resource}]) => `<section class="sy-card sy-api-card" data-api-card="${kind}"><div class="sy-top"><h4>${title}</h4>${['embedding','rerank'].includes(kind) ? button(`recommend-${kind}`, '补齐推荐值') : ''}</div><p class="sy-help">${help}</p>
     ${['assistant','supplement','knowledge'].includes(kind) ? setting(kind==='knowledge'?'knowledgeFollowAssistant':`${kind}FollowSummary`) + `<p class="sy-inherited sy-help" data-inherited="${kind}"></p>` : ''}
     <div data-api-fields="${kind}">
     <div data-api-connection="${kind}">

@@ -8,7 +8,12 @@ const personName=value=>validTerm(value)&&!/[\n，。！？；：:<>%=|]/.test(v
 const aliasName=value=>personName(value)||validTerm(value)&&/^[\p{Script=Han}]$/u.test(value);
 const genericTitle=/^(?:人物|角色|人设|人設|基本|基础|基礎|背景|外貌|性格|兴趣爱好|興趣愛好|爱好|愛好|阶段|階段|资料|資料|设定|設定|档案|檔案|关系|關係|行为|行為|描写|描寫|.*规则|.*規則)$/;
 export function personaTitleNames(title){
-  return String(title??'').split(/[\s·|｜:：\[\]【】（）()/_—-]+/u).map(s=>s.replace(/(?:的)?(?:人物设定|人物設定|基础资料|基礎資料|人设|人設|档案|檔案|性格|阶段|階段)$/u,'')).filter(s=>personName(s)&&!genericTitle.test(s));
+  // Leading bracket groups are metadata only when a real title follows.
+  // A standalone [Alice] remains a name; no card-specific prefix list.
+  let value=String(title??'').trim();
+  const prefix=/^(?:(?:\[[^\]\r\n]+\]|【[^】\r\n]+】)\s*)+/.exec(value);
+  if(prefix&&value.slice(prefix[0].length).trim())value=value.slice(prefix[0].length);
+  return value.split(/[·|｜:：\[\]【】（）()/_—]+/u).map(s=>s.trim().replace(/(?:的)?(?:人物设定|人物設定|人物档案|人物檔案|基础资料|基礎資料|基础档案|基礎檔案|人设|人設|档案|檔案|性格|阶段|階段|语料|語料|口吻|外貌|profile|dialogue|appearance)$/iu,'').trim()).filter(s=>personName(s)&&!genericTitle.test(s));
 }
 function shortNames(name){
   if(!/^[\p{Script=Han}]{3,8}$/u.test(name))return [];

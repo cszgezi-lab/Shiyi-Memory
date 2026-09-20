@@ -13,6 +13,15 @@ import {getNarrativeConfig} from './narrative-extraction.js';
 export const PRODUCT_SETTINGS_VERSION = 1;
 
 const DEFINITIONS = [
+  {key:'personaReviewEnabled',label:'启用按角色辅助精修（额外调用，默认关闭）',defaultValue:false,type:'boolean',consumers:['PersonaRefinement']},
+  {key:'personaReviewEndpoint',label:'人设精修 API 地址',defaultValue:'',type:'string',maxLength:2048,consumers:['PersonaRefinement']},
+  {key:'personaReviewModel',label:'人设精修模型',defaultValue:'',type:'string',maxLength:240,consumers:['PersonaRefinement']},
+  {key:'personaReviewEndpointMode',label:'人设精修地址模式',defaultValue:'base',type:'enum',values:['base','exact'],consumers:['PersonaRefinement']},
+  {key:'personaReviewAuthMode',label:'人设精修认证方式',defaultValue:'bearer',type:'enum',values:['none','bearer','api-key'],consumers:['PersonaRefinement']},
+  {key:'personaReviewInputUnits',label:'精修输入上限（估算）',defaultValue:16000,type:'integer',min:2000,max:32000,consumers:['PersonaRefinement']},
+  {key:'personaReviewOutputTokens',label:'精修输出上限（Token）',defaultValue:3072,type:'integer',min:512,max:8192,consumers:['PersonaRefinement']},
+  {key:'personaReviewDeadlineMs',label:'精修超时（毫秒）',defaultValue:90000,type:'integer',min:1000,max:180000,consumers:['PersonaRefinement']},
+  {key:'personaReviewCooldownFloors',label:'同一人物精修间隔楼数',defaultValue:30,type:'integer',min:10,max:1000,consumers:['PersonaRefinement']},
   {key:'knowledgeFollowAssistant',label:'资料分析沿用配置助手连接',defaultValue:true,type:'boolean',consumers:['ProductApplication.analyzeDocuments']},
   {key:'knowledgeEndpoint',label:'资料分析 API 地址',defaultValue:'',type:'string',maxLength:2048,consumers:['ProductApplication.analyzeDocuments']},
   {key:'knowledgeModel',label:'资料分析模型',defaultValue:'',type:'string',maxLength:240,consumers:['ProductApplication.analyzeDocuments']},
@@ -220,7 +229,7 @@ export const PRODUCT_PERSISTED_SETTING_KEYS = PERSISTED_KEYS;
 // Connection settings belong to this TT installation, not a story or chat.
 // Credentials remain runtime-only and are deliberately absent from this list.
 export const PRODUCT_API_SETTING_KEYS = Object.freeze([
-  ...['provider','assistant','supplement','embedding','rerank','dynamicPersona','knowledge'].flatMap(prefix => ['Endpoint','EndpointMode','Model','AuthMode'].map(suffix => prefix + suffix)),
+  ...['provider','assistant','supplement','embedding','rerank','dynamicPersona','personaReview','knowledge'].flatMap(prefix => ['Endpoint','EndpointMode','Model','AuthMode'].map(suffix => prefix + suffix)),
   'knowledgeFollowAssistant','knowledgeOutputTokens',
   'assistantFollowSummary','supplementFollowSummary','deadlineMs','summaryDeadlineMs','summaryStreaming','summaryRequestMode','chatRequestsPerMinute','assistantBudgetUnits','assistantOutputTokens',
 ]);

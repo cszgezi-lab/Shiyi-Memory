@@ -1,5 +1,8 @@
 import {clone,sha256} from './utils.js';
 import {foldName} from './persona-identity.js';
+export const PERSONA_IMPACT_RULE=`动态人设不是第二份事件记忆。客观事件、完整时间线和发生经过由记忆模块保存；这里优先回答“这些经历让此人对谁、在何种场合、如何说话与行动发生了什么变化”。当前text按对象归纳仍有效的态度、情感、边界和表达方式，把本批重大变化放在最前；同一关系是当前状态，不逐批追加日记。转变原因只留理解表现所必要的一句与楼号，不重复整段事件经过。
+必须核对本批具实质变化的角色：是否明确答应改变态度，是否开始主动求助/表达依赖，是否只对特定对象放下防备，公开与私下是否不同，之后的行动是否延续该变化。不因“底色是傲娇/冷漠”等原设定把明确变化抹平，也不把一次情绪写成永久人格替换。沿用development的主题与对象更新当前after，before/origin只是历史，不是每轮重演的性格。保留其他仍有效的对象关系。
+examples优先选体现当前态度改变、措辞和表达方式的真实原话，写明对谁及情境；保留否定、条件与不确定性，不把威胁或玩笑升格为会执行的永久行为。稳定外貌、身份、独立爱好由底稿保留，不为缩短删除未变细节。应退出当前演绎的旧关系/口吻通过对应updates明确注明历史，不只追加矛盾结论。无依据不“彻底、完全、永远”强化。`;
 
 // Optional guidance, appended to the wire contract rather than overwriting a
 // user's saved preset. There is still only one model request per persona batch.

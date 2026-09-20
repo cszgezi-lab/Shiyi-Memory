@@ -93,7 +93,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache(),knowledgeVectorCache=new ProductVectorCache();
   let knowledgeJob=false,automaticPaused=false,autoInvalidSources=new Set();
   const operations = new Set(), apiOperations = new Set(), injectedPayloads = new WeakSet();
-  const keys = { summary: '', supplement:'', assistant: '', embedding: '', rerank: '',dynamicPersona:'',knowledge:'' };
+  const keys = { summary: '', supplement:'', assistant: '', embedding: '', rerank: '',dynamicPersona:'',personaReview:'',knowledge:'' };
   const keyOrigins={},keyVersions={},keyEdited=new Set();let credentialsLoaded=false;
   const prefixFor=k=>k==='summary'?'provider':k;
   function effectiveKeys(patch={}){const s={...core.settings,...patch};return Object.fromEntries(Object.entries(keys).map(([k,v])=>[k,keyOrigins[k]&&keyOrigins[k]!==credentialOrigin(s[`${prefixFor(k)}Endpoint`])?'':v]));}
@@ -121,7 +121,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   function markForeground(value){
     foreground=value;state.foregroundBusy=value;providerScheduler.setForeground?.(foregroundBusy());notify();
-    if(value){clearTimeout(autoTimer);autoTimer=null;vectorJob?.cancel();}
+    if(value){clearTimeout(autoTimer);autoTimer=null;vectorJob?.cancel();dynamicPersona.interruptReview();}
     else {queueAutomaticSummary();dynamicPersona.wake();wakeVectors();}
   }
   const recordedErrors=new WeakSet(),diagnosticJobs=new Set(),transportRuns=new Map(),queuedRequests=new Map();
@@ -162,7 +162,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   const modules=createModuleController({host,core,state,load:loadApiSettings,getGlobal:()=>globalWorkspace,getChat:()=>workspace,check:assertCurrent,notify,refresh,changed:()=>recallChanged({vectors:true})});
   const personaWorldbook=createPersonaWorldbook({host,check:assertCurrent,context:()=>({scope:boundScope,epoch}),stageMode:()=>core.settings.dynamicPersonaMvuMode});
-  const dynamicPersona=createDynamicPersona({settings:()=>core.settings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:()=>core.historyTail(),worldbook:personaWorldbook,client:()=>client('dynamicPersona'),dictionary:()=>activeDictionary(),records:()=>state.records,log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>!personaLaunch&&enabled&&!opening&&!state.stale&&!foregroundBusy()&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
+  const dynamicPersona=createDynamicPersona({settings:()=>core.settings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:()=>core.historyTail(),worldbook:personaWorldbook,client:()=>client('dynamicPersona'),reviewClient:()=>client('personaReview'),dictionary:()=>activeDictionary(),records:()=>state.records,log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>!personaLaunch&&enabled&&!opening&&!state.stale&&!foregroundBusy()&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
   const resumeAutomaticTasks=()=>{if(host.document?.visibilityState==='hidden')return;queueAutomaticSummary();dynamicPersona.wake();};
   host.document?.addEventListener?.('visibilitychange',resumeAutomaticTasks);host.addEventListener?.('online',resumeAutomaticTasks);
   function activeDictionary(){
@@ -490,7 +490,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           if(core.settings.injectionLogEnabled)injectionLog?.append({status:'auxiliary',persona:{replaced:0,supplemental:0,profiles:[]}});
           return;
         }
-        injecting++;providerScheduler.setForeground?.(true);
+        injecting++;providerScheduler.setForeground?.(true);dynamicPersona.interruptReview();
         try{
         // The host can still hold a request prepared before a chat switch. Do
         // not put either the new chat's recall or persona in that old payload.
@@ -499,7 +499,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         let personaInjection;
         if(!injectedPayloads.has(payload))try{personaInjection=await dynamicPersona.inject(payload,{enabled});}catch(error){void reportError(error,{task:'persona',stage:'prepare'});}
         if(requestEpoch!==epoch){await personaWorldbook.finalize(payload,[]);return;}
-        await inject(payload,{dossierPeople:personaInjection?.people??[],personaInjection});
+        await inject(payload,{dossierPeople:personaInjection?.people??[],dossierProfiles:personaInjection?.profiles??[],personaInjection});
         }finally{injecting--;providerScheduler.setForeground?.(foregroundBusy());if(!foregroundBusy()){queueAutomaticSummary();dynamicPersona.wake();}}
       }));
       try{bindings.push(hostAdapter.subscribe('WORLDINFO_ENTRIES_LOADED',payload=>enabled?personaWorldbook.applyLoaded(payload,dynamicPersona.profiles()).catch(error=>{void reportError(error,{task:'persona',stage:'prepare'});}):undefined));}catch{/* Optional capability must not disable automatic summary. */}
@@ -590,7 +590,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     catch(error){void reportError(error,{task:'background',stage:'background'});state.cards=state.cards.filter(c=>!c.readonly);recallChanged();setMessage('MVU 读取未完成，旧变量未注入；请重新加载当前聊天或刷新变量');}
   }
   async function saveSettings(patch) {
-    await loadApiSettings();await apiSettings.save(validateProductPatch(patch));
+    const valid=validateProductPatch(patch);
+    if(valid.personaReviewEnabled===false)dynamicPersona.interruptReview();
+    await loadApiSettings();await apiSettings.save(valid);
+    if(valid.personaReviewEnabled===false)dynamicPersona.interruptReview();
     if(!core.settings.injectionEnabled)await clearPrompt();
     if(patch.dynamicPersonaEnabled===false)await dynamicPersona.pause();
     queueAutomaticSummary();dynamicPersona.wake();
@@ -1242,7 +1245,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     } finally { recallBusy--; }
   }
   async function knowledgeCards() { return core.settings.knowledgeEnabled ? knowledgeCache.filter(card => !state.hidden.includes(card.id)) : []; }
-  async function preview(query, { online = false, context='',characterContext=context,clock=null,snapshot=null,dossierPeople=[],signal,publish=true } = {}) {
+  async function preview(query, { online = false, context='',characterContext=context,clock=null,snapshot=null,dossierPeople=[],dossierProfiles=[],signal,publish=true } = {}) {
     assertCurrent(); if(state.stale) throw new Error('正文已修改，先重新整理');
     if (recallBusy&&!snapshot) throw new Error('记忆正在更新，请稍后检索');
     const op=begin(false),abort=()=>op.abort();recallReaders++;
@@ -1258,13 +1261,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const lookup=context?`${query}\n最近剧情参照：${context}\n当前询问：${query}`:query;
     if(!clock)try{clock=sceneClockFromMessages(await core.sceneMessages?.()??[]);}catch(error){op.check();void reportError(error,{task:'recall',stage:'prepare'});clock={date:null,status:'unavailable',source:'scene'};}
     op.check();
-    const result = await recallMemory(cards, lookup, {...settings,storyDate:clock.date??''}, { ...(online ? await retrievalAdapters(selectRecallCards(cards, settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:snapshot?.dictionary??activeDictionary(),focusQuery:query,characterQuery:[query,characterContext].filter(Boolean).join('\n'),dossierPeople });
+    const result = await recallMemory(cards, lookup, {...settings,storyDate:clock.date??''}, { ...(online ? await retrievalAdapters(selectRecallCards(cards, settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:snapshot?.dictionary??activeDictionary(),focusQuery:query,characterQuery:[query,characterContext].filter(Boolean).join('\n'),dossierPeople,dossierProfiles });
     result.sceneClock=clock;
     op.check(); if (snapshot?safetyRevision!==recallSafetyRevision:revision!==recallRevision) throw new Error('记忆或设置已更新，请重新检索');
     if(publish){state.preview = result; notify();}return result;
     } finally { signal?.removeEventListener('abort',abort);recallReaders--;op.finish(); }
   }
-  async function inject(payload,{dossierPeople=[],personaInjection}={}) {
+  async function inject(payload,{dossierPeople=[],dossierProfiles=[],personaInjection}={}) {
     if (!payload || !Array.isArray(payload.messages) || injectedPayloads.has(payload)) return;
     const log=injectionLog,started=Date.now(),initialToken=epoch;
     const audit=(status,options={})=>{if(log&&core.settings.injectionLogEnabled)log.append({status,persona:personaInjection,budgetUnits:core.settings.retrievalBudgetUnits,elapsedMs:Date.now()-started,...options});};
@@ -1283,13 +1286,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try {
       let result;
       try{
-        result = await withTimeout(preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,signal:onlineController.signal,publish:false }), recallDeadlineMs(), '本轮记忆召回');
+        result = await withTimeout(preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,signal:onlineController.signal,publish:false }), recallDeadlineMs(), '本轮记忆召回');
       }catch(error){
         // 在线部分太慢：这一轮直接用本地检索结果，聊天不因此少一份记忆。
         if(error?.code!=='TIMEOUT')throw error;
         onlineController.abort();
         runtimeLog.record({run:diagnosticRun,task:'recall',phase:'prepared',level:'warning',details:safeLogDetails({reason:'online_too_slow',stage:'validate',elapsedMs:Date.now()-started,code:'TIMEOUT',modelRole:'embedding'})});
-        result = await preview(query, { online:false,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,publish:false });
+        result = await preview(query, { online:false,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,publish:false });
         result.degraded=true;
       }
       assertCurrent(token); if (revision !== recallSafetyRevision || !enabled || !core.settings.injectionEnabled){audit('changed');return;}
@@ -1630,6 +1633,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     pauseDynamicPersonaManual:()=>logged('persona',()=>dynamicPersona.pauseManual()),
     discardDynamicPersonaManual:()=>logged('persona',()=>dynamicPersona.discardManual()),
     inspectDynamicPersonaWorldbook:()=>logged('persona',()=>dynamicPersona.inspectWorldbook()),
+    retryDynamicPersonaReview:()=>logged('persona',()=>dynamicPersona.retryReview()),
+    setDynamicPersonaPartHistorical:(id,key,value)=>dynamicPersona.setPartHistorical(id,key,value),
     syncDynamicPersonaWorldbook:()=>logged('persona',async()=>{await dynamicPersona.inspectWorldbook();return dynamicPersona.syncMirror();}),
     async setDynamicPersona(enabledNow){await saveSettings({dynamicPersonaEnabled:enabledNow});if(!enabledNow)dynamicPersona.stop();else {if(!workspace?.isCurrent())await open({enable:enabled});await dynamicPersona.load();await dynamicPersona.resume();}},
     async setFeature(kind,value){

@@ -1,11 +1,11 @@
 import {personaIdentity} from './persona-identity.js';
 
-const shared=/规则|規則|系统|系統|世界观|世界觀|世界设定|世界設定|变量|變量|初始化|状态栏|狀態欄|提示词|提示詞|多人|全体|全體|all\s*characters/i;
+const shared=/规则|規則|系统|系統|世界观|世界觀|世界设定|世界設定|变量|變量|初始化|状态栏|狀態欄|提示词|提示詞|多人|全体|全體|家庭|家族|地图|地圖|剧情大纲|劇情大綱|all\s*characters|world\s*rules|family|map\b/i;
 const personal=/人物|角色|人设|人設|档案|檔案|外貌|性格|口吻|语料|語料|衣着|衣著|爱好|愛好|profile|appearance/i;
 // Category-only headings do not name a person. In particular, two joined
 // categories must not become a competing identity against an explicit key.
 const categoryTitle=value=>!String(value??'').replace(/人物|角色|人设|人設|档案|檔案|外貌|性格|口吻|语料|語料|衣着|衣著|爱好|愛好|兴趣|興趣|基础|基礎|基本|资料|資料|设定|設定|背景|关系|關係|行为|行為|描写|描寫|与|與|和|及|\s|[·:：/、_-]|profile|appearance/gi,'');
-const declaredNames=text=>[...new Set([...String(text??'').matchAll(/^\s*(?:[-*]\s*)?(?:姓名|角色名|人物姓名|name)\s*[:：]\s*["']?([^\n"'，,。；;<>]{1,32})/gmi)].map(m=>m[1].trim()))];
+const declaredNames=text=>[...new Set([...String(text??'').matchAll(/^\s*(?:[-*]\s*)?(?:姓名|角色名|人物姓名|name)\s*[:：]\s*["']?([^\n"'，,。；;<>]{1,64})/gmi)].map(m=>m[1].replace(/\s*[（(][^）)]*[）)]\s*$/u,'').trim()))];
 const entryKey=e=>JSON.stringify([e.book,e.uid]);
 
 // Only explicit metadata establishes ownership. A body merely mentioning a

@@ -4,7 +4,7 @@ import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './prod
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel,scopeLabel } from './product-narrative.js';
 import { hasStoryTime, storyDateOf } from './temporal.js';
 import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts } from './product-recall-packing.js';
-import { factValue, fullCharacterGroups, awarenessSubjectLabel, PERSON_RECORD_CATEGORIES } from './product-person-profiles.js';
+import { factValue, fullCharacterGroups, awarenessSubjectLabel, characterRecordSubjects, PERSON_RECORD_CATEGORIES } from './product-person-profiles.js';
 import {foldName} from './persona-identity.js';
 import { compileEventPacket } from './product-event-packet.js';
 import { factValidity, awarenessAssociationSupported } from './memory-evidence.js';
@@ -272,7 +272,7 @@ export function prepareRecallIndex(cache, cards, settings, { scopeKey, revision,
   if (revision === undefined) throw new Error('recall cache requires a snapshot revision');
   return cache.prepare(selectRecallCards(cards, settings), { scopeKey, revision: { snapshot: revision, persona: settings.personaEnabled, performance: settings.performanceEnabled, knowledge: settings.knowledgeEnabled,journal:settings.journalEnabled,reading:settings.narrativeExtraction??'' }, k1: settings.bm25K1, b: settings.bm25B, signal });
 }
-export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null,focusQuery=query,characterQuery=query,dossierPeople=[] } = {}) {
+export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null,focusQuery=query,characterQuery=query,dossierPeople=[],dossierProfiles=[] } = {}) {
   const startedAt = globalThis.performance?.now?.() ?? Date.now();
   const selected = selectRecallCards(cards, settings);
   const prepared = indexCache ? await prepareRecallIndex(indexCache, selected, settings, { scopeKey, revision, signal }) : null;
@@ -292,6 +292,19 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   // Its historical records remain ordinary searchable candidates, not deleted.
   const supplied=new Set(dossierPeople.map(foldName));
   const canonical=name=>{const matches=(lexicon.entries??[]).filter(e=>!e.disabled&&[e.name,...(e.aliases??[])].some(n=>foldName(n)===foldName(name))&&!(e.ambiguous??[]).some(n=>foldName(n)===foldName(name)));return matches.length===1?matches[0].name:name;};
+  const dossierCoverage=new Map();
+  for(const profile of dossierProfiles??[]){
+    if(!profile||typeof profile.name!=='string'||!Number.isInteger(profile.through))continue;
+    const key=foldName(canonical(profile.name)),old=dossierCoverage.get(key)??-1;
+    if(profile.through>old)dossierCoverage.set(key,profile.through);
+  }
+  const historyIntent=/(?:当初|以前|过去|当时|曾经|最初|起初|先前|之前|哪一楼|第几楼)|(?:关系|态度|性格|口吻|人设).{0,8}(?:发展|变化|改变|过程|历程)|为什么.{0,12}(?:改变|变化|变成)/u.test(String(focusQuery??''));
+  const coveredPersonaHistory=record=>{
+    if(historyIntent||!['relationshipChanges','personaChanges','performanceHints'].includes(record.category))return false;
+    const floors=sourceFloors(record);if(!floors.length)return false;
+    const last=Math.max(...floors);
+    return characterRecordSubjects(record).some(name=>(dossierCoverage.get(foldName(canonical(name)))??-1)>=last);
+  };
   characters.groups=characters.groups.filter(g=>!supplied.has(foldName(canonical(g.subject))));
   const fullIds=new Set(characters.groups.flatMap(g=>g.records.map(r=>r.id)));
   const tagLanes=settings.tagRecallEnabled===false?[]:matched.tags.map(tag=>({tag,limit:settings.tagCandidateLimit??4}));
@@ -299,7 +312,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     ? [...new Set(selected.filter(c=>!fullIds.has(c.id)).map(c=>c.category))].filter(category=>category!=='summaryView').map(category=>({category,limit:settings.tagCandidateLimit??4})) : [];
   const channelFilter=settings.distributedEnabled&&settings.distributedStrategy==='leader_only'
     ? c=>(c.category==='knowledge'?'knowledge':'memory')===settings.distributedChannel : undefined;
-  const filter=c=>!fullIds.has(c.id)&&(!channelFilter||channelFilter(c));
+  const filter=c=>!fullIds.has(c.id)&&!coveredPersonaHistory(c)&&(!channelFilter||channelFilter(c));
   const result = await retrieveMemories({ index, query: q, limit: Math.max(settings.retrievalLimit, settings.retrievalCandidateLimit ?? 24), vectorAdapter, reranker, signal,categoryLanes,filter,
     entityIds:matched.entities,tagLanes,
     totalTimeoutMs: settings.retrievalTimeoutMs,
@@ -449,7 +462,11 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     if(!resolved)unresolvedKnowledge.push(row.id);
   }
   const contextText=knowledgeContext.size?['[知情所指的事件背景：仅解释具体事实的来龙去脉，不扩大任何角色的知情范围；知情状态仍以人物条目为准。]',...[...knowledgeContext.values()].map(event=>renderMemoryCard(event,{...settings,timeProtection:true},{body:event.recallSummary||event.description,query:focusQuery}))].join('\n\n'):'';
-  const dialoguePacket=settings.dialogueEnabled===false?{rows:[],text:''}:importantDialoguePacket(selected,characterQuery,lexicon,[characterText,eventPacket.text,contextText].join('\n'));
+  // The important-dialogue lane is another injection route over the same
+  // records. Apply the dossier coverage rule here too, or covered relationship
+  // history returns after ordinary retrieval correctly filtered it out.
+  const dialogueSource=selected.filter(record=>!coveredPersonaHistory(record));
+  const dialoguePacket=settings.dialogueEnabled===false?{rows:[],text:''}:importantDialoguePacket(dialogueSource,characterQuery,lexicon,[characterText,eventPacket.text,contextText].join('\n'));
   const dialogueCards=[...new Map(dialoguePacket.rows.map(r=>[r.recordId,r.record])).values()].filter(c=>!packedIds.has(c.id)&&!knowledgeContext.has(c.id));
   content=packed.length||dialoguePacket.rows.length?[packetHeader,characterText,eventPacket.text,contextText,dialoguePacket.text].filter(Boolean).join('\n\n'):'';
   result.trace.importantDialogues={count:dialoguePacket.rows.length,units:estimateUnits(dialoguePacket.text),extraModelCalls:0};

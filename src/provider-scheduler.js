@@ -35,7 +35,8 @@ export function createProviderScheduler({requestsPerMinute=()=>0,now=()=>Date.no
     lane.stop?.();lane.stop=null;
     lane.starts=lane.starts.filter(t=>t>now()-60000);
     if(disposed||!lane.pending.length)return;
-    const rpm=Math.max(0,Math.floor(Number(requestsPerMinute())||0));
+    const limits=[Number(requestsPerMinute()),Number(lane.pending[0]?.rpmLimit)].filter(n=>Number.isFinite(n)&&n>0);
+    const rpm=limits.length?Math.max(1,Math.floor(Math.min(...limits))):0;
     const rateUntil=rpm&&lane.starts.length>=rpm?lane.starts[lane.starts.length-rpm]+60000:0;
     const until=Math.max(rateUntil,lane.cooldownUntil);
     const reason=foreground?'queue_foreground':lane.active?'queue_busy':until>now()?(lane.cooldownUntil>=rateUntil?'queue_cooldown':'queue_rpm'):null;
@@ -69,15 +70,15 @@ export function createProviderScheduler({requestsPerMinute=()=>0,now=()=>Date.no
   }
   return {
     setForeground(value){foreground=Boolean(value);for(const lane of lanes.values())pump(lane);},
-    acquire(key,{signal,onWait}={}){
+    acquire(key,{signal,onWait,rpmLimit=0,priority=0}={}){
       if(disposed||signal?.aborted)return Promise.reject(canceled());
       sweep();
       let lane=lanes.get(key);
       if(!lane){lane={active:false,pending:[],starts:[],cooldownUntil:0,failures:0,stop:null};lanes.set(key,lane);}
       return new Promise((resolve,reject)=>{
-        const item={signal,onWait,resolve,reject,queuedAt:now()};
+        const item={signal,onWait,rpmLimit,priority,resolve,reject,queuedAt:now()};
         item.abort=()=>{const i=lane.pending.indexOf(item);if(i<0)return;lane.pending.splice(i,1);signal?.removeEventListener('abort',item.abort);reject(canceled());pump(lane);};
-        signal?.addEventListener('abort',item.abort,{once:true});lane.pending.push(item);pump(lane);
+        signal?.addEventListener('abort',item.abort,{once:true});lane.pending.push(item);lane.pending.sort((a,b)=>b.priority-a.priority);pump(lane);
       });
     },
     dispose(){disposed=true;for(const lane of lanes.values()){lane.stop?.();for(const item of lane.pending.splice(0)){item.signal?.removeEventListener('abort',item.abort);item.reject(canceled());}}lanes.clear();},

@@ -7,12 +7,10 @@ const normalized = value => String(value ?? '').toLocaleLowerCase().replace(/\s+
 const refs = record => [...new Set([record.eventRef, record.eventId, ...(record.eventRefs ?? []), ...(record.relatedEvents ?? []).map(e => e.id)].filter(Boolean))];
 const sentences = value => String(value ?? '').match(/[^。！？\n]+[。！？]?/g) ?? [];
 
-// TT quiet requests can also be legitimate story generation. Do not skip all
-// quiet requests, or guess from mentions of MVU in the scene. This conservative
-// guard recognizes the variable-only control prefill seen in the supplied logs.
-// Legacy hosts omit type; explicit ordinary generations always take precedence.
+// TT can label its own variable-only prefill as quiet, omit the type, or expose
+// an ordinary generation type. Match only the anchored control signature; do
+// not guess from MVU mentions or skip unrelated quiet/ordinary story requests.
 export function auxiliaryInjectionReason(payload){
-  if(payload?.type&&payload.type!=='quiet')return null;
   const latest=(Array.isArray(payload?.messages)?payload.messages:[]).filter(m=>m?.role==='user').at(-1);
   const text=typeof latest?.content==='string'?latest.content:Array.isArray(latest?.content)?latest.content.filter(p=>p?.type==='text').map(p=>p.text??'').join('\n'):'';
   return /^\s*---\s+NoThinking refers to a method that bypasses the explicit reasoning process\b/i.test(text)
