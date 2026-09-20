@@ -115,7 +115,6 @@ export function peopleHTML() {
       </div>
       <article data-people-detail class="sy-people-reading" aria-label="人物阅读区"></article>
     </div>
-    <details class="sy-people-settings"><summary>API 与更新设置</summary><div class="sy-people-links"><button type="button" data-people-page-link="api">API 与模型</button><button type="button" data-people-page-link="dynamic-persona">人设更新设置</button></div></details>
   </section>`;
 }
 

@@ -431,3 +431,10 @@
 #shiyi-product-shell .sy-category-grid button{height:52px;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:1px}
 #shiyi-product-shell .sy-category-grid strong{font:600 16px/1.15 system-ui,sans-serif;color:var(--sy-accent);font-variant-numeric:tabular-nums;white-space:nowrap}
 #shiyi-product-shell .sy-category-grid small{font:400 12.5px/1.3 system-ui,sans-serif;opacity:.85;white-space:nowrap}
+#shiyi-product-shell .sy-feature-switches{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}
+#shiyi-product-shell .sy-feature-switches button{display:inline-flex;align-items:center;justify-content:center;gap:5px;flex:0 0 auto;min-height:32px;margin:0;padding:5px 10px;border:1px solid #656a70;border-radius:6px;background:#454a50;color:#fff;font:500 12px/1.4 system-ui,sans-serif;white-space:nowrap;box-shadow:none}
+#shiyi-product-shell .sy-feature-switches button::before{content:'−';width:10px;text-align:center}
+#shiyi-product-shell .sy-feature-switches button[aria-pressed="true"]{background:#2e7d61;border-color:#409877}
+#shiyi-product-shell .sy-feature-switches button[aria-pressed="true"]::before{content:'✓'}
+#shiyi-product-shell .sy-feature-switches button:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+#shiyi-product-shell .sy-feature-switches button:disabled{opacity:.65;cursor:wait}

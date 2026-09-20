@@ -7,8 +7,8 @@ const names = { base:'自动补接口路径', exact:'完整地址（不补路径
 const copy = {
   knowledgeFollowAssistant:['沿用配置助手连接（默认）','已有助手 / 总结 API 就能分析资料，无需重复填写。关闭后使用本卡的独立地址、模型与 Key；不改其他任务。'],
   knowledgeOutputTokens:['字典分析回复上限（Token）','推荐 4096；每次最多分析约 6000 字原文，原文始终完整保存，AI 不负责压缩或改写资料。'],
-  dynamicPersonaEvery:['每多少楼更新人物','推荐 10。人设独立计数，不等待主总结；正常每批一次模型请求。'],
-  dynamicPersonaKeepRecent:['保留最近多少楼','推荐 0；需要给重生成留空间可增加。保留的楼层暂不进入人设更新。'],
+  dynamicPersonaEvery:['每多少楼更新人物',''],
+  dynamicPersonaKeepRecent:['保留最近多少楼（推荐 2）',''],
   dynamicPersonaInputUnits:['人设输入预算（估算）','推荐 24000；包含正文、原书和已有材料。超限会明确提示，不偷偷拆分你选的批次。'],
   dynamicPersonaOutputTokens:['人设回复上限（Token）','推荐 8192，限制模型本次回复长度，不截断已保存的完整人物档案。'],
   dynamicPersonaDeadlineMs:['人设请求超时（毫秒）','推荐 180000，即 3 分钟；后台更新，不增加前台召回等待时间。'],

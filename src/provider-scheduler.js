@@ -18,7 +18,7 @@ export function backgroundRetryDelay(error, failures){
   if(d.recoveryExhausted===true)return 0;
   if(['content_blocked','context_limit'].includes(d.upstreamHint)||['insufficient_quota','invalid_api_key','api_key_missing','context_length_exceeded','model_not_found','invalid_request_error','outbound_host_denied'].includes(d.upstreamCode))return 0;
   if([400,401,403,404,413,422].includes(status))return 0;
-  const retryable=[408,429,500,502,503,504].includes(status)||code.startsWith('network.')||['TIMEOUT','PROVIDER_REQUEST_FAILED','PERSONA_RESPONSE_INVALID','PERSONA_STAGE_CHANGED','SUMMARY_RESPONSE_ERROR','VALIDATION_ERROR','MODEL_OUTPUT_TRUNCATED'].includes(code);
+  const retryable=[408,429,500,502,503,504].includes(status)||code.startsWith('network.')||['TIMEOUT','PROVIDER_REQUEST_FAILED','PROVIDER_STREAM_ERROR','PERSONA_RESPONSE_INVALID','PERSONA_STAGE_CHANGED','SUMMARY_RESPONSE_ERROR','VALIDATION_ERROR','MODEL_OUTPUT_TRUNCATED'].includes(code);
   return retryable&&failures<=3?Math.max([60000,120000,300000][failures-1]??0,Number(d.retryAfterMs)||0):0;
 }
 // A service outage is not a bad record. Optional batch consumers persist the

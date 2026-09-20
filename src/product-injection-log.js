@@ -4,7 +4,7 @@ import { recordTitle, sourceFloors } from './product-narrative.js';
 
 export const INJECTION_LOG_LIMIT=30;
 const STORAGE='injection-log-v1',MAX_CHARS=500000;
-const statuses=new Set(['prepared','empty','disabled','stale','unavailable','failed','changed']);
+const statuses=new Set(['prepared','empty','disabled','stale','unavailable','failed','changed','auxiliary']);
 const num=v=>typeof v==='number'&&Number.isFinite(v)&&v>=0?v:0;
 const str=(v,n)=>typeof v==='string'?v.slice(0,n):'';
 const stage=v=>['passed','disabled','fallback','skipped'].includes(v)?v:'disabled';
@@ -12,9 +12,10 @@ export const INJECTION_DETAIL_LABELS=Object.freeze({source_evidence_omitted:'原
 const array=v=>Array.isArray(v)?v:[];
 const reasons=new Set(['人物重要对话','人物身份匹配','人物档案全量','关键词匹配','标签匹配','分类检索','语义匹配','人物精确匹配','相关候选','解释已注入知情的明确关联事件']);
 const scores=v=>Object.fromEntries(['keyword','vector','fusion','final'].map(k=>[k,typeof v?.[k]==='number'&&Number.isFinite(v[k])?v[k]:null]));
+const personaStats=v=>v&&typeof v==='object'?{replaced:num(v.replaced),supplemental:num(v.supplemental),profiles:array(v.profiles).slice(0,100).map(p=>({id:str(p.id,160),name:str(p.name,120),through:num(p.through),chars:num(p.chars),mode:p.mode==='replacement'?'replacement':'supplement'}))}:null;
 function storedEntry(e){
   if(!statuses.has(e?.status)||typeof e.id!=='string')return null;
-  const safe=injectionEntry({id:str(e.id,160),at:num(e.at),status:e.status,query:e.query,text:e.text,budgetUnits:e.budgetUnits,elapsedMs:e.elapsedMs,role:e.role,position:e.position,result:{usedUnits:e.usedUnits,degraded:e.degraded,cards:array(e.selected).filter(c=>c&&typeof c==='object'),trace:{timings:e.timings,vector:{status:e.vector},rerank:{status:e.rerank},local:{count:e.localCandidates},dictionary:{matched:array(e.dictionary).map(name=>({name}))},tags:{lanes:array(e.tags).map(tag=>({tag}))},packing:{duplicates:e.duplicates,decisions:array(e.decisions).filter(d=>d&&typeof d==='object')}}}});
+  const safe=injectionEntry({id:str(e.id,160),at:num(e.at),status:e.status,persona:e.persona,query:e.query,text:e.text,budgetUnits:e.budgetUnits,elapsedMs:e.elapsedMs,role:e.role,position:e.position,result:{usedUnits:e.usedUnits,degraded:e.degraded,cards:array(e.selected).filter(c=>c&&typeof c==='object'),trace:{timings:e.timings,vector:{status:e.vector},rerank:{status:e.rerank},local:{count:e.localCandidates},dictionary:{matched:array(e.dictionary).map(name=>({name}))},tags:{lanes:array(e.tags).map(tag=>({tag}))},packing:{duplicates:e.duplicates,decisions:array(e.decisions).filter(d=>d&&typeof d==='object')}}}});
   return {...safe,evidenceOmitted:Math.max(safe.evidenceOmitted,num(e.evidenceOmitted)),importantDialogues:{count:num(e.importantDialogues?.count),units:num(e.importantDialogues?.units)},quarantinedLinks:num(e.quarantinedLinks),knowledgeContext:knowledgeStats(e.knowledgeContext),eventPacket:packetStats(e.eventPacket),version:str(e.version,30),chars:num(e.chars),contentTruncated:Boolean(e.contentTruncated)||safe.contentTruncated,characters:characterStats(e.characters),selectedCount:num(e.selectedCount)||safe.selectedCount,memorySelected:num(e.memorySelected)};
 }
 const knowledgeStats=v=>({events:num(v?.events),units:num(v?.units),unresolved:num(v?.unresolved)});
@@ -25,6 +26,7 @@ export function injectionEntry(input={}){
   return {id:input.id??makeId('injection'),at:input.at??Date.now(),version:PRODUCT_VERSION,status:statuses.has(input.status)?input.status:'failed',
     query:str(input.query,800),text:str(input.text,100000),contentTruncated:typeof input.text==='string'&&input.text.length>100000,
     chars:typeof input.text==='string'?input.text.length:0,usedUnits:num(result.usedUnits),budgetUnits:num(input.budgetUnits),elapsedMs:num(input.elapsedMs),
+    persona:personaStats(input.persona),
     characters:characterStats({full:trace.characters?.mode==='full',people:trace.characters?.people?.length,records:trace.characters?.records,units:trace.characters?.units}),selectedCount:array(result.cards).length,memorySelected:num(trace.packing?.memorySelected),
     role:['system','user'].includes(input.role)?input.role:null,position:['start','before_last'].includes(input.position)?input.position:null,
     sent:false,degraded:Boolean(result.degraded),selected:array(result.cards).slice(0,100).map(c=>({id:str(c.id,160),title:str(recordTitle(c),160),category:str(c.category,40),sourceFloors:sourceFloors({...c,sourceRefs:array(c.sourceRefs),sourceFloors:array(c.sourceFloors)}).slice(0,100)})),
@@ -50,7 +52,7 @@ export function createInjectionLog({workspace,onChange=()=>{}}){
     get state(){return {entries:clone(entries),persistence,limit:INJECTION_LOG_LIMIT};},
     async remove(id){entries=entries.filter(e=>e.id!==id);notify();await persist();if(!writable||persistence!=='saved')throw new Error('注入日志删除未通过保存确认');},
     async clear(){entries=[];notify();await persist();if(!writable||persistence!=='saved')throw new Error('注入日志清空未通过保存确认');},
-    async export({includeContent=false}={}){await queue;return {kind:'shiyi-injection-log',version:1,pluginVersion:PRODUCT_VERSION,persistence,containsStoryContent:includeContent,entries:entries.map(e=>includeContent?clone(e):{id:e.id,at:e.at,version:e.version,status:e.status,sent:false,chars:e.chars,usedUnits:e.usedUnits,budgetUnits:e.budgetUnits,elapsedMs:e.elapsedMs,degraded:e.degraded,timings:e.timings,vector:e.vector,rerank:e.rerank,localCandidates:e.localCandidates,selectedCount:e.selectedCount,evidenceOmitted:e.evidenceOmitted,characters:e.characters,memorySelected:e.memorySelected,duplicates:e.duplicates,knowledgeContext:e.knowledgeContext,importantDialogues:e.importantDialogues,eventPacket:e.eventPacket,quarantinedLinks:e.quarantinedLinks,dictionaryCount:e.dictionary.length,tagCount:e.tags.length})};},
+    async export({includeContent=false}={}){await queue;return {kind:'shiyi-injection-log',version:1,pluginVersion:PRODUCT_VERSION,persistence,containsStoryContent:includeContent,entries:entries.map(e=>includeContent?clone(e):{id:e.id,at:e.at,version:e.version,status:e.status,sent:false,persona:e.persona?{replaced:e.persona.replaced,supplemental:e.persona.supplemental,profiles:e.persona.profiles.map(({name,...p})=>p)}:null,chars:e.chars,usedUnits:e.usedUnits,budgetUnits:e.budgetUnits,elapsedMs:e.elapsedMs,degraded:e.degraded,timings:e.timings,vector:e.vector,rerank:e.rerank,localCandidates:e.localCandidates,selectedCount:e.selectedCount,evidenceOmitted:e.evidenceOmitted,characters:e.characters,memorySelected:e.memorySelected,duplicates:e.duplicates,knowledgeContext:e.knowledgeContext,importantDialogues:e.importantDialogues,eventPacket:e.eventPacket,quarantinedLinks:e.quarantinedLinks,dictionaryCount:e.dictionary.length,tagCount:e.tags.length})};},
     async flush(){await queue;},
   };
 }

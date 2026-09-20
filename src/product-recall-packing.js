@@ -7,6 +7,19 @@ const normalized = value => String(value ?? '').toLocaleLowerCase().replace(/\s+
 const refs = record => [...new Set([record.eventRef, record.eventId, ...(record.eventRefs ?? []), ...(record.relatedEvents ?? []).map(e => e.id)].filter(Boolean))];
 const sentences = value => String(value ?? '').match(/[^。！？\n]+[。！？]?/g) ?? [];
 
+// TT quiet requests can also be legitimate story generation. Do not skip all
+// quiet requests, or guess from mentions of MVU in the scene. This conservative
+// guard recognizes the variable-only control prefill seen in the supplied logs.
+// Legacy hosts omit type; explicit ordinary generations always take precedence.
+export function auxiliaryInjectionReason(payload){
+  if(payload?.type&&payload.type!=='quiet')return null;
+  const latest=(Array.isArray(payload?.messages)?payload.messages:[]).filter(m=>m?.role==='user').at(-1);
+  const text=typeof latest?.content==='string'?latest.content:Array.isArray(latest?.content)?latest.content.filter(p=>p?.type==='text').map(p=>p.text??'').join('\n'):'';
+  return /^\s*---\s+NoThinking refers to a method that bypasses the explicit reasoning process\b/i.test(text)
+    && /<think>\s*- According to the user's input, I'm only responsible for updating variables\./i.test(text)
+    ?'variable_update':null;
+}
+
 export function sceneRecallQuery(messages=[]) {
   const text=m=>typeof m?.content==='string'?m.content:Array.isArray(m?.content)?m.content.filter(p=>p?.type==='text').map(p=>p.text??'').join('\n'):'';
   const rows=messages.filter(m=>['user','assistant'].includes(m?.role)),latest=rows.filter(m=>m.role==='user').at(-1);

@@ -5,10 +5,8 @@ import { moduleBinding } from '../src/product-custom-modules.js';
 import { makeId } from '../src/utils.js';
 
 export function customModulesHTML(){return `<details class="sy-card sy-custom" data-custom-modules><summary>扩展模块 <span data-module-count>0</span></summary>
-  <p class="sy-help">自己新增区块，或让配置助手帮你创建。区块全局共用，内容按聊天保存。</p>
-  <div class="sy-actions">${button('new-module','新增区块')}${button('module-assistant','让助手创建')}${button('read-mvu','读取 MVU 变量')}</div>
-  <p data-mvu-status class="sy-help" role="status"></p><div data-module-list></div>
-  <details><summary>已删除区块 / 导入导出</summary><div data-module-archive></div><div class="sy-actions">${button('export-modules','导出区块定义')}</div><input data-module-import type="file" accept=".json" aria-label="导入区块定义 JSON">${button('import-modules','导入区块定义')}</details>
+  <p class="sy-help">区块全局共用，内容按聊天保存。</p>
+  <div class="sy-actions">${button('new-module','新增区块')}</div><div data-module-list></div>
   <section class="sy-card" data-module-editor hidden><h4>区块设置</h4>
     ${field('区块名称','<input data-module-name maxlength="80" placeholder="例如：主角等级">')}
     ${field('记录对象','<input data-module-subject maxlength="120" placeholder="例如：主角姓名">')}
@@ -48,14 +46,12 @@ export function mountCustomModules({panel,app,run,host,onAssistant,download}){
   function record(m,field,card=null){recordEdit={module:m,field,card};$('[data-module-record-label]').textContent=`${m.name} · ${field.label}`;$('[data-module-value]').value=card?String(card.to??card.value??card.newValue):'';$('[data-module-record-editor]').hidden=false;$('[data-module-record-editor]').scrollIntoView({block:'nearest'});}
   function paint(s){
     const modules=s.modules??[];$('[data-module-count]').textContent=String(modules.filter(m=>!m.archived).length);
-    $('[data-mvu-status]').textContent=({no_chat:'加载当前聊天后可读取 MVU。',unavailable:'尚未检测到 MVU，请确认角色卡的变量框架已运行。',empty:'最近楼层尚无 MVU 数据。',ready:'已读取 MVU，只读同步；不会改写原变量。',error:'MVU 读取失败，当前值未更新。'})[s.mvuStatus]??'';
     const signature=JSON.stringify([modules,s.cardRevision??s.cards.filter(c=>c.customModuleId),s.moduleSnapshots,s.moduleCurrent,s.stale]);if(signature===lastList)return;lastList=signature;
     const expanded=new Set([...root.querySelectorAll('details[data-module-id][open]')].map(e=>e.dataset.moduleId));
     $('[data-module-list]').innerHTML=modules.filter(m=>!m.archived).map(m=>{
       const cards=s.cards.filter(c=>c.customModuleId===m.id),history=(s.moduleSnapshots??[]).filter(r=>r.moduleId===m.id&&r.definition===moduleBinding(m));
       return `<details class="sy-card" data-module-id="${esc(m.id)}" ${expanded.has(m.id)?'open':''}><summary>${esc(m.name)} · ${cards.length} 条${m.enabled?'':' · 已停用'}</summary><p class="sy-help">${esc(m.description)} · ${m.mode==='mvu'?'MVU 只读':m.mode==='summary'?'随总结记录':'手动记录'}${m.inject?' · 参与召回':''}</p><div class="sy-actions"><button type="button" data-edit-module="${esc(m.id)}">编辑区块</button><button type="button" data-archive-module="${esc(m.id)}">删除区块</button></div>${cards.map(c=>`<div class="sy-card"><p>${esc(recordDescription(c))}</p>${!c.readonly?`<button type="button" data-edit-module-record="${esc(c.id)}">修改</button> <button type="button" data-delete-module-record="${esc(c.id)}">删除记录</button>`:''}</div>`).join('')||'<p class="sy-help">暂无记录。MVU 缺失值不会猜测补齐。</p>'}${m.mode!=='mvu'?m.fields.map(f=>`<button type="button" data-add-module-record="${esc(m.id)}" data-module-field="${esc(f.id)}">新增${esc(f.label)}</button>`).join(''):`<details><summary>变量历史 · ${history.length} 楼</summary>${history.slice(-100).reverse().map(r=>`<p>#${r.floor} · ${m.fields.map(f=>`${esc(f.label)}：${Object.hasOwn(r.values,f.id)?esc(String(r.values[f.id])):'未读取到'}${r.changes?.[f.id]?`（${esc(r.changes[f.id].from)} → ${esc(r.changes[f.id].to)}）`:''}`).join('；')}</p>`).join('')}${history.length>100?'<p>显示最近 100 楼，其余保留在聊天备份中。</p>':''}</details>`}</details>`;
     }).join('')||'<p class="sy-help">还没有扩展区块。</p>';
-    $('[data-module-archive]').innerHTML=modules.filter(m=>m.archived).map(m=>`<p>${esc(m.name)} <button type="button" data-restore-module="${esc(m.id)}">恢复区块</button></p>`).join('');
     const bind=(selector,fn)=>{for(const b of root.querySelectorAll(selector))b.addEventListener('click',()=>run(()=>fn(b)));};
     bind('[data-edit-module]',b=>edit(modules.find(m=>m.id===b.dataset.editModule)));
     bind('[data-archive-module]',async b=>{if(host.confirm?.('删除这个区块？可以恢复，已有记录和原 MVU 数据不会被删除。'))await app.archiveModule(b.dataset.archiveModule);});

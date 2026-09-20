@@ -36,7 +36,7 @@ import { createCredentialStore, credentialOrigin } from './product-credentials.j
 import { createRuntimeLog, safeLogDetails } from './product-runtime-log.js';
 import { buildDictionary, normalizeTerms, KNOWLEDGE_ANALYSIS_PROMPT, parseKnowledgeAnalysis, updateDictionaryOverride, normalizeTags } from './product-dictionary.js';
 import { fullSearchText } from './product-narrative.js';
-import { sceneRecallQuery } from './product-recall-packing.js';
+import { sceneRecallQuery, auxiliaryInjectionReason } from './product-recall-packing.js';
 import { sceneClockFromMessages } from './temporal.js';
 import { QUALITY_STORE_KEY,QUALITY_PROMPT,memoryQualityIssues,qualityGroups,qualityStatus,qualityEntryCurrent,qualityReviewedIds,qualityFingerprint,validateQualityReview,validateQualityReviewPartial,projectQualityRecords,finishQualityAttempt } from './product-memory-quality.js';
 import {planQuality,qualityTargets,qualityRows,mergeQualityEntry} from './product-quality-plan.js';
@@ -89,7 +89,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let injectionLog=null,vectorExcluded=[],mergeDecisions={},qualitySaved={},preparedQuality=null;
   let tracking=false,trackingStart=null,disposed=false,followPending=false,followTimer=null,following=null,followVersion=0;
   let qualityJob=null,automaticQualityQueue=[],qualityOperation=null;
-  const chatListeners=[],followWaiters=[];
+  const chatListeners=[],generationListeners=[],followWaiters=[];
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache(),knowledgeVectorCache=new ProductVectorCache();
   let knowledgeJob=false,automaticPaused=false,autoInvalidSources=new Set();
   const operations = new Set(), apiOperations = new Set(), injectedPayloads = new WeakSet();
@@ -113,6 +113,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const providerScheduler=requestScheduler??createProviderScheduler({requestsPerMinute:()=>core.settings.chatRequestsPerMinute});
   const stopRequestScheduler=scheduleProviderRequests(fetchImpl,providerScheduler);
   const foregroundBusy=()=>foreground||injecting>0;
+  function bindGenerationLifecycle(){
+    if(generationListeners.length)return;
+    for(const name of ['GENERATION_STARTED','GENERATION_ENDED','GENERATION_STOPPED']){
+      try{generationListeners.push(hostAdapter.subscribe(name,(_type,_options,dryRun)=>{if(dryRun!==true)markForeground(name==='GENERATION_STARTED');}));}catch{/* Injection has its own guard on older hosts. */}
+    }
+  }
   function markForeground(value){
     foreground=value;state.foregroundBusy=value;providerScheduler.setForeground?.(foregroundBusy());notify();
     if(value){clearTimeout(autoTimer);autoTimer=null;vectorJob?.cancel();}
@@ -402,7 +408,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(trackingStart)return trackingStart;
     trackingStart=(async()=>{
       await loadApiSettings();hostAdapter??=new HostAdapter(host);await hostAdapter.ready?.();if(disposed)return;
-      tracking=true;
+      bindGenerationLifecycle();tracking=true;
       for(const name of ['CHAT_CHANGED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_SWIPED','MESSAGE_DELETED','MESSAGE_SWIPE_DELETED','MESSAGE_RECEIVED']){
         try{chatListeners.push(hostAdapter.subscribe(name,()=>{
           if(disposed)return;
@@ -442,7 +448,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const checkOpen=()=>{if(opener.signal.aborted||version!==cancelVersion)throw Object.assign(new Error('聊天加载已取消'),{code:'CANCELED'});};
     try {
     await loadApiSettings();checkOpen();
-    hostAdapter ??= new HostAdapter(host);
+    hostAdapter ??= new HostAdapter(host);bindGenerationLifecycle();
     const target=expectedRef??await hostAdapter.currentRef();checkOpen();
     if(!target)throw Object.assign(new Error('TT 当前没有打开聊天'),{code:'CHAT_REF_UNAVAILABLE'});
     const targetKey=stableStringify(target);
@@ -474,10 +480,16 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try{await dynamicPersona.load();}catch(error){void reportError(error,{task:'persona',stage:'prepare'});state.dynamicPersona={...dynamicPersona.state,message:dynamicPersona.state.message||failureText(error)};}checkOpen();
     await loadKnowledge(); await checkTarget(); enabled = enable;if(enable)automaticPaused=false;
     try {
-      for(const name of ['GENERATION_STARTED','GENERATION_ENDED','GENERATION_STOPPED']){
-        try{bindings.push(hostAdapter.subscribe(name,(_type,_options,dryRun)=>{if(dryRun!==true)markForeground(name==='GENERATION_STARTED');}));}catch{/* Optional on older hosts; injection still has a local guard. */}
-      }
+      // Generation end must stay subscribed while chat listeners are rebound.
+      // Otherwise a reply finishing during open() leaves foreground latched forever.
       bindings.push(hostAdapter.subscribe('CHAT_COMPLETION_SETTINGS_READY', async payload => {
+        if(auxiliaryInjectionReason(payload)){
+          if(injectedPayloads.has(payload))return;
+          await personaWorldbook.finalize(payload,[]);
+          injectedPayloads.add(payload);
+          if(core.settings.injectionLogEnabled)injectionLog?.append({status:'auxiliary',persona:{replaced:0,supplemental:0,profiles:[]}});
+          return;
+        }
         injecting++;providerScheduler.setForeground?.(true);
         try{
         // The host can still hold a request prepared before a chat switch. Do
@@ -487,7 +499,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         let personaInjection;
         if(!injectedPayloads.has(payload))try{personaInjection=await dynamicPersona.inject(payload,{enabled});}catch(error){void reportError(error,{task:'persona',stage:'prepare'});}
         if(requestEpoch!==epoch){await personaWorldbook.finalize(payload,[]);return;}
-        await inject(payload,{dossierPeople:personaInjection?.people??[]});
+        await inject(payload,{dossierPeople:personaInjection?.people??[],personaInjection});
         }finally{injecting--;providerScheduler.setForeground?.(foregroundBusy());if(!foregroundBusy()){queueAutomaticSummary();dynamicPersona.wake();}}
       }));
       try{bindings.push(hostAdapter.subscribe('WORLDINFO_ENTRIES_LOADED',payload=>enabled?personaWorldbook.applyLoaded(payload,dynamicPersona.profiles()).catch(error=>{void reportError(error,{task:'persona',stage:'prepare'});}):undefined));}catch{/* Optional capability must not disable automatic summary. */}
@@ -1252,10 +1264,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(publish){state.preview = result; notify();}return result;
     } finally { signal?.removeEventListener('abort',abort);recallReaders--;op.finish(); }
   }
-  async function inject(payload,{dossierPeople=[]}={}) {
+  async function inject(payload,{dossierPeople=[],personaInjection}={}) {
     if (!payload || !Array.isArray(payload.messages) || injectedPayloads.has(payload)) return;
     const log=injectionLog,started=Date.now(),initialToken=epoch;
-    const audit=(status,options={})=>{if(log&&core.settings.injectionLogEnabled)log.append({status,budgetUnits:core.settings.retrievalBudgetUnits,elapsedMs:Date.now()-started,...options});};
+    const audit=(status,options={})=>{if(log&&core.settings.injectionLogEnabled)log.append({status,persona:personaInjection,budgetUnits:core.settings.retrievalBudgetUnits,elapsedMs:Date.now()-started,...options});};
     if(!enabled||!core.settings.injectionEnabled){injectedPayloads.add(payload);audit('disabled');return;}
     if(state.stale||!workspace?.isCurrent()){injectedPayloads.add(payload);audit(state.stale?'stale':'unavailable');return;}
     injectedPayloads.add(payload);
@@ -1618,8 +1630,16 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     pauseDynamicPersonaManual:()=>logged('persona',()=>dynamicPersona.pauseManual()),
     discardDynamicPersonaManual:()=>logged('persona',()=>dynamicPersona.discardManual()),
     inspectDynamicPersonaWorldbook:()=>logged('persona',()=>dynamicPersona.inspectWorldbook()),
-    syncDynamicPersonaWorldbook:()=>logged('persona',()=>dynamicPersona.syncMirror()),
+    syncDynamicPersonaWorldbook:()=>logged('persona',async()=>{await dynamicPersona.inspectWorldbook();return dynamicPersona.syncMirror();}),
     async setDynamicPersona(enabledNow){await saveSettings({dynamicPersonaEnabled:enabledNow});if(!enabledNow)dynamicPersona.stop();else {if(!workspace?.isCurrent())await open({enable:enabled});await dynamicPersona.load();await dynamicPersona.resume();}},
+    async setFeature(kind,value){
+      if(!['memory','persona'].includes(kind)||typeof value!=='boolean')throw new Error('未知功能开关');
+      if(value&&kind==='memory'&&active)throw new Error('请等当前任务结束后启用自动总结');
+      if(value&&(!enabled||!workspace?.isCurrent()||!bindings.length))await open({enable:true});
+      if(kind==='memory'){await setAutomatic(value);await saveSettings({injectionEnabled:value});}
+      else {await saveSettings({dynamicPersonaEnabled:value});if(value){await dynamicPersona.load();await dynamicPersona.resume();}}
+      return {message:`${kind==='memory'?'记忆功能':'动态人设'}已${value?'启用':'关闭'}；已有记录保留`,level:'success'};
+    },
     startChatTracking,followCurrentChat,reviewMemory,previewQuality,inspectQualityRecord,saveQualityRecord,undoQuality,readViewState,
     reportError,loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:async options=>{const snapshot=await runtimeLog.export(options);return {...snapshot,pendingDiagnostics:diagnosticJobs.size};},clearRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.clear();},
     async exportInjectionLog(options){assertCurrent();return injectionLog.export(options);},
@@ -1647,7 +1667,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     setKey(kind,value,endpoint){if(!Object.hasOwn(keys,kind))throw new Error('未知连接');keyEdited.add(kind);keyVersions[kind]=(keyVersions[kind]??0)+1;keys[kind]=String(value??'');keyOrigins[kind]=credentialOrigin(endpoint??core.settings[`${prefixFor(kind)}Endpoint`]);if(kind==='summary')core.setSessionCredential(effectiveKeys().summary);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true,scheduleVectors:false});},
     exportSettings(){return {kind:'shiyi-config',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings)};},
     async exportBackup(){assertCurrent();return {kind:'shiyi-backup',version:1,scope:boundScope,modules:clone(state.modules),moduleSnapshots:clone(state.moduleSnapshots),eventMergeDecisions:clone(mergeDecisions),settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(documentPartKey(d,i))))}))),assistant:state.history};},
-    async dispose(){disposed=true;host.document?.removeEventListener?.('visibilitychange',resumeAutomaticTasks);host.removeEventListener?.('online',resumeAutomaticTasks);await dynamicPersona.dispose();host.document?.removeEventListener?.('visibilitychange',resumeVectorMaintenance);host.removeEventListener?.('online',resumeVectorMaintenance);host.removeEventListener?.('offline',resumeVectorMaintenance);tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of chatListeners.splice(0)){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();stopRequestScheduler();stopTransportDiagnostics();stopErrorBoundary();for(const resolve of followWaiters.splice(0))resolve(publicState());await flushDiagnostics();},
+    async dispose(){disposed=true;host.document?.removeEventListener?.('visibilitychange',resumeAutomaticTasks);host.removeEventListener?.('online',resumeAutomaticTasks);await dynamicPersona.dispose();host.document?.removeEventListener?.('visibilitychange',resumeVectorMaintenance);host.removeEventListener?.('online',resumeVectorMaintenance);host.removeEventListener?.('offline',resumeVectorMaintenance);tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of [...chatListeners.splice(0),...generationListeners.splice(0)]){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();stopRequestScheduler();stopTransportDiagnostics();stopErrorBoundary();for(const resolve of followWaiters.splice(0))resolve(publicState());await flushDiagnostics();},
   };
   const exportRawBackup=application.exportBackup;
   application.exportBackup=async()=>{const token=epoch,backup=await exportRawBackup();assertCurrent(token);return {...backup,dynamicPersona:dynamicPersona.export(),qualityReview:clone(qualitySaved),effectiveRecords:clone(state.records)};};

@@ -603,7 +603,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     const extras=available.filter(p=>!p.bindings.length&&!used.has(p.id)&&selectedPeople.has(foldName(p.name)));
     if(extras.length)payload.messages.splice(Math.max(0,payload.messages.length-1),0,{role:'system',content:'【当前路线动态人设补充】根据已发生剧情持续更新的完整人物档案；最新正文优先，'+(settings().dynamicPersonaMvuMode==='strict'?'遵守当前 MVU 阶段边界':'MVU 数值只作参考，不因数值未变否定剧情发展')+'；不赋予其他角色额外知情。\n'+extras.map(p=>`${p.name}（依据至 #${p.through}）：\n${p.text}`).join('\n\n')});
     const selected=available.filter(p=>used.has(p.id)||extras.includes(p));
-    view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,text:selected.map(p=>`${p.name}：\n${p.text}`).join('\n\n')}};emit();
+    view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,profiles:selected.map(p=>({id:p.id,name:p.name,through:p.through,chars:p.text.length,mode:used.has(p.id)?'replacement':'supplement'})),text:selected.map(p=>`${p.name}：\n${p.text}`).join('\n\n')}};emit();
     return clone(view.lastInjection);
   }
   return {load,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,bind,merge,undo,add,profiles,inject,syncMirror,export:()=>clone(data),async dispose(){disposed=true;stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};

@@ -35,7 +35,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  if(!documentRef||documentRef.getElementById?.(ID))return null;
  const panel=documentRef.createElement('section');panel.id=ID;panel.className='sy-root';
  panel.innerHTML=`<div class="sy-shell"><div class="sy-brand"><span class="sy-mark">拾</span><span>拾忆<small>让故事有迹可循</small></span><span class="sy-version">${PRODUCT_VERSION}</span></div><div class="sy-body">
- <div class="sy-top"><span data-scope>尚未打开聊天</span><div class="sy-actions">${button('open','启用插件',true)}${button('disable','暂停插件')}</div></div><p role="status" aria-live="polite" class="sy-status" data-status>连接一个模型，就可以开始整理故事。</p>
+ <div class="sy-top"><span data-scope>尚未打开聊天</span></div><p role="status" aria-live="polite" class="sy-status" data-status>连接一个模型，就可以开始整理故事。</p>
  <nav class="sy-nav" aria-label="拾忆导航">${['记忆','人物','总结','召回','日志','设置'].map((v,i)=>`<button type="button" data-page="${NAV[i]}" ${i===0?'class="active"':''}>${v}</button>`).join('')}</nav>
  <section data-view="memory"><div class="sy-top"><h3>故事记忆</h3>${button('refresh','刷新')}</div>
  <div class="sy-progress" data-memory-progress><div class="sy-dial" data-memory-dial><span data-memory-floor>0</span></div><div class="sy-progress-text"><b data-memory-through>尚未开始记录</b><p data-memory-gap></p><p data-memory-next-batch></p></div></div>
@@ -46,7 +46,9 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  <div class="sy-recent" data-recent-changes><h4>最近修改</h4><div data-recent-list><p class="sy-help">还没有记录。</p></div></div>
  <div class="sy-memory-tools">${qualityPanelHTML()}${memoryEditorHTML()}${customModulesHTML()}</div>
  </section>
- <section data-view="recording" hidden><div class="sy-top"><h3>聊天总结</h3><span class="sy-help">进度按已保存的自动设置计算</span><button type="button" data-action="auto-inspect">检查进度</button><button type="button" data-action="auto-catchup">补采缺口</button></div><div data-summary-modules>${summaryModulesHTML()}</div><div class="sy-record-tabs"><button type="button" data-record-tab="compose" class="active">手动总结</button><button type="button" data-record-tab="automatic">自动总结</button><button type="button" data-record-tab="presets">总结预设</button><button type="button" data-record-tab="batches">批次管理</button></div><div data-record-panel="compose"><div class="sy-card"><h4>手动总结</h4>${field('总结范围','<select data-range-mode><option value="recent">最近 N 楼</option><option value="range">指定起止楼层</option></select>')}<div data-range-fields="recent">${field('最近多少楼','<input type="number" min="1" max="100000" value="8" data-count>')}<p class="sy-help">最后一楼为 20、填 10，即整理 11–20。</p></div><div data-range-fields="range" hidden><div class="sy-grid">${field('从哪一楼','<input type="number" min="0" data-start placeholder="与聊天 # 编号相同" disabled>')}${field('到哪一楼','<input type="number" min="0" data-end placeholder="包含结束楼" disabled>')}</div></div>${field('每多少楼记录一次','<input type="number" min="1" max="200" value="5" data-batch-size>')}<p class="sy-help" data-summary-selection role="status"></p>${field('本次想记得更细的内容','<textarea rows="3" data-focus placeholder="留空时沿用长期记录偏好"></textarea>')}<div class="sy-actions">${button('focus-summary','开始总结',true)}${button('stop','停止')}</div></div>${settingsSection('recording')}${button('save-settings','保存总结设置',true)}</div><div data-record-panel="automatic" hidden>${settingsSection('automatic')}</div><div data-record-panel="presets" hidden>${summaryPresetsHTML()}</div><div data-record-panel="batches" hidden>${batchManagementHTML()}</div></section>
+ <div data-summary-overview hidden><div class="sy-feature-switches" aria-label="启用功能"><button type="button" data-feature="memory" aria-pressed="false" aria-describedby="sy-memory-feature-status">记忆功能</button><span id="sy-memory-feature-status" data-feature-status="memory" class="sy-sr-only">未启用</span><button type="button" data-feature="persona" aria-pressed="false" aria-describedby="sy-persona-feature-status">动态人设</button><span id="sy-persona-feature-status" data-feature-status="persona" class="sy-sr-only">未启用</span></div><div class="sy-top"><h3>聊天总结</h3><span class="sy-help">进度按已保存的自动设置计算</span><button type="button" data-action="auto-inspect">检查进度</button><button type="button" data-action="auto-catchup">补采缺口</button></div><div data-summary-modules>${summaryModulesHTML()}</div></div>
+ <div class="sy-record-tabs" hidden><button type="button" data-record-tab="compose" class="active">手动总结</button><button type="button" data-record-tab="automatic">自动总结</button><button type="button" data-record-tab="presets">总结预设</button><button type="button" data-record-tab="batches">批次管理</button><button type="button" data-record-tab="dynamic-persona">人设更新设置</button></div>
+ <section data-view="recording" hidden><div data-record-panel="compose"><div class="sy-card"><h4>手动总结</h4>${field('总结范围','<select data-range-mode><option value="recent">最近 N 楼</option><option value="range">指定起止楼层</option></select>')}<div data-range-fields="recent">${field('最近多少楼','<input type="number" min="1" max="100000" value="8" data-count>')}<p class="sy-help">最后一楼为 20、填 10，即整理 11–20。</p></div><div data-range-fields="range" hidden><div class="sy-grid">${field('从哪一楼','<input type="number" min="0" data-start placeholder="与聊天 # 编号相同" disabled>')}${field('到哪一楼','<input type="number" min="0" data-end placeholder="包含结束楼" disabled>')}</div></div>${field('每多少楼记录一次','<input type="number" min="1" max="200" value="5" data-batch-size>')}<p class="sy-help" data-summary-selection role="status"></p>${field('本次想记得更细的内容','<textarea rows="3" data-focus placeholder="留空时沿用长期记录偏好"></textarea>')}<div class="sy-actions">${button('focus-summary','开始总结',true)}${button('stop','停止')}</div></div>${settingsSection('recording')}${button('save-settings','保存总结设置',true)}</div><div data-record-panel="automatic" hidden>${settingsSection('automatic')}</div><div data-record-panel="presets" hidden>${summaryPresetsHTML()}</div><div data-record-panel="batches" hidden>${batchManagementHTML()}</div></section>
  <section data-view="current" hidden><h3>本轮记忆</h3><p class="sy-help">本地预览不发送模型请求。向量与重排仅在启用且实际使用时调用。</p>${field('当前剧情查询','<textarea rows="3" data-query></textarea>')}${button('preview','预览本地召回',true)}${button('preview-online','按已启用接口试召回')}<div data-preview></div><h3>最近一次请求准备</h3><div data-actual><p class="sy-empty">尚未向宿主请求加入记忆。</p></div></section>
  <section data-view="assistant" hidden><div class="sy-top"><h3>配置助手</h3><span data-model></span></div><div class="sy-actions"><button type="button" data-jump="api">模型设置</button><button type="button" data-jump="world">添加 TXT / MD / JSON</button></div><div class="sy-actions"><select data-conversation aria-label="历史对话"><option value="main">配置对话</option></select>${button('new-conversation','新对话')}${button('delete-conversation','删除本次对话')}</div><details class="sy-card" data-builtin-skills><summary>内置配置规则 v${ASSISTANT_SKILL_VERSION} · ${ASSISTANT_SKILLS.length} 组</summary>${ASSISTANT_SKILLS.map(skill=>`<details><summary>${esc(skill.title)}</summary><p class="sy-help">${esc(skill.text)}</p></details>`).join('')}</details><div data-history><p class="sy-empty">说说想怎样记忆，也可以一次说完全部要求。</p></div><div data-proposal></div>${field('你的要求','<textarea rows="4" data-input placeholder="描述你的卡、想保留的细节、希望避免的问题，或让我按导入的规则配置。"></textarea>')}<div class="sy-actions">${button('assistant','发送',true)}${button('builtin-beginner','按内置新手规则配置')}${button('beginner','按导入的规则配置')}${button('assistant-stop','停止')}</div><p class="sy-help">Key 不会发送给助手；设置方案应用后才生效。</p></section>
  <section data-view="api" hidden><h3>API 与模型</h3><p class="sy-help">所有聊天共用，无需打开聊天即可配置、拉取模型和测试连接。</p>${apiSettingsHTML()}${button('save-settings','保存 API 设置',true)}</section>
@@ -102,10 +104,6 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  * 记忆用自动总结的起点/每批楼数/保留楼数，人设用动态人设自己那一套设置。 */
  function summaryModulesHTML(){
   return ['memory','persona'].map(kind=>{
-    // 人设更新周期设置原本只在动态人设页「更新人物 → 自动更新」。现在也放在总结页
-    // 第二行，但只显示文本（避免在动态人设页和总结页出现两份相同 data-setting 元素，
-    // 否则 mobile 验证会报「data-setting 多于注册项」）；修改周期请到人设页或点下方按钮。
-    const personaSettings=kind==='persona'?`<div class="sy-summary-settings" data-persona-current-settings><p class="sy-help">当前周期：每 <span data-persona-display-every>—</span> 楼一批，保留最近 <span data-persona-display-keep-recent>—</span> 楼。修改周期请到动态人设页或使用下方按钮。</p><div class="sy-actions"><button type="button" data-jump="people">到人设页调整</button><button type="button" data-persona-enable-inline>启用 / 继续自动</button><button type="button" data-persona-pause-inline>暂停自动</button></div></div>`:'';
     return `<section class="sy-summary-module" data-summary-module="${kind}">
     <div class="sy-pie" data-summary-pie><span data-summary-percent>0%</span></div>
     <div class="sy-module-meta">
@@ -119,9 +117,9 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
       <button type="button" class="primary" data-summary-next-batch>总结下一批</button>
       <button type="button" data-summary-catchup>补缺口</button>
       <button type="button" data-summary-pause>暂停</button>
+      ${kind==='persona'?'<button type="button" data-persona-resume-auto hidden>继续自动</button>':''}
     </div>
     ${kind==='persona'?'<p class="sy-summary-settings sy-help" data-persona-task-status role="status" aria-live="polite"></p>':''}
-    ${personaSettings}
     ${kind==='persona'?`<details class="sy-summary-settings" data-summary-persona-batches><summary>人设批次 <small data-persona-batch-count></small></summary><p class="sy-help">失败自动重试最多三次；继续未完成会接回原计划，已完成批次不重跑。候选只有整段完成后才应用。</p><div class="sy-actions"><button type="button" data-persona-resume-batches>继续未完成</button><button type="button" data-persona-pause-batches>暂停任务</button></div><div data-persona-batch-rows></div><div class="sy-actions"><button type="button" data-persona-batch-prev>上一页</button><span data-persona-batch-page></span><button type="button" data-persona-batch-next>下一页</button></div></details>`:''}
     <p class="sy-help" data-summary-legend></p>
   </section>`;}).join('');
@@ -173,7 +171,6 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
      if(node.querySelector?.('[data-summary-state]'))node.querySelector('[data-summary-state]').textContent=text.state;
      if(node.querySelector?.('[data-summary-covered]'))node.querySelector('[data-summary-covered]').textContent=text.covered;
      if(node.querySelector?.('[data-summary-next]'))node.querySelector('[data-summary-next]').textContent=`${text.next} · 自动每 ${row.batchSize??'—'} 楼一次 · 保留最近 ${row.keepRecent??0} 楼`;
-    // 总结页底部显示当前人设周期（来自同一份 settings），编辑请到人设页。
     if(row.kind==='persona'){
       const d=s.dynamicPersona??{},scope=JSON.stringify(s.core?.scope);if(scope!==personaBatchScope){personaBatchScope=scope;personaBatchPage=0;}
       const manual=d.manualPlan,unfinished=['running','paused','failed'].includes(manual?.status);
@@ -186,9 +183,6 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
       node.querySelector('[data-persona-batch-prev]').disabled=personaBatchPage===0;
       node.querySelector('[data-persona-batch-next]').disabled=personaBatchPage===pages-1;
       node.querySelector('[data-persona-resume-batches]').disabled=Boolean(d.busy)||!unfinished&&!items.some(b=>b.status==='failed');
-      const every=row.batchSize??settings.dynamicPersonaEvery,keepRecent=row.keepRecent??settings.dynamicPersonaKeepRecent;
-      if(node.querySelector?.('[data-persona-display-every]'))node.querySelector('[data-persona-display-every]').textContent=every;
-      if(node.querySelector?.('[data-persona-display-keep-recent]'))node.querySelector('[data-persona-display-keep-recent]').textContent=keepRecent;
     }
      // 减负：summary card 只显示已总结范围和缺口；详细数字和图例太啰嗦。
      if(node.querySelector?.('[data-summary-detail]'))node.querySelector('[data-summary-detail]').hidden=true;
@@ -227,6 +221,8 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
        catchUp.hidden=unfinished||!missing;catchUp.disabled=Boolean(d.busy);
        pause.hidden=!d.busy&&!(unfinished&&manual.status==='running')&&!retrying;
        pause.disabled=stopping;pause.textContent='暂停任务';
+       const resume=node.querySelector('[data-persona-resume-auto]');
+       if(resume){resume.hidden=!settings.dynamicPersonaEnabled||!d.paused||unfinished;resume.disabled=Boolean(d.busy);}
      }
      node.dataset.ready=chatFloors===null?'waiting':'ready';
      void fallback;
@@ -285,7 +281,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
     floating?.setBusy(s.busy||modelRequests.size>0);
     if(floating?.window.hidden)return;
     journalView?.paint(s,currentPage);
-    if(currentPage==='dynamic-persona'){
+    if(['dynamic-persona','persona-profiles'].includes(currentPage)){
       dynamicPersonaView?.paint(s);
       const d=s.dynamicPersona,key=JSON.stringify([s.core?.scope,d?.status,d?.message]);
       if(personaNotice!==key){personaNotice=key;if(d?.message&&['running','saved','failed','paused'].includes(d.status))feedback(d.message,({running:'running',saved:'success',failed:'error',paused:'info'})[d.status]);}
@@ -293,8 +289,9 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
     const memory=currentPage==='memory',recording=currentPage==='recording',recordTab=$('[data-record-tab].active')?.dataset.recordTab;
     if(memory){paintCards();customManagement?.paint(s);}
     if(memory||recording&&recordTab==='batches')management?.paint(s,{memory,batches:recording&&recordTab==='batches'});
-    if(recording){
+    if(recording||currentPage==='dynamic-persona'){
      paintSummaryModules(s);
+     for(const kind of ['memory','persona']){const control=$(`[data-feature="${kind}"]`),enabled=kind==='memory'?Boolean(s.settings.autoSummaryEnabled||s.settings.injectionEnabled):Boolean(s.settings.dynamicPersonaEnabled);control.setAttribute('aria-pressed',String(enabled));const status=kind==='memory'?`自动总结${s.settings.autoSummaryEnabled?'开':'关'} · 注入${s.settings.injectionEnabled?'开':'关'}`:!s.settings.dynamicPersonaEnabled?'未启用':s.dynamicPersona?.paused?'更新已暂停 · 档案启用':'自动更新 · 档案启用';control.title=status;$(`[data-feature-status="${kind}"]`).textContent=status;}
     }
     // 日志在独立 page：切到 log page 时加载，加载完重画。
     if(currentPage==='log'){
@@ -385,6 +382,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  actions['undo-quality']=async()=>{if(host.confirm?.('撤销此聊天的自动校对？恢复原总结；校对补入的属性和知情项将撤下，人工修改的原记录保留。'))await app.undoQuality();};
  actions['builtin-beginner']=()=>app.assistant('按内置新手配置规则帮助我配置拾忆。先查看当前设置和相关规则，保留已经填好的模型连接。只有卡类型、变量系统或记录偏好等必要信息缺失时才询问；生成可确认应用的方案。');
  $('[data-auto-start]')?.addEventListener('input',()=>{autoStartDirty=true;});
+ for(const control of $$('[data-feature]'))control.addEventListener('click',()=>{if(control.disabled)return;const value=control.getAttribute('aria-pressed')!=='true';void run(()=>app.setFeature(control.dataset.feature,value),{name:'save-feature',button:control});});
  const saveAutomatic=async()=>{const floor=Number($('[data-auto-start]').value),scope=readViewState(app).core?.scope,patch=collect($('[data-record-panel="automatic"]'));await app.saveSettings(patch);await app.setAutoStartFloor(floor,scope);autoStartDirty=false;};
  actions['auto-catchup']=()=>app.catchUpAutomatic();actions['auto-save']=saveAutomatic;actions['auto-inspect']=()=>app.inspectAutomaticProgress();actions['auto-process']=()=>app.processAutomatic();
  // 扇形卡片上的按钮：记忆走主总结（只补缺口，按已保存的自动设置）；
@@ -413,6 +411,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  $('[data-persona-pause-inline]')?.addEventListener('click',()=>run(()=>app.pauseDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-pause-inline]')}));
  $('[data-persona-resume-batches]')?.addEventListener('click',()=>run(()=>app.queueDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-resume-batches]')}));
  $('[data-persona-pause-batches]')?.addEventListener('click',()=>run(()=>app.pauseDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-pause-batches]')}));
+ $('[data-persona-resume-auto]')?.addEventListener('click',e=>run(()=>app.setFeature('persona',true),{name:'dynamic-persona',button:e.currentTarget}));
  $('[data-summary-persona-batches]')?.addEventListener('toggle',()=>paintSummaryModules(readViewState(app)));
  for(const [key,delta] of [['prev',-1],['next',1]])$(`[data-persona-batch-${key}]`)?.addEventListener('click',()=>{personaBatchPage=Math.max(0,personaBatchPage+delta);paintSummaryModules(readViewState(app));});
  actions['per-call-mode']=async()=>{const patch={summaryReviewEnabled:false,summaryStaged:false,autoMergeEnabled:false,autoQualityEnabled:false};await app.saveSettings(patch);for(const key of Object.keys(patch))dirtyApi.delete(key);fill();feedback('已改为一次主总结；不自动追加分工、合并和校对请求。API、楼数、回复上限不变。','success');};
@@ -430,24 +429,29 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  }
  for(const [name,fn]of Object.entries(actions))for(const b of $$(`[data-action="${name}"]`))b.addEventListener?.('click',()=>run(fn,{name,button:b}));
  for(const selector of ['[data-range-mode]','[data-count]','[data-start]','[data-end]','[data-batch-size]'])$(selector)?.addEventListener(selector==='[data-range-mode]'?'change':'input',syncSummaryRange);
- function showRecordTab(name){for(const section of $$('[data-record-panel]'))if(section.dataset.recordPanel!=='logs')section.hidden=section.dataset.recordPanel!==name;for(const tab of $$('[data-record-tab]'))tab.classList.toggle('active',tab.dataset.recordTab===name);setPage('recording');if(name==='logs')void app.loadRuntimeLog?.().then(()=>paint(readViewState(app)));}
+ function showRecordTab(name){if(name==='dynamic-persona'){setPage(name);return;}for(const section of $$('[data-record-panel]'))if(section.dataset.recordPanel!=='logs')section.hidden=section.dataset.recordPanel!==name;for(const tab of $$('[data-record-tab]'))tab.classList.toggle('active',tab.dataset.recordTab===name);setPage('recording');recordTabs.scrollIntoView?.({block:'start'});if(name==='logs')void app.loadRuntimeLog?.().then(()=>paint(readViewState(app)));}
  for(const b of $$('[data-record-tab]'))b.addEventListener('click',()=>showRecordTab(b.dataset.recordTab));
  const openLogs=()=>{setPage('log');};
  const logJump=documentRef.createElement('button');logJump.type='button';logJump.textContent='查看运行日志';logJump.dataset.openLogs='';logJump.addEventListener('click',openLogs);$('[data-status]')?.after(logJump);
+ const recordTabs=$('.sy-record-tabs'),summaryOverview=$('[data-summary-overview]');
  const pageButtons=$$('[data-page]');
  function setPage(page){
    if(!$(`[data-view="${page}"]`))return currentPage;
    currentPage=page;
+   recordTabs.hidden=!['recording','dynamic-persona'].includes(page);
+   summaryOverview.hidden=recordTabs.hidden;
+   if(page==='dynamic-persona')for(const tab of $$('[data-record-tab]'))tab.classList.toggle('active',tab.dataset.recordTab===page);
+   else if(page==='recording'&&$('[data-record-tab="dynamic-persona"]').classList.contains('active')){for(const tab of $$('[data-record-tab]'))tab.classList.toggle('active',tab.dataset.recordTab==='compose');for(const p of $$('[data-record-panel]'))p.hidden=p.dataset.recordPanel!=='compose';}
    if(['recall','vectors'].includes(page))void app.refreshVectorStatus?.({cached:true});
-   const group=['people','dialogue','diary','dynamic-persona'].includes(page)?'people':RECALL_PAGES.includes(page)?'recall':NAV.includes(page)?page:'modules';
+   const group=page==='dynamic-persona'?'recording':['people','dialogue','diary','persona-profiles'].includes(page)?'people':RECALL_PAGES.includes(page)?'recall':NAV.includes(page)?page:'modules';
    for(const s of $$('[data-view]'))s.hidden=s.getAttribute('data-view')!==page;
    for(const b of pageButtons){const selected=b.getAttribute('data-page')===page||b.closest('.sy-nav')&&b.getAttribute('data-page')===group;b.classList?.toggle('active',Boolean(selected));if(b.closest('.sy-nav'))b.setAttribute('aria-current',selected?'page':'false');}
    if($('[data-open-logs]'))$('[data-open-logs]').hidden=true;
-   const chatControls=$('[data-scope]')?.closest?.('.sy-top');if(chatControls)chatControls.hidden=!['memory','recording','current'].includes(page);
-   if($('[data-status]'))$('[data-status]').hidden=!['memory','recording','current'].includes(page);
+   const chatControls=$('[data-scope]')?.closest?.('.sy-top');if(chatControls)chatControls.hidden=!['recording','current'].includes(page);
+   if($('[data-status]'))$('[data-status]').hidden=!['recording','current'].includes(page);
    if(page==='recording'){if(chatControls)chatControls.hidden=false;}
    if(page!=='recording')runtimeLogPage='';
-   panel.closest?.('.sy-workbench-content')?.scrollTo?.(0,0);painting.flush();return page; }
+   panel.closest?.('.sy-workbench-content')?.scrollTo?.(0,0);painting.flush();if(page==='dynamic-persona')recordTabs.scrollIntoView?.({block:'start'});return page; }
  for(const b of pageButtons)b.addEventListener?.('click',()=>setPage(b.getAttribute('data-page')));
  for(const b of $$('[data-jump]'))b.addEventListener?.('click',()=>setPage(b.getAttribute('data-jump')));
  // 更新中心里的跳转：把用户送到真正带勾选框与周期的面板。
@@ -480,7 +484,7 @@ $('[data-memory-page]')?.addEventListener('change',()=>{memoryCurrentPage=Math.m
  journalView=mountCharacterJournal({panel,app,run,host});
  peopleView=mountPeopleView({panel,app,run,host,setPage:page=>{setPage(page);if(page==='dynamic-persona')$('[data-persona-controls]').open=true;},onSelect:({name,profileId,kind})=>{
    if(kind==='facts'){$('[data-search]').value=name;$('[data-category]').value='entityFactChanges';cardStamp='';setPage('memory');return;}
-   if(kind==='dynamic-persona'){setPage(kind);dynamicPersonaView.focus?.(profileId??name);return;}
+   if(kind==='dynamic-persona'){setPage(profileId?'persona-profiles':'dynamic-persona');dynamicPersonaView.focus?.(profileId??name);return;}
    setPage(kind);journalView.selectPerson?.(kind,name);
  }});
  extractionView=mountExtractionView({panel,app,run,host,download});
