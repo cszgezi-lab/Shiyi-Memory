@@ -1,6 +1,7 @@
 import { clone, estimateUnits, stableStringify } from './utils.js';
 import { tokenizeChinese } from './retrieval.js';
 import { sourceTimeline } from './source-consistency.js';
+import {markMemoryStates} from './memory-current-state.js';
 
 // Storage proofs stay in the repository. Model context needs exact identifiers,
 // meaningful fields and source locators, not repeated hashes and old revisions.
@@ -27,10 +28,12 @@ export function selectSummaryContext(records, messages, {budgetUnits=6000, maxRe
   const tokens = [...new Set(tokenizeChinese(query).filter(t=>t.length>1))];
   const sourceIds = new Set(messages.map(m=>m.id));
   const selected = {}, candidates=[];
+  const historical=new Set(markMemoryStates(['relationshipChanges','commitmentChanges'].flatMap(category=>(records?.[category]??[]).map(r=>({...r,category})))).filter(r=>r.stateHistorical).map(r=>r.id));
   for (const [category, rows] of Object.entries(records??{})) {
     if (!Array.isArray(rows) || ['history','summaryView','conflicts','coverage'].includes(category) || categories && !categories.includes(category)) continue;
     selected[category]=[];
     for (const original of rows) {
+      if(historical.has(original.id))continue;
       const record=summaryRecord(original);
       const text=stableStringify(record).toLocaleLowerCase();
       const overlap=(record.sourceRefs??[]).some(r=>sourceIds.has(r.sourceId));

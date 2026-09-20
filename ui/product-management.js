@@ -6,6 +6,7 @@ import { characterProfiles,factValue,factSubject,factKey } from '../src/product-
 import { recordTitle,sourceLabel,narrativeText,sourceFloors } from '../src/product-narrative.js';
 import { MEMORY_CATEGORIES } from '../src/product-batches.js';
 import { originalSourceText } from '../src/source-recall-evidence.js';
+import {markMemoryStates} from '../src/memory-current-state.js';
 
 
 import { mountBatchList,batchRecordDescription } from './product-batch-list.js';
@@ -60,7 +61,7 @@ export function sortByComparator(rows,compare){
 }
 export function memoryPage(cards,{q='',category='all',page=1,pageSize=10}={}){
   if(category==='none'&&!q.trim())return {entries:[],total:0,pages:1,page:1,pageSize:[10,20,50].includes(Number(pageSize))?Number(pageSize):10};
-  const base=cards.filter(c=>!c.customModuleId),profiles=characterProfiles(base),byRecord=new Map(profiles.flatMap(p=>p.records.map(r=>[r.id,p]))),seen=new Set();
+  const base=markMemoryStates(cards).filter(c=>!c.customModuleId&&(q.trim()||!c.stateHistorical)),profiles=characterProfiles(base),byRecord=new Map(profiles.flatMap(p=>p.records.map(r=>[r.id,p]))),seen=new Set();
   // Search reads the pre-built metadata first. The narrative is only touched when
   // a query exists AND that metadata is missing (hand-made or legacy cards), so
   // opening the list never builds the prose of every record in the chat.
@@ -96,8 +97,10 @@ export function memoryListHTML(cards,{settings={},q='',category='all',opened=new
       continue;
     }
     const meta=renderMemoryCard(c,settings,{metadataOnly:true,detail:true});
+    const history=(c.stateHistoryIds??[]).map(id=>cards.find(r=>r.id===id)).filter(Boolean);
+    const historyHTML=history.length?`<details class="sy-state-history"><summary>前序状态与重复依据 ${history.length} 条（保留，可修改）</summary>${history.map(r=>`<section class="sy-profile-evidence"><div class="sy-packet">${esc(renderMemoryCard({...r,stateHistorical:true},settings,{detail:true}))}</div><p class="sy-help">${esc(sourceLabel(r))}</p><button type="button" data-edit="${esc(r.id)}">修改历史记录</button>${actions(r)}</section>`).join('')}</details>`:'';
     const original=originalSourceText(c);
-    const originalHTML=original?`<details data-memory-detail="${esc(`original:${c.id}`)}" ${open(`original:${c.id}`)}><summary>查看原文依据</summary><p class="sy-help">总结时保存的本楼原文；不是额外生成的摘要。</p><div class="sy-packet sy-narrative">${esc(original)}</div></details>`:'';
+    const originalHTML=(original?`<details data-memory-detail="${esc(`original:${c.id}`)}" ${open(`original:${c.id}`)}><summary>查看原文依据</summary><p class="sy-help">总结时保存的本楼原文；不是额外生成的摘要。</p><div class="sy-packet sy-narrative">${esc(original)}</div></details>`:'')+historyHTML;
     rows.push(`<article class="sy-card sy-memory-row" data-memory-level="${c.importanceLevel??3}" data-record-id="${esc(c.id)}"><span class="sy-tag">${CATEGORY_LABELS[c.category]??'记忆'}</span><h4>${starMarkup(c.importanceLevel)}<span class="sy-row-title">${esc(recordTitle(c))}</span><button type="button" class="sy-row-edit" data-edit="${esc(c.id)}" aria-label="修改这条记忆">修改</button></h4><p class="sy-help sy-memory-meta">${esc(sourceLabel(c))}</p>${c.recallSummary?`<p class="sy-narrative sy-memory-brief">${esc(c.recallSummary)}</p>`:''}${c.viewpoints?.length||c.keyDialogues?.length?`<p class="sy-help">人物观念 ${c.viewpoints?.length??0} 条 · 关键台词 ${c.keyDialogues?.length??0} 条</p>`:''}<details data-memory-detail="${esc(c.id)}" ${open(c.id)}><summary>${memoryDetailLabel(c.category)}</summary><div class="sy-packet sy-narrative">${esc(recordDescription(c))}</div>${meta?`<div class="sy-packet sy-help">${esc(meta)}</div>`:''}${c.tags?.length?`<p class="sy-help">检索标签：${esc(c.tags.join('、'))}</p>`:''}</details>${originalHTML}<details class="sy-record-actions" data-memory-detail="${esc(`actions:${c.id}`)}" ${open(`actions:${c.id}`)}><summary>操作</summary>${actions(c)}</details></article>`);
   }
   return rows.join('')||'<p class="sy-empty">没有符合条件的记忆。</p>';

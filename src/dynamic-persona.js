@@ -492,9 +492,9 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const pending=manualId?personaManualPending(data.manualPlan):null;
       const next=manualId&&pending?{nextStart:pending.startIndex,nextEnd:pending.endIndex,ready:pending.endIndex<=lastIndex}:plan();
       if(manualId&&(!pending||!next.ready))throw new Error('手动计划范围已不适用于当前聊天，请停止后核对原文楼层');
-      if(!next.ready){view={status:'waiting',message:`等待 #${next.nextStart}–${next.nextEnd} 满足人设更新条件`};return {message:view.message,phase:'waiting',level:'info',diagnostics:{reason:'persona_waiting',startIndex:next.nextStart,endIndex:next.nextEnd,lastIndex,keepRecent:settings().dynamicPersonaKeepRecent,modelRequested:false}};}
+      if(!next.ready){view={...view,status:'waiting',message:`等待 #${next.nextStart}–${next.nextEnd} 满足人设更新条件`};return {message:view.message,phase:'waiting',level:'info',diagnostics:{reason:'persona_waiting',startIndex:next.nextStart,endIndex:next.nextEnd,lastIndex,keepRecent:settings().dynamicPersonaKeepRecent,modelRequested:false}};}
       const prior=manualId?pending:data.batches.find(b=>b.startIndex===next.nextStart&&b.endIndex===next.nextEnd);
-      if(!retry&&prior?.status==='failed'&&(!prior.retryAt&&!historyFailure(prior)||prior.retryAt>now())){view={status:'failed',message:prior.message};if(prior.retryAt){timer=setTimeout(()=>{timer=null;wake();},Math.max(100,prior.retryAt-now()));timer.unref?.();}return {message:prior.message,phase:prior.retryAt?'waiting':'skipped',level:'warning',diagnostics:{reason:'persona_previous_failure',retryDelayMs:Math.max(0,(prior.retryAt??0)-now()),startIndex:next.nextStart,endIndex:next.nextEnd,modelRequested:false}};}
+      if(!retry&&prior?.status==='failed'&&(!prior.retryAt&&!historyFailure(prior)||prior.retryAt>now())){view={...view,status:'failed',message:prior.message};if(prior.retryAt){timer=setTimeout(()=>{timer=null;wake();},Math.max(100,prior.retryAt-now()));timer.unref?.();}return {message:prior.message,phase:prior.retryAt?'waiting':'skipped',level:'warning',diagnostics:{reason:'persona_previous_failure',retryDelayMs:Math.max(0,(prior.retryAt??0)-now()),startIndex:next.nextStart,endIndex:next.nextEnd,modelRequested:false}};}
       personaStep='api_config';const config=clone(settings());client(); // Fail before changing progress when the independent API is unconfigured.
       key=`${next.nextStart}-${next.nextEnd}`;
       const taskLabel=`${manualId?'手动补建':'更新动态人设'} #${next.nextStart}–${next.nextEnd}`;
@@ -571,7 +571,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
           const sameProfile=(p,pk)=>Boolean(p)&&(p.id===pk.id||foldName(p.name)===foldName(pk.name)||(p.aliases??[]).some(alias=>foldName(alias)===foldName(pk.name)));
           const merged=[...profiles.map(p=>{const kept=protectedProfiles.find(m=>sameProfile(p,m));return kept?.locked?clone(kept):kept?{...p,text:kept.text,composition:kept.composition,aliases:kept.aliases,aliasPolicy:kept.aliasPolicy,manual:kept.manual,locked:kept.locked,protected:true}:p;}),...protectedProfiles.filter(m=>!profiles.some(p=>sameProfile(p,m)))].map(p=>applyPersonaCasting(p,data.castingOverrides));
           const manualPlan={...data.manualPlan,items,status:completed?'completed':'running',workingProfiles:completed?[]:merged,...(clean&&completed?{liveHash:personaRebuildLiveHash(merged)}:{})};
-          const continueAuto=completed&&manualPlan.resumeAutomatic===true;
+          const continueAuto=completed&&manualPlan.resumeAutomatic===true&&!manualPlan.discardedTail;
           if(clean&&completed){
             // Verify the kept prefix and already saved candidate inputs once
             // before switching; never commit a mix of edited source revisions.
@@ -581,7 +581,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
             }
             assertCleanUnchanged();
           }
-          await save({...data,paused:!continueAuto,manualPlan,...(completed?{profiles:merged,batches:[...data.batches.filter(b=>b.endIndex<(manualPlan.replaceFrom??manualPlan.startIndex)),...items],...(clean?{personaIdentities:manualPlan.identityProfiles,refinement:{version:1,queue:[],last:{},status:'idle',message:'旧精修任务已随干净重建撤回',revision:(data.refinement?.revision??0)+1}}:{}),startFloor:manualPlan.handoff?manualPlan.endIndex+1:data.startFloor}:{})},bound);
+          await save({...data,paused:!continueAuto,manualPlan,...(completed?{profiles:merged,batches:[...data.batches.filter(b=>b.endIndex<(manualPlan.replaceFrom??manualPlan.startIndex)),...items],...(clean?{personaIdentities:manualPlan.identityProfiles,refinement:{version:1,queue:[],last:{},status:'idle',message:'旧精修任务已随干净重建撤回',revision:(data.refinement?.revision??0)+1}}:{}),startFloor:manualPlan.handoff||manualPlan.discardedTail?manualPlan.endIndex+1:data.startFloor}:{})},bound);
           if(continueAuto){paused=false;wakePending=true;}
         }else await save({...data,profiles,batches:[...data.batches.filter(b=>b.startIndex!==next.nextStart),batch]},bound);
         success=true;

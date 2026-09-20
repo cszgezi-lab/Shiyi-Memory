@@ -6,6 +6,7 @@ import { hasStoryTime, storyDateOf } from './temporal.js';
 import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts } from './product-recall-packing.js';
 import { factValue, fullCharacterGroups, awarenessSubjectLabel, characterRecordSubjects, PERSON_RECORD_CATEGORIES } from './product-person-profiles.js';
 import {foldName} from './persona-identity.js';
+import {markMemoryStates,memoryHistoryIntent} from './memory-current-state.js';
 import { compileEventPacket } from './product-event-packet.js';
 import { factValidity, awarenessAssociationSupported } from './memory-evidence.js';
 import { originalSourceText, sourceRecallExcerpt, sourceQuote, evidenceTerms, sourceEvidenceQuery, projectSourceForRecall } from './source-recall-evidence.js';
@@ -90,7 +91,11 @@ export function memoryCards(records = {}, { hidden = [], knowledge = [], include
   const knowledgeRows=(records.awarenessChanges??[]).filter(r=>visible(r)&&r.knowledgeReview?.status!=='pending');
   const awarenessFor = dependencyIndex(knowledgeRows,links);
   const unlinkedBySource=dependencyIndex(knowledgeRows.filter(a=>!links(a).length),a=>(a.sourceRefs??[]).map(r=>r.sourceId));
-  const followUpsFor = dependencyIndex((records.commitmentChanges ?? []).filter(r=>r.state!=='unknown'), a => [a.eventRef, a.completionOf, a.correctionOf, ...(a.eventRefs ?? [])]);
+  const commitments=markMemoryStates((records.commitmentChanges??[]).filter(visible).map(r=>({...r,category:'commitmentChanges'})));
+  const commitmentById=new Map(commitments.map(r=>[r.id,r]));
+  const rawCommitmentById=new Map((records.commitmentChanges??[]).map(r=>[r.id,r]));
+  const followUpLinks=a=>[a.eventRef,a.completionOf,a.correctionOf,a.supersedes,...(a.eventRefs??[])];
+  const followUpsFor = dependencyIndex(commitments.filter(r=>r.state!=='unknown'&&!r.stateHistorical).map(r=>rawCommitmentById.get(r.id)), a => [...followUpLinks(a),...(commitmentById.get(a.id)?.stateHistoryIds??[]).flatMap(id=>followUpLinks(commitmentById.get(id)??{}))]);
   for (const category of Object.keys(CATEGORY_LABELS)) {
     if (category==='knowledge'||category==='awarenessChanges'&&!includeAwareness)continue;
     for (const record of records[category] ?? []) {
@@ -127,7 +132,7 @@ export function memoryCards(records = {}, { hidden = [], knowledge = [], include
   }
   const attached=new Set(cards.filter(c=>c.category!=='awarenessChanges'&&c.category!=='summaryView').flatMap(c=>(c.awareness??[]).map(a=>a.id)));
   for(const card of cards)if(card.category==='awarenessChanges')card.standaloneRecall=!attached.has(card.id);
-  return [...markDiaryHistory(cards), ...knowledge.filter(r => !ignored.has(r.id))];
+  return markMemoryStates([...markDiaryHistory(cards), ...knowledge.filter(r => !ignored.has(r.id))]);
 }
 function dateOnly(value) {
   const s = storyDateOf(value);
@@ -169,6 +174,8 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
     })].join('\n\n');
   }
   const lines = metadataOnly?[]:[`[${CATEGORY_LABELS[card.category] ?? '记忆'}] ${body}`];
+  if(card.stateHistorical)lines.push('这是已被后续记录接续的历史状态，不作当前关系或待履行约定。');
+  if(card.stateHistoryIds?.length)lines.push(`当前记录；另有 ${card.stateHistoryIds.length} 条前序依据保留在历史，不重复注入旧状态。`);
   if(card.category==='commitmentChanges'&&card.state==='unknown')lines.push('约定状态待核对：正文已保留，暂不自动注入。可在内容校对中单独修正，无需重新总结。');
   if(card.knowledgeReview?.status==='pending')lines.push('获知依据待核对：暂不把这条作为角色已知信息注入，可在内容校对中单独修正。');
   if(card.category==='conflicts')lines.push('核对参考：保留分歧及原文结论；未解决不作事实，已否认不再当真。不由召回决定谁知情。');
@@ -278,6 +285,8 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const prepared = indexCache ? await prepareRecallIndex(indexCache, selected, settings, { scopeKey, revision, signal }) : null;
   const index = prepared?.index ?? new LocalBM25Index(selected, { k1: settings.bm25K1, b: settings.bm25B });
   const lexicon=dictionary??buildDictionary(selected,{aliases:settings.aliases,automatic:settings.dictionaryEnabled!==false});
+  const historyIntent=memoryHistoryIntent(focusQuery);
+  const historicalIds=new Set(markMemoryStates(cards,{dictionary:lexicon}).filter(c=>c.stateHistorical).map(c=>c.id));
   // A person's alias expands identity, not every topic in their lifetime.
   const matched=dictionaryQuery(query,lexicon,{expandTopics:false}),q=matched.query;
   const personNames=(lexicon.entries??[]).filter(e=>e.kind==='人物').flatMap(e=>[e.name,...(e.aliases??[])]);
@@ -287,7 +296,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     if(!evidenceExcerpts.has(record.id))evidenceExcerpts.set(record.id,sourceRecallExcerpt(record,queryTokens,personNames));
     return evidenceExcerpts.get(record.id);
   };
-  const characters=fullCharacterGroups(selectRecallCards(cards,settings,{includeAwareness:true}),characterQuery,lexicon);
+  const characters=fullCharacterGroups(selectRecallCards(cards,settings,{includeAwareness:true}).filter(c=>historyIntent||!historicalIds.has(c.id)),characterQuery,lexicon);
   // Only an actually inserted current dossier can replace the full-person lane.
   // Its historical records remain ordinary searchable candidates, not deleted.
   const supplied=new Set(dossierPeople.map(foldName));
@@ -298,7 +307,6 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     const key=foldName(canonical(profile.name)),old=dossierCoverage.get(key)??-1;
     if(profile.through>old)dossierCoverage.set(key,profile.through);
   }
-  const historyIntent=/(?:当初|以前|过去|当时|曾经|最初|起初|先前|之前|哪一楼|第几楼)|(?:关系|态度|性格|口吻|人设).{0,8}(?:发展|变化|改变|过程|历程)|为什么.{0,12}(?:改变|变化|变成)/u.test(String(focusQuery??''));
   const coveredPersonaHistory=record=>{
     if(historyIntent||!['relationshipChanges','personaChanges','performanceHints'].includes(record.category))return false;
     const floors=sourceFloors(record);if(!floors.length)return false;
@@ -312,7 +320,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     ? [...new Set(selected.filter(c=>!fullIds.has(c.id)).map(c=>c.category))].filter(category=>category!=='summaryView').map(category=>({category,limit:settings.tagCandidateLimit??4})) : [];
   const channelFilter=settings.distributedEnabled&&settings.distributedStrategy==='leader_only'
     ? c=>(c.category==='knowledge'?'knowledge':'memory')===settings.distributedChannel : undefined;
-  const filter=c=>!fullIds.has(c.id)&&!coveredPersonaHistory(c)&&(!channelFilter||channelFilter(c));
+  const filter=c=>(historyIntent||!historicalIds.has(c.id))&&!fullIds.has(c.id)&&!coveredPersonaHistory(c)&&(!channelFilter||channelFilter(c));
   const result = await retrieveMemories({ index, query: q, limit: Math.max(settings.retrievalLimit, settings.retrievalCandidateLimit ?? 24), vectorAdapter, reranker, signal,categoryLanes,filter,
     entityIds:matched.entities,tagLanes,
     totalTimeoutMs: settings.retrievalTimeoutMs,

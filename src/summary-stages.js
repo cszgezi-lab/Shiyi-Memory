@@ -28,7 +28,7 @@ export function isolateDraftIds(output, scope, operationId, existingEvents=[]){
     for(const row of result[category]){
       if(!row||typeof row!=='object'||Array.isArray(row))continue;
       for(const key of ['eventRef','eventId','sourceEventId'])if(eventMap.has(row[key]))row[key]=eventMap.get(row[key]);
-      for(const key of ['recordRef','recordId'])if(map.has(row[key]))row[key]=map.get(row[key]);
+      for(const key of ['recordRef','recordId','completionOf','correctionOf','supersedes'])if(map.has(row[key]))row[key]=map.get(row[key]);
       if(!priorIds.has(row.mergeInto)&&eventMap.has(row.mergeInto))row.mergeInto=eventMap.get(row.mergeInto);
       for(const key of ['eventRefs','eventIds'])if(Array.isArray(row[key]))row[key]=row[key].map(id=>eventMap.get(id)??id);
       for(const key of ['recordRefs','recordIds'])if(Array.isArray(row[key]))row[key]=row[key].map(id=>map.get(id)??id);

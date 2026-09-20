@@ -174,6 +174,13 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
     if(row.kind==='persona'){
       const d=s.dynamicPersona??{},scope=JSON.stringify(s.core?.scope);if(scope!==personaBatchScope){personaBatchScope=scope;personaBatchPage=0;}
       const manual=d.manualPlan,unfinished=['running','paused','failed'].includes(manual?.status);
+      if(unfinished){
+        const done=manual.items.filter(b=>b.status==='saved').length,total=manual.items.length;
+        if(pie)pie.style.background=summaryPieGradient({covered:done,pending:total-done});
+        node.querySelector('[data-summary-percent]').textContent=`${Math.round(done/Math.max(1,total)*100)}%`;
+        node.querySelector('[data-summary-covered]').textContent=`本次重建 ${done}/${total} 批 · #${manual.startIndex}–${manual.endIndex}`;
+        node.querySelector('[data-summary-next]').textContent=`${text.covered.replace('已总结','仍生效')}；候选全部成功后替换`;
+      }
       const items=[...(unfinished?manual.items.map(b=>({...b,candidate:true})):[]),...(d.batches??[])].sort((a,b)=>b.startIndex-a.startIndex);
       const pages=Math.max(1,Math.ceil(items.length/10));personaBatchPage=Math.min(personaBatchPage,pages-1);
       node.querySelector('[data-persona-batch-count]').textContent=`${items.length} 批${d.busy?' · 处理中':unfinished?' · 有未完成计划':''}`;
@@ -198,6 +205,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
      }
      const catchUp=node.querySelector?.('[data-summary-catchup]');
      if(catchUp){catchUp.hidden=!missing;catchUp.dataset.summaryCatchup=row.kind;}
+     if(row.kind==='memory'&&s.summaryHold){node.querySelector('[data-summary-state]').textContent='自动接续已暂停';node.querySelector('[data-summary-next]').textContent='已按所选终点撤下后续记录；点击“总结下一批”处理一批，或在自动总结中启用接续。';}
      const pause=node.querySelector?.('[data-summary-pause]');
      if(pause)pause.hidden=row.kind!=='memory';
      if(row.kind==='persona'){
@@ -360,9 +368,9 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
    if(!app.previewSummary)return app.summarize(options);
    const preview=await app.previewSummary(options);
    const extra=[...preview.prefix,...preview.suffix].map(r=>`#${r.startIndex}–${r.endIndex}`).join('、');
-   const text=`本次 #${preview.requested.startIndex}–${preview.requested.endIndex}，共 ${preview.plannedBatches} 批。${preview.grouped?'重叠旧结果在整组成功后替换；失败保留旧记忆。':''}${extra?`为保留跨批次边界的完整事实，另需重算 ${extra}，额外 ${preview.extraBatches} 批（已计入总数）。`:''}输入预算、分工或复核可能增加请求。`;
+   const text=`本次 #${preview.requested.startIndex}–${preview.requested.endIndex}，共 ${preview.plannedBatches} 批。${preview.grouped?'旧结果在整组成功后替换；失败保留旧记忆。':''}${preview.discardedTail?`完成后撤下旧 #${preview.discardedTail.startIndex}–${preview.discardedTail.endIndex}，不重算后续；自动接续暂停，需主动继续。`:''}${extra?`为保留起点前的完整事实，另需重算 ${extra}，额外 ${preview.extraBatches} 批（已计入总数）。`:''}输入预算、分工或复核可能增加请求。`;
    $('[data-summary-selection]').textContent=text;
-   if(preview.extraBatches&&await host.confirm?.(text+' 是否继续？')!==true)return {status:'canceled'};
+   if((preview.extraBatches||preview.discardedTail)&&await host.confirm?.(text+' 是否继续？')!==true)return {status:'canceled'};
    return app.summarize({...options,previewHash:preview.previewHash});
  }
  async function download(data,name,{preferBrowser='picker'}={}){

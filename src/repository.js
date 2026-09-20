@@ -277,7 +277,7 @@ function remapReferences(record, idMap) {
     }
     return current;
   };
-  for (const key of ['eventRef', 'eventId', 'sourceEventId', 'recordRef', 'recordId']) {
+  for (const key of ['eventRef', 'eventId', 'sourceEventId', 'recordRef', 'recordId', 'completionOf', 'correctionOf', 'supersedes']) {
     if (typeof result[key] === 'string' && has(result[key])) result[key] = resolve(result[key]);
   }
   for (const key of ['eventRefs', 'eventIds', 'recordRefs', 'recordIds']) {
@@ -403,7 +403,7 @@ export class MemoryRepository {
     return withScopeLock(this.store,frozen,async()=>{
       check();const previous=await this.readScope(frozen),keys=this._keys(frozen);
       const controls=clone(previous.manifest?.controls??{});
-      for(const key of ['operations','deletedRecords','edits'])controls[key]={...controls[key],...clone(patch[key]??{})};
+      for(const key of ['operations','deletedRecords','edits','automation'])controls[key]={...controls[key],...clone(patch[key]??{})};
       const revision=previous.committedRevision+1,operationId=makeId('memory-view');
       const manifest={schemaVersion:1,kind:'memory-manifest',scope:frozen,scopeKey:scopeKey(frozen),committedRevision:revision,chunks:previous.manifest?.chunks??[],controls,operationId,createdAt:this.now()};
       const manifestSha256=sha256(manifest),manifestRef=`${keys.manifestPrefix}-${revision}-${manifestSha256.slice(0,20)}`;

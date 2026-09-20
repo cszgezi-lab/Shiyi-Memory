@@ -6,6 +6,7 @@ import { characterRecordSubjects, explicitSubjectNames, factKey } from '../src/p
 import { sourceLabel, recordTitle, epistemicLabel } from '../src/product-narrative.js';
 import { esc } from '../src/product-settings-ui.js';
 import {PERSONA_GENDERS,PERSONA_ROLES,personaCasting,personaCastingLabel} from '../src/persona-casting.js';
+import {markMemoryStates} from '../src/memory-current-state.js';
 
 const PAGE_SIZE = 6;
 const nameKey = name => foldName(name).trim();
@@ -117,7 +118,7 @@ export function peopleGroups(snapshot = {}) {
     fieldCount: new Set(group.facts.map(factKey).filter(k => k != null)).size,
     relationships: newestFirst(group.relationships),
     relationshipThreads: relationshipThreads(group.relationships, name => identity.resolve(name)?.key ?? nameKey(name)),
-    commitments: newestFirst(group.commitments),
+    commitments: newestFirst(markMemoryStates(group.commitments,{dictionary})),
     personaChanges: newestFirst(group.personaChanges),
   })).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
 }
@@ -246,6 +247,8 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
     label: recordTitle(record), value: recordDescription(record), source: sourceText(record), category, id: record.id, clamp: 3,
   })).join('');
   const relationThreads = group.relationshipThreads ?? relationshipThreads(group.relationships ?? []);
+  const currentCommitments=(group.commitments??[]).filter(r=>!r.stateHistorical);
+  const commitmentRows=currentCommitments.map(r=>`${personRows([r],'commitmentChanges')}${r.stateHistoryIds?.length?`<details class="sy-state-history"><summary>前序状态与重复依据 ${r.stateHistoryIds.length} 条</summary>${personRows(group.commitments.filter(p=>r.stateHistoryIds.includes(p.id)),'commitmentChanges')}</details>`:''}`).join('');
   const relationshipRows = relationThreads.map(thread => {
     const current = personRows([thread.latest], 'relationshipChanges');
     const older = thread.rows.slice(1);
@@ -261,7 +264,7 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
     value: r.data.text,
     source: `${sourceText(r.record)}${r.data.provenance === 'user_authored' ? ' · 用户编写，非核对原话' : ''}`, category: 'dialogue', id: r.id, clamp: 3,
   })}${editing === r.id ? personEntryEditor(r, 'dialogue') : ''}`).join('');
-  const stats = `${group.fieldCount} 项属性 · 关系 ${relationThreads.length} 组${(group.relationships?.length ?? 0) > relationThreads.length ? `（${group.relationships.length} 条历程）` : ''} · 约定 ${group.commitments?.length ?? 0} · 人设变化 ${group.personaChanges?.length ?? 0} · 心迹 ${group.diaries.length} · 台词 ${group.dialogues.length}`;
+  const stats = `${group.fieldCount} 项属性 · 关系 ${relationThreads.length} 组${(group.relationships?.length ?? 0) > relationThreads.length ? `（${group.relationships.length} 条历程）` : ''} · 约定 ${currentCommitments.length} 项 · 人设变化 ${group.personaChanges?.length ?? 0} · 心迹 ${group.diaries.length} · 台词 ${group.dialogues.length}`;
   return `<div class="sy-person-head">
       <h4 data-people-title tabindex="-1">${esc(group.name)}</h4>
       ${profileId?`<details data-people-casting="${esc(profileId)}"><summary><span class="sy-casting-badge sy-casting-${casting.role}">${esc(personaCastingLabel(casting))}</span> · 调整定位</summary><div class="sy-grid"><label>性别<select data-casting-gender>${options(PERSONA_GENDERS,casting.gender)}</select></label><label>剧情定位<select data-casting-role>${options(PERSONA_ROLES,casting.role)}</select></label></div><label><input type="checkbox" data-casting-player${casting.playerControlled?' checked':''}>由玩家扮演（降低自动精修频率）</label><button type="button" data-casting-save>保存定位</button></details>`:''}
@@ -277,7 +280,7 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
       ${fieldGroup('动态人设', group.profiles.length, profileRows, '还没有动态人设档案。', { category: 'dynamic-persona' })}
     </div>
     ${fieldGroup('关系', relationThreads.length, relationshipRows, '还没有关系记录。', { category: 'relationshipChanges', add: 'relationship' })}
-    ${fieldGroup('约定', group.commitments?.length ?? 0, personRows(group.commitments ?? [], 'commitmentChanges'), '还没有约定。', { category: 'commitmentChanges', add: 'commitment' })}
+    ${fieldGroup('约定', currentCommitments.length, commitmentRows, '还没有约定。', { category: 'commitmentChanges', add: 'commitment' })}
     ${fieldGroup('人设变化', group.personaChanges?.length ?? 0, personRows(group.personaChanges ?? [], 'personaChanges'), '还没有人设变化。', { category: 'personaChanges', add: 'persona' })}
     ${fieldGroup('角色心迹', group.diaries.length, diaryRows, '还没有心迹。', { category: 'diary' })}
     ${fieldGroup('关键台词', group.dialogues.length, dialogueRows, '还没有关键台词。', { category: 'dialogue' })}

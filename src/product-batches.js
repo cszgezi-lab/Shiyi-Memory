@@ -86,21 +86,22 @@ export function planSummaryRanges({count,startIndex,endIndex,lastIndex,batchSize
   const ranges=[];for(let start=startIndex;start<=endIndex;start+=batchSize)ranges.push({startIndex:start,endIndex:Math.min(endIndex,start+batchSize-1)});
   return ranges;
 }
-// Independent memories need only boundary repair, not a replay of all later
-// history. Expand through overlapping old batches so no cross-boundary event
-// is sliced as prose or silently lost. New generations share one publication
-// barrier only when exact-range replacement cannot cover the selection.
-export function summaryOverwritePlan(ranges,rows,batchSize,lastIndex){
+// Manual overwrite ends exactly at the requested cutoff. Preserve the prefix
+// by regenerating whole source floors, and retire the old tail only together
+// with the complete replacement. Automatic gap filling keeps independent tails.
+export function summaryOverwritePlan(ranges,rows,batchSize,lastIndex,{truncateTail=true}={}){
   const requested={startIndex:ranges[0].startIndex,endIndex:ranges.at(-1).endIndex};
   const active=rows.filter(b=>b.status!=='deleted'&&savedBatchOperation(b)&&Number.isInteger(b.startIndex)&&Number.isInteger(b.endIndex));
   let start=requested.startIndex,end=requested.endIndex,changed=true;
-  while(changed){changed=false;for(const b of active)if(b.startIndex<=end&&b.endIndex>=start){const s=Math.min(start,b.startIndex),e=Math.max(end,b.endIndex);if(s!==start||e!==end){start=s;end=e;changed=true;}}}
-  const affected=active.filter(b=>b.startIndex<=end&&b.endIndex>=start);
+  while(changed){changed=false;for(const b of active)if(b.startIndex<=end&&b.endIndex>=start){const s=Math.min(start,b.startIndex),e=truncateTail?end:Math.max(end,b.endIndex);if(s!==start||e!==end){start=s;end=e;changed=true;}}}
+  const affected=active.filter(b=>(truncateTail||b.startIndex<=end)&&b.endIndex>=start);
+  const through=Math.max(end,...affected.map(b=>b.endIndex));
+  const discardedTail=truncateTail&&through>end?{startIndex:end+1,endIndex:through}:null;
   const parts=(s,e)=>s<=e?planSummaryRanges({startIndex:s,endIndex:e,batchSize,lastIndex}):[];
   const prefix=parts(start,requested.startIndex-1),suffix=parts(requested.endIndex+1,end);
   const actual=[...prefix,...ranges,...suffix];
-  const grouped=affected.some(b=>!actual.some(r=>sameBatchRange(b,r)));
-  return {requested,startIndex:start,endIndex:end,ranges:actual,prefix,suffix,grouped,affected,extraBatches:prefix.length+suffix.length,plannedBatches:actual.length,
+  const grouped=Boolean(discardedTail)||affected.some(b=>!actual.some(r=>sameBatchRange(b,r)));
+  return {requested,startIndex:start,endIndex:end,ranges:actual,prefix,suffix,grouped,affected,discardedTail,extraBatches:prefix.length+suffix.length,plannedBatches:actual.length,
     excludeOperations:[...new Set(active.filter(b=>b.endIndex>=start).flatMap(batchOperationIds))]};
 }
 export function batchRecords(history,operationId){

@@ -3,7 +3,7 @@ import { clone } from '../src/utils.js';
 import { esc } from '../src/product-settings-ui.js';
 
 const groups=[
-  ['shared','共同规则',['extractionWorkflow','narrativeRules.language','narrativeRules.facts','narrativeRules.completeness','timeRules','sceneTimeRules','temporalShape','stateTransitionRules','detailRules']],
+  ['shared','共同规则',['extractionWorkflow','narrativeRules.language','narrativeRules.facts','narrativeRules.completeness','timeRules','sceneTimeRules','temporalShape','stateTransitionRules','currentStateRules','detailRules']],
   ['events','事件',['narrativeRules.eventBody','narrativeRules.eventMetadata','narrativeRules.brief','consolidationRules']],
   ['awarenessChanges','知情',['knowledgeRules','evidenceBoundaryRules']],
   ['entityFactChanges','人物与事实',['profileRules','archiveRules']],
@@ -14,7 +14,7 @@ const groups=[
   ['summaryView','楼层摘要',['floorContentRules','floorMetadataRules','floorKnowledgeRules']],
   ['conflicts','冲突与疑点',[]],
 ];
-const addedLabels={sceneTimeRules:'正文日期与场景时间',dialogueSourceRules:'关键台词的原文来源',evidenceBoundaryRules:'知情证据边界',promiseBoundaryRules:'承诺与预测的区别',journalCoverageRules:'角色心迹的依据与范围'};
+const addedLabels={sceneTimeRules:'正文日期与场景时间',dialogueSourceRules:'关键台词的原文来源',evidenceBoundaryRules:'知情证据边界',promiseBoundaryRules:'承诺与预测的区别',journalCoverageRules:'角色心迹的依据与范围',currentStateRules:'关系与约定的当前状态'};
 const labels={extractionWorkflow:'整理顺序','narrativeRules.language':'输出语言','narrativeRules.facts':'事实与推测','narrativeRules.completeness':'记录范围',timeRules:'时间与有效期',temporalShape:'时间填写方式',stateTransitionRules:'动态变化',detailRules:'字典、标签、关键台词与观念','narrativeRules.eventBody':'完整事件纪要','narrativeRules.eventMetadata':'人物、地点与时间','narrativeRules.brief':'召回速览',consolidationRules:'同一事件的合并',knowledgeRules:'具体知情与事件关联',profileRules:'动态属性填写',archiveRules:'主体归档',relationshipEndpointRules:'关系双方与互动',interpretationRules:'态度、演绎与疑点的共同边界',commitmentRules:'承诺与兑现',planStateRules:'计划状态',schedulePrecisionRules:'不同日程的时间',floorContentRules:'每楼经过',floorMetadataRules:'每楼人物与时间',floorKnowledgeRules:'楼层与知情关联'};
 Object.assign(labels,addedLabels);
 // Illustrative, not hidden instructions. IDs must be replaced with input IDs.

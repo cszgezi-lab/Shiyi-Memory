@@ -363,6 +363,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function stopListeners() { for (const off of bindings.splice(0)) { try { await off(); } catch { /* tracked by host */ } } }
   function emptyChatView(status='loading'){
     dynamicPersona.clear();
+    state.summaryHold=null;
     workspace=null;boundScope=null;boundRefKey=null;moduleSourceBaseline=null;modules.clear();
     qualitySaved={};preparedQuality=null;Object.assign(state,{rawRecords:{},memoryControls:{},quality:null,qualityPlan:null,qualityProgress:'',cards:[],records:{},batches:[],deletedRecords:[],hidden:[],savedThrough:-1,autoStartFloor:1,autoLastIndex:null,sourceStatus:null,progress:'',preview:null,actual:null,status,stale:status==='loading'});
     recallChanged({clear:true});
@@ -560,6 +561,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const all=Object.values(view.records?.history??{}).flatMap(h=>MEMORY_CATEGORIES.flatMap(k=>h.categories?.[k]??[]));
     state.deletedRecords=[...new Map(all.filter(r=>view.controls?.deletedRecords?.[r.id]).map(r=>[r.id,r])).values()];
     state.rawRecords=filtered;state.memoryControls=view.controls??{};
+    state.summaryHold=view.controls?.automation?.summaryHold??null;
     qualitySaved=await bound.read(QUALITY_STORE_KEY,{});assertCurrent(token);
     state.records=projectQualityRecords(filtered,qualitySaved,view.controls);
     state.quality=qualityStatus(filtered,qualitySaved,view.controls,state.records);
@@ -665,6 +667,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const status=scheduled?'queued':mode==='active'?'saved':mode==='deleted'?'deleted':item.status==='running'&&!active?'interrupted':item.status;
       return {...item,status,...(!scheduled&&mode==='active'?{error:null,savedOperationId:item.operationId}:{}),records,counts:Object.fromEntries(MEMORY_CATEGORIES.map(k=>[k,records[k].length]))};
     });
+    if(view.controls?.automation?.summaryHold){
+      state.summaryHold=view.controls.automation.summaryHold;
+      state.autoStartFloor=state.summaryHold.endIndex+1;
+      state.savedThrough=Math.max(-1,...state.batches.filter(b=>b.status==='saved').map(b=>b.endIndex).filter(Number.isInteger));
+    }
     // Reconcile UI bookkeeping against the committed view after a restart.
     // This never activates pending content or changes memory evidence.
     const recovered=state.batches.filter(b=>list.some(old=>old.id===b.id&&(b.status==='saved'&&(old.status!=='saved'||old.savedOperationId!==b.operationId||old.error)||b.status==='deleted'&&old.status!=='deleted')));
@@ -709,7 +716,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       if(current.status!=='ready'||current.sourceRevision!==b.sourceRevision)throw Object.assign(new Error(`覆盖候选 #${b.startIndex}–${b.endIndex} 的原文已变化；请撤下候选后重新覆盖，旧记忆保留`),{code:'SOURCE_INVALIDATED'});
     }
     const retire=[...replacement.oldOperations,...members.flatMap(b=>b.attempts??[])];
-    await core.updateMemoryControls({operations:{...Object.fromEntries(retire.map(id=>[id,'deleted'])),...Object.fromEntries(members.map(b=>[b.operationId,'active']))}});op.check();
+    // The refill hold and record switch use the SAME manifest pointer. A crash
+    // cannot publish a cutoff without also preserving its automatic pause.
+    await core.updateMemoryControls({operations:{...Object.fromEntries(retire.map(id=>[id,'deleted'])),...Object.fromEntries(members.map(b=>[b.operationId,'active']))},...(replacement.discardedTail?{automation:{summaryHold:{id:replacement.id,endIndex:replacement.requested.endIndex,discardedTail:replacement.discardedTail}}}:{})});op.check();
+    if(replacement.discardedTail){state.summaryHold={id:replacement.id,endIndex:replacement.requested.endIndex,discardedTail:replacement.discardedTail};state.savedThrough=replacement.requested.endIndex;}
     await workspace.update('summary-batches',list=>list.map(b=>replacement.memberIds.includes(b.id)?{...b,status:'saved',savedOperationId:b.operationId,error:null}:replacement.oldIds.includes(b.id)?{...b,status:'deleted',replacedBy:replacement.id}:b),[]).catch(()=>{});
     return true;
   }
@@ -741,7 +751,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       if(list.some(b=>b.replacement&&b.status!=='deleted'&&b.status!=='saved'&&b.replacement.id!==previous?.replacement?.id&&ranges.some(r=>b.startIndex<=r.endIndex&&b.endIndex>=r.startIndex)))throw new Error('所选范围已有未完成覆盖候选，请继续未完成批次，或在批次管理撤下候选后重建');
       let overwrite=null;
       if(!missingOnly&&!replaceBatchId){
-        overwrite=summaryOverwritePlan(ranges,list,batchSize,lastIndex);
+        overwrite=summaryOverwritePlan(ranges,list,batchSize,lastIndex,{truncateTail:trigger==='manual'});
         if(previewHash&&previewHash!==overwriteHash(overwrite))throw new Error('总结覆盖范围已变化，请重新确认预览');
         if(list.some(b=>b.replacement&&b.status!=='deleted'&&b.status!=='saved'&&b.startIndex<=overwrite.endIndex&&b.endIndex>=overwrite.startIndex))throw new Error('所选范围已有未完成覆盖候选，请继续未完成批次，或在批次管理撤下候选后重建');
         ranges=overwrite.ranges;
@@ -752,7 +762,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         const prior=previous??(overwrite?.grouped?null:list.find(b=>sameBatchRange(b,range)));
         return {...prior,id:prior?.id??makeId('summary-batch'),number:prior?.number??Math.max(0,...list.map(b=>b.number??0))+i+1,groupId,plan,...range,focus,trigger,status:'queued',freshStart:resume?prior?.freshStart??!prior?.operationId:true,operationId:prior?.operationId??null,createdAt:prior?.createdAt??Date.now(),attempts:prior?.attempts??[]};
       });
-      const replacement=(resume?previous?.replacement:null)??(overwrite?.grouped?{id:groupId,memberIds:planned.map(p=>p.id),oldIds:overwrite.affected.map(b=>b.id),oldOperations:[...new Set(overwrite.affected.flatMap(batchOperationIds))],recipeHash:summaryRecipeHash(),requested:overwrite.requested}:null);
+      const replacement=(resume?previous?.replacement:null)??(overwrite?.grouped?{id:groupId,memberIds:planned.map(p=>p.id),oldIds:overwrite.affected.map(b=>b.id),oldOperations:[...new Set(overwrite.affected.flatMap(batchOperationIds))],recipeHash:summaryRecipeHash(),requested:overwrite.requested,discardedTail:overwrite.discardedTail}:null);
       if(replacement&&!resume){
         const view=await core.readMemoryView();op.check();
         replacement.recordIds=[...new Set(replacement.oldOperations.flatMap(id=>Object.values(batchRecords(view.records.history,id)).flat().map(r=>r.id)))];
@@ -1200,6 +1210,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function syncAutoStartFloor(diagnosticRun){
     if(!workspace)return null;
     const start=state.autoStartFloor??1;
+    if(state.summaryHold){const floor=state.summaryHold.endIndex+1;await workspace.write('auto-progress',{startFloor:floor,updatedAt:Date.now()});state.autoStartFloor=floor;return floor;}
     const batchSize=core.settings.autoSummaryEvery,keepRecent=core.settings.autoKeepRecent;
     const lastIndex=Number.isSafeInteger(state.autoLastIndex)?state.autoLastIndex:await core.historyTail();
     state.autoLastIndex=lastIndex;
@@ -1232,6 +1243,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function setAutomatic(enabledNow){
     if(enabledNow&&active)throw new Error('请等当前任务结束后启用自动总结');
+    if(enabledNow&&state.summaryHold){await core.updateMemoryControls({automation:{summaryHold:null}});state.summaryHold=null;}
     if(enabledNow){automaticPaused=false;autoHistoryAttempts=0;autoRetryAt=0;autoFailureCount=0;}
     else {autoPending=false;clearTimeout(autoTimer);autoTimer=null;}
     await saveSettings({autoSummaryEnabled:enabledNow});
@@ -1248,7 +1260,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     autoPending=true;wakeAutomaticSummary();
   }
   function wakeAutomaticSummary(){
-    if(!autoPending||autoTimer!==null||autoTask||active||opening||disposed||state.stale||automaticPaused||foregroundBusy()||!enabled||!core.settings.autoSummaryEnabled||host.document?.visibilityState==='hidden'||!workspace?.isCurrent())return;
+    if(!autoPending||autoTimer!==null||autoTask||active||opening||disposed||state.stale||automaticPaused||state.summaryHold||foregroundBusy()||!enabled||!core.settings.autoSummaryEnabled||host.document?.visibilityState==='hidden'||!workspace?.isCurrent())return;
     const token=epoch,version=cancelVersion;
     autoTimer=setTimeout(()=>{
       autoTimer=null;
@@ -1261,7 +1273,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     },Math.max(0,autoRetryAt-Date.now()));
   }
   async function autoSummary({force=false}={}) {
-    if (active || state.stale || foregroundBusy() || (!force&&(automaticPaused||!core.settings.autoSummaryEnabled)) || !workspace?.isCurrent()) return;
+    if (active || state.stale || foregroundBusy() || (!force&&(automaticPaused||state.summaryHold||!core.settings.autoSummaryEnabled)) || !workspace?.isCurrent()) return;
+    if(force&&state.summaryHold){await core.updateMemoryControls({automation:{summaryHold:null}});state.summaryHold=null;}
     const feedbackAtStart = feedbackSequence,op=begin();autoRunning=true;
     try {
       state.autoLastIndex=await core.historyTail();op.check();

@@ -14,11 +14,10 @@ export function personaRebuildPlan(next,data){
   const replaceFrom=full?0:Math.min(next.startIndex,first.startIndex);
   const prefix=!full&&replaceFrom<next.startIndex?{startIndex:replaceFrom,endIndex:next.startIndex-1,status:'pending',kind:'prefix'}:null;
   const prefixItems=prefix?Array.from({length:Math.ceil((prefix.endIndex-prefix.startIndex+1)/next.batchSize)},(_,i)=>({...prefix,startIndex:prefix.startIndex+i*next.batchSize,endIndex:Math.min(prefix.endIndex,prefix.startIndex+(i+1)*next.batchSize-1)})):[];
-  const tail=through>next.endIndex?{startIndex:next.endIndex+1,endIndex:through,kind:'tail'}:null;
-  const tailItems=tail?Array.from({length:Math.ceil((tail.endIndex-tail.startIndex+1)/next.batchSize)},(_,i)=>({...tail,startIndex:tail.startIndex+i*next.batchSize,endIndex:Math.min(tail.endIndex,tail.startIndex+(i+1)*next.batchSize-1),status:'pending'})):[];
-  const items=[...prefixItems,...next.items,...tailItems];
-  if(items.length>5000)throw new Error('包含前缀和后续重算后超过5000批，请调大每批楼数');
-  return {...next,requestedEndIndex:next.endIndex,endIndex:Math.max(next.endIndex,through),mode:'clean',full,replaceFrom,baseVersionId:full?null:first.versionId,prefix,tail,extraRequests:prefixItems.length+tailItems.length,tailRequests:tailItems.length,items,replaces:affected.length,plannedRequests:items.length,prefixBatches:saved.filter(b=>b.endIndex<replaceFrom)};
+  const discardedTail=through>next.endIndex?{startIndex:next.endIndex+1,endIndex:through}:null;
+  const items=[...prefixItems,...next.items];
+  if(items.length>5000)throw new Error('包含必要前缀后超过5000批，请调大每批楼数');
+  return {...next,requestedEndIndex:next.endIndex,mode:'clean',tailPolicy:'discard',full,replaceFrom,baseVersionId:full?null:first.versionId,prefix,tail:null,discardedTail,extraRequests:prefixItems.length,tailRequests:0,items,replaces:affected.length,plannedRequests:items.length,prefixBatches:saved.filter(b=>b.endIndex<replaceFrom)};
 }
 export function personaRebuildIdentities(profiles,retained=[]){
   const removed=new Set(profiles.filter(p=>p.deleted).map(p=>p.id));
