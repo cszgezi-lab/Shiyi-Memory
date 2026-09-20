@@ -26,7 +26,7 @@ import { productApiProfile, fetchProductModels } from './product-model-list.js';
 import { selectSummaryContext, summaryRecord } from './summary-context.js';
 import { failureText } from './product-feedback.js';
 import { createGlobalSettings } from './product-global-settings.js';
-import { numberedSummaryBatches, planSummaryRanges, batchRecords, MEMORY_CATEGORIES, editedMemoryFields, batchOperationIds, sameBatchRange, consolidateSummaryBatches, savedBatchOperation } from './product-batches.js';
+import { numberedSummaryBatches, planSummaryRanges, batchRecords, MEMORY_CATEGORIES, editedMemoryFields, batchOperationIds, sameBatchRange, consolidateSummaryBatches, savedBatchOperation, summaryOverwritePlan } from './product-batches.js';
 import { chatConnectionPayload, inspectChatConnection } from './product-connection-probe.js';
 
 import { createModuleController } from './product-module-controller.js';
@@ -667,13 +667,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     });
     // Reconcile UI bookkeeping against the committed view after a restart.
     // This never activates pending content or changes memory evidence.
-    const recovered=state.batches.filter(b=>b.status==='saved'&&list.some(old=>old.id===b.id&&(old.status!=='saved'||old.savedOperationId!==b.operationId||old.error)));
+    const recovered=state.batches.filter(b=>list.some(old=>old.id===b.id&&(b.status==='saved'&&(old.status!=='saved'||old.savedOperationId!==b.operationId||old.error)||b.status==='deleted'&&old.status!=='deleted')));
     if(recovered.length){
       await bound.update('summary-batches',rows=>rows.map(row=>{
         const valid=recovered.find(b=>b.id===row.id&&b.operationId===row.operationId);
-        return valid?{...row,status:'saved',savedOperationId:valid.operationId,error:null}:row;
+        return valid?{...row,status:valid.status,...(valid.status==='saved'?{savedOperationId:valid.operationId,error:null}:{})}:row;
       }),[]).catch(()=>{});assertCurrent(token);
-      state.savedThrough=Math.max(state.savedThrough,...recovered.map(b=>b.endIndex).filter(Number.isInteger));
+      state.savedThrough=Math.max(state.savedThrough,...recovered.filter(b=>b.status==='saved').map(b=>b.endIndex).filter(Number.isInteger));
     }
   }
   async function prepareSummaryChat(){
@@ -687,8 +687,34 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     summaryFeedback('running','正在读取 TT 当前聊天…','manual');
     await open({enable:enabled,expectedRef:target});
   }
+  const summaryRecipeHash=()=>sha256([core.settings.recordingRules,core.settings.summaryPresets,core.settings.narrativeExtraction]);
+  const replacementEditsHash=(ids,controls={})=>sha256(ids.map(id=>[id,controls.edits?.[id],controls.deletedRecords?.[id]]));
+  const overwriteHash=plan=>sha256([plan.ranges,plan.affected.map(b=>[b.id,savedBatchOperation(b)]),plan.excludeOperations]);
+  async function previewSummary(options={}){
+    await prepareSummaryChat();const lastIndex=await core.historyTail(),list=await workspace.read('summary-batches',[]);
+    const size=options.batchSize??core.settings.summaryBatchSize;
+    const ranges=planSummaryRanges({...options,count:options.count??core.settings.messageCount,lastIndex,batchSize:size});
+    const plan=summaryOverwritePlan(ranges,list,size,lastIndex);
+    return {...plan,previewHash:overwriteHash(plan)};
+  }
+  async function publishSummaryReplacement(replacement,op){
+    const rows=await workspace.read('summary-batches',[]);op.check();
+    const members=replacement.memberIds.map(id=>rows.find(b=>b.id===id));
+    if(members.some(b=>!b?.replacementReady||b.status==='deleted'))return false;
+    const view=await core.readMemoryView();op.check();
+    if(replacement.editsHash&&replacementEditsHash(replacement.recordIds,view.controls)!==replacement.editsHash)throw Object.assign(new Error('覆盖期间旧记忆有新的人工修改，请撤下候选后重新预览；没有覆盖该修改'),{code:'SUMMARY_REBUILD_CONFLICT'});
+    if(summaryRecipeHash()!==replacement.recipeHash)throw Object.assign(new Error('覆盖期间记录规则已变化；请撤下候选后重新覆盖，旧记忆保留'),{code:'SOURCE_INVALIDATED'});
+    for(const b of members){
+      const current=await core.readRange({startIndex:b.startIndex,endIndex:b.endIndex});op.check();
+      if(current.status!=='ready'||current.sourceRevision!==b.sourceRevision)throw Object.assign(new Error(`覆盖候选 #${b.startIndex}–${b.endIndex} 的原文已变化；请撤下候选后重新覆盖，旧记忆保留`),{code:'SOURCE_INVALIDATED'});
+    }
+    const retire=[...replacement.oldOperations,...members.flatMap(b=>b.attempts??[])];
+    await core.updateMemoryControls({operations:{...Object.fromEntries(retire.map(id=>[id,'deleted'])),...Object.fromEntries(members.map(b=>[b.operationId,'active']))}});op.check();
+    await workspace.update('summary-batches',list=>list.map(b=>replacement.memberIds.includes(b.id)?{...b,status:'saved',savedOperationId:b.operationId,error:null}:replacement.oldIds.includes(b.id)?{...b,status:'deleted',replacedBy:replacement.id}:b),[]).catch(()=>{});
+    return true;
+  }
   async function summarize(options={}){return logged('summary',run=>summarizeTask({...options,diagnosticRun:run}));}
-  async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null,resume=false,missingOnly=false,diagnosticRun}={}){
+  async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null,resume=false,missingOnly=false,previewHash=null,diagnosticRun}={}){
     const taskStarted=Date.now();let firstRequestAt=null,modelMs=0,publishMs=0;
     if(trigger==='manual'&&!replaceBatchId){
       const version=cancelVersion;
@@ -696,7 +722,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     if(!workspace)throw Object.assign(new Error('当前聊天尚未读取'),{code:'CHAT_REF_UNAVAILABLE'});
     batchSize??=core.settings.summaryBatchSize;
-    const op=begin();let saved=0,currentBatch=null,remainingPlanned=0,bookkeepingWarning=false,deferredRecords=0,automaticQualityIds=[],usedVerification=core.settings.summaryReviewEnabled;
+    const op=begin();let saved=0,currentBatch=null,remainingPlanned=0,bookkeepingWarning=false,deferredRecords=0,automaticQualityIds=[],usedVerification=core.settings.summaryReviewEnabled,stagedOnly=false;
     summaryFeedback('running','正在读取总结范围…',trigger);
     try{
       // Read current source again only inside the same bound chat.
@@ -705,19 +731,36 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       state.autoLastIndex=lastIndex;
       if(missingOnly)batchSize=core.settings.autoSummaryEvery;
       const missing=missingOnly?missingSummaryRanges(summaryCoverage(validAutomaticBatches(),{startFloor:state.autoStartFloor??1,lastIndex,keepRecent:core.settings.autoKeepRecent,batchSize}),batchSize):null;
-      const ranges=missingOnly?missing.map(r=>({...r,startIndex:Math.max(r.startIndex,startIndex??r.startIndex),endIndex:Math.min(r.endIndex,endIndex??r.endIndex)})).filter(r=>r.startIndex<=r.endIndex):planSummaryRanges({count:count??core.settings.messageCount,startIndex,endIndex,lastIndex,batchSize});
+      let ranges=missingOnly?missing.map(r=>({...r,startIndex:Math.max(r.startIndex,startIndex??r.startIndex),endIndex:Math.min(r.endIndex,endIndex??r.endIndex)})).filter(r=>r.startIndex<=r.endIndex):planSummaryRanges({count:count??core.settings.messageCount,startIndex,endIndex,lastIndex,batchSize});
       if(!ranges.length){summaryFeedback('success','当前可处理楼层没有缺口；没有调用总结模型。',trigger);return {status:'complete',batches:0};}
       let groupId=makeId('summary-group');
       const list=await workspace.read('summary-batches',[]);
       let previous=replaceBatchId?list.find(b=>b.id===replaceBatchId):null;
       if(replaceBatchId&&!previous)throw new Error('总结批次不存在');
       if(previous&&ranges.length!==1)throw new Error('重生保留原批次范围');
+      if(list.some(b=>b.replacement&&b.status!=='deleted'&&b.status!=='saved'&&b.replacement.id!==previous?.replacement?.id&&ranges.some(r=>b.startIndex<=r.endIndex&&b.endIndex>=r.startIndex)))throw new Error('所选范围已有未完成覆盖候选，请继续未完成批次，或在批次管理撤下候选后重建');
+      let overwrite=null;
+      if(!missingOnly&&!replaceBatchId){
+        overwrite=summaryOverwritePlan(ranges,list,batchSize,lastIndex);
+        if(previewHash&&previewHash!==overwriteHash(overwrite))throw new Error('总结覆盖范围已变化，请重新确认预览');
+        if(list.some(b=>b.replacement&&b.status!=='deleted'&&b.status!=='saved'&&b.startIndex<=overwrite.endIndex&&b.endIndex>=overwrite.startIndex))throw new Error('所选范围已有未完成覆盖候选，请继续未完成批次，或在批次管理撤下候选后重建');
+        ranges=overwrite.ranges;
+      }
       if(resume&&previous?.groupId)groupId=previous.groupId;
       const plan=resume&&previous?.plan?previous.plan:{startIndex:ranges[0].startIndex,endIndex:ranges.at(-1).endIndex,batchSize};
-      const planned=ranges.map((range,i)=>{
-        const prior=previous??list.find(b=>sameBatchRange(b,range));
+      let planned=ranges.map((range,i)=>{
+        const prior=previous??(overwrite?.grouped?null:list.find(b=>sameBatchRange(b,range)));
         return {...prior,id:prior?.id??makeId('summary-batch'),number:prior?.number??Math.max(0,...list.map(b=>b.number??0))+i+1,groupId,plan,...range,focus,trigger,status:'queued',freshStart:resume?prior?.freshStart??!prior?.operationId:true,operationId:prior?.operationId??null,createdAt:prior?.createdAt??Date.now(),attempts:prior?.attempts??[]};
       });
+      const replacement=(resume?previous?.replacement:null)??(overwrite?.grouped?{id:groupId,memberIds:planned.map(p=>p.id),oldIds:overwrite.affected.map(b=>b.id),oldOperations:[...new Set(overwrite.affected.flatMap(batchOperationIds))],recipeHash:summaryRecipeHash(),requested:overwrite.requested}:null);
+      if(replacement&&!resume){
+        const view=await core.readMemoryView();op.check();
+        replacement.recordIds=[...new Set(replacement.oldOperations.flatMap(id=>Object.values(batchRecords(view.records.history,id)).flat().map(r=>r.id)))];
+        replacement.editsHash=replacementEditsHash(replacement.recordIds,view.controls);
+      }
+      if(!resume)planned=planned.map(p=>({...p,replacement:null,replacementReady:false,replacedBy:null}));
+      if(replacement)planned=planned.map(p=>({...p,replacement,replacementReady:resume?Boolean(p.replacementReady):false}));
+      if(overwrite)planned=planned.map(p=>({...p,excludeOperations:overwrite.excludeOperations}));
       // Persist the whole user's selection BEFORE its first paid request,
       // replacing bookkeeping for reused ranges as well as inserting new ones.
       // Old successful generations remain active until replacements commit.
@@ -741,7 +784,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         summaryFeedback('running',`正在总结 ${state.progress}`,trigger);
         currentBatch={...currentBatch,freshStart:false};
         await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
-        const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,resume:continuing,excludeOperations:currentBatch.attempts,requireFloorSummaries:true,onDiagnostic:event=>{
+        const result=await core.startSummary({focus,confirmedFocus:true,trigger,operationId,resume:continuing,excludeOperations:[...currentBatch.attempts,...(currentBatch.excludeOperations??[])],requireFloorSummaries:true,onDiagnostic:event=>{
           // A settings edit during the request applies to future work. It must
           // not append another paid review/merge after a two-pass generation.
           usedVerification ||= event.details.purpose==='summary_verification';
@@ -766,10 +809,18 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         }});
         op.check();if(result.status!=='saved')throw Object.assign(new Error(core.state.errorMessage??'总结未保存'),{code:result.failure?.code??result.errorCode??'SUMMARY_RESPONSE_ERROR',details:result.errorDetails});
         const publishingAt=Date.now();
-        await core.updateMemoryControls({operations:{...Object.fromEntries(currentBatch.attempts.map(id=>[id,'deleted'])),[operationId]:'active'}});op.check();
-        currentBatch={...currentBatch,status:'saved',savedOperationId:operationId,requests:result.requests,updatedAt:Date.now()};
-        await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]).catch(error=>{bookkeepingWarning=true;runtimeLog.record({run:diagnosticRun,task:'summary',phase:'checkpoint_warning',level:'warning',details:{...errorDiagnostics(error),storageArtifact:'checkpoint'}});});
-        saved++;state.savedThrough=Math.max(state.savedThrough,item.endIndex);state.stale=false;
+        if(currentBatch.replacement){
+          currentBatch={...currentBatch,status:'queued',replacementReady:true,sourceRevision:range.sourceRevision,requests:result.requests,updatedAt:Date.now()};
+          // This checkpoint is required: no old operation is retired before
+          // every replacement member has a durable, source-verified result.
+          await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
+          stagedOnly=!await publishSummaryReplacement(currentBatch.replacement,op);
+        }else{
+          await core.updateMemoryControls({operations:{...Object.fromEntries(currentBatch.attempts.map(id=>[id,'deleted'])),[operationId]:'active'}});op.check();
+          currentBatch={...currentBatch,status:'saved',savedOperationId:operationId,requests:result.requests,updatedAt:Date.now()};
+          await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]).catch(error=>{bookkeepingWarning=true;runtimeLog.record({run:diagnosticRun,task:'summary',phase:'checkpoint_warning',level:'warning',details:{...errorDiagnostics(error),storageArtifact:'checkpoint'}});});
+        }
+        saved++;if(!stagedOnly)state.savedThrough=Math.max(state.savedThrough,item.endIndex);state.stale=false;
         // 保存之后把「起算楼层」推到真正已记录的位置；失败只记日志，绝不影响已保存的记忆。
         try{await syncAutoStartFloor(diagnosticRun);}catch(error){void reportError(error,{task:'summary',stage:'background'});}
         await workspace.write('ui',{savedThrough:state.savedThrough}).catch(error=>{bookkeepingWarning=true;void reportError(error,{task:'storage',stage:'storage'});});await refresh({summaryCommit:true});currentBatch=null;
@@ -782,6 +833,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         // op.finish() wakes the bounded vector queue after releasing the
         // summary lock. The batch's durable autoIndex marker survives reloads.
       }
+      if(stagedOnly){summaryFeedback('info','覆盖候选已保存，旧记忆仍在使用；请继续未完成批次，整组成功后替换。',trigger);return {status:'staged',batches:saved};}
       // All source-valid summaries are already durable. Merge is a separate
       // task and cannot mark any of these batches as failed or roll them back.
       let mergeWarning=false;
@@ -993,8 +1045,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }finally{op.finish();}
   }
   async function regenerateBatch(id){
-    assertCurrent();const row=(await workspace.read('summary-batches',[])).find(b=>b.id===id);
+    assertCurrent();const rows=await workspace.read('summary-batches',[]),row=rows.find(b=>b.id===id);
     if(!row)throw new Error('批次不存在');
+    if(row.replacement&&row.status!=='saved'&&row.status!=='deleted')throw new Error('覆盖候选请使用继续未完成；重新选择范围前先在批次管理撤下候选');
+    if(row.replacedBy||row.status==='deleted'&&rows.some(b=>b.id!==row.id&&b.status==='saved'&&b.startIndex<=row.endIndex&&b.endIndex>=row.startIndex))throw new Error('旧批次已被范围覆盖，请从手动总结选择需要重新覆盖的范围');
     if(!Number.isInteger(row.startIndex)||!Number.isInteger(row.endIndex))throw new Error('旧版未保存楼层范围，请在手动总结中指定范围重新整理');
     return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id});
   }
@@ -1007,6 +1061,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(!row)throw new Error('批次不存在');
     if(row.status==='saved'){summaryFeedback('info','该批总结已保存，无需重复总结；索引未完成时可单独补建。','manual');return {status:'saved',requests:0};}
     if(!['failed','interrupted','queued'].includes(row.status))throw new Error('此批次当前不能续跑');
+    if(row.replacementReady&&row.replacement){
+      const op=begin();try{const applied=await publishSummaryReplacement(row.replacement,op);await refresh();return {status:applied?'saved':'staged',requests:0};}finally{op.finish();}
+    }
     return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id,resume:true,trigger:row.trigger??'manual'});
   }
   async function retryIncompleteBatches(){
@@ -1016,7 +1073,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function manageBatches(ids,action){
     assertCurrent();if(active)throw new Error('请先停止总结');
-    const selected=[...new Set(ids)],rows=await workspace.read('summary-batches',[]),targets=selected.map(id=>rows.find(b=>b.id===id));
+    let selected=[...new Set(ids)];const rows=await workspace.read('summary-batches',[]);
+    if(action==='delete'||action==='restore'){
+      const groups=new Set(rows.filter(b=>selected.includes(b.id)&&b.replacement&&!b.savedOperationId).map(b=>b.replacement.id));
+      selected=[...new Set([...selected,...rows.filter(b=>groups.has(b.replacement?.id)).map(b=>b.id)])];
+    }
+    const targets=selected.map(id=>rows.find(b=>b.id===id));
     if(!targets.length||targets.some(b=>!b))throw new Error('请选择仍存在的批次');
     const token=epoch,version=cancelVersion;
     if(action==='regenerate'||action==='retry'){
@@ -1027,11 +1089,16 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         try{await (action==='retry'?retryBatch(row.id):regenerateBatch(row.id));processed++;}
         catch(error){if(action!=='retry'||version!==cancelVersion||['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error.code))throw error;failed++;}
       }
-      const text=action==='retry'?`续跑已结束：${processed} 批完成，${failed} 批仍未完成；详情见各批次和运行日志。`:`已重新生成 ${targets.length} 批`;
-      setMessage(text);state.feedback={id:++feedbackSequence,level:failed?'warning':'success',text};notify();return {processed,failed};
+      await refresh();const pending=action==='retry'?state.batches.filter(b=>selected.includes(b.id)&&!['saved','deleted'].includes(b.status)).length:0;
+      const text=action==='retry'?`续跑已结束：已处理 ${processed} 批，${failed} 批失败，${pending} 批尚未应用；覆盖候选需整组完成后生效。`:`已重新生成 ${targets.length} 批`;
+      setMessage(text);state.feedback={id:++feedbackSequence,level:failed||pending?'warning':'success',text};notify();return {processed,failed};
     }
     if(!['delete','restore'].includes(action))throw new Error('未知批量操作');
     const operations={};
+    if(action==='restore'){
+      const view=await core.readMemoryView();
+      for(const target of targets)if(rows.some(b=>!selected.includes(b.id)&&view.controls?.operations?.[b.operationId]==='active'&&b.startIndex<=target.endIndex&&b.endIndex>=target.startIndex))throw new Error('此范围已有生效的覆盖结果，请先撤下重叠批次再恢复；没有叠加旧记忆');
+    }
     for(const row of targets){
       const keep=savedBatchOperation(row);
       if(action==='restore'&&!keep)throw new Error('所选批次尚无结果可恢复');
@@ -1040,7 +1107,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     assertCurrent(token);await core.updateMemoryControls({operations});assertCurrent(token);
     await workspace.update('summary-batches',list=>list.map(row=>selected.includes(row.id)?{...row,status:action==='delete'?'deleted':'saved',savedOperationId:savedBatchOperation(row),operationId:action==='restore'?savedBatchOperation(row):row.operationId}:row),[]);
-    await refresh();setMessage(action==='delete'?`已撤下 ${targets.length} 批记忆，可恢复；聊天原文未改变`:`已恢复 ${targets.length} 批`);
+    await refresh();setMessage(action==='delete'?`已撤下 ${targets.length} 批；已应用记忆可恢复，未应用候选不会进入正式记忆；聊天原文未改变`:`已恢复 ${targets.length} 批`);
     // 撤下或恢复批次都会改变真实覆盖，起算楼层跟着回到正确位置（删除的楼层重新变成待总结）。
     try{await syncAutoStartFloor();}catch(error){void reportError(error,{task:'summary',stage:'auto_start_floor'});}
   }
@@ -1616,7 +1683,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   // 补一批 / 检查进度 / 立刻处理：包到 logged('summary', ...) 里，
   // 这样按钮点击会立即产生一条「开始 / 完成 / 失败」的运行日志记录，
   // UI 反馈也由 run() 的 feedback 链路驱动，不会再「按了没反应」。
-  const application={saveCharacterKeepsake,editPersonProfile,catchUpAutomatic:()=>summarize({missingOnly:true}),inspectAutomaticProgress:()=>logged('summary',async run=>{await inspectAutomaticProgress();runtimeLog.record({run,task:'summary',phase:'complete',level:'success',details:{}});return {batches:0};}),setAutoStartFloor,setAutomatic,processAutomatic:()=>logged('summary',run=>autoSummary({force:true})),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
+  const application={previewSummary,saveCharacterKeepsake,editPersonProfile,catchUpAutomatic:()=>summarize({missingOnly:true}),inspectAutomaticProgress:()=>logged('summary',async run=>{await inspectAutomaticProgress();runtimeLog.record({run,task:'summary',phase:'complete',level:'success',details:{}});return {batches:0};}),setAutoStartFloor,setAutomatic,processAutomatic:()=>logged('summary',run=>autoSummary({force:true})),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
     inspectDynamicPersona:()=>logged('persona',async run=>{await dynamicPersona.load();const result=await dynamicPersona.inspect();runtimeLog.record({run,task:'persona',phase:'complete',level:'success',details:{}});return result;}),
     queueDynamicPersona,
     processDynamicPersona:async()=>logged('persona',async run=>{await dynamicPersona.load();return dynamicPersona.process({force:true,retry:true});}),pauseDynamicPersona:()=>{personaCommandVersion++;return logged('persona',()=>dynamicPersona.pause());},setDynamicPersonaStart:floor=>dynamicPersona.setStart(floor),editDynamicPersona:(id,patch)=>dynamicPersona.edit(id,patch),bindDynamicPersona:(name,targetId)=>dynamicPersona.bind(name,targetId),mergeDynamicPersona:(sourceId,targetId)=>dynamicPersona.merge(sourceId,targetId),undoDynamicPersona:id=>dynamicPersona.undo(id),addDynamicPersona:(name,text)=>dynamicPersona.add(name,text),

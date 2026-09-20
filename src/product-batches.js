@@ -2,7 +2,7 @@ import { DRAFT_CATEGORIES } from './contracts.js';
 
 export const MEMORY_CATEGORIES=Object.freeze(DRAFT_CATEGORIES.filter(k=>k!=='coverage'));
 export const batchOperationIds=b=>[...new Set([b.operationId,b.previousOperation,...(b.attempts??[])].filter(Boolean))];
-export const savedBatchOperation=b=>b.savedOperationId??(b.status==='saved'||b.status==='deleted'&&!b.error?b.operationId:b.previousOperation)??null;
+export const savedBatchOperation=b=>b.replacement&&!b.savedOperationId?null:b.savedOperationId??(b.status==='saved'||b.status==='deleted'&&!b.error?b.operationId:b.previousOperation)??null;
 export const sameBatchRange=(a,b)=>Number.isInteger(a.startIndex)&&Number.isInteger(a.endIndex)&&a.startIndex===b.startIndex&&a.endIndex===b.endIndex;
 
 // Associate derived recall cards with their contributing batch, including a
@@ -35,7 +35,7 @@ export function numberedSummaryBatches(batches){
 // only the effective generation changes. Never prefer an unfinished attempt.
 export function consolidateSummaryBatches(rows,controls={}){
   const groups=new Map(),retire={};
-  for(const row of rows){const key=Number.isInteger(row.startIndex)&&Number.isInteger(row.endIndex)?`${row.startIndex}:${row.endIndex}`:row.id;const group=groups.get(key)??[];group.push(row);groups.set(key,group);}
+  for(const row of rows){const key=!row.replacement&&!row.replacedBy&&Number.isInteger(row.startIndex)&&Number.isInteger(row.endIndex)?`${row.startIndex}:${row.endIndex}`:row.id;const group=groups.get(key)??[];group.push(row);groups.set(key,group);}
   const result=[];
   for(const group of groups.values()){
     if(group.length===1){result.push(group[0]);continue;}
@@ -85,6 +85,23 @@ export function planSummaryRanges({count,startIndex,endIndex,lastIndex,batchSize
   if(endIndex-startIndex+1>100000)throw new Error('一次任务最多 100000 楼，请拆成多个任务');
   const ranges=[];for(let start=startIndex;start<=endIndex;start+=batchSize)ranges.push({startIndex:start,endIndex:Math.min(endIndex,start+batchSize-1)});
   return ranges;
+}
+// Independent memories need only boundary repair, not a replay of all later
+// history. Expand through overlapping old batches so no cross-boundary event
+// is sliced as prose or silently lost. New generations share one publication
+// barrier only when exact-range replacement cannot cover the selection.
+export function summaryOverwritePlan(ranges,rows,batchSize,lastIndex){
+  const requested={startIndex:ranges[0].startIndex,endIndex:ranges.at(-1).endIndex};
+  const active=rows.filter(b=>b.status!=='deleted'&&savedBatchOperation(b)&&Number.isInteger(b.startIndex)&&Number.isInteger(b.endIndex));
+  let start=requested.startIndex,end=requested.endIndex,changed=true;
+  while(changed){changed=false;for(const b of active)if(b.startIndex<=end&&b.endIndex>=start){const s=Math.min(start,b.startIndex),e=Math.max(end,b.endIndex);if(s!==start||e!==end){start=s;end=e;changed=true;}}}
+  const affected=active.filter(b=>b.startIndex<=end&&b.endIndex>=start);
+  const parts=(s,e)=>s<=e?planSummaryRanges({startIndex:s,endIndex:e,batchSize,lastIndex}):[];
+  const prefix=parts(start,requested.startIndex-1),suffix=parts(requested.endIndex+1,end);
+  const actual=[...prefix,...ranges,...suffix];
+  const grouped=affected.some(b=>!actual.some(r=>sameBatchRange(b,r)));
+  return {requested,startIndex:start,endIndex:end,ranges:actual,prefix,suffix,grouped,affected,extraBatches:prefix.length+suffix.length,plannedBatches:actual.length,
+    excludeOperations:[...new Set(active.filter(b=>b.endIndex>=start).flatMap(batchOperationIds))]};
 }
 export function batchRecords(history,operationId){
   const entries=(history??[]).filter(item=>item.operationId===operationId||item.operationId?.startsWith(`${operationId}/child-`));

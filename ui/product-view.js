@@ -355,7 +355,16 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
    const preview=$('[data-summary-selection]');if(!preview)return;
    try{const value=selectedSummary(false);preview.textContent=mode==='range'?`本次：#${value.startIndex}–${value.endIndex}，共 ${value.endIndex-value.startIndex+1} 楼，每 ${value.batchSize} 楼一批。`:`本次：最近 ${value.count} 楼，每 ${value.batchSize} 楼一批。`;}catch{preview.textContent=mode==='range'?'请填写起止楼层。':'请填写楼数与每批楼数。';}
  }
- function summarize(withFocus){return app.summarize(selectedSummary(withFocus));}
+ async function summarize(withFocus){
+   const options=selectedSummary(withFocus);
+   if(!app.previewSummary)return app.summarize(options);
+   const preview=await app.previewSummary(options);
+   const extra=[...preview.prefix,...preview.suffix].map(r=>`#${r.startIndex}–${r.endIndex}`).join('、');
+   const text=`本次 #${preview.requested.startIndex}–${preview.requested.endIndex}，共 ${preview.plannedBatches} 批。${preview.grouped?'重叠旧结果在整组成功后替换；失败保留旧记忆。':''}${extra?`为保留跨批次边界的完整事实，另需重算 ${extra}，额外 ${preview.extraBatches} 批（已计入总数）。`:''}输入预算、分工或复核可能增加请求。`;
+   $('[data-summary-selection]').textContent=text;
+   if(preview.extraBatches&&await host.confirm?.(text+' 是否继续？')!==true)return {status:'canceled'};
+   return app.summarize({...options,previewHash:preview.previewHash});
+ }
  async function download(data,name,{preferBrowser='picker'}={}){
     // Only a host-confirmed save may be reported as success. A dispatched
     // payload (anchor / TT download-bridge hand-off) is explicitly unconfirmed,

@@ -367,6 +367,8 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
   async function previewManual(options){
     check();const bound=currentWorkspace;lastIndex=await historyTail();check(bound);
     const next=personaRebuildPlan(personaManualPlan(options,lastIndex),data);
+    if(next.endIndex>lastIndex)throw new Error(`旧人设依据超出当前聊天 #${lastIndex}，请先重新加载以核对删除或编辑的原文；未开始覆盖`);
+    next.previewHash=sha256(next);
     emit();return next;
   }
   async function createManual(options){
@@ -374,6 +376,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     const replacingFailed=personaManualUnfinished(data.manualPlan)&&data.manualPlan.items?.some(b=>b.status==='failed');
     if(personaManualUnfinished(data.manualPlan)&&!replacingFailed)throw new Error('已有未完成的手动计划，请继续或暂停后再新建');
     const bound=currentWorkspace,previousPlanId=data.manualPlan?.id,next=await previewManual(options);check(bound);client();
+    if(options.previewHash&&options.previewHash!==next.previewHash)throw new Error('覆盖范围或后续档案已变化，请重新预览实际范围与请求数');
     const liveHash=personaRebuildLiveHash(data.profiles),identities=personaRebuildIdentities(data.profiles,data.personaIdentities);
     let workingProfiles=data.profiles;
     if(next.mode==='clean'){
