@@ -42,14 +42,18 @@ export function markMemoryStates(cards,{dictionary}={}){
     // Conflicting links are not permission to erase several independent facts.
     if(new Set(refs).size!==1)continue;
     const old=byId.get(refs[0]);if(!old||old.category!==r.category||!identity(old)||identity(old)!==identity(r)||floor(r)<=floor(old))continue;
-    if(stableStringify(scope(old))!==stableStringify(scope(r)))continue;
+    // An explicit ending link identifies the same promise; its context is the
+    // occurrence of completion/cancellation, not necessarily the original scene.
+    // Persistent conditions/scope remain guarded and conflicting dates fail shut.
+    const ending=r.category==='commitmentChanges'&&closed.has(r.state)&&refs[0]===old.id;
+    if(stableStringify(ending?scope(old).slice(1):scope(old))!==stableStringify(ending?scope(r).slice(1):scope(r)))continue;
     if(old.epistemicStatus==='user_asserted'&&r.epistemicStatus!=='user_asserted')continue;
     if(r.epistemicStatus==='unknown'||['character_claim','inferred','uncertain','rumor'].includes(r.epistemicStatus)&&r.epistemicStatus!==old.epistemicStatus)continue;
     if(r.category==='commitmentChanges'){
       if(!['proposed','accepted',...closed].includes(r.state))continue;
       if(closed.has(old.state)&&!(r.correctionOf===old.id&&r.state===old.state))continue;
       if(old.state==='accepted'&&r.state==='proposed')continue;
-      if(stableStringify(old.temporal?.plannedFor??null)!==stableStringify(r.temporal?.plannedFor??null))continue;
+      if(!(ending&&r.temporal?.plannedFor==null)&&stableStringify(old.temporal?.plannedFor??null)!==stableStringify(r.temporal?.plannedFor??null))continue;
     }
     // A later passage can be a flashback. Never reverse explicit story dates.
     const at=x=>storyTimeRange(x.temporal?.actualAt??x.temporal?.occurredAt??x.temporal?.assertedAt??x.temporal);

@@ -5,8 +5,9 @@ import { characterKeepsakes } from '../src/character-journal.js';
 import { characterRecordSubjects, explicitSubjectNames, factKey } from '../src/product-person-profiles.js';
 import { sourceLabel, recordTitle, epistemicLabel } from '../src/product-narrative.js';
 import { esc } from '../src/product-settings-ui.js';
-import {PERSONA_GENDERS,PERSONA_ROLES,personaCasting,personaCastingLabel} from '../src/persona-casting.js';
+import {PERSONA_GENDERS,PERSONA_ROLES,personaCasting,personaCastingLabel,personaAttentionWeight} from '../src/persona-casting.js';
 import {markMemoryStates} from '../src/memory-current-state.js';
+import {sha256} from '../src/utils.js';
 
 const PAGE_SIZE = 6;
 const nameKey = name => foldName(name).trim();
@@ -161,7 +162,7 @@ const peopleMergeHTML = (profiles, pendingName = '') => {
 };
 
 const personaBindHTML = (group, profiles) => {
-  if (!group?.ambiguous || !profiles.length) return '';
+  if (!group || !group.ambiguous && group.profiles.length || !profiles.length) return '';
   const ordered = [...profiles]
     .sort((a, b) => b.name.length - a.name.length || a.name.localeCompare(b.name, 'zh-CN'))
   const foldedName = nameKey(group.name);
@@ -171,7 +172,7 @@ const personaBindHTML = (group, profiles) => {
     .join('');
   return `<details open class="sy-people-persona-bind" data-people-persona-bind>
     <summary>把“${esc(group.name)}”归入已有动态人设</summary>
-    <p class="sy-help">这个称呼目前对应多人，系统不会擅自猜测归属。选择正确的人物后，若称呼已有正式档案会直接合并；否则保存为目标档案的手工别称。当前称呼下已有的心迹、台词、属性会随身份归属统一显示。不调用模型、不改原文、不改原世界书；合并仍保留可恢复版本。</p>
+    <p class="sy-help">${group.ambiguous?'这个称呼目前对应多人，系统不会擅自猜测归属。':'这个名字来自记忆记录，尚未关联动态档案；若是已有角色的简称，可在这里确认归属。'}选择正确的人物后，若称呼已有正式档案会直接合并；否则保存为目标档案的手工别称。当前称呼下已有的心迹、台词、属性会随身份归属统一显示。不调用模型、不改原文、不改原世界书；合并仍保留可恢复版本。</p>
     <label>归入档案<select data-people-persona-bind-target aria-label="把称呼归入人物档案">${options}</select></label>
     <button type="button" data-people-persona-bind-commit>确认归入所选人物</button>
   </details>`;
@@ -247,11 +248,13 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
     label: recordTitle(record), value: recordDescription(record), source: sourceText(record), category, id: record.id, clamp: 3,
   })).join('');
   const relationThreads = group.relationshipThreads ?? relationshipThreads(group.relationships ?? []);
-  const currentCommitments=(group.commitments??[]).filter(r=>!r.stateHistorical);
-  const commitmentRows=currentCommitments.map(r=>`${personRows([r],'commitmentChanges')}${r.stateHistoryIds?.length?`<details class="sy-state-history"><summary>前序状态与重复依据 ${r.stateHistoryIds.length} 条</summary>${personRows(group.commitments.filter(p=>r.stateHistoryIds.includes(p.id)),'commitmentChanges')}</details>`:''}`).join('');
+  const currentCommitments=(group.commitments??[]).filter(r=>!r.stateHistorical&&!['completed','canceled','declined'].includes(r.state));
+  const closedCommitments=(group.commitments??[]).filter(r=>!r.stateHistorical&&['completed','canceled','declined'].includes(r.state));
+  const commitmentRow=r=>`${personRows([r],'commitmentChanges')}${r.stateHistoryIds?.length?`<details class="sy-state-history"><summary>前序状态与重复依据 ${r.stateHistoryIds.length} 条</summary>${personRows(group.commitments.filter(p=>r.stateHistoryIds.includes(p.id)),'commitmentChanges')}</details>`:''}`;
+  const commitmentRows=currentCommitments.map(commitmentRow).join('')+(closedCommitments.length?`<details class="sy-closed-commitments"><summary>已完成／取消／拒绝 ${closedCommitments.length} 项</summary>${closedCommitments.map(commitmentRow).join('')}</details>`:'');
   const relationshipRows = relationThreads.map(thread => {
-    const current = personRows([thread.latest], 'relationshipChanges');
-    const older = thread.rows.slice(1);
+    const current = [...thread.rows.slice(0,3)].reverse().map(r=>`<p class="sy-help">${esc(sourceText(r))}</p>${personRows([r], 'relationshipChanges')}`).join('');
+    const older = thread.rows.slice(3);
     return `${current}${older.length ? `<details class="sy-relationship-history"><summary>过往 ${older.length} 条关系变化（保留来源，可逐条修改）</summary>${personRows(older, 'relationshipChanges')}</details>` : ''}`;
   }).join('');
   const diaryRows = group.diaries.slice(0, 3).map(r => `${personFieldRow({
@@ -267,7 +270,7 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
   const stats = `${group.fieldCount} 项属性 · 关系 ${relationThreads.length} 组${(group.relationships?.length ?? 0) > relationThreads.length ? `（${group.relationships.length} 条历程）` : ''} · 约定 ${currentCommitments.length} 项 · 人设变化 ${group.personaChanges?.length ?? 0} · 心迹 ${group.diaries.length} · 台词 ${group.dialogues.length}`;
   return `<div class="sy-person-head">
       <h4 data-people-title tabindex="-1">${esc(group.name)}</h4>
-      ${profileId?`<details data-people-casting="${esc(profileId)}"><summary><span class="sy-casting-badge sy-casting-${casting.role}">${esc(personaCastingLabel(casting))}</span> · 调整定位</summary><div class="sy-grid"><label>性别<select data-casting-gender>${options(PERSONA_GENDERS,casting.gender)}</select></label><label>剧情定位<select data-casting-role>${options(PERSONA_ROLES,casting.role)}</select></label></div><label><input type="checkbox" data-casting-player${casting.playerControlled?' checked':''}>由玩家扮演（降低自动精修频率）</label><button type="button" data-casting-save>保存定位</button></details>`:''}
+      ${profileId?`<details data-people-casting="${esc(profileId)}"><summary><span class="sy-casting-badge sy-casting-${casting.role}">${esc(personaCastingLabel(casting))}</span> · 调整定位</summary><div class="sy-grid"><label>性别<select data-casting-gender>${options(PERSONA_GENDERS,casting.gender)}</select></label><label>剧情定位<select data-casting-role>${options(PERSONA_ROLES,casting.role)}</select></label></div><label><input type="checkbox" data-casting-player${casting.playerControlled?' checked':''}>由玩家扮演（降低补充材料份额）</label><p class="sy-help">当前记录关注权重 ${personaAttentionWeight(casting)}：主角4、重要配角3、配角2、客串1；玩家角色1。影响主更新检查顺序与补充材料份额，不漏掉低权重人物的重大变化；性别不影响权重。</p><button type="button" data-casting-save>保存定位</button></details>`:''}
       <p class="sy-help">${group.aliases.length ? `别称：${esc(group.aliases.join('、'))} · ` : ''}${esc(stats)}</p>
       <div class="sy-actions sy-person-bar"><button type="button" data-people-rename>改名</button><button type="button" data-people-merge-open>合并档案</button><button type="button" class="danger" data-people-remove>删除</button></div>
     </div>
@@ -277,6 +280,7 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
     ${peopleMergeHTML(allProfiles, group.ambiguous ? group.name : '')}
     ${fieldGroup('人物属性', group.fieldCount, factRows, '还没有属性记录。', { category: 'entityFactChanges', add: 'attribute' })}
     <div class="sy-persona-block" data-people-persona-block>
+      ${profile?.composition?.changeCheck?`<p class="sy-help" data-persona-change-check>${esc(['changed','unchanged'].includes(profile.composition.changeCheck.status)?'本批变化结构核对已完成（不代表模型语义已人工验收）':'本批变化仍待核对：'+(profile.composition.changeCheck.issues??[]).join('；'))}</p>`:''}
       ${fieldGroup('动态人设', group.profiles.length, profileRows, '还没有动态人设档案。', { category: 'dynamic-persona' })}
     </div>
     ${fieldGroup('关系', relationThreads.length, relationshipRows, '还没有关系记录。', { category: 'relationshipChanges', add: 'relationship' })}
@@ -292,7 +296,12 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
   const root = panel.querySelector?.('[data-view="people"]');
   if (!root) return { paint(){}, focus(){}, select(){} };
   const $ = selector => root.querySelector?.(selector);
-  let scope, stamp = '', rendered = '', groups = [], selected = '', editing = '', stripStamp = '', query = '';
+  let scope, stamp = '', rendered = '', groups = [], selected = '', editing = '', stripStamp = '', query = '', sourceCards = [];
+  const origins = row => (row.origins?.length ? row.origins : [row]).map(origin => {
+    const record=sourceCards.find(c=>c.id===origin.recordId);
+    if(!record)throw new Error('来源记忆已变化，请刷新人物页');
+    return {...origin,expected:sha256(record)};
+  });
   const filter = () => {
     const needle = nameKey(query);
     return groups.filter(g => [g.name, ...g.aliases].some(n => nameKey(n).includes(needle)));
@@ -343,7 +352,7 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     const nextStamp = revision != null ? `revision:${revision}`
       : `legacy:${JSON.stringify([snapshot.cardRevision ?? snapshot.cards, snapshot.dynamicPersona?.profiles, snapshot.dictionary, snapshot.settings?.aliases, snapshot.settings?.dynamicPersonaMvuMode])}`;
     if (stamp === nextStamp) return;
-    groups = peopleGroups(snapshot); stamp = nextStamp; draw();
+    sourceCards = snapshot.cards ?? []; groups = peopleGroups(snapshot); stamp = nextStamp; draw();
   }
   $('[data-people-search]')?.addEventListener('input', () => draw());
   /** 第一次点这一行：展开全文。展开之后点这一行的文字：进编辑。 */
@@ -410,9 +419,12 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
       const group = groups.find(g => g.key === selected);
       if (!group) return;
       void run(async () => {
-        if (await host.confirm?.(`删除“${group.name}”这个角色的记忆？记录会移入回收站，聊天原文与总结不受影响。`) !== true) return;
-        const ids = [...group.facts, ...group.relationships, ...group.commitments, ...group.personaChanges, ...group.diaries.map(r => r.id), ...group.dialogues.map(r => r.id)];
-        if (ids.length) await app.deleteRecords([...new Set(ids)]);
+        if (await host.confirm?.(`删除“${group.name}”显示的关联记录与动态档案？记忆可从回收站恢复，动态档案保留旧版；心迹和台词仅移除对应字段，不删除整篇共享事件。聊天原文与原世界书不改。`) !== true) return;
+        const ids = [...new Set([...group.facts, ...group.relationships, ...group.commitments, ...group.personaChanges].map(r=>r.id))];
+        const keepsakes=[...group.diaries,...group.dialogues].flatMap(row=>origins(row).filter(o=>!ids.includes(o.recordId)).map(o=>({...o,kind:row.kind})));
+        if (ids.length || keepsakes.length) await app.deleteRecords(ids,{keepsakes});
+        for(const p of group.profiles)await app.editDynamicPersona(p.id,{deleted:true});
+        stamp='';rendered='';
       }, { name: 'deleteRecord', button });
       return;
     }
@@ -433,8 +445,16 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     }
     // 一次点击展开，展开后点内容或「修改」进编辑；「删除」把这条移入回收站。
     if (button.hasAttribute('data-field-remove')) {
-      const id = button.closest('[data-field-row]')?.dataset.fieldId ?? '';
-      if (id) void run(() => app.deleteRecords([id]), { name: 'deleteRecord', button });
+      const field = button.closest('[data-field-row]'),id=field?.dataset.fieldId??'',category=field?.dataset.fieldCategory;
+      if(id)void run(async()=>{
+        if(category==='dynamic-persona')return app.editDynamicPersona(id,{deleted:true});
+        if(category==='diary'||category==='dialogue'){
+          const row=groups.flatMap(g=>category==='diary'?g.diaries:g.dialogues).find(r=>r.id===id);
+          if(!row)throw new Error('角色记录已变化，请刷新后重试');
+          return app.saveCharacterKeepsake({kind:category,origins:origins(row),remove:true});
+        }
+        return app.deleteRecords([id]);
+      }, { name: 'deleteRecord', button });
       return;
     }
     if (button.hasAttribute('data-field-edit')) {
@@ -457,7 +477,7 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
       if (!row || !box) return;
       const data = { ...row.data };
       for (const field of box.querySelectorAll('[data-keep-field]')) data[field.dataset.keepField] = field.value;
-      void run(() => app.saveCharacterKeepsake({ kind: diary ? 'diary' : 'dialogue', recordId: row.recordId, index: row.index, expected: row.expected, data }), { name: 'journal-write', button })
+      void run(() => app.saveCharacterKeepsake({ kind: diary ? 'diary' : 'dialogue', origins: origins(row), data }), { name: 'journal-write', button })
         .then(() => { editing = ''; rendered = ''; });
       return;
     }
@@ -482,7 +502,7 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
       const targetId = root.querySelector('[data-people-persona-bind-target]')?.value;
       const profiles = groups.flatMap(g => g.profiles);
       const target = profiles.find(p => p.id === targetId);
-      if (!group?.ambiguous || !group.name || !target) return;
+      if (!group || !group.ambiguous && group.profiles.length || !group.name || !target) return;
       void run(async () => {
         if (await host.confirm?.(`将称呼“${group.name}”归入“${target.name}”？若已有同名正式档案会一并合并；原文、原世界书和来源记录不改。`) !== true) return;
         return app.bindDynamicPersona?.(group.name, target.id)

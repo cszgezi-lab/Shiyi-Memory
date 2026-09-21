@@ -1125,11 +1125,22 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function deleteRecord(id){
     return deleteRecords([id]);
   }
-  async function deleteRecords(selected){
+  async function deleteRecords(selected,{keepsakes=[]}={}){
     assertCurrent();if(active)throw new Error('请先停止总结');
-    if(!Array.isArray(selected)||!selected.length||selected.some(id=>!state.cards.some(c=>c.id===id)))throw new Error('记忆不存在');
+    if(!Array.isArray(selected)||!Array.isArray(keepsakes)||!selected.length&&!keepsakes.length||selected.some(id=>!state.cards.some(c=>c.id===id)))throw new Error('记忆不存在');
     const ids=[...new Set(selected.flatMap(id=>state.cards.find(c=>c.id===id).mergedIds??[id]))];
-    await core.updateMemoryControls({deletedRecords:Object.fromEntries(ids.map(key=>[key,true]))});await refresh();setMessage('记忆已删除，可在回收站恢复；聊天原文未改变');
+    const edits={},seen=new Set();
+    for(const row of [...keepsakes].sort((a,b)=>(b.index??0)-(a.index??0))){
+      const record=state.cards.find(c=>c.id===row?.recordId),key=JSON.stringify([row?.kind,row?.recordId,row?.index]);
+      if(!record||sha256(record)!==row.expected)throw new Error('原记录已变化，请刷新人物页后重试');
+      if(record.mergedIds?.length)throw new Error('请先撤销事件合并，再移除其中的台词或心迹');
+      if(seen.has(key)||ids.includes(record.id))continue;seen.add(key);
+      edits[record.id]={...edits[record.id],...editKeepsakePatch({...record,...edits[record.id]},{...row,remove:true})};
+    }
+    const op=begin();
+    try{const view=await core.readMemoryView();op.check();for(const id of Object.keys(edits))edits[id]={...view.controls?.edits?.[id],...edits[id]};await core.updateMemoryControls({deletedRecords:Object.fromEntries(ids.map(key=>[key,true])),edits});op.check();}
+    finally{op.finish();}
+    await refresh();setMessage('选中记忆已移入回收站；指定心迹/台词已移除，共享事件和聊天原文保留');
   }
   async function restoreRecord(id){assertCurrent();await core.updateMemoryControls({deletedRecords:{[id]:false}});await refresh();}
   async function restoreBatch(id){return manageBatches([id],'restore');}
@@ -1714,6 +1725,14 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     discardDynamicPersonaManual:()=>logged('persona',()=>dynamicPersona.discardManual()),
     inspectDynamicPersonaWorldbook:()=>logged('persona',()=>dynamicPersona.inspectWorldbook()),
     retryDynamicPersonaReview:()=>logged('persona',()=>dynamicPersona.retryReview()),
+    previewDeleteDynamicPersonaBatch:options=>dynamicPersona.previewDeleteBatch(options),
+    deleteDynamicPersonaBatch:options=>logged('persona',()=>dynamicPersona.deletePersonaBatch(options)),
+    restoreDynamicPersonaBatch:()=>logged('persona',()=>dynamicPersona.restorePersonaBatch()),
+    previewDynamicPersonaReview:options=>dynamicPersona.previewReview(options),
+    startDynamicPersonaReview:options=>logged('persona',()=>dynamicPersona.startReview(options)),
+    manageDynamicPersonaReview:(action,id)=>logged('persona',()=>dynamicPersona.manageReview(action,id)),
+    applyDynamicPersonaReview:()=>logged('persona',()=>dynamicPersona.applyReview()),
+    dynamicPersonaReviewMarkdown:()=>dynamicPersona.reviewMarkdown(),
     setDynamicPersonaPartHistorical:(id,key,value)=>dynamicPersona.setPartHistorical(id,key,value),
     syncDynamicPersonaWorldbook:()=>logged('persona',async()=>{await dynamicPersona.inspectWorldbook();return dynamicPersona.syncMirror();}),
     async setDynamicPersona(enabledNow){await saveSettings({dynamicPersonaEnabled:enabledNow});if(!enabledNow)dynamicPersona.stop();else {if(!workspace?.isCurrent())await open({enable:enabled});await dynamicPersona.load();await dynamicPersona.resume();}},

@@ -5,6 +5,7 @@ import {sourceFloors} from './product-narrative.js';
 import {qualitySourceSegments} from './source-evidence.js';
 import {withoutPrivateSpeech} from './memory-evidence.js';
 import {mergePersonaDevelopment,personaDevelopmentText} from './persona-development.js';
+import {personaChangeCheck} from './persona-change-check.js';
 
 export const PERSONA_COMPOSITION_RULE=`当前使用原文保留模式。original.parts列出程序保留的原设定片段及当前有效文字；source=chat表示本聊天已保存的初建人物底稿，不是原世界书。ref仅定位本人物片段。不要重写整篇传记。
 先依据source中的明确时间、日期、学段和倒叙/回忆切换，区分当前叙事时点、原卡默认时点与历史/未来设定。楼号是来源位置，不是故事日期；楼号增加也可能进入更早的倒叙学段，不能直接套用原卡默认的年龄、学校、班级、团体或已成立关系。原文自身有时间冲突时标明来源与待核实处，不把冲突句当定论。只在有明确证据时局部更新；不明确则标注原卡默认时点及适用范围，不把整段旧设定删掉。禁止按学段、日期差或常识自动猜测年龄或学校并替换，未发生的未来关系不可当作当前关系。
@@ -259,7 +260,7 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
     const issue=!part?'unknown_ref':touched.has(part.key)?'duplicate_ref':typeof edit?.text!=='string'||!edit.text.trim()?'empty_edit':!validFloors(edit.sourceFloors)?'invalid_edit_floors':/<%|%>|<\/?script\b|\{\{|@@|\[\[SHIYI_PERSONA:/i.test(edit.text)?'unsafe_edit':null;
     if(issue)throw fail('text','局部修改没有唯一对应本人物原文或本批依据，原档案保留','persona_fields',{personaIssue:issue,editIndex});
     touched.add(part.key);const before=part.text;part.text=edit.text+(/\n$/.test(part.original)&&!edit.text.endsWith('\n')?'\n':'');part.sourceFloors=[...new Set(edit.sourceFloors)];
-    if(before!==part.text)changes.push({title:part.title,before,after:part.text,sourceFloors:part.sourceFloors});
+    if(before!==part.text)changes.push({key:part.key,title:part.title,before,after:part.text,sourceFloors:part.sourceFloors});
   }
   const examples=[];let rejectedExamples=0;
   const candidates=row.examples===undefined?(previous?.composition?.examples??[]):Array.isArray(row.examples)?row.examples:[];
@@ -294,6 +295,7 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
     }
   }
   const notes=row.text.trim(),composition={version:1,retiredParts:clone(previous?.composition?.retiredParts??[]),parts,notes,examples:currentPersonaExamples(examples,development.items),sceneEvidence,changes,rejectedExamples,ignoredUpdates,development:development.items,rejectedDevelopment:development.rejected,...(!spans.length?{localMode:localPatches&&parts.length?'patches':'snapshot'}:{}),...(!parts.length?{sourceBaseline:sourcePersonaBaseline(notes,name,row.sourceFloors)}:{})};
+  composition.changeCheck=personaChangeCheck(row,{parts,changes,development:development.items,examples:composition.examples,messages,identity,name});
   return {text:personaCompositionText(composition,{hasSources:spans.length>0}),composition:clone(composition)};
 }
 

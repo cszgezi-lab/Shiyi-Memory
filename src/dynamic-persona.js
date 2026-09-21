@@ -11,10 +11,12 @@ import {personaRebuildPlan,personaRebuildIdentities,personaRebuildIdentity,perso
 import {personaIdentity,personaAliases,foldName,personaTitleNames} from './persona-identity.js';
 import {personaSourceIndex,personaSourceGuide} from './persona-source-index.js';
 import {rebindPersonaSources} from './persona-source-rebind.js';
-import {editPersonaCasting,inferPersonaCasting,PERSONA_CASTING_RULE,rememberPersonaCasting,applyPersonaCasting} from './persona-casting.js';
+import {editPersonaCasting,inferPersonaCasting,PERSONA_CASTING_RULE,rememberPersonaCasting,applyPersonaCasting,personaAttentionWeight,weightedPersonaMaterials} from './persona-casting.js';
+import {PERSONA_CHANGE_CHECK_RULE} from './persona-change-check.js';
 import {projectCurrentPersona,personaTimelineFrame} from './persona-current-projection.js';
 import {PERSONA_COMPOSITION_RULE,personaParts,personaMaterials,personaReviewFocus,composePersona,personaSpokenAliases,personaCompositionText} from './persona-composition.js';
 import {createPersonaRefinement} from './persona-refinement.js';
+import {previewPersonaRefinement,startPersonaRefinement,savePersonaRefinementCandidate,personaRefinementMarkdown} from './persona-refinement-plan.js';
 import {PERSONA_DEVELOPMENT_RULE,PERSONA_IMPACT_RULE as PERSONA_IMPACT_BASE,PERSONA_CURRENT_ARC_RULE,personaCharacterCandidates} from './persona-development.js';
 const PERSONA_IMPACT_RULE=`${PERSONA_IMPACT_BASE}\n${PERSONA_CURRENT_ARC_RULE}`;
 import {PERSONA_RECOVERY_VERSION} from './persona-validation.js';
@@ -181,7 +183,7 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
   const spans=indexed.spans.filter(s=>s.ownerKey&&s.text.trim()&&mentioned.has(s.ownerKey)).map(s=>{
     const person=identity.forTitle(s.name),key=person.key;if(!groups.has(key))groups.set(key,{id:`P${groups.size+1}`,title:s.name,characterId:person.characterId,name:person.name,aliases:[...person.visibleAliases],text:[]});const group=groups.get(key);group.text.push(s.text);return {...s,ref:group.id};
   });
-  const known=currentPersonaProfiles(previous.filter(p=>!p.deleted&&mentioned.has(foldName(p.name))),stageMode).map(p=>projectCurrentPersona(p,frame));
+  const known=currentPersonaProfiles(previous.filter(p=>!p.deleted&&mentioned.has(foldName(p.name))),stageMode).map(p=>projectCurrentPersona(p,frame)).sort((a,b)=>personaAttentionWeight(b.casting)-personaAttentionWeight(a.casting));
   const promptParts=parts=>parts.filter(p=>p.original.trim()&&p.status!=='historical').map(p=>({ref:p.ref,title:p.title,text:p.text}));
   const originals=[...groups.values()].map(g=>({id:g.id,name:g.name,aliases:g.aliases,parts:promptParts(personaParts(spans.filter(s=>s.ownerKey===foldName(g.name)),known.find(p=>foldName(p.name)===foldName(g.name))))}));
   for(const p of known)if(!p.bindings?.length&&!groups.has(foldName(p.name))){const parts=personaParts([],p);if(parts.length)originals.push({name:p.name,source:'chat',aliases:[...(identity.resolve(p.name)?.visibleAliases??[])],parts:promptParts(parts)});}
@@ -190,7 +192,7 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
     // The exact effective baseline is already in original.parts. Sending it
     // again in previous.text doubles input, not evidence or model attention.
     text:originals.some(o=>o.name===p.name)&&p.composition?String(p.composition.notes??''):personaDossierText(p),baselineInOriginal:originals.some(o=>o.name===p.name),examples:p.composition?.examples,development:p.composition?.development,locked:p.locked,through:p.through,currentStage:stageMode!=='strict'||!p.bindings?.length||p.bindings.every(b=>spans.some(s=>s.id===b.id&&s.stage===b.stage))}));
-  return {messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n${PERSONA_CASTING_RULE}\n姓名使用original/previous提供的正式姓名；简称、昵称、简繁写法不创建另一个角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}\n${PERSONA_DEVELOPMENT_RULE}\n${PERSONA_IMPACT_RULE}\noriginal.parts已完整提供有效底稿；previous.text只提供未重复的当前补充。底稿与补充合读，不因不再重复发送就认为属性丢失。narrativeFrame是已保存原文明确的全局时点；新的明确切换优先，不将原卡默认年龄/学段写成当前状态。`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),narrativeFrame:frame,characterCandidates:personaCharacterCandidates(source,identity),original:originals,materials:personaMaterials(records,identity,mentioned,Math.min(endFloor,materialsThrough)),previous:prior,reviewFocus:personaReviewFocus(source,identity)})}],source,spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
+  return {messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n${PERSONA_CASTING_RULE}\n${PERSONA_CHANGE_CHECK_RULE}\n姓名使用original/previous提供的正式姓名；简称、昵称、简繁写法不创建另一个角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}\n${PERSONA_DEVELOPMENT_RULE}\n${PERSONA_IMPACT_RULE}\noriginal.parts已完整提供有效底稿；previous.text只提供未重复的当前补充。底稿与补充合读，不因不再重复发送就认为属性丢失。narrativeFrame是已保存原文明确的全局时点；新的明确切换优先，不将原卡默认年龄/学段写成当前状态。`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),narrativeFrame:frame,characterCandidates:personaCharacterCandidates(source,identity),attention:known.map(p=>({name:p.name,weight:personaAttentionWeight(p.casting)})),original:originals,materials:weightedPersonaMaterials(personaMaterials(records,identity,mentioned,Math.min(endFloor,materialsThrough)),known),previous:prior,reviewFocus:personaReviewFocus(source,identity)})}],source,spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
 }
 export function parsePersonaResponse(response,{messages,spans,previous,identity,dictionary,aliases='',stageMode='narrative',preserveSources=false,developmentMessages,diagnostic=()=>{},collectFailures=false}){
   const reason=response?.choices?.[0]?.finish_reason;
@@ -256,11 +258,17 @@ export function parsePersonaResponse(response,{messages,spans,previous,identity,
 export function createDynamicPersona({settings,getWorkspace,readRange,historyTail,worldbook,client,reviewClient,dictionary=()=>({entries:[]}),records=()=>({}),notify=()=>{},log=async(_fn,fn)=>fn(),diagnostic=()=>{},canRun=()=>true,now=Date.now}){
   let data=initial(),scopeKey='',currentWorkspace=null,job=null,timer=null,disposed=false,paused=false,ready=false,serial=Promise.resolve(),view={status:'unbound',message:'动态人设尚未启用'},lastIndex=null;
   let historyAttempts=0,historyRetryAt=0,wakePending=false;
-  const refinement=createPersonaRefinement({settings,getScope:()=>currentWorkspace,getProfiles:()=>data.profiles,getState:()=>data.refinement,readRange,client:()=>{if(!reviewClient)throw new Error('请在 API 设置中配置人设辅助精修');return reviewClient();},now,
-    canRun:()=>ready&&!job&&!paused&&!personaManualUnfinished(data.manualPlan)&&canRun(),notify:status=>{if(Object.hasOwn(status,'error'))view={...view,reviewError:status.error};emit();},
+  const refinement=createPersonaRefinement({settings,getScope:()=>currentWorkspace,getProfiles:()=>data.profiles,getState:()=>data.refinement,readRange,client:()=>{if(!reviewClient)throw new Error('请在 API 设置中配置人设辅助精修');return reviewClient();},now,manualOnly:true,
+    canRun:()=>ready&&!job&&!personaManualUnfinished(data.manualPlan)&&canRun(),notify:status=>{if(Object.hasOwn(status,'error'))view={...view,reviewError:status.error};emit();},
     saveState:(next,bound)=>transact(async()=>{check(bound);if((next.revision??0)!==(data.refinement?.revision??0))throw Object.assign(new Error('精修队列已有新版本'),{code:'SOURCE_INVALIDATED'});await save({...data,refinement:{...next,revision:(next.revision??0)+1}},bound);}),
     commit:(task,patch,bound,options={})=>transact(async()=>{
       check(bound);const prior=data.profiles.find(p=>p.id===task.id),s=data.refinement;
+      if(task.manualPlanId){
+        if(options.signal?.aborted)throw canceled();
+        const profile=data.profiles.find(p=>p.id===task.profileId);
+        if(!profile||sha256(profile)!==task.profileHash)throw new Error('人物档案已变，精修候选未覆盖');
+        await save({...data,refinement:{...savePersonaRefinementCandidate(s,task,patch),revision:(s.revision??0)+1}},bound);return;
+      }
       const queue=s.queue.filter(t=>t.id!==task.id||t.profileHash!==task.profileHash);
       const valid=()=>{if(options.signal?.aborted||!settings().personaReviewEnabled)throw canceled();return sha256(data.profiles.find(p=>p.id===task.id))===task.profileHash;};
       if(!prior||!valid()){await save({...data,refinement:{...s,queue,revision:(s.revision??0)+1,status:'stale',message:'档案已变化，旧精修结果未覆盖'}},bound);return;}
@@ -603,7 +611,87 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     }catch(error){await fail(error);throw error;}finally{finish();}});
     }catch(error){if(!settled)await fail(error);throw error;}finally{finish();}
   }
-  async function pause(){const bound=currentWorkspace;stop({preserveManual:disposed});if(!disposed&&bound?.isCurrent())await transact(()=>save({...data,paused:true,...(data.manualPlan?.status==='running'?{manualPlan:{...data.manualPlan,status:'paused'}}:{})},bound));}
+  function previewDeleteBatch(options){
+    check();if(personaManualUnfinished(data.manualPlan))throw new Error('请先完成或放弃未完成的人设候选计划，再删除正式批次');
+    const batch=data.batches.find(b=>b.startIndex===options.startIndex&&b.endIndex===options.endIndex);
+    if(!batch)throw new Error('人设批次已变化，请刷新后重试');
+    const affected=data.batches.filter(b=>b.endIndex>=batch.startIndex),firstSaved=affected.filter(b=>b.status==='saved').sort((a,b)=>a.startIndex-b.startIndex)[0],preview={startIndex:batch.startIndex,endIndex:Math.max(...affected.map(b=>b.endIndex)),count:affected.length,saved:Boolean(firstSaved),versionId:firstSaved?.versionId,hash:sha256([data.batches,personaRebuildLiveHash(data.profiles)])};
+    return preview;
+  }
+  async function deletePersonaBatch(options){
+    check();if(job)throw new Error('请先暂停人设任务，待请求退出后再删除批次');
+    const bound=currentWorkspace,preview=previewDeleteBatch(options);
+    if(options.hash!==preview.hash)throw new Error('批次或档案已变化，请重新确认删除范围');
+    const version=preview.saved?await bound.read(preview.versionId,null):null;check(bound);
+    if(preview.saved&&!Array.isArray(version?.profiles))throw new Error('批次恢复点缺失，未删除任何档案');
+    refinement.interrupt();clearTimeout(timer);timer=null;
+    await transact(async()=>{
+      check(bound);if(previewDeleteBatch(options).hash!==preview.hash)throw new Error('删除期间档案已变化');
+      const identities=personaRebuildIdentities(data.profiles,data.personaIdentities),protectedProfiles=data.profiles.filter(p=>p.manual||p.locked||p.protected||p.deleted);
+      const rewound=preview.saved?personaRebuildSeed(version.profiles,{replaceFrom:preview.startIndex},identities,mergePersonaProfiles):data.profiles;
+      const profiles=[...rewound.filter(p=>!protectedProfiles.some(old=>old.id===p.id)),...protectedProfiles].map(p=>applyPersonaCasting(p,data.castingOverrides));
+      const batches=data.batches.filter(b=>b.endIndex<preview.startIndex),archiveId=makeId('persona-batch-archive');
+      await bound.write(archiveId,{kind:'persona-batch-removal',state:clone(data)});check(bound);
+      await save({...data,profiles,batches,paused:true,startFloor:Math.min(data.startFloor,preview.startIndex),personaIdentities:identities,batchRemoval:{archiveId,startIndex:preview.startIndex,endIndex:preview.endIndex,hash:sha256([batches,personaRebuildLiveHash(profiles)])}},bound);paused=true;
+    });view={...view,status:'paused',message:`已撤下 #${preview.startIndex}–${preview.endIndex} 的累积人设批次；手工档案保留，自动接续已暂停，可恢复归档`};emit();await mirrorAfterEdit();
+  }
+  async function restorePersonaBatch(){
+    check();if(job||personaManualUnfinished(data.manualPlan))throw new Error('请先结束当前人设任务');const bound=currentWorkspace;
+    await transact(async()=>{check(bound);const removal=data.batchRemoval;if(!removal)throw new Error('没有可恢复的删除归档');if(removal.hash!==sha256([data.batches,personaRebuildLiveHash(data.profiles)]))throw new Error('删除后已有新档案或批次，不能覆盖；本聊天的本地删除归档仍保留');const archive=await bound.read(removal.archiveId,null);check(bound);if(!archive?.state?.profiles)throw new Error('删除归档缺失，当前档案保留');await save({...data,profiles:archive.state.profiles.map(p=>applyPersonaCasting(p,data.castingOverrides)),batches:archive.state.batches,batchRemoval:null,paused:true},bound);paused=true;});await mirrorAfterEdit();
+  }
+  async function previewReview(options){
+    check();const bound=currentWorkspace,lastIndex=await historyTail();check(bound);
+    const preview=await previewPersonaRefinement(options,{profiles:data.profiles,lastIndex,readRange,inputLimit:settings().personaReviewInputUnits});check(bound);return preview;
+  }
+  async function startReview(options){
+    check();const bound=currentWorkspace,preview=await previewReview(options);check(bound);
+    if(preview.previewHash!==options.previewHash)throw new Error('精修范围或档案已变，请重新预览');
+    if(['running','paused','ready','failed'].includes(data.refinement?.manualPlan?.status))throw new Error('请先完成或删除当前精修计划');
+    const {plan,queue}=startPersonaRefinement(preview);
+    await transact(()=>{check(bound);const s=data.refinement??{};if(['running','paused','ready','failed'].includes(s.manualPlan?.status)||sha256(data.profiles.find(p=>p.id===preview.profileId))!==preview.profileHash)throw new Error('档案或精修计划刚有变化，请重新预览');return save({...data,refinement:{...s,manualPlan:plan,archives:[...(s.archives??[]),...(s.manualPlan?[s.manualPlan]:[])].slice(-100),queue:[...(s.queue??[]).filter(t=>!t.manualPlanId),...queue],status:'waiting',message:'手动精修已排队；候选完成后确认应用',revision:(s.revision??0)+1}},bound);});refinement.wake();return plan;
+  }
+  async function manageReview(action,id){
+    check();if(!['pause','resume','retry','delete','discard'].includes(action))throw new Error('未知精修批次操作');
+    const bound=currentWorkspace;await refinement.interrupt();check(bound);
+    if(action==='retry'||action==='resume'){await refinement.retry(id);return;}
+    await transact(async()=>{
+      check(bound);const s=data.refinement??{},plan=s.manualPlan;if(!plan)throw new Error('还没有手动精修计划');
+      if(action==='pause'){if(['applied','discarded','withdrawn','ready'].includes(plan.status))throw new Error('这组精修没有正在运行的批次');await save({...data,refinement:{...s,manualPlan:{...plan,status:'paused'},status:'paused',message:'精修已暂停，已保存候选保留',revision:(s.revision??0)+1}},bound);return;}
+      if(plan.status==='applied'){
+        if(action!=='discard')throw new Error('已应用精修需整组撤回，不能只删一条历史伪装撤销');
+        const current=data.profiles.find(p=>p.id===plan.profileId);if(current?.versionId!==plan.appliedVersionId)throw new Error('精修后档案已有新版本，不能覆盖；旧候选仍可查看');
+        const version=await bound.read(plan.appliedVersionId,null);check(bound);const prior=version?.profiles?.find(p=>p.id===plan.profileId);if(!prior)throw new Error('精修前恢复点缺失，当前档案保留');
+        await save({...data,profiles:data.profiles.map(p=>p.id===plan.profileId?applyPersonaCasting(prior,data.castingOverrides):p),refinement:{...s,manualPlan:{...plan,status:'withdrawn'},status:'withdrawn',message:'已撤回这组精修并恢复之前档案；批次记录保留',revision:(s.revision??0)+1}},bound);return;
+      }
+      if(action==='delete'&&!plan.items.some(i=>i.id===id))throw new Error('精修批次不存在');
+      const items=plan.items.map(item=>action==='discard'||item.id===id?{...item,status:'deleted'}:item),discarded=action==='discard',complete=items.every(i=>['saved','deleted'].includes(i.status));
+      const next={...plan,items,status:discarded?'discarded':complete?'ready':'paused'};
+      await save({...data,refinement:{...s,manualPlan:next,queue:(s.queue??[]).filter(t=>t.manualPlanId!==plan.id||!discarded&&t.id!==id),status:next.status,message:discarded?'精修计划已归档；正式档案未改变':'本批候选已撤下；其他候选保留，正式档案未改变',revision:(s.revision??0)+1}},bound);
+    });if(action==='discard')await mirrorAfterEdit();
+  }
+  async function applyReview(){
+    check();const bound=currentWorkspace,s=data.refinement,plan=s?.manualPlan;
+    if(!plan||plan.status!=='ready')throw new Error('请先完成或删除未完成的精修批次');
+    if(plan.historicalOnly)throw new Error(`本计划只核对早期范围，不能覆盖依据至 #${plan.through} 的当前档案；请查看Markdown结果，当前态修复需核对到已有最新依据`);
+    const prior=data.profiles.find(p=>p.id===plan.profileId&&!p.deleted);
+    if(!prior||sha256(prior)!==plan.profileHash)throw new Error('档案已改变，旧精修候选不能覆盖');
+    const items=plan.items.filter(i=>i.status==='saved');if(!items.length)throw new Error('没有可应用的候选');
+    if(Math.max(...items.map(i=>i.endIndex))<plan.through)throw new Error('最新依据所在批次已删除；早期候选不能倒退当前档案');
+    for(const item of items){const source=await readRange(item);check(bound);if(sha256(source.messages)!==item.sourceHash)throw new Error(`第 #${item.startIndex}–${item.endIndex} 楼已改变，请重新核对`);}
+    await transact(async()=>{
+      check(bound);if(data.refinement?.manualPlan?.id!==plan.id||sha256(data.refinement.manualPlan)!==sha256(plan)||sha256(data.profiles.find(p=>p.id===prior.id))!==plan.profileHash)throw new Error('精修期间档案或计划已改变');
+      const updates=new Map(),suggestions=new Map(),focus=new Map();
+      for(const item of items){for(const q of item.patch?.focus??[])focus.set(JSON.stringify([q.floor,q.quote]),q);for(const p of item.patch?.suggestions??[])suggestions.set(p.key,p);for(const p of item.patch?.updates??[]){if(updates.has(p.key)&&updates.get(p.key).text!==p.text)throw new Error('不同批次对同一片段给出了不同修改；请核对Markdown并撤下不适用的候选');updates.set(p.key,p);}}
+      if([...updates.keys()].some(key=>suggestions.has(key)))throw new Error('候选对同一片段同时建议修改和移入历史，请先核对');
+      const parts=clone(prior.composition.parts),changes=[];let notes=prior.composition.notes;
+      for(const patch of updates.values()){if(patch.key==='review-current-notes'){if(sha256(notes)!==patch.partHash)throw new Error('当前补充已改变，候选未应用');changes.push({title:'当前补充',before:notes,after:patch.text,sourceFloors:[patch.evidence.floor]});notes=patch.text;continue;}const part=parts.find(p=>p.key===patch.key);if(!part||sha256(part)!==patch.partHash)throw new Error('原片段已改变，候选未应用');changes.push({title:part.title,before:part.text,after:patch.text,sourceFloors:[patch.evidence.floor]});part.text=patch.text+(/\n$/.test(part.original)&&!patch.text.endsWith('\n')?'\n':'');part.sourceFloors=[patch.evidence.floor];}
+      const versionId=makeId('persona-review-version');await bound.write(versionId,{kind:'persona-refinement',profiles:data.profiles});check(bound);
+      const composition={...prior.composition,parts,notes,changes,reviewFocus:[...focus.values()].sort((a,b)=>b.floor-a.floor).slice(0,3)};
+      const profile={...prior,composition,text:personaCompositionText(composition,{hasSources:Boolean(prior.bindings?.length)}),reviewSuggestions:[...suggestions.values()],reviewScope:{requestedRange:[plan.startIndex,plan.endIndex],reviewedRanges:items.map(i=>[i.startIndex,i.endIndex]),deletedBatches:plan.items.filter(i=>i.status==='deleted').map(i=>[i.startIndex,i.endIndex])},versionId};
+      await save({...data,profiles:data.profiles.map(p=>p.id===profile.id?profile:p),refinement:{...data.refinement,manualPlan:{...plan,status:'applied',appliedVersionId:versionId},status:'saved',message:'手动精修已应用，旧版可恢复；历史整理建议仍需确认',revision:(data.refinement.revision??0)+1}},bound);
+    });await mirrorAfterEdit();
+  }
+  async function pause(){const bound=currentWorkspace;stop({preserveManual:disposed});if(!disposed&&bound?.isCurrent())await transact(()=>save({...data,paused:true,...(data.manualPlan?.status==='running'?{manualPlan:{...data.manualPlan,status:'paused'}}:{}),...(data.refinement?.manualPlan?.status==='running'?{refinement:{...data.refinement,manualPlan:{...data.refinement.manualPlan,status:'paused'},status:'paused',message:'人设任务已暂停；手动精修需明确继续',revision:(data.refinement.revision??0)+1}}:{})},bound));}
   async function resume(){check();if(personaManualUnfinished(data.manualPlan)){await transact(()=>save({...data,manualPlan:{...data.manualPlan,resumeAutomatic:true}}));return resumeManual();}await transact(()=>save({...data,paused:false,batches:data.batches.map(b=>b.status==='failed'?{...b,attempts:0,retryAt:now()}:b)}));paused=false;clearTimeout(timer);timer=null;historyAttempts=0;historyRetryAt=0;if(!ready){await load();check();}view={...view,status:'ready',message:'已启用当前聊天的人设后台更新'};emit();wake();}
   async function setStart(floor){check();if(!Number.isSafeInteger(floor)||floor<0)throw new Error('起算楼层必须是非负整数');if(floor===data.startFloor)return;if(job)throw new Error('请先暂停人设任务再更改起算楼层');await transact(()=>save({...data,startFloor:floor}));lastIndex=await historyTail();emit();wake();}
   async function syncMirror(cardName,bound=currentWorkspace){return transact(async()=>{
@@ -685,5 +773,5 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,coverage:{replacedEntries:finalized?.replacedEntries??0,replacedFragments:finalized?.replacedFragments??0,restoredFragments:finalized?.restoredFragments??0,owned:audit.filter(a=>a.status==='owned').length,shared:audit.filter(a=>a.status==='shared').length,unresolved:audit.filter(a=>['unresolved','unsupported'].includes(a.status)).length},profiles:selected.map(p=>({id:p.id,name:p.name,through:p.through,chars:p.text.length,mode:used.has(p.id)?'replacement':'supplement'})),text:selected.map(p=>`${p.name}：\n${p.text}`).join('\n\n')}};emit();
     return clone(view.lastInjection);
   }
-  return {load,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,setPartHistorical,bind,merge,undo,add,profiles,inject,syncMirror,interruptReview:()=>refinement.interrupt(),retryReview:()=>refinement.retry(),processReview:()=>refinement.process(),export:()=>clone(data),async dispose(){disposed=true;refinement.dispose();stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};
+  return {load,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,setPartHistorical,bind,merge,undo,add,profiles,inject,syncMirror,previewDeleteBatch,deletePersonaBatch,restorePersonaBatch,previewReview,startReview,manageReview,applyReview,reviewMarkdown:()=>personaRefinementMarkdown(data.refinement),interruptReview:()=>refinement.interrupt(),retryReview:()=>refinement.retry(),processReview:()=>refinement.process(),export:()=>clone(data),async dispose(){disposed=true;refinement.dispose();stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};
 }

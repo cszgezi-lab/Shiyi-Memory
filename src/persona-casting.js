@@ -6,6 +6,18 @@ export const PERSONA_CASTING_RULE='可选casting={gender:unknown/female/male/non
 export function personaCasting(value={}){
   return {gender:Object.hasOwn(PERSONA_GENDERS,value.gender)?value.gender:'unknown',role:Object.hasOwn(PERSONA_ROLES,value.role)?value.role:'unknown',playerControlled:value.playerControlled===true,manual:{...value.manual}};
 }
+export function personaAttentionWeight(value){const c=personaCasting(value);return c.playerControlled?1:({lead:4,core:3,support:2,unknown:2,guest:1}[c.role]);}
+// Allocate supplemental memory rows, not story truth. Every represented person
+// receives one before weighted extra slots; raw source and baseline are intact.
+export function weightedPersonaMaterials(rows,profiles,limit=24){
+  const casts=new Map(profiles.map(p=>[foldName(p.name),p.casting])),groups=new Map();
+  for(const row of [...rows].sort((a,b)=>Math.max(...b.floors)-Math.max(...a.floors))){const key=foldName(row.name);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(row);}
+  const names=[...groups.keys()].sort((a,b)=>personaAttentionWeight(casts.get(b))-personaAttentionWeight(casts.get(a))),out=[];
+  for(const key of names)out.push(groups.get(key).shift());
+  const max=Math.max(limit,names.length);
+  while(out.length<max&&names.some(key=>groups.get(key).length))for(const key of names)for(let n=0;n<personaAttentionWeight(casts.get(key))&&groups.get(key).length&&out.length<max;n++)out.push(groups.get(key).shift());
+  return out;
+}
 export function editPersonaCasting(prior,patch){
   const next=personaCasting(prior);
   for(const key of ['gender','role','playerControlled'])if(Object.hasOwn(patch??{},key)){

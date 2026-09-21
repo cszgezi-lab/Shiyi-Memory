@@ -2,6 +2,7 @@ import {esc,field,setting} from '../src/product-settings-ui.js';
 import {DYNAMIC_PERSONA_PROMPT,currentPersonaProfiles} from '../src/dynamic-persona.js';
 import {PERSONA_SOURCE_LABELS,PERSONA_SOURCE_REASONS} from '../src/persona-source-index.js';
 import {PERSONA_STEPS,DIAGNOSTIC_REASONS} from '../src/diagnostics.js';
+import {personaRefinementHTML,mountPersonaRefinement} from './persona-refinement-view.js';
 export function personaSourceDetails(p,guide,sources){
   const bindings=[...new Map((p.bindings??[]).map(b=>[JSON.stringify([b.book,b.uid]),{book:b.book,title:b.originalName??b.name}])).values()];
   // The panel must explain itself. A bare "0 个条目" left the user unable to tell
@@ -43,7 +44,7 @@ ${field('当前聊天自动起算楼层','<input data-persona-start type="number
 <details class="sy-card" data-persona-settings><summary>共用预设与请求预算</summary>
 ${setting('dynamicPersonaMvuMode')}${setting('dynamicPersonaInputUnits')}${setting('dynamicPersonaOutputTokens')}${setting('dynamicPersonaDeadlineMs')}${field('发给人设模型的指导词',`<textarea rows="12" data-persona-prompt>${esc(DYNAMIC_PERSONA_PROMPT)}</textarea>`)}<div class="sy-actions"><button type="button" data-persona-budget-save>保存预设与预算</button><button type="button" data-persona-default>恢复内置预设</button></div></details>
 <div class="sy-actions"><button type="button" data-persona-worldbook-sync>同步世界书</button></div>
-<details class="sy-card" data-persona-refinement-settings><summary>按角色辅助精修（可选）</summary><p class="sy-help">每批最多一个角色；主角优先，玩家角色默认跳过。关键原话核对后前置，历史整理建议需确认。独立连接在设置 → API 中配置。</p>${setting('personaReviewEnabled')}${setting('personaReviewCooldownFloors')}<details><summary>精修预算</summary>${setting('personaReviewInputUnits')}${setting('personaReviewOutputTokens')}${setting('personaReviewDeadlineMs')}</details><button type="button" data-persona-refinement-save>保存精修设置</button><p data-persona-refinement-status role="status"></p></details>
+${personaRefinementHTML()}
 <p class="sy-help" data-persona-worldbook-read></p><p class="sy-help" data-persona-worldbook></p>
 <details class="sy-card" data-persona-source-audit><summary>原书条目识别结果（不是已替换清单）</summary><div data-persona-source-audit-list></div></details>
 <details class="sy-card"><summary>本轮动态人设注入</summary><p data-persona-injected-info></p><div class="sy-packet" data-persona-injected-text></div></details>
@@ -53,13 +54,13 @@ ${setting('dynamicPersonaMvuMode')}${setting('dynamicPersonaInputUnits')}${setti
 export function mountDynamicPersona({panel,app,run,host=globalThis}){
   const $=s=>panel.querySelector?.(s),root=$('[data-view="dynamic-persona"]'),drafts=new Map();let stamp='',scope='',profilePage=0,startDirty=false,promptDirty=false,manualDirty=false,manualPage=0,manualStamp='',previewStamp='',auditStamp='';
   if(!root)return {paint(){},focus(){},select(){},tab(){},dispose(){}};
+  const refinementView=mountPersonaRefinement({panel,app,run,host});
   $('[data-persona-source-audit]')?.addEventListener('toggle',()=>paint(app.state));
   const bind=(s,fn)=>$(s)?.addEventListener('click',e=>run(fn,{name:'dynamic-persona',button:e.currentTarget}));
   $('[data-persona-start]')?.addEventListener('input',()=>{startDirty=true;});$('[data-persona-prompt]')?.addEventListener('input',()=>{promptDirty=true;});
   // Only this form edits the cadence; summary cards read the saved values.
   const save=async()=>{const patch={dynamicPersonaEvery:Number($('[data-setting="dynamicPersonaEvery"]')?.value),dynamicPersonaKeepRecent:Number($('[data-setting="dynamicPersonaKeepRecent"]')?.value)};await app.saveSettings(patch);await app.setDynamicPersonaStart(Number($('[data-persona-start]').value));startDirty=false;};
   bind('[data-persona-save]',save);
-  bind('[data-persona-refinement-save]',async()=>{const patch={personaReviewEnabled:$('[data-setting="personaReviewEnabled"]').checked};for(const key of ['personaReviewCooldownFloors','personaReviewInputUnits','personaReviewOutputTokens','personaReviewDeadlineMs'])patch[key]=Number($('[data-setting="'+key+'"]').value);await app.saveSettings(patch);});
   bind('[data-persona-default]',()=>{$('[data-persona-prompt]').value=DYNAMIC_PERSONA_PROMPT;promptDirty=true;});
   bind('[data-persona-budget-save]',async()=>{const patch={dynamicPersonaPrompt:$('[data-persona-prompt]').value,dynamicPersonaMvuMode:$('[data-setting="dynamicPersonaMvuMode"]').value};for(const key of ['dynamicPersonaInputUnits','dynamicPersonaOutputTokens','dynamicPersonaDeadlineMs'])patch[key]=Number($('[data-setting="'+key+'"]').value);await app.saveSettings(patch);promptDirty=false;});
   const manualOptions=()=>({startIndex:Number($('[data-persona-manual-start]').value),endIndex:Number($('[data-persona-manual-end]').value),batchSize:Number($('[data-persona-manual-size]').value),handoff:$('[data-persona-manual-handoff]').checked});
@@ -88,7 +89,8 @@ export function mountDynamicPersona({panel,app,run,host=globalThis}){
     const d=s.dynamicPersona??{profiles:[],batches:[]},nextScope=JSON.stringify(s.core?.scope);
     if(scope!==nextScope){scope=nextScope;stamp=manualStamp=previewStamp='';startDirty=promptDirty=manualDirty=false;profilePage=manualPage=0;drafts.clear();$('[data-persona-profiles]').replaceChildren();$('[data-persona-manual-start]').value=1;$('[data-persona-manual-end]').value='';$('[data-persona-manual-size]').value=20;$('[data-persona-manual-handoff]').checked=true;clearPreview();}
     $('[data-persona-status]').textContent=`${s.settings.dynamicPersonaEnabled?'已启用':'未启用'} · ${d.message??'打开聊天后读取档案'}`;
-    $('[data-persona-refinement-status]').textContent=d.reviewError??d.refinement?.message??'默认关闭，不会额外调用模型。';
+    $('[data-persona-refinement-status]').textContent=d.reviewError??d.refinement?.message??'只在手动开始后调用精修模型。';
+    refinementView.paint(s);
     $('[data-persona-failure]').hidden=!d.failureDetails;
     if(d.failureDetails){const f=d.failureDetails;$('[data-persona-failure-text]').textContent=[PERSONA_STEPS[f.personaStep],f.code,DIAGNOSTIC_REASONS[f.reason],f.errorType,f.modelRequested===false?'本次尚未请求模型':f.modelRequested?'本次已请求模型':null,...(f.stackFrames??[]),d.failureStorage?'失败进度另未保存；原始错误仍保留':null].filter(Boolean).join(' · ');}
     if(!startDirty)$('[data-persona-start]').value=d.startFloor??1;if(!promptDirty)$('[data-persona-prompt]').value=s.settings.dynamicPersonaPrompt||DYNAMIC_PERSONA_PROMPT;
