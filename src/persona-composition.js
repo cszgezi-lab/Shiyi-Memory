@@ -47,7 +47,11 @@ function personaSpeechLead(lead,speaker,identity){
   if(owns(header))return true;
   const target=identity?.resolve(speaker),labels=[speaker,...(target?[target.name,...target.aliases]:[])].map(foldName);
   const spoken=/^\s*(?:(?:对|向)[\p{L}\p{N}· ]{1,40})?\s*(?:(?:轻声|低声|小声|大声|柔声|笑着|认真地|温和地)\s*)?(?:说道|说|问道|问|回答|答道|回应|喊道|喊|答|道|补充(?:说|道)?)$/u;
-  return labels.some(label=>header.startsWith(label)&&owns(label)&&spoken.test(header.slice(label.length)));
+  // An explicit audience modifier does not change the grammatical speaker.
+  // Strip only this bounded form after a verified name; the complete remainder
+  // must still be a speech clause (not hearing, quoting, imagining or thinking).
+  const audience=/^\s*(?:(?:当[着著][\p{L}\p{N}· ]{1,24}的面|在[\p{L}\p{N}· ]{1,24}面前|当众|私下|公开|当面)\s*)/u;
+  return labels.some(label=>header.startsWith(label)&&owns(label)&&spoken.test(header.slice(label.length).replace(audience,'')));
 }
 
 /** Local exact utterance attribution, reusable without a model call. Identity
