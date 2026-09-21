@@ -1722,7 +1722,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     startDynamicPersonaManual:async options=>logged('persona',async run=>{if(!enabled)throw new Error('插件已暂停，请先启用插件，再开始手动人设补建');await dynamicPersona.load();await dynamicPersona.createManual(options);await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();}),
     continueDynamicPersonaManual:async()=>logged('persona',async run=>{if(!enabled)throw new Error('插件已暂停，请先启用插件，再继续手动人设补建');await dynamicPersona.load();if(['paused','running','failed'].includes(dynamicPersona.state.manualPlan?.status))await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();}),
     pauseDynamicPersonaManual:()=>logged('persona',()=>dynamicPersona.pauseManual()),
-    discardDynamicPersonaManual:()=>logged('persona',()=>dynamicPersona.discardManual()),
+    discardDynamicPersonaManual:options=>logged('persona',()=>dynamicPersona.discardManual(options)),
     inspectDynamicPersonaWorldbook:()=>logged('persona',()=>dynamicPersona.inspectWorldbook()),
     retryDynamicPersonaReview:()=>logged('persona',()=>dynamicPersona.retryReview()),
     previewDeleteDynamicPersonaBatch:options=>dynamicPersona.previewDeleteBatch(options),

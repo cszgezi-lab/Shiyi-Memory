@@ -82,6 +82,32 @@ export function upstreamErrorHint(value){
   if(/\b(?:ECONNRESET|connection reset|unexpected EOF|connection closed|socket hang up)\b|上游连接.{0,4}(?:断开|关闭|重置)/i.test(text))return 'connection_reset';
   return 'unknown';
 }
+// Read only the first message line inside a reserved host error envelope.
+// Never search a generated answer, an endpoint, or arbitrary follow-up advice.
+export const NATIVE_NETWORK_MESSAGES=Object.freeze({
+  'network.timeout':'TT 原生请求等待目标服务超时',
+  'network.connect_failed':'TT 原生请求未能连接目标服务',
+  'network.proxy_failed':'TT 原生请求的代理连接失败',
+  'network.dns_failed':'TT 原生请求无法解析目标服务地址',
+  'network.tls_failed':'TT 原生请求的安全连接未建立',
+  'network.body_interrupted':'TT 原生响应在读取时中断',
+  'network.request_failed':'TT 原生网络请求失败，宿主未提供更细原因',
+});
+export function nativeStreamErrorCode(message){
+  const lines=String(message??'').slice(0,4096).split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  if(/^\[[^\]\r\n]{1,40}\]$/.test(lines[0]??''))lines.shift();
+  const line=lines[0]??'';
+  const prefixes=[
+    ['network.timeout',/^(?:请求超时：|請求逾時：|The request timed out before the target service responded\.)/],
+    ['network.connect_failed',/^(?:连接目标服务失败：|連線到目標服務失敗：|Could not connect to the target service\.)/],
+    ['network.proxy_failed',/^(?:代理连接失败：|代理連線失敗：|Could not connect through the configured proxy\.)/],
+    ['network.dns_failed',/^(?:找不到目标服务地址：|找不到目標服務位址：|Could not find the target service address\.)/],
+    ['network.tls_failed',/^(?:安全连接失败：|安全連線失敗：|Could not establish a secure connection\.)/],
+    ['network.body_interrupted',/^(?:响应读取中断：|回應讀取中斷：|The response was interrupted while it was being read\.)/],
+    ['network.request_failed',/^(?:网络请求失败：|網路請求失敗：|Network request failed\.)/],
+  ];
+  return prefixes.find(([,pattern])=>pattern.test(line))?.[0];
+}
 export const DIAGNOSTIC_ACTIONS=Object.freeze({editDocumentChunk:'修改资料片段',catchUpAutomatic:'补采未记录楼层',inspectAutomaticProgress:'检查记录覆盖',open:'打开聊天',refresh:'刷新记忆',saveSettings:'保存设置',saveApi:'保存 API',forgetKey:'清除密钥',editRecord:'修改记忆',editPersonProfile:'修改人物档案',deleteRecord:'删除记忆',deleteRecords:'批量删除记忆',remember:'新增记忆',manageBatches:'管理总结批次',deleteBatch:'删除批次',regenerateBatch:'重新总结',retryBatch:'重试总结',retryIncompleteBatches:'重试未完成批次',saveModule:'保存扩展模块',editModuleRecord:'修改扩展记忆',rememberModule:'新增扩展记忆',importModules:'导入模块',exportModules:'导出模块',inspectMvu:'读取 MVU',syncModules:'同步 MVU',applyProposal:'应用助手方案',undoSettings:'撤销配置',saveDictionaryEntry:'修改字典',exportBackup:'导出聊天备份',exportGlobalBackup:'导出全局备份',setAutoStartFloor:'设置自动总结起点',setAutomatic:'配置自动总结',processAutomatic:'执行自动总结',setDraft:'保存助手草稿',newConversation:'新建助手对话',selectConversation:'切换助手对话',deleteConversation:'删除助手对话',hideRecord:'排除记忆',restoreHidden:'恢复被排除记忆',removeDocument:'删除知识库资料',updateDocument:'更新知识库资料',stop:'停止任务',disable:'暂停插件'});
 const files=new Set(['provider-scheduler.js','summary-planner.js','request-deadline.js','provider.js','summary-stages.js','summary-context.js','summary-reference-repair.js','summary-engine.js','summary-recovery.js','contracts.js','repository.js','reliable-storage.js','host-adapter.js','dynamic-persona.js','dynamic-persona-worldbook.js','dynamic-persona-stage.js','product-application.js','product-workspace.js','product-network.js','product-shell-controller.js','product-host-adapters.js','product-view.js','product-runtime-log.js','product-model-list.js','product-vector-indexer.js','product-vector-cache.js','product-vector-storage.js','product-dictionary.js','product-event-merge.js','product-credentials.js','product-global-settings.js','product-module-controller.js','diagnostics.js']);
 // JavaException is the WebView wrapper around a throwable raised inside an
@@ -106,6 +132,7 @@ export const QUALITY_REASONS=Object.freeze(['证据片段不存在或已变化',
 export function diagnosticRequestId(){return `req-${Date.now().toString(36)}-${(++sequence).toString(36)}`;}
 export function safeDiagnosticFields(value={}){
   const result={};
+  if(Object.hasOwn(NATIVE_NETWORK_MESSAGES,value?.nativeErrorCode))result.nativeErrorCode=value.nativeErrorCode;
   if(Object.hasOwn(PERSONA_STEPS,value?.personaStep))result.personaStep=value.personaStep;
   if(['tail','before'].includes(value?.historyStep))result.historyStep=value.historyStep;
   for(const key of ['historyReadAttempts','lastIndex','keepRecent'])if(Number.isSafeInteger(value?.[key])&&value[key]>=0)result[key]=value[key];

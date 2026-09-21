@@ -1,6 +1,6 @@
 import { humanValidationIssueText } from './validation-diagnostics.js';
 import {PERSONA_ISSUES} from './persona-validation.js';
-import { upstreamErrorCode,upstreamErrorHint,PERSONA_STEPS,DIAGNOSTIC_REASONS } from './diagnostics.js';
+import { upstreamErrorCode,upstreamErrorHint,PERSONA_STEPS,DIAGNOSTIC_REASONS,NATIVE_NETWORK_MESSAGES } from './diagnostics.js';
 
 const NETWORK = {
   'network.timeout':'请求超时，请重试或调整请求超时。',
@@ -89,7 +89,10 @@ export function productFailure(error) {
   if(code==='INPUT_BUDGET_EXCEEDED'&&Number.isSafeInteger(error?.details?.inputUnits)&&Number.isSafeInteger(error?.details?.inputLimit))message=`本次模型输入估算 ${error.details.inputUnits}，超过设置的 ${error.details.inputLimit}；该请求尚未发送。已返回的结果保留，可调整输入预算后继续。`;
   if(error?.details?.reason==='stream_incomplete')message='模型流式传输中断，未收到完整结束标记；半份结果没有保存。已完成阶段保留，可继续未完成任务。';
   if(error?.details?.reason==='stream_invalid')message='服务返回的流式格式不兼容，本次结果未保存。可在 API → 请求设置选择“兼容非流式”后重试；不会自动追加一次收费请求。';
-  if(error?.details?.reason==='stream_error'&&!status&&error?.details?.upstreamCode!=='insufficient_quota')message='模型服务在流式返回途中报错，本批未保存。已完成阶段保留；具体服务错误分类见运行日志。';
+  if(error?.details?.reason==='stream_error'&&!status&&error?.details?.upstreamCode!=='insufficient_quota'&&!message){
+    const cause=NATIVE_NETWORK_MESSAGES[error.details.nativeErrorCode]??({timeout:'服务报文明确提示上游等待超时',connection_reset:'服务报文明确提示上游连接中断',overloaded:'服务报文明确提示模型繁忙'})[error.details.upstreamHint];
+    message=cause?`${cause}；本批未得到可用回答。旧档案与成功候选保留，不必重做成功批次。`:'TT 或模型服务返回了流式错误，但未提供可识别原因；本批未保存，旧档案与成功候选保留。不能据此认定额度不足或配置错误。';
+  }
   if((error?.details?.purpose==='embeddings'||error?.details?.modelRole==='embedding')&&message){
     message=message.replace('在批次管理中继续未完成任务即可，不必重新总结成功批次。','').replace('已保存批次保留，','');
     message+= ' 故事记忆已保存的部分不受影响；请在批次或召回页补建未完成索引，只调用向量模型，不重新总结。';

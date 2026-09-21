@@ -424,10 +424,12 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     view={...view,status:'running',message:'手动人设已排队，后台补建完成前继续使用原档案'};emit();wake();return {message:view.message,level:'info'};
   }
   async function pauseManual(){const bound=currentWorkspace;stop();check(bound);await transact(()=>save({...data,paused:true,...(personaManualUnfinished(data.manualPlan)?{manualPlan:{...data.manualPlan,status:'paused'}}:{})},bound));}
-  async function discardManual(){
+  async function discardManual(options={}){
     check();if(job)throw new Error('请先停止手动补建，待当前请求退出后再放弃');
     if(!personaManualUnfinished(data.manualPlan))return {message:'没有待放弃的手动计划'};
-    const bound=currentWorkspace;await transact(async()=>{check(bound);await bound.write(`persona-manual-archive-${data.manualPlan.id}`,data.manualPlan);check(bound);await save({...data,paused:true,manualPlan:{...data.manualPlan,status:'discarded',workingProfiles:[]}},bound);});paused=true;view={...view,status:'paused',message:'已放弃本次候选计划，原档案与主总结保留'};emit();
+    const bound=currentWorkspace,expected=options.planId??data.manualPlan.id;
+    if(data.manualPlan.id!==expected)throw new Error('候选计划已变化，请重新选择');
+    await transact(async()=>{check(bound);if(data.manualPlan?.id!==expected)throw new Error('候选计划已变化，请重新选择');await bound.write(`persona-manual-archive-${data.manualPlan.id}`,data.manualPlan);check(bound);await save({...data,paused:true,manualPlan:{...data.manualPlan,status:'discarded',workingProfiles:[]}},bound);});paused=true;view={...view,status:'paused',message:'已放弃本次候选计划，原档案与主总结保留'};emit();
   }
   function wake({resume=false}={}){
     if(resume)paused=false;
@@ -613,9 +615,11 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
   }
   function previewDeleteBatch(options){
     check();if(personaManualUnfinished(data.manualPlan))throw new Error('请先完成或放弃未完成的人设候选计划，再删除正式批次');
-    const batch=data.batches.find(b=>b.startIndex===options.startIndex&&b.endIndex===options.endIndex);
-    if(!batch)throw new Error('人设批次已变化，请刷新后重试');
-    const affected=data.batches.filter(b=>b.endIndex>=batch.startIndex),firstSaved=affected.filter(b=>b.status==='saved').sort((a,b)=>a.startIndex-b.startIndex)[0],preview={startIndex:batch.startIndex,endIndex:Math.max(...affected.map(b=>b.endIndex)),count:affected.length,saved:Boolean(firstSaved),versionId:firstSaved?.versionId,hash:sha256([data.batches,personaRebuildLiveHash(data.profiles)])};
+    const requests=options.batches??[options];if(!Array.isArray(requests)||!requests.length)throw new Error('请先选择要删除的人设批次');
+    const selected=[...new Set(requests.map(r=>data.batches.find(b=>b.startIndex===r?.startIndex&&b.endIndex===r?.endIndex&&(!Object.hasOwn(r,'versionId')||b.versionId===r.versionId)&&(!Object.hasOwn(r,'sourceHash')||b.sourceHash===r.sourceHash))))];
+    if(selected.includes(undefined))throw new Error('人设批次已变化，请刷新后重试');
+    selected.sort((a,b)=>a.startIndex-b.startIndex||a.endIndex-b.endIndex);const batch=selected[0];
+    const affected=data.batches.filter(b=>b.endIndex>=batch.startIndex),firstSaved=affected.filter(b=>b.status==='saved').sort((a,b)=>a.startIndex-b.startIndex)[0],preview={startIndex:batch.startIndex,endIndex:Math.max(...affected.map(b=>b.endIndex)),count:affected.length,selectedCount:selected.length,dependentCount:affected.length-selected.length,saved:Boolean(firstSaved),versionId:firstSaved?.versionId,hash:sha256([scopeKey,data.batches,personaRebuildLiveHash(data.profiles),selected.map(b=>[b.startIndex,b.endIndex])])};
     return preview;
   }
   async function deletePersonaBatch(options){
@@ -652,10 +656,10 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
   }
   async function manageReview(action,id){
     check();if(!['pause','resume','retry','delete','discard'].includes(action))throw new Error('未知精修批次操作');
-    const bound=currentWorkspace;await refinement.interrupt();check(bound);
+    const bound=currentWorkspace,expectedPlan=data.refinement?.manualPlan?.id;await refinement.interrupt();check(bound);
     if(action==='retry'||action==='resume'){await refinement.retry(id);return;}
     await transact(async()=>{
-      check(bound);const s=data.refinement??{},plan=s.manualPlan;if(!plan)throw new Error('还没有手动精修计划');
+      check(bound);const s=data.refinement??{},plan=s.manualPlan;if(!plan)throw new Error('还没有手动精修计划');if(plan.id!==expectedPlan)throw new Error('精修计划已切换，请重新选择');
       if(action==='pause'){if(['applied','discarded','withdrawn','ready'].includes(plan.status))throw new Error('这组精修没有正在运行的批次');await save({...data,refinement:{...s,manualPlan:{...plan,status:'paused'},status:'paused',message:'精修已暂停，已保存候选保留',revision:(s.revision??0)+1}},bound);return;}
       if(plan.status==='applied'){
         if(action!=='discard')throw new Error('已应用精修需整组撤回，不能只删一条历史伪装撤销');
@@ -663,10 +667,12 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
         const version=await bound.read(plan.appliedVersionId,null);check(bound);const prior=version?.profiles?.find(p=>p.id===plan.profileId);if(!prior)throw new Error('精修前恢复点缺失，当前档案保留');
         await save({...data,profiles:data.profiles.map(p=>p.id===plan.profileId?applyPersonaCasting(prior,data.castingOverrides):p),refinement:{...s,manualPlan:{...plan,status:'withdrawn'},status:'withdrawn',message:'已撤回这组精修并恢复之前档案；批次记录保留',revision:(s.revision??0)+1}},bound);return;
       }
-      if(action==='delete'&&!plan.items.some(i=>i.id===id))throw new Error('精修批次不存在');
-      const items=plan.items.map(item=>action==='discard'||item.id===id?{...item,status:'deleted'}:item),discarded=action==='discard',complete=items.every(i=>['saved','deleted'].includes(i.status));
+      const ids=new Set(Array.isArray(id)?id:[id]);
+      if(action==='delete'&&(!ids.size||[...ids].some(key=>!plan.items.some(i=>i.id===key&&i.status!=='deleted'))))throw new Error('精修批次不存在或已删除，请重新选择');
+      if(['discarded','withdrawn'].includes(plan.status))throw new Error('这组精修已结束，不能删除候选');
+      const items=plan.items.map(item=>action==='discard'||ids.has(item.id)?{...item,status:'deleted'}:item),discarded=action==='discard',complete=items.every(i=>['saved','deleted'].includes(i.status));
       const next={...plan,items,status:discarded?'discarded':complete?'ready':'paused'};
-      await save({...data,refinement:{...s,manualPlan:next,queue:(s.queue??[]).filter(t=>t.manualPlanId!==plan.id||!discarded&&t.id!==id),status:next.status,message:discarded?'精修计划已归档；正式档案未改变':'本批候选已撤下；其他候选保留，正式档案未改变',revision:(s.revision??0)+1}},bound);
+      await save({...data,refinement:{...s,manualPlan:next,queue:(s.queue??[]).filter(t=>t.manualPlanId!==plan.id||!discarded&&!ids.has(t.id)),status:next.status,message:discarded?'精修计划已归档；正式档案未改变':'所选候选已撤下；其他候选保留，正式档案未改变',revision:(s.revision??0)+1}},bound);
     });if(action==='discard')await mirrorAfterEdit();
   }
   async function applyReview(){

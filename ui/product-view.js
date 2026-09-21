@@ -120,7 +120,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
       ${kind==='persona'?'<button type="button" data-persona-resume-auto hidden>继续自动</button>':''}
     </div>
     ${kind==='persona'?'<p class="sy-summary-settings sy-help" data-persona-task-status role="status" aria-live="polite"></p><p class="sy-help" data-persona-review-status hidden></p><button type="button" data-persona-review-retry hidden>恢复辅助精修</button>':''}
-    ${kind==='persona'?`<details class="sy-summary-settings" data-summary-persona-batches><summary>人设批次 <small data-persona-batch-count></small></summary><p class="sy-help">失败自动重试最多三次；继续未完成会接回原计划，已完成批次不重跑。候选只有整段完成后才应用。</p><div class="sy-actions"><button type="button" data-persona-resume-batches>继续未完成</button><button type="button" data-persona-pause-batches>暂停任务</button></div><div data-persona-batch-rows></div><div class="sy-actions"><button type="button" data-persona-batch-prev>上一页</button><span data-persona-batch-page></span><button type="button" data-persona-batch-next>下一页</button></div></details>`:''}
+    ${kind==='persona'?`<details class="sy-summary-settings" data-summary-persona-batches><summary>人设批次 <small data-persona-batch-count></small></summary><p class="sy-help">失败自动重试最多三次；成功批次不重跑。正式批次按累积依赖删除，确认时会列出受影响的后续范围；未完成候选只能整组撤下。</p><div class="sy-actions"><button type="button" data-persona-resume-batches>继续未完成</button><button type="button" data-persona-pause-batches>暂停任务</button></div><div class="sy-actions"><button type="button" data-persona-batch-prev>上一页</button><span data-persona-batch-page></span><button type="button" data-persona-batch-next>下一页</button></div><div class="sy-actions"><button type="button" data-persona-batch-select-page>选中本页</button><button type="button" data-persona-batch-clear>清空选择</button><button type="button" data-persona-batch-delete-selected>删除所选</button></div><p class="sy-help" data-persona-batch-selection role="status"></p><div data-persona-batch-rows></div></details>`:''}
     <p class="sy-help" data-summary-legend></p>
   </section>`;}).join('');
 }
@@ -147,7 +147,8 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
     legend:`实色=已总结 ${covered} 楼 · 红=缺口 ${missing} 楼 · 斜纹=按设置不记录 ${skipped} 楼 · 浅=保留最近/未到 ${pending} 楼`,
   };
 }
- let personaBatchPage=0,personaBatchScope='';
+ let personaBatchPage=0,personaBatchScope='',personaBatchItems=[];
+ const personaBatchSelection=new Set();
  function paintSummaryModules(s){
    const box=$('[data-summary-modules]');if(!box)return;
    const fallback={eligibleEnd:null,coveredRanges:[],missingRanges:[],coveredFloors:0,missingFloors:0};
@@ -172,7 +173,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
      if(node.querySelector?.('[data-summary-covered]'))node.querySelector('[data-summary-covered]').textContent=text.covered;
      if(node.querySelector?.('[data-summary-next]'))node.querySelector('[data-summary-next]').textContent=`${text.next} · 自动每 ${row.batchSize??'—'} 楼一次 · 保留最近 ${row.keepRecent??0} 楼`;
     if(row.kind==='persona'){
-      const d=s.dynamicPersona??{},scope=JSON.stringify(s.core?.scope);if(scope!==personaBatchScope){personaBatchScope=scope;personaBatchPage=0;}
+      const d=s.dynamicPersona??{},scope=JSON.stringify(s.core?.scope);if(scope!==personaBatchScope){personaBatchScope=scope;personaBatchPage=0;personaBatchSelection.clear();}
       const manual=d.manualPlan,unfinished=['running','paused','failed'].includes(manual?.status);
       if(unfinished){
         const done=manual.items.filter(b=>b.status==='saved').length,total=manual.items.length;
@@ -181,12 +182,17 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
         node.querySelector('[data-summary-covered]').textContent=`本次重建 ${done}/${total} 批 · #${manual.startIndex}–${manual.endIndex}`;
         node.querySelector('[data-summary-next]').textContent=`${text.covered.replace('已总结','仍生效')}；候选全部成功后替换`;
       }
-      const items=[...(unfinished?manual.items.map(b=>({...b,candidate:true})):[]),...(d.batches??[])].sort((a,b)=>b.startIndex-a.startIndex);
+      const items=[...(unfinished?manual.items.map(b=>({...b,candidate:true})):[]),...(d.batches??[])].sort((a,b)=>b.startIndex-a.startIndex).map(b=>({...b,selectionKey:JSON.stringify([b.candidate?manual.id:'formal',b.startIndex,b.endIndex,b.versionId??'',b.sourceHash??'']),selectable:!unfinished||Boolean(b.candidate)}));
+      personaBatchItems=items;for(const key of personaBatchSelection)if(!items.some(b=>b.selectionKey===key&&b.selectable))personaBatchSelection.delete(key);
       const pages=Math.max(1,Math.ceil(items.length/10));personaBatchPage=Math.min(personaBatchPage,pages-1);
       node.querySelector('[data-persona-batch-count]').textContent=`${items.length} 批${d.busy?' · 处理中':unfinished?' · 有未完成计划':''}`;
       const detail=node.querySelector('[data-summary-persona-batches]');
-      if(detail.open)node.querySelector('[data-persona-batch-rows]').innerHTML=(d.batchRemoval?'<button type="button" data-persona-batch-action="restore">恢复上次删除的批次</button>':'')+(items.slice(personaBatchPage*10,personaBatchPage*10+10).map(b=>`<div class="sy-card"><p class="sy-help">#${b.startIndex}–${b.endIndex} · ${b.status==='saved'?(b.candidate?'候选已保存':'已应用'):b.status==='failed'?(b.retryAt>Date.now()?`等待自动重试 ${b.attempts}/3`:'未完成，可继续'):b.status==='running'?'处理中':'等待处理'}${b.message?`<br>${esc(b.message)}`:''}</p><div class="sy-actions">${b.status==='failed'?'<button type="button" data-persona-batch-action="retry">重试未完成</button>':''}<button type="button" data-persona-batch-action="${b.candidate?'discard':'delete'}" data-start="${b.startIndex}" data-end="${b.endIndex}" ${d.busy?'disabled':''}>${b.candidate?'删除候选计划':'删除此批及后续'}</button></div></div>`).join('')||'<p class="sy-help">尚无人设批次。</p>');
-      node.querySelector('[data-persona-batch-page]').textContent=`${personaBatchPage+1}/${pages}`;
+      if(detail.open)node.querySelector('[data-persona-batch-rows]').innerHTML=(d.batchRemoval?`<button type="button" data-persona-batch-action="restore" ${d.busy||unfinished?'disabled':''}>恢复上次删除的批次</button>`:'')+(items.slice(personaBatchPage*10,personaBatchPage*10+10).map(b=>`<div class="sy-card"><label><input type="checkbox" data-persona-batch-select="${esc(b.selectionKey)}" ${personaBatchSelection.has(b.selectionKey)?'checked':''} ${d.busy||!b.selectable?'disabled':''}> 选择 #${b.startIndex}–${b.endIndex}${b.candidate?' 候选':''}</label><p class="sy-help">#${b.startIndex}–${b.endIndex} · ${b.status==='saved'?(b.candidate?'候选已保存':'已应用'):b.status==='failed'?(b.retryAt>Date.now()?`等待自动重试 ${b.attempts}/3`:'未完成，可继续'):b.status==='running'?'处理中':'等待处理'}${b.message?`<br>${esc(b.message)}`:''}</p><div class="sy-actions">${b.status==='failed'?'<button type="button" data-persona-batch-action="retry">重试未完成</button>':''}<button type="button" data-persona-batch-action="${b.candidate?'discard':'delete'}" data-key="${esc(b.selectionKey)}" ${d.busy||!b.selectable?'disabled':''}>${b.candidate?'删除候选计划':'删除此批及后续'}</button></div></div>`).join('')||'<p class="sy-help">尚无人设批次。</p>');
+      node.querySelector('[data-persona-batch-page]').textContent=`第 ${personaBatchPage+1}/${pages} 页 · 每页 10 批`;
+      node.querySelector('[data-persona-batch-selection]').textContent=`已选 ${personaBatchSelection.size} 批（跨页保留）${unfinished?'；正式批次需先完成或撤下候选计划。':''}`;
+      node.querySelector('[data-persona-batch-select-page]').disabled=Boolean(d.busy)||!items.slice(personaBatchPage*10,personaBatchPage*10+10).some(b=>b.selectable);
+      node.querySelector('[data-persona-batch-clear]').disabled=!personaBatchSelection.size;
+      node.querySelector('[data-persona-batch-delete-selected]').disabled=Boolean(d.busy)||!personaBatchSelection.size;
       node.querySelector('[data-persona-batch-prev]').disabled=personaBatchPage===0;
       node.querySelector('[data-persona-batch-next]').disabled=personaBatchPage===pages-1;
       node.querySelector('[data-persona-resume-batches]').disabled=Boolean(d.busy)||!unfinished&&!items.some(b=>b.status==='failed');
@@ -434,7 +440,29 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  $('[data-persona-pause-batches]')?.addEventListener('click',()=>run(()=>app.pauseDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-pause-batches]')}));
  $('[data-persona-resume-auto]')?.addEventListener('click',e=>run(()=>app.setFeature('persona',true),{name:'dynamic-persona',button:e.currentTarget}));
  $('[data-summary-persona-batches]')?.addEventListener('toggle',()=>paintSummaryModules(readViewState(app)));
- $('[data-persona-batch-rows]')?.addEventListener('click',e=>{const button=e.target.closest?.('[data-persona-batch-action]');if(!button)return;void run(async()=>{const action=button.dataset.personaBatchAction;if(action==='retry')return app.queueDynamicPersona();if(action==='restore'){if(await host.confirm?.('恢复上次删除归档？自动接续保持暂停；删除后的新修改不会被覆盖。'))return app.restoreDynamicPersonaBatch();return;}if(action==='discard'){if(await host.confirm?.('候选人设逐批累积，不能独立跳过中间一批。删除整个未完成候选计划并保留归档？正式档案不变。'))return app.discardDynamicPersonaManual();return;}const selected={startIndex:Number(button.dataset.start),endIndex:Number(button.dataset.end)},preview=await app.previewDeleteDynamicPersonaBatch(selected);if(await host.confirm?.(`撤下 #${preview.startIndex}–${preview.endIndex} 共 ${preview.count} 批累积人设？会保存归档并暂停自动补回；手工档案、主总结与原文保留。`))return app.deleteDynamicPersonaBatch({...selected,hash:preview.hash});},{name:'dynamic-persona',button});});
+ const checkPersonaBatchScope=scope=>{if(JSON.stringify(readViewState(app).core?.scope)!==scope)throw new Error('聊天已切换，未删除任何批次');};
+ const deletePersonaSelection=async keys=>{
+   const scope=JSON.stringify(readViewState(app).core?.scope),rows=keys.map(key=>personaBatchItems.find(b=>b.selectionKey===key&&b.selectable));
+   if(scope!==personaBatchScope)throw new Error('聊天已切换，请重新选择批次');
+   if(!rows.length||rows.some(b=>!b))throw new Error('批次已变化，请重新选择');
+   if(rows.some(b=>b.candidate)){
+     if(rows.some(b=>!b.candidate))throw new Error('候选与正式批次不能混选');
+     const plan=readViewState(app).dynamicPersona.manualPlan;
+     if(!plan||rows.some(b=>JSON.parse(b.selectionKey)[0]!==plan.id))throw new Error('候选计划已变化，请重新选择');
+     if(!await host.confirm?.(`已选 ${rows.length} 批候选。人设逐批累积，将撤下整个 #${plan.startIndex}–${plan.endIndex} 候选计划（${plan.items.length} 批），不能只跳过中间一批。保留归档，正式档案不变。继续？`))return;
+     checkPersonaBatchScope(scope);await app.discardDynamicPersonaManual({planId:plan.id});
+   }else{
+     const selected={batches:rows.map(b=>({startIndex:b.startIndex,endIndex:b.endIndex,versionId:b.versionId,sourceHash:b.sourceHash}))},preview=await app.previewDeleteDynamicPersonaBatch(selected);checkPersonaBatchScope(scope);
+     if(!await host.confirm?.(`已选 ${preview.selectedCount} 批，另有 ${preview.dependentCount} 批后续累积人设需一起撤下。实际删除 #${preview.startIndex}–${preview.endIndex} 共 ${preview.count} 批；保存归档并暂停自动补回，手工档案、主总结与原文保留。继续？`))return;
+     checkPersonaBatchScope(scope);await app.deleteDynamicPersonaBatch({...selected,hash:preview.hash});
+   }
+   personaBatchSelection.clear();paintSummaryModules(readViewState(app));
+ };
+ $('[data-persona-batch-rows]')?.addEventListener('change',e=>{const input=e.target.closest?.('[data-persona-batch-select]');if(!input||input.disabled)return;input.checked?personaBatchSelection.add(input.dataset.personaBatchSelect):personaBatchSelection.delete(input.dataset.personaBatchSelect);paintSummaryModules(readViewState(app));});
+ $('[data-persona-batch-select-page]')?.addEventListener('click',()=>{for(const b of personaBatchItems.slice(personaBatchPage*10,personaBatchPage*10+10))if(b.selectable)personaBatchSelection.add(b.selectionKey);paintSummaryModules(readViewState(app));});
+ $('[data-persona-batch-clear]')?.addEventListener('click',()=>{personaBatchSelection.clear();paintSummaryModules(readViewState(app));});
+ $('[data-persona-batch-delete-selected]')?.addEventListener('click',e=>void run(()=>deletePersonaSelection([...personaBatchSelection]),{name:'dynamic-persona',button:e.currentTarget}));
+ $('[data-persona-batch-rows]')?.addEventListener('click',e=>{const button=e.target.closest?.('[data-persona-batch-action]');if(!button)return;void run(async()=>{const action=button.dataset.personaBatchAction;if(action==='retry')return app.queueDynamicPersona();if(action==='restore'){const scope=JSON.stringify(readViewState(app).core?.scope);if(await host.confirm?.('恢复上次删除归档？自动接续保持暂停；删除后的新修改不会被覆盖。')){checkPersonaBatchScope(scope);return app.restoreDynamicPersonaBatch();}return;}return deletePersonaSelection([button.dataset.key]);},{name:'dynamic-persona',button});});
  for(const [key,delta] of [['prev',-1],['next',1]])$(`[data-persona-batch-${key}]`)?.addEventListener('click',()=>{personaBatchPage=Math.max(0,personaBatchPage+delta);paintSummaryModules(readViewState(app));});
  actions['per-call-mode']=async()=>{const patch={summaryReviewEnabled:false,summaryStaged:false,autoMergeEnabled:false,autoQualityEnabled:false};await app.saveSettings(patch);for(const key of Object.keys(patch))dirtyApi.delete(key);fill();feedback('已改为一次主总结；不自动追加分工、合并和校对请求。API、楼数、回复上限不变。','success');};
  actions['recommended-memory']=async()=>{if(!host.confirm?.('将总结与召回参数设为推荐值（5楼一批、回复8192）。不改 API、Key、记录偏好和自动运行开关。确认应用？'))return;await app.saveSettings(RECOMMENDED_MEMORY_SETTINGS);for(const k of Object.keys(RECOMMENDED_MEMORY_SETTINGS))dirtyApi.delete(k);fill();};
