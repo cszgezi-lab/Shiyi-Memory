@@ -3,6 +3,7 @@ import {DYNAMIC_PERSONA_PROMPT,currentPersonaProfiles} from '../src/dynamic-pers
 import {PERSONA_SOURCE_LABELS,PERSONA_SOURCE_REASONS} from '../src/persona-source-index.js';
 import {PERSONA_STEPS,DIAGNOSTIC_REASONS} from '../src/diagnostics.js';
 import {personaRefinementHTML,mountPersonaRefinement} from './persona-refinement-view.js';
+import {markPersonaQuoteParts} from '../src/persona-edit-evidence.js';
 export function personaSourceDetails(p,guide,sources){
   const bindings=[...new Map((p.bindings??[]).map(b=>[JSON.stringify([b.book,b.uid]),{book:b.book,title:b.originalName??b.name}])).values()];
   // The panel must explain itself. A bare "0 个条目" left the user unable to tell
@@ -11,8 +12,12 @@ export function personaSourceDetails(p,guide,sources){
   const hint=sources?.length?'':`<p>${esc(reason)}</p>${guide?.candidates?.length?`<p>已读取到的条目（前 ${guide.candidates.length} 个，未确认归属）：${guide.candidates.map(c=>esc(c)).join('；')}</p>`:''}`;
   const kept=p.composition?.parts?.length||p.composition?.sourceBaseline?.length||0;
   const rewritten=p.composition?.changes?.length??0;
+  const pending=p.composition?.pendingEdits??[],revision=p.composition?.pendingRevision;
+  const protectedQuotes=markPersonaQuoteParts(p.composition?.parts??[]).filter(q=>q.sourceQuote&&q.original!==q.text).length;
+  const pendingHTML=(pending.length||revision)?`<details data-persona-pending><summary>有待核对改动，尚未应用</summary><p>批次完成不代表这些改动已确认；原有可用内容保留。可在本人物编辑或手动精修中核对。</p>${revision?`<p>待核对的当前描述</p><div class="sy-packet">${esc(revision.notes??'')}</div>`:''}${pending.map(q=>`<p>${esc(q.ref??'当前补充')} · 缺少完整依据或对应片段</p>${q.text?`<div class="sy-packet">${esc(q.text)}</div>`:''}`).join('')}</details>`:'';
+  const quoteHTML=protectedQuotes?`<p>${protectedQuotes} 处历史语料改写不作为原话注入；原记录仍可追溯，当前只保留原书范例及已核对实说。</p>`:'';
   const summary=p.composition?`<p>保留 ${kept} 个${sources?.length?'原书原文':'聊天档案'}片段；本次改写原设定 ${rewritten} 处。未修改部分沿用${sources?.length?'原文':'已保存底稿'}，不靠模型重写。</p>${rewritten?p.composition.changes.map(c=>`<details><summary>${esc(c.title)} · 第${esc(c.sourceFloors.join('、'))}楼依据</summary><p>修改前</p><div class="sy-packet">${esc(c.before)}</div><p>修改后</p><div class="sy-packet">${esc(c.after)}</div></details>`).join(''):`<p>本次没有改写任何原设定句子；如果剧情已经和原设定冲突，说明模型只追加了新的剧情变化，没有去改动冲突的原句。</p>`}${p.composition.rejectedExamples?`<p>${p.composition.rejectedExamples} 条语料未确认原话或说话人，未纳入示例；其他档案内容保留。</p>`:''}${p.composition.rejectedDevelopment?`<p>${p.composition.rejectedDevelopment} 项成长补充缺少对应正文依据，未纳入成长脉络；原档案及已保存内容保留，不会自动另开校对任务。</p>`:''}`:'<p>此为旧版或手工档案；不会在升级时重写。下次明确更新时建立原文保留版本。</p>';
-  return `<details data-persona-sources><summary>原书来源与本次修改 · ${bindings.length} 个条目</summary>${bindings.length?bindings.map(s=>`<p>${esc(s.book)} · ${esc(s.title)}</p>`).join(''):''}${hint}${summary}</details>`;
+  return `<details data-persona-sources><summary>原书来源与本次修改 · ${bindings.length} 个条目</summary>${bindings.length?bindings.map(s=>`<p>${esc(s.book)} · ${esc(s.title)}</p>`).join(''):''}${hint}${pendingHTML}${quoteHTML}${summary}</details>`;
 }
 export function dynamicPersonaProgressText(d){
   if(!d.plan)return '独立进度尚未读取';
