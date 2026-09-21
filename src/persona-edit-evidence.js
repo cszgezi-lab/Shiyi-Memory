@@ -3,7 +3,7 @@ import {foldName} from './persona-identity.js';
 
 const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{|@@/i;
 export const PERSONA_EDIT_RULE=`局部更新合同：原人物只做有据的最小演进，不重写人格。original.parts中editable=false的是原书引语/口吻范例，不是本聊天已说过的话，不改写或拼接成新台词；新实说只放examples。其它updates每项附before（该ref当前完整文字）、evidence:{floor,quote}（本人物本批连续原文依据），保留对象、否定、条件和未变细节。只提供楼号不是修改依据。
-previous.noteParts按previous.text的空行段落顺序给出ref与paragraph（1起算），只读一次正文，不重复发送。已有补充时返回noteUpdates:[{ref:"N1",before:"该段当前原文",text:"仅修改必要部分后的完整段落",evidence:{floor,quote}}]；未列出的段落由程序保留。确有新的、此前没有的信息时ref="new"、before=""；不要逐批加事件日记，也不要重复现有段落。无变更返回noteUpdates:[]。不允许空文字删除段落；过时态度应在对应段落改为明确的当前适用范围。已有noteParts时text不再用于重写整份补充，可返回空字符串；首次建档仍用text提供可靠概况。evidence须包含本人物的明确归属，语料不得编写、改字或移花接木。语义不确定的修改会留作候选，不会因为请求成功就自动作为当前人设；不要为了通过核对捏造弧光。`;
+previous.noteParts按previous.text的空行段落顺序给出ref与paragraph（1起算），只读一次正文，不重复发送。已有补充时返回noteUpdates:[{ref:"N1",before:"该段当前原文",text:"仅修改必要部分后的完整段落",evidence:{floor,quote}}]；未列出的段落由程序保留。确有新的、此前没有的信息时ref="new"、before=""；不要逐批加事件日记，也不要重复现有段落。无变更返回noteUpdates:[]。不允许空文字删除段落；过时态度应在对应段落改为明确的当前适用范围。有noteParts或聊天B底稿时text必须为空，新补充也用ref="new"；首次无原书建档或尚无N段的原书首次补充才使用text。evidence须包含本人物的明确归属，优先选原文直接写出姓名的完整句，不截成仅“她/他/两人”的片段；没有可靠归属则保留未确认，不补写姓名伪造引文。语料不得编写、改字或移花接木。语义不确定的修改会留作候选，不会因为请求成功就自动作为当前人设；不要为了通过核对捏造弧光。`;
 
 export function personaNoteParts(profile){
   // A legacy source-free dossier is already supplied as editable chat B-parts.
@@ -31,7 +31,12 @@ export function mergePersonaNotes(row,previous,context){
   const parts=personaNoteParts(previous),old=parts.map(p=>p.text).join('\n\n'),pending=[];
   if(row.noteUpdates===undefined){
     const text=String(row.text??'').trim();
-    if(text===old||!previous)return {notes:text,changes:[],pending};
+    // A worldbook-only baseline has no N paragraph to replace yet. The first
+    // supplement follows the same contract as first creation. Chat baselines
+    // still require B deltas; existing notes still require N deltas.
+    const firstSupplement=!parts.length&&previous?.bindings?.length&&
+      !previous.composition?.parts?.some(p=>p.source==='chat')&&!previous.composition?.sourceBaseline?.length;
+    if(text===old||!previous||firstSupplement)return {notes:text,changes:[],pending};
     // Keeping old paragraphs does not justify silently appending a conflicting
     // state. Changed snapshots use the same evidence-bearing delta contract.
     return {notes:old,changes:[],pending:[{kind:'notes',reason:'missing_note_updates',text,sourceFloors:clone(row.sourceFloors??[])}]};

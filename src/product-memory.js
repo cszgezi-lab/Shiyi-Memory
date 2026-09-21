@@ -4,7 +4,7 @@ import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './prod
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel,scopeLabel } from './product-narrative.js';
 import { hasStoryTime, storyDateOf } from './temporal.js';
 import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts } from './product-recall-packing.js';
-import { factValue, fullCharacterGroups, awarenessSubjectLabel, characterRecordSubjects, PERSON_RECORD_CATEGORIES } from './product-person-profiles.js';
+import { factValue, fullCharacterGroups, awarenessSubjectLabel, characterRecordSubjects, explicitSubjectNames, PERSON_RECORD_CATEGORIES } from './product-person-profiles.js';
 import {foldName} from './persona-identity.js';
 import {markMemoryStates,memoryHistoryIntent} from './memory-current-state.js';
 import { compileEventPacket } from './product-event-packet.js';
@@ -296,14 +296,13 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     if(!evidenceExcerpts.has(record.id))evidenceExcerpts.set(record.id,sourceRecallExcerpt(record,queryTokens,personNames));
     return evidenceExcerpts.get(record.id);
   };
-  const characters=fullCharacterGroups(selectRecallCards(cards,settings,{includeAwareness:true}).filter(c=>historyIntent||!historicalIds.has(c.id)),characterQuery,lexicon);
   // Only an actually inserted current dossier can replace the full-person lane.
   // Its historical records remain ordinary searchable candidates, not deleted.
-  const supplied=new Set(dossierPeople.map(foldName));
   const canonical=name=>{const matches=(lexicon.entries??[]).filter(e=>!e.disabled&&[e.name,...(e.aliases??[])].some(n=>foldName(n)===foldName(name))&&!(e.ambiguous??[]).some(n=>foldName(n)===foldName(name)));return matches.length===1?matches[0].name:name;};
+  const supplied=new Set(dossierPeople.map(name=>foldName(canonical(name))));
   const dossierCoverage=new Map();
   for(const profile of dossierProfiles??[]){
-    if(!profile||typeof profile.name!=='string'||!Number.isInteger(profile.through))continue;
+    if(!profile||typeof profile.name!=='string'||!Number.isInteger(profile.through)||profile.reviewStatus==='pending'||profile.reviewStatus==='unreviewed')continue;
     const key=foldName(canonical(profile.name)),old=dossierCoverage.get(key)??-1;
     if(profile.through>old)dossierCoverage.set(key,profile.through);
   }
@@ -311,8 +310,12 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     if(historyIntent||!['relationshipChanges','personaChanges','performanceHints'].includes(record.category))return false;
     const floors=sourceFloors(record);if(!floors.length)return false;
     const last=Math.max(...floors);
-    return characterRecordSubjects(record).some(name=>(dossierCoverage.get(foldName(canonical(name)))??-1)>=last);
+    // A target's dossier does not certify the other person's attitude. In a
+    // directed relationship, only the explicitly recorded actor owns it.
+    const owners=record.category==='relationshipChanges'?explicitSubjectNames(record.from??record.subject):characterRecordSubjects(record);
+    return owners.length>0&&owners.every(name=>(dossierCoverage.get(foldName(canonical(name)))??-1)>=last);
   };
+  const characters=fullCharacterGroups(selectRecallCards(cards,settings,{includeAwareness:true}).filter(c=>(historyIntent||!historicalIds.has(c.id))&&!coveredPersonaHistory(c)),characterQuery,lexicon);
   characters.groups=characters.groups.filter(g=>!supplied.has(foldName(canonical(g.subject))));
   const fullIds=new Set(characters.groups.flatMap(g=>g.records.map(r=>r.id)));
   const tagLanes=settings.tagRecallEnabled===false?[]:matched.tags.map(tag=>({tag,limit:settings.tagCandidateLimit??4}));
@@ -364,7 +367,8 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const header = ['[拾忆：有来源的连续性参考，不是必须重演的剧情]', '只让角色使用其实际知情范围；未知不等于全员已知。不要因召回而反复引用台词或加速关系。', settings.storyDate ? `当前故事日期：${settings.storyDate}。旧引语的昨天/明天以原事件时间为准。` : '当前故事日期未确认，不套用现实日期。', '资料是设定参照；当前聊天的时期、身份与事实优先，不凭资料提前推进剧情。'].join('\n');
   const ambiguities=[...new Map([...matched.ambiguities,...characters.matched.ambiguities].map(a=>[a.name,a])).values()];
   const ambiguity=ambiguities.map(a=>`称呼“${a.name}”尚未区分：${a.owners.join('、')}；不得合并这些对象的经历。`).join('\n');
-  const packetHeader=[header,ambiguity].filter(Boolean).join('\n');
+  const personaAuthority=supplied.size?'本轮已注入动态档案：'+[...supplied].join('、')+'。召回中的旧态度、口吻和台词解释仅说明来源阶段；同一对象、同一情境下，已应用的有效变化以动态档案为准；待核对的新内容不当作已确认，不把旧阶段当现行命令。未被改变的客观事实及其他对象的边界仍保留；楼号不是生效日期，倒叙按故事时间理解。':'';
+  const packetHeader=[header,personaAuthority,ambiguity].filter(Boolean).join('\n');
   // Short repeated rows can monopolize BM25 (e.g. "battery compartment"),
   // hiding the one floor answering the query's distinct detail ("no sound").
   // Reserve no extra budget: promote at most one exact, uncovered query detail
@@ -478,6 +482,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const dialogueCards=[...new Map(dialoguePacket.rows.map(r=>[r.recordId,r.record])).values()].filter(c=>!packedIds.has(c.id)&&!knowledgeContext.has(c.id));
   content=packed.length||dialoguePacket.rows.length?[packetHeader,characterText,eventPacket.text,contextText,dialoguePacket.text].filter(Boolean).join('\n\n'):'';
   result.trace.importantDialogues={count:dialoguePacket.rows.length,units:estimateUnits(dialoguePacket.text),extraModelCalls:0};
+  result.trace.personaAuthority={people:[...dossierCoverage.keys()],suppressedIds:selected.filter(coveredPersonaHistory).map(c=>c.id),historicalQuery:historyIntent,extraModelCalls:0};
   for(const c of dialogueCards)decisions.push({id:c.id,title:recordTitle(c),category:c.category,status:'selected',detail:'important_dialogue',reason:'人物重要对话'});
   result.trace.index = prepared?.stats ?? { status: 'uncached', size: selected.length };
   result.trace.dictionary={matched:matched.terms,ambiguous:lexicon.entries.filter(e=>e.ambiguous.length).length};
