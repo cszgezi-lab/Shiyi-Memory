@@ -594,8 +594,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function saveSettings(patch) {
     const valid=validateProductPatch(patch);
     if(valid.personaReviewEnabled===false)dynamicPersona.interruptReview();
+    if(valid.dynamicPersonaFactReviewEnabled===false)dynamicPersona.interruptFactReview();
     await loadApiSettings();await apiSettings.save(valid);
     if(valid.personaReviewEnabled===false)dynamicPersona.interruptReview();
+    if(valid.dynamicPersonaFactReviewEnabled===false)dynamicPersona.interruptFactReview();
     if(!core.settings.injectionEnabled)await clearPrompt();
     if(patch.dynamicPersonaEnabled===false)await dynamicPersona.pause();
     queueAutomaticSummary();dynamicPersona.wake();

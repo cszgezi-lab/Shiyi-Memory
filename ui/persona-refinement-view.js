@@ -19,7 +19,9 @@ export function mountPersonaRefinement({panel,app,run,host=globalThis}){
   const deleteSelected=async ids=>{const check=guard();if(!ids.length)throw new Error('请先选择精修批次');if(!await host.confirm?.(`删除所选 ${ids.length} 批精修候选？其他候选保留，正式档案不变；已删除范围会在 Markdown 中标明。`))return;check();await app.manageDynamicPersonaReview('delete',ids);selection.clear();renderer.paint(app.state);};
   const options=()=>({profileId:$('[data-review-profile]').value,startIndex:Number($('[data-review-start]').value),endIndex:Number($('[data-review-end]').value),batchSize:Number($('[data-review-size]').value)});
   const invalidate=()=>{preview=null;$('[data-review-start-run]').disabled=true;$('[data-review-preview-text]').textContent='请选择人物与范围，然后预览。';};
-  const bind=(selector,fn)=>$(selector)?.addEventListener('click',e=>run(fn,{name:'dynamic-persona',button:e.currentTarget}));
+  // Generic run releases its busy button in finally. Restore capability state
+  // after that release, not before it or on an unrelated animation frame.
+  const bind=(selector,fn)=>$(selector)?.addEventListener('click',async e=>{try{return await run(fn,{name:'dynamic-persona',button:e.currentTarget});}finally{renderer.paint(app.state);}});
   for(const name of ['profile','start','end','size'])$('[data-review-'+name+']').addEventListener('input',()=>{dirty=true;invalidate();});
   bind('[data-review-preview]',async()=>{
     if(['start','end','size'].some(k=>$('[data-review-'+k+']').value===''))throw new Error('请填写起止楼层与每批楼数');

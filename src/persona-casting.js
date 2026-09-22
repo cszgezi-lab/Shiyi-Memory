@@ -2,7 +2,7 @@ import {foldName} from './persona-identity.js';
 
 export const PERSONA_GENDERS=Object.freeze({unknown:'性别未注明',female:'女',male:'男',nonbinary:'非二元',other:'其他'});
 export const PERSONA_ROLES=Object.freeze({unknown:'定位未注明',lead:'主角',core:'重要配角',support:'配角',guest:'客串'});
-export const PERSONA_CASTING_RULE='可选casting={gender:unknown/female/male/nonbinary/other,role:unknown/lead/core/support/guest,playerControlled:boolean,evidence:{floor,quote}}。只依据原文明确性别、剧情定位或玩家归属，不凭姓名和恋爱对象猜性别/主角；quote须逐字含正式姓名。缺依据不输出。previous.casting.manual中的人工指定不能覆盖。';
+export const PERSONA_CASTING_RULE='可选casting={gender:unknown/female/male/nonbinary/other,role:unknown/lead/core/support/guest,playerControlled:boolean,evidence:{floor,quote}}。只依据原文明确性别、剧情定位或玩家归属，不凭姓名、代词、职业或恋爱对象猜性别/主角；quote须逐字含正式姓名。缺依据不输出。此限制同样适用于text/updates/noteUpdates，不能元数据留unknown却在正文猜写男性/女性、年龄或玩家身份；未知不必填占位。previous.casting.manual中的人工指定不能覆盖。';
 export function personaCasting(value={}){
   return {gender:Object.hasOwn(PERSONA_GENDERS,value.gender)?value.gender:'unknown',role:Object.hasOwn(PERSONA_ROLES,value.role)?value.role:'unknown',playerControlled:value.playerControlled===true,manual:{...value.manual}};
 }
@@ -41,15 +41,29 @@ export function applyPersonaCasting(profile,overrides={}){
 }
 export function inferPersonaCasting(prior,spans=[],proposal,messages=[],name=''){
   const next=personaCasting(prior),text=spans.map(s=>s.text).join('\n');
+  const escaped=foldName(name).replace(/[.*+?^${}()|[\]\\]/g,c=>'\\'+c);
+  const namedValue=(source,tail)=>{
+    if(!escaped)return null;
+    return new RegExp(escaped+'(?:\\s|[，,:：]|是|为|一位|一名|成年|本故事的|本剧的|\\d+岁){0,12}('+tail+')(?=\\s|[。；;，,、]|$)','iu').exec(foldName(source))?.[1];
+  };
+  const namedGender=source=>{
+    const v=namedValue(source,'女性|男性|非二元|女|男|female|male|nonbinary');
+    return v?/^(女|female)/i.test(v)?'female':/^(男|male)/i.test(v)?'male':'nonbinary':null;
+  };
   const sexes=[...text.matchAll(/(?:^|\n)\s*(?:[-*]\s*)?(?:性别|性別|gender|sex)\s*[:：]\s*(女(?:性)?|男(?:性)?|female|male|nonbinary)(?=\s|[。；;，,]|$)/gim)].map(m=>/^(女|female)/i.test(m[1])?'female':/^(男|male)/i.test(m[1])?'male':'nonbinary');
   if(!next.manual.gender&&new Set(sexes).size===1)next.gender=sexes[0];
+  if(!next.manual.gender&&next.gender==='unknown'&&namedGender(text))next.gender=namedGender(text);
   // Optional evidence-backed primary-model metadata costs no extra call.
   // Never infer gender/importance from a name, romance or frequency alone.
   const evidence=proposal?.evidence;
   if(evidence&&typeof evidence.quote==='string'&&foldName(evidence.quote).includes(foldName(name))&&messages.some(m=>m.index===evidence.floor&&m.text.includes(evidence.quote))){
     for(const key of ['gender','role','playerControlled'])if(!next.manual[key]){
-      if(key==='gender'&&next.gender==='unknown'&&Object.hasOwn(PERSONA_GENDERS,proposal[key]))next[key]=proposal[key];
-      if(key==='role'&&Object.hasOwn(PERSONA_ROLES,proposal[key]))next[key]=proposal[key];
+      if(key==='gender'&&next.gender==='unknown'&&namedGender(evidence.quote)===proposal[key])next[key]=proposal[key];
+      if(key==='role'){
+        const v=namedValue(evidence.quote,'女主角|男主角|主角|重要配角|配角|客串');
+        const supported=v?(/主角$/.test(v)?'lead':v==='重要配角'?'core':v==='配角'?'support':'guest'):null;
+        if(supported&&supported===proposal[key])next[key]=proposal[key];
+      }
       if(key==='playerControlled'&&proposal[key]===true&&/玩家|用户|用戶|player|\{\{user\}\}/i.test(evidence.quote))next[key]=true;
     }
   }

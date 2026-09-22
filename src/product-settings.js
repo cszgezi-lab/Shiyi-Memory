@@ -30,6 +30,7 @@ const DEFINITIONS = [
   {key:'knowledgeOutputTokens',label:'资料分析回复上限（Token）',defaultValue:4096,type:'integer',min:0,max:131072,consumers:['ProductApplication.analyzeDocuments']},
   {key:'narrativeExtraction',label:'正文提取规则',defaultValue:'',type:'string',maxLength:16384,consumers:['SummaryEngine','DynamicPersonaController','planQuality']},
   {key:'dynamicPersonaEnabled',label:'启用动态人设',defaultValue:false,type:'boolean',consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaFactReviewEnabled',label:'重要变化后核查（每批最多额外 1 次）',defaultValue:false,type:'boolean',consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaEvery',label:'人设每多少楼更新',defaultValue:10,type:'integer',min:1,max:200,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaKeepRecent',label:'保留最近楼数（推荐 2）',defaultValue:0,type:'integer',min:0,max:1000,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaInputUnits',label:'人设输入预算（估算）',defaultValue:24000,type:'integer',min:1000,max:1000000,consumers:['DynamicPersonaController']},

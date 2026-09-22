@@ -3,10 +3,11 @@ import {foldName,personaAliases} from './persona-identity.js';
 import {characterKeepsakes,markDiaryHistory} from './character-journal.js';
 import {sourceFloors} from './product-narrative.js';
 import {qualitySourceSegments} from './source-evidence.js';
-import {withoutPrivateSpeech} from './memory-evidence.js';
 import {mergePersonaDevelopment,personaDevelopmentText} from './persona-development.js';
-import {personaChangeCheck} from './persona-change-check.js';
-import {markPersonaQuoteParts,mergePersonaNotes,personaEditEvidence} from './persona-edit-evidence.js';
+import {personaChangeCheck,personaReviewedThrough} from './persona-change-check.js';
+import {markPersonaQuoteParts,mergePersonaNotes,personaEditEvidence,personaStyleGroups,personaProjectedSourceParts,safePersonaQuotedProse,personaSourcePartText} from './persona-edit-evidence.js';
+import {personaSpeechPairs as speechPairs,personaSpeechSpanEnd as speechSpanEnd,hasPersonaSpeechEvidence} from './persona-speech-evidence.js';
+export {hasPersonaSpeechEvidence} from './persona-speech-evidence.js';
 
 export const PERSONA_COMPOSITION_RULE=`当前使用原文保留模式。original.parts列出程序保留的原设定片段及当前有效文字；source=chat表示本聊天已保存的初建人物底稿，不是原世界书。ref仅定位本人物片段。不要重写整篇传记。
 先依据source中的明确时间、日期、学段和倒叙/回忆切换，区分当前叙事时点、原卡默认时点与历史/未来设定。楼号是来源位置，不是故事日期；楼号增加也可能进入更早的倒叙学段，不能直接套用原卡默认的年龄、学校、班级、团体或已成立关系。原文自身有时间冲突时标明来源与待核实处，不把冲突句当定论。只在有明确证据时局部更新；不明确则标注原卡默认时点及适用范围，不把整段旧设定删掉。禁止按学段、日期差或常识自动猜测年龄或学校并替换，未发生的未来关系不可当作当前关系。
@@ -16,98 +17,6 @@ export const PERSONA_COMPOSITION_RULE=`当前使用原文保留模式。original
 examples选用少量能表现当前人物表达方式的真实原话，每条严格使用 {text:"逐字原话",floor:实际楼号,to:"明确对象或空串",context:"原文明示的情境"}，text不是概括，to不是推测；context中的日期/学段/场合只填来源明确提供的内容，缺失不编造，未知对象不猜。可保留previous.examples中仍合适的原话（原文和楼号不变），或选择本批明确说出的新原话。只引用实际出现的完整原话，GAL日文原话或配对中文译文均须逐字来自同一显式说话人，不自行翻译，不编示范，不把私密心声、旁白或他人台词当本人的公开台词。旧阶段语料仅供历史，不覆盖当前关系；重要旧原话仍在记忆与档案历史中。materials是已有记忆参考，private为私人心迹，inferred为推测而非事实，用户编写不冒充已验证原话；不赋予其他角色知情。reviewFocus是程序从完整正文摘出的变化线索，不是已确认结论；在完整语境中逐条确认，尤其明确换装、身体变化、关系确认和新增能力，不要因其只占一句就遗漏。记录当前服装时写明来源楼号、来源明确的时间和当场衣着，服饰习惯与当场衣着分开，不把旧场景服装当当前穿着，不永久固定。只在有实质变化时返回人物，无变化profiles:[]。`;
 
 export const PERSONA_OUTPUT_CHECK_RULE='输出前核对：①development沿用旧key时target和scope必须逐字沿用旧值（旧scope缺失就是空串），本批更具体的情境写在after里；若确是不同对象或独立情境则另建项并省略key，不能用新scope覆盖旧key。②updates/noteUpdates的evidence.quote优先选本批原文明确写出本人物姓名、同时支持该修改的完整连续句；不要只引用匿名收尾结论，不得自行补姓名。角色自己实说的完整原话也可作依据。没有支持依据的修改不提出。③examples只用{text,floor,to,context}，说话人、否定、条件逐字核对；不编语料。④changed有本批development，unchanged不能同时改冲突片段；列出的conflictRefs均有对应updates。⑤只输出合法JSON；profiles是数组，每位人物是对象，以对象花括号闭合，不把字段说明写入内容。';
-
-const speechPairs=new Map([['“','”'],['「','」'],['『','』'],['"','"'],['〔','〕'],['【','】'],['（','）'],['(',')'],['‘','’']]);
-// Read an outer span as a unit: quoted names/speech inside action, thought or
-// narrator brackets must never establish a new speaker. Unclosed spans fail shut.
-function speechSpanEnd(text,start){
-  const stack=[speechPairs.get(text[start])];
-  for(let i=start+1;i<text.length;i++){
-    if(text[i]===stack.at(-1)){stack.pop();if(!stack.length)return i;}
-    else if(speechPairs.has(text[i]))stack.push(speechPairs.get(text[i]));
-  }
-  return -1;
-}
-
-function personaSpeechLead(lead,speaker,identity){
-  const folded=foldName(lead).trim();
-  if(/心想|暗想|心里|心中|内心|心声|心の声|心の中|モノローグ|ナレーション|默念|默想|想道|思忖|腹诽|独白|旁白|画外音|未说|没说|没有说|并未|没有开口|沉默|如果|假如|假设|也许|可能会|打算|想要|准备|梦中|梦见/.test(folded))return false;
-  // A bounded grammar rather than 'some name occurs in the preceding prose'.
-  // Addressees are allowed only behind 对/向; shared aliases use identity.resolve.
-  const header=/^(.*?)(?:\s*【[^】\r\n]*】)?\s*[：:]?\s*$/u.exec(folded)?.[1]?.trim();
-  if(!header)return false;
-  const owns=label=>{
-    const person=identity?.resolve(label),target=identity?.resolve(speaker);
-    if(person)return person.key===(target?.key??foldName(speaker));
-    // A new unindexed character may use its exact full name. Never bypass an
-    // ambiguous/disabled alias known to the identity index.
-    const known=identity?.people.some(p=>[p.name,...p.aliases].some(a=>foldName(a)===label));
-    return !known&&label===foldName(speaker).trim();
-  };
-  if(owns(header))return true;
-  const target=identity?.resolve(speaker),labels=[speaker,...(target?[target.name,...target.aliases]:[])].map(foldName);
-  const spoken=/^\s*(?:(?:对|向)[\p{L}\p{N}· ]{1,40})?\s*(?:(?:轻声|低声|小声|大声|柔声|笑着|认真地|温和地)\s*)?(?:说道|说|问道|问|回答|答道|回应|喊道|喊|答|道|补充(?:说|道)?)$/u;
-  // An explicit audience modifier does not change the grammatical speaker.
-  // Strip only this bounded form after a verified name; the complete remainder
-  // must still be a speech clause (not hearing, quoting, imagining or thinking).
-  const audience=/^\s*(?:(?:当[着著][\p{L}\p{N}· ]{1,24}的面|在[\p{L}\p{N}· ]{1,24}面前|当众|私下|公开|当面)\s*)/u;
-  return labels.some(label=>header.startsWith(label)&&owns(label)&&spoken.test(header.slice(label.length).replace(audience,'')));
-}
-
-/** Local exact utterance attribution, reusable without a model call. Identity
- * folding applies only to speaker labels; source words are never normalized.
- * This checks explicit forms, not semantic truth, chronology or who heard them. */
-export function hasPersonaSpeechEvidence(evidence,quote,speaker,identity){
-  if(typeof quote!=='string'||!quote.trim()||typeof speaker!=='string'||!speaker.trim()||!String(evidence??'').includes(quote))return false;
-  // Reuse the source filter, retaining boundaries across removed planning,
-  // variable or script blocks so removal cannot manufacture an attribution.
-  const raw=withoutPrivateSpeech(evidence);
-  // Keep the explicit content-body boundary used by hasSpeechEvidence, while
-  // filtering against original offsets (never concatenate through hidden text).
-  const body=/^\s*<content>\s*\r?\n([\s\S]*?)<\/content>/mi.exec(raw);
-  const from=body?body.index+body[0].indexOf('>')+1:0,to=body?body.index+body[0].lastIndexOf('</content>'):raw.length;
-  let end=from;
-  const source=qualitySourceSegments({id:'persona-speech',text:raw}).filter(s=>s.end>from&&s.start<to).map(s=>{
-    const a=Math.max(from,s.start),b=Math.min(to,s.end),chunk=(a===end?'':'\n\uFFFC\n')+raw.slice(a,b);end=b;return chunk;
-  }).join('');
-  let start=0;
-  for(let i=0;i<source.length;i++){
-    // Only examine top-level lines. A second global line scan would expose
-    // unquoted dialogue nested in multiline narrator/inner-thought brackets.
-    if(i===0||source[i-1]==='\n'){
-      const last=source.indexOf('\n',i),line=source.slice(i,last<0?source.length:last).trim();
-      const m=/^([^：:\r\n]+)[：:]\s*([^“”「」『』"〔〕【】（）()‘’]+)$/u.exec(line);
-      if(m&&m[2].trim()===quote&&personaSpeechLead(m[1],speaker,identity))return true;
-    }
-    const c=source[i];
-    if(speechPairs.has(c)){
-      const close=speechSpanEnd(source,i);if(close<0)break;
-      if(/[“「『"]/u.test(c)){
-        const attributed=personaSpeechLead(source.slice(start,i),speaker,identity);
-        if(attributed&&source.slice(i+1,close).trim()===quote)return true;
-        // Keep the Japanese opener's subject through its matching closer and
-        // adjacent translation. An intervening narrator/speaker breaks the pair.
-        const translated=c==='「'?/^\s*〔/u.exec(source.slice(close+1)):null;
-        if(translated){
-          const at=close+translated[0].length,last=speechSpanEnd(source,at);
-          if(last<0)break;
-          if(attributed&&source.slice(at+1,last).trim()===quote)return true;
-          i=last;start=i+1;continue;
-        }
-        start=close+1;
-      }else if(c!=='【')start=close+1;
-      i=close;
-    }else if(/[。！？；，,;!?\r\n]/u.test(c)){
-      // GAL often puts an explicit speaker header on one line and the quoted
-      // utterance on the very next. Retain only a verified header across this
-      // one line break; never bridge narration, blank lines or removed text.
-      const breakLength=c==='\r'&&source[i+1]==='\n'?2:1;
-      if((c==='\n'||c==='\r')&&personaSpeechLead(source.slice(start,i),speaker,identity)&&/^[ \t]*[“「『"]/.test(source.slice(i+breakLength))){i+=breakLength-1;continue;}
-      start=i+1;
-    }
-  }
-  return false;
-}
 
 // Model formatting is not the utterance itself. Remove at most one complete
 // outer quote/translation pair, never select a substring or one half of a
@@ -234,14 +143,25 @@ export function personaMaterials(records,identity,mentioned,endFloor){
 // Keep source quotes in storage; select a small diverse reading projection.
 // Only an explicitly linked arc can retire its old expression automatically.
 export function currentPersonaExamples(examples,development=[],limit=6){
+  if(limit<=0)return [];
   const arcs=new Map(development.map(d=>[d.key,d])),seen=new Set(),groups=new Map(),pool=[];
   for(const q of [...examples].sort((a,b)=>b.floor-a.floor)){
     const arc=arcs.get(q.developmentKey);
-    if(q.status==='historical'||arc&&q.floor<arc.floor||seen.has(q.text))continue;
+    if(q.status==='historical'||arc&&q.floor<arc.floor&&q.reaffirmedAt!==arc.floor||seen.has(q.text))continue;
     seen.add(q.text);pool.push(q);
   }
-  const selected=[],rest=[];
+  const selected=[],rest=[],retainedArcs=new Set(),reserved=Math.max(1,Math.floor(limit/2));
+  // Validation has already established that these old words were explicitly
+  // reselected for the current arc. Keep a bounded, per-arc slot; otherwise a
+  // newest-floor cutoff accepts the choice and then silently discards it.
   for(const q of pool){
+    const arc=arcs.get(q.developmentKey);
+    if(!arc||q.floor>=arc.floor||q.reaffirmedAt!==arc.floor||retainedArcs.has(arc.key))continue;
+    selected.push(q);retainedArcs.add(arc.key);groups.set(JSON.stringify([foldName(q.to??''),q.context??'']),1);
+    if(selected.length>=reserved)break;
+  }
+  for(const q of pool){
+    if(selected.includes(q))continue;
     const group=JSON.stringify([foldName(q.to??''),q.context??'']),count=groups.get(group)??0;
     if(count>=2){rest.push(q);continue;}
     groups.set(group,count+1);selected.push(q);
@@ -256,7 +176,9 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   const localPatches=!spans.length&&Boolean(row.updates?.length||previous?.composition?.sourceBaseline?.length||previous?.composition?.localMode==='patches'||previous?.composition?.changes?.length||previous&&!previous.composition);
   const parts=spans.length||localPatches?markPersonaQuoteParts(personaParts(spans,previous,{includeNotes:Boolean(row.updates?.length)})):[],byRef=new Map(parts.map(p=>[p.ref,p])),touched=new Set(),changes=[],pendingEdits=[];
   const originalParts=clone(parts),evidenceMessages=developmentMessages??messages.map(m=>({...m,text:qualitySourceSegments(m).map(s=>s.text).join('\n\uFFFC\n')}));
+  const styleGroups=personaStyleGroups(parts),retirableKeys=new Set(styleGroups.flatMap(g=>g.map(p=>p.key)));
   const editContext={messages:evidenceMessages,identity,name,speech:hasPersonaSpeechEvidence};
+  const development=mergePersonaDevelopment(row.development,{previous:previous?.composition?.development??[],messages:evidenceMessages,identity,name});
   if(!parts.length&&!row.text.trim()&&!previous?.text&&!row.noteUpdates?.length)throw fail('text','正文新角色须有可独立阅读的档案，不能只返回局部修改','persona_fields',{personaIssue:'empty_profile'});
   const validFloors=floors=>Array.isArray(floors)&&floors.length&&floors.every(f=>messages.some(m=>m.index===f));
   if(row.updates!==undefined&&!Array.isArray(row.updates))throw fail('text','局部修改应为列表','persona_fields',{personaIssue:'invalid_updates'});
@@ -274,10 +196,45 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
     const issue=!part?'unknown_ref':touched.has(part.key)?'duplicate_ref':typeof edit?.text!=='string'||!edit.text.trim()?'empty_edit':!validFloors(editFloors)?'invalid_edit_floors':/<%|%>|<\/?script\b|\{\{|@@|\[\[SHIYI_PERSONA:/i.test(edit.text)?'unsafe_edit':null;
     if(issue)throw fail('text','局部修改没有唯一对应本人物原文或本批依据，原档案保留','persona_fields',{personaIssue:issue,editIndex});
     touched.add(part.key);
-    const semanticIssue=part.sourceQuote?'protected_source_quote':edit.before!==part.text?'before_mismatch':!evidence||!editFloors.includes(evidence.floor)?'missing_edit_evidence':null;
+    if(edit.status==='historical'){
+      const canonical=value=>identity.resolve(String(value??''))?.key??foldName(String(value??''));
+      const explicitIndex=Object.hasOwn(edit,'developmentIndex');
+      const link=Number.isInteger(edit.developmentIndex)&&edit.developmentIndex>0?row.development?.[edit.developmentIndex-1]:null;
+      const currentArcs=development.items.filter(d=>d.target&&evidenceMessages.some(m=>m.index===d.floor&&m.text.includes(d.evidence)));
+      const actorOnlyReview=d=>{
+        if(!explicitIndex||!evidence||!row.changeCheck?.evidence?.some(e=>e.floor===evidence.floor&&e.quote===evidence.quote))return false;
+        const people=identity.mentions(evidence.quote),floor=evidenceMessages.find(m=>m.index===evidence.floor);
+        // An explicit link plus one current target/scope avoids guessing "you"
+        // in multi-person changes. Conflicting labels/participants stay pending.
+        return new Set(currentArcs.map(a=>JSON.stringify([canonical(a.target),a.scope??'']))).size===1&&
+          people.length>0&&people.every(p=>p.key===canonical(name))&&
+          identity.mentions(floor?.text??'').every(p=>[canonical(name),canonical(d.target)].includes(p.key))&&
+          hasPersonaSpeechEvidence(floor?.text??'',evidence.quote,name,identity,{includeLead:true})&&
+          (!Object.hasOwn(edit,'target')||canonical(edit.target)===canonical(d.target))&&
+          (!Object.hasOwn(edit,'scope')||(edit.scope??'')===(d.scope??''));
+      };
+      const arc=development.items.find(d=>d.target&&evidenceMessages.some(m=>m.index===d.floor&&m.text.includes(d.evidence))&&
+        (explicitIndex?link&&link.floor===d.floor&&link.evidence===d.evidence&&canonical(link.target)===canonical(d.target)&&(link.scope??'')===(d.scope??''):
+          canonical(d.target)===canonical(edit.target)&&(d.scope??'')===(edit.scope??''))&&
+        (d.floor===evidence?.floor||identity.mentions(evidence?.quote??'').some(p=>p.key===canonical(d.target))||actorOnlyReview(d)));
+      const reason=!retirableKeys.has(part.key)?'not_independent_source_style':edit.before!==part.original||edit.text!==part.original?'source_style_bytes_changed':!evidence||!editFloors.includes(evidence.floor)?'missing_edit_evidence':!arc||row.changeCheck?.status!=='changed'?'missing_scoped_style_transition':null;
+      if(reason){pendingEdits.push({kind:'source',reason,ref:part.ref,key:part.key,text:edit.text,sourceFloors:clone(editFloors)});continue;}
+      part.status='historical';part.text=part.original;part.sourceFloors=[...new Set(editFloors)];part.editEvidence=evidence;
+      part.retirement={kind:'source_style',target:arc.target,scope:arc.scope??'',developmentKey:arc.key,evidence};
+      changes.push({key:part.key,title:part.title,before:part.original,after:part.original,status:'historical',sourceFloors:part.sourceFloors});
+      continue;
+    }
+    const quoteSafeEdit=safePersonaQuotedProse(part,edit.text);
+    const semanticIssue=part.sourceQuote&&!quoteSafeEdit?'protected_source_quote':edit.before!==personaSourcePartText(part)?'before_mismatch':!evidence||!editFloors.includes(evidence.floor)?'missing_edit_evidence':null;
     if(semanticIssue){pendingEdits.push({kind:'source',reason:semanticIssue,ref:part.ref,key:part.key,text:edit.text,sourceFloors:clone(editFloors),...(evidence?{evidence}:{})});continue;}
     const before=part.text;part.text=edit.text+(/\n$/.test(part.original)&&!edit.text.endsWith('\n')?'\n':'');part.sourceFloors=[...new Set(editFloors)];part.editEvidence=evidence;
+    if(quoteSafeEdit)part.quoteSafeEdit=true;
     if(before!==part.text)changes.push({key:part.key,title:part.title,before,after:part.text,sourceFloors:part.sourceFloors});
+  }
+  for(const group of styleGroups.filter(g=>g.length>1)){
+    if(!group.some(p=>touched.has(p.key)&&p.status==='historical'))continue;
+    const first=group[0],same=group.every(p=>touched.has(p.key)&&p.status==='historical'&&p.retirement?.developmentKey===first.retirement?.developmentKey&&JSON.stringify(p.editEvidence)===JSON.stringify(first.editEvidence));
+    if(!same){const keys=new Set(group.map(p=>p.key));for(const p of group){const old=originalParts.find(o=>o.key===p.key);for(const key of Object.keys(p))delete p[key];Object.assign(p,clone(old));}for(let i=changes.length-1;i>=0;i--)if(keys.has(changes[i].key))changes.splice(i,1);pendingEdits.push({kind:'source',reason:'incomplete_style_group',refs:group.map(p=>p.ref)});}
   }
   const examples=[];let rejectedExamples=0;
   // Normalize transport synonyms only when unambiguous; the original text,
@@ -287,11 +244,17 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
     const conflict=(Object.hasOwn(q,'text')&&Object.hasOwn(q,'quote')&&q.text!==q.quote)||(Object.hasOwn(q,'to')&&Object.hasOwn(q,'target')&&foldName(String(q.to))!==foldName(String(q.target)));
     return conflict?null:{...q,text:Object.hasOwn(q,'text')?q.text:q.quote,to:Object.hasOwn(q,'to')?q.to:q.target};
   });
-  const candidates=[...(previous?.composition?.exampleArchive??previous?.composition?.examples??[]),...normalized];
+  // The archive is authoritative for duplicates (including retirement), but a
+  // legacy capped archive may have dropped a still-selected current example.
+  const priorKeys=new Set();
+  const priorExamples=[...previous?.composition?.exampleArchive??[],...previous?.composition?.examples??[]].filter(q=>{
+    const key=JSON.stringify([q?.floor,q?.text]);if(priorKeys.has(key))return false;priorKeys.add(key);return true;
+  });
+  const candidates=[...priorExamples,...normalized];
   for(const q of candidates){
     const m=messages.find(m=>m.index===q?.floor),raw=typeof q?.text==='string'?q.text.trim():'';
     const text=m&&hasPersonaSpeechEvidence(m.text,raw,name,identity)?raw:unwrappedPersonaQuote(raw);
-    const prior=(previous?.composition?.exampleArchive??previous?.composition?.examples??[]).find(p=>p.kind==='source_quote'&&p.text===text&&p.floor===q?.floor);
+    const prior=priorExamples.find(p=>p.kind==='source_quote'&&p.text===text&&p.floor===q?.floor);
     // Previously verified history can be outside this batch. If its floor is
     // supplied again, recheck the actual source instead of trusting an old tag.
     if(prior&&!m){if(!examples.some(p=>p.text===prior.text&&p.floor===prior.floor))examples.push(clone(prior));continue;}
@@ -299,7 +262,6 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
     if(!examples.some(e=>e.text===text&&e.floor===q.floor))examples.push(prior?clone(prior):{text,floor:q.floor,to:typeof q.to==='string'?q.to:'',context:typeof q.context==='string'?q.context:'',kind:'source_quote'});
   }
   const sceneEvidence=personaSceneEvidence(messages,identity,name,previous?.composition?.sceneEvidence);
-  const development=mergePersonaDevelopment(row.development,{previous:previous?.composition?.development??[],messages:developmentMessages??messages.map(m=>({...m,text:qualitySourceSegments(m).map(s=>s.text).join('\n\uFFFC\n')})),identity,name});
   for(const q of examples){
     const supplied=normalized.find(e=>e?.floor===q.floor&&unwrappedPersonaQuote(e.text)===q.text);
     const arc=development.items.find(d=>d.key===supplied?.developmentKey&&d.floor===q.floor&&d.evidence.includes(q.text));
@@ -320,7 +282,7 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   }
   const noteResult=mergePersonaNotes(row,previous?.composition?.pendingOnly?undefined:previous,editContext),notes=noteResult.notes;
   const composition={version:2,retiredParts:clone(previous?.composition?.retiredParts??[]),parts,notes,examples:currentPersonaExamples(examples,development.items),exampleArchive:examples.sort((a,b)=>b.floor-a.floor).slice(0,48),sceneEvidence,changes,noteChanges:noteResult.changes,pendingEdits:[...pendingEdits,...noteResult.pending],rejectedExamples,ignoredUpdates,development:development.items,rejectedDevelopment:development.rejected,...(!spans.length?{localMode:localPatches&&parts.length?'patches':'snapshot'}:{}),...(!parts.length?{sourceBaseline:sourcePersonaBaseline(notes,name,row.sourceFloors)}:{})};
-  composition.changeCheck=personaChangeCheck(row,{parts,changes,development:development.items,examples:composition.examples,messages,identity,name});
+  composition.changeCheck=personaChangeCheck(row,{parts,changes,development:development.items,previousDevelopment:previous?.composition?.development??[],examples:composition.examples,messages,identity,name});
   if(composition.changeCheck.status==='pending'){
     // A request can complete while its proposed interpretation remains pending.
     // Keep independently verified speech, not unverified current-state claims.
@@ -332,6 +294,27 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
     composition.pendingOnly=!spans.length&&(!previous||Boolean(previous.composition?.pendingOnly));
   }
   if(composition.pendingEdits.length)composition.changeCheck={...composition.changeCheck,status:'pending',issues:[...composition.changeCheck.issues??[],`${composition.pendingEdits.length}项局部修改尚未应用，未变内容保留`]};
+  // Reusing an explicitly selected, previously verified utterance is not
+  // reviving every old phase. Bind that selection to this accepted revision
+  // of the SAME arc and audience; a later reversal must review it again.
+  if(composition.changeCheck.status==='changed'){
+    const canonical=value=>identity.resolve(String(value??''))?.key??foldName(String(value??''));
+    for(const q of examples){
+      const prior=priorExamples.find(p=>p.kind==='source_quote'&&p.floor===q.floor&&p.text===q.text);
+      const supplied=normalized.find(e=>e?.floor===q.floor&&unwrappedPersonaQuote(e.text)===q.text&&(!Object.hasOwn(e,'developmentKey')||e.developmentKey===prior?.developmentKey)&&canonical(e.to)===canonical(prior?.to));
+      const arc=prior?.developmentKey&&composition.development.find(d=>d.key===prior.developmentKey&&d.floor>q.floor&&evidenceMessages.some(m=>m.index===d.floor&&m.text.includes(d.evidence)));
+      if(supplied&&arc&&canonical(arc.target)===canonical(q.to))q.reaffirmedAt=arc.floor;
+    }
+    composition.examples=currentPersonaExamples(examples,composition.development);
+  }
+  // Keep the bounded CURRENT selection recoverable on the next update. This
+  // is storage priority only: historical/reversed speech remains ineligible.
+  const archived=new Set();
+  composition.exampleArchive=[...composition.examples,...examples.sort((a,b)=>b.floor-a.floor)].filter(q=>{
+    const key=JSON.stringify([q.floor,q.text]);if(archived.has(key))return false;archived.add(key);return true;
+  }).slice(0,48);
+  const reviewedThrough=['changed','unchanged'].includes(composition.changeCheck.status)?Math.max(...messages.map(m=>m.index)):personaReviewedThrough(previous);
+  if(Number.isInteger(reviewedThrough)&&reviewedThrough>=0)composition.reviewedThrough=reviewedThrough;
   if(!composition.parts.length&&!composition.notes&&!composition.pendingRevision)throw fail('text','新人物尚无可独立阅读的有效概况','persona_fields',{personaIssue:'empty_profile'});
   return {text:personaCompositionText(composition,{hasSources:spans.length>0}),composition:clone(composition)};
 }
@@ -341,7 +324,7 @@ export function personaCompositionText(composition,{hasSources=false}={}){
   const examples=currentPersonaExamples(composition.examples??[],development);
   const blocks=[];let last;
   const focus=(composition.reviewFocus??[]).filter(q=>!examples.some(e=>e.floor===q.floor&&e.text===q.quote));
-  for(const part of markPersonaQuoteParts(parts)){if(part.status==='historical')continue;const speech=/语料|語料|台词|臺詞|dialogue|speech|quotes?/iu.test(part.title??'');const key=JSON.stringify([part.book,part.uid,part.spanId]);if(last?.key!==key){last={key,title:part.title,speech,source:part.source,allQuoted:true,text:''};blocks.push(last);}if(String(part.original??part.text).trim())last.allQuoted&&=part.sourceQuote;last.text+=part.sourceQuote&&part.original!==undefined?part.original:part.text;}
+  for(const part of personaProjectedSourceParts(parts)){if(part.status==='historical')continue;const speech=/语料|語料|台词|臺詞|dialogue|speech|quotes?/iu.test(part.title??'');const key=JSON.stringify([part.book,part.uid,part.spanId]);if(last?.key!==key){last={key,title:part.title,speech,source:part.source,allQuoted:true,text:''};blocks.push(last);}if(String(part.original??part.text).trim())last.allQuoted&&=part.sourceQuote;last.text+=personaSourcePartText(part);}
   const exampleText=examples.map(q=>`第${q.floor}楼${q.to?' 对'+q.to:''}：${q.text}${q.context?'〔'+q.context+'〕':''}`).join('\n');
   // A failed refresh preserves evidence, not a claim that the old notes are
   // the latest state. In particular B patches can apply while an N patch is

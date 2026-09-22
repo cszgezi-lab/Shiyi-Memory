@@ -302,9 +302,11 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const supplied=new Set(dossierPeople.map(name=>foldName(canonical(name))));
   const dossierCoverage=new Map();
   for(const profile of dossierProfiles??[]){
-    if(!profile||typeof profile.name!=='string'||!Number.isInteger(profile.through)||profile.reviewStatus==='pending'||profile.reviewStatus==='unreviewed')continue;
+    if(!profile||typeof profile.name!=='string'||!Number.isInteger(profile.through))continue;
+    const through=['pending','unreviewed'].includes(profile.reviewStatus)?profile.reviewedThrough:profile.through;
+    if(!Number.isInteger(through)||through<0||through>profile.through)continue;
     const key=foldName(canonical(profile.name)),old=dossierCoverage.get(key)??-1;
-    if(profile.through>old)dossierCoverage.set(key,profile.through);
+    if(through>old)dossierCoverage.set(key,through);
   }
   const coveredPersonaHistory=record=>{
     if(historyIntent||!['relationshipChanges','personaChanges','performanceHints'].includes(record.category))return false;

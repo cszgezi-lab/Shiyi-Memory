@@ -80,8 +80,12 @@ export function mergePersonaDevelopment(updates,{previous=[],messages,identity,n
     if(row.key!==undefined&&(!old||typeof row.key!=='string'||canonical(old.target??'')===null||foldName(canonical(old.target??''))!==foldName(target)||(old.scope??'').trim()!==scope)){rejected++;continue;}
     // No stale rerun/flashback floor can roll the current projection backwards.
     if(old&&old.floor>row.floor)continue;
-    if(earlierStoryTime(old?.storyTime,row.storyTime)){rejected++;continue;}
-    const item={key,topic,target,before:row.before.trim(),after:row.after.trim(),cause:row.cause.trim(),floor:row.floor,evidence:row.evidence,origin:old?.origin??row.before.trim(),...(scope?{scope}:{}),...(row.storyTime?{storyTime:row.storyTime}:old?.storyTime?{storyTime:old.storyTime}:{})};
+    if(earlierStoryTime(old?.timeAnchor?.storyTime??old?.storyTime,row.storyTime)){rejected++;continue;}
+    // An earlier dated revision is a chronology bound, not the date of a new
+    // undated change. Keep its provenance privately for flashback protection;
+    // do not attach it to the current floor or send it as current storyTime.
+    const timeAnchor=row.storyTime?{storyTime:row.storyTime,floor:row.floor}:old?.timeAnchor??(old?.storyTime?{storyTime:old.storyTime,floor:old.floor}:undefined);
+    const item={key,topic,target,before:row.before.trim(),after:row.after.trim(),cause:row.cause.trim(),floor:row.floor,evidence:row.evidence,origin:old?.origin??row.before.trim(),...(scope?{scope}:{}),...(row.storyTime?{storyTime:row.storyTime}:{}),...(timeAnchor?{timeAnchor}: {})};
     if(old&&old.after===item.after&&old.cause===item.cause)continue;
     proposals.push(item);
   }
@@ -89,8 +93,13 @@ export function mergePersonaDevelopment(updates,{previous=[],messages,identity,n
     // Conflicting answers for one key/floor are not last-row-wins.
     if(proposals.some(p=>p.key===item.key&&p.floor===item.floor&&JSON.stringify(p)!==JSON.stringify(item))){rejected++;continue;}
     const old=items.get(item.key);if(old&&old.floor>item.floor)continue;
-    if(earlierStoryTime(old?.storyTime,item.storyTime)){rejected++;continue;}
+    if(earlierStoryTime(old?.timeAnchor?.storyTime??old?.storyTime,item.storyTime)){rejected++;continue;}
+    if(!item.storyTime&&(old?.timeAnchor||old?.storyTime))item.timeAnchor=clone(old.timeAnchor??{storyTime:old.storyTime,floor:old.floor});
     item.origin=old?.origin??item.origin;
+    // One bounded first-recorded turning point, not an accumulating event log.
+    // Preserve unknown causes as unknown; don't replace them with recent trivia.
+    const start=old?.originChange??old??item;
+    item.originChange=clone({floor:start.floor,cause:start.cause??'',evidence:start.evidence??''});
     items.set(item.key,item);
   }
   return {items:[...items.values()],rejected};
@@ -102,6 +111,7 @@ export function personaDevelopmentText(items){
   // as current narration instructions on every request.
   return '【当前有据的角色表现 · 仅限所述对象与情境；旧阶段不是当前指令】\n'+[...items].sort((a,b)=>b.floor-a.floor).map(e=>[
     `${e.topic}${e.target?' · 对'+e.target:''}${e.scope?' · '+e.scope:''}（第${e.floor}楼${e.storyTime?'；'+e.storyTime:''}）`,
-    `变化后：${e.after}`,e.cause?`转变缘由：${e.cause}`:'',
+    `变化后：${e.after}`,e.cause?`本次转变缘由：${e.cause}`:'',
+    e.originChange?.cause&&e.originChange.floor!==e.floor?`形成这一变化的早期依据（第${e.originChange.floor}楼；历史缘由，不是旧态度指令）：${e.originChange.cause}`:'',
   ].filter(Boolean).join('\n')).join('\n\n');
 }

@@ -75,3 +75,57 @@ export function markPersonaQuoteParts(parts){
   }
   return parts.map(p=>({...p,sourceQuote:protectedKeys.has(p)}));
 }
+
+// Only a self-contained quotation, with no surrounding stable prose, may
+// leave the current style projection. Never rewrite the original utterance.
+export function retirablePersonaStyle(part){
+  if(!part?.sourceQuote||part.source==='chat')return false;
+  const text=String(part.original??'').trim();
+  return /^(?:[-*•]\s*)?(?:“[^“”]+”|「[^「」]+」|『[^『』]+』|"[^"]+")$/u.test(text);
+}
+// Legacy B references split some complete quotes (notably ASCII closers).
+// Keep those refs/keys stable and identify bounded, wholly quoted units.
+export function personaStyleGroups(parts){
+  const result=[];
+  for(let i=0;i<parts.length;i++){
+    const first=parts[i];if(!first.sourceQuote||first.source==='chat')continue;
+    let original='';const group=[];
+    for(let j=i;j<Math.min(parts.length,i+16);j++){
+      const p=parts[j];if(!p.sourceQuote||p.source==='chat'||p.book!==first.book||p.uid!==first.uid||p.spanId!==first.spanId)break;
+      original+=p.original??'';group.push(p);
+      if(original.length>4000)break;
+      if(retirablePersonaStyle({...first,original})){result.push(group);i=j;break;}
+    }
+  }
+  return result;
+}
+export function personaProjectedSourceParts(parts){
+  const marked=markPersonaQuoteParts(parts),restore=new Set();
+  for(const group of personaStyleGroups(marked))if(group.some(p=>p.status==='historical')&&!group.every(p=>p.status==='historical'))for(const p of group)restore.add(p.key);
+  return marked.map(p=>restore.has(p.key)?{...p,status:'active',text:p.original}:p);
+}
+// Quoted names/concepts must not freeze all surrounding narration. Only
+// complete, balanced quotes are eligible; fragments crossing old B-refs stay
+// protected. No quote bytes, number or order may change in a prose patch.
+export function personaProseQuotes(text){
+  const pairs=new Map([['“','”'],['「','」'],['『','』'],['"','"']]),closes=new Set(pairs.values()),stack=[],quotes=[];
+  let start=-1,outside='';
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(stack.length&&c===stack.at(-1)){stack.pop();if(!stack.length){quotes.push(text.slice(start,i+1));start=-1;}continue;}
+    if(pairs.has(c)){if(!stack.length)start=i;stack.push(pairs.get(c));continue;}
+    if(closes.has(c))return null;
+    if(!stack.length)outside+=c;
+  }
+  return !stack.length&&quotes.length&&/\p{L}/u.test(outside)?quotes:null;
+}
+export function safePersonaQuotedProse(part,text){
+  if(!part?.sourceQuote||part.source==='chat'||typeof text!=='string')return false;
+  const original=personaProseQuotes(String(part.original??'')),next=personaProseQuotes(text);
+  return Boolean(original&&next&&JSON.stringify(original)===JSON.stringify(next));
+}
+export function personaSourcePartText(part){
+  return part.sourceQuote&&part.original!==undefined&&!(part.quoteSafeEdit&&safePersonaQuotedProse(part,part.text))?part.original:part.text;
+}
+export const PERSONA_QUOTED_PROSE_RULE='editable="surrounding_prose"表示段落含被保护的称谓/引语，只可修改引号外有本批依据的叙述；protectedQuotes中的完整引语必须逐字保留、顺序与个数不变。不要因为段里出现引号就放任过时的全局性格指令：将其适用对象/场合改到有据范围，稳定身份、爱好、其它对象的特点不动。不在引号内插入叙述，不移动拼接跨ref引语。';
+export const PERSONA_STYLE_RETIRE_RULE='输出前逐个核对原书retirable:true口吻引语是否仍适用于当前对象。冲突时在updates用{ref,before,text:与before逐字相同,status:"historical",developmentIndex:本次development数组中对应项的位置从1起算,evidence:{floor,quote}}退出当前口吻，不改写引语，也无需重复填target/scope。retireTogether列出同一句被拆开的refs：必须对整组逐项提供完全相同的转变位置与依据，不能只退半句；各自before/text保留该ref原字。必须关联本批有依据的对象/情境转变及changed核对，将相关refs列入conflictRefs；原因叙述与相关人物原话可在本批不同楼，不为同楼伪造引文。稳定资料、非独立引语、没有冲突的范例不可退出。程序保留原文与历史，仅不再作为当前模仿素材。不能因为变亲近就撤掉自主、工作或对他人的边界。';

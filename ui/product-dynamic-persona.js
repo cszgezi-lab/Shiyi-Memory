@@ -16,7 +16,7 @@ export function personaSourceDetails(p,guide,sources){
   const protectedQuotes=markPersonaQuoteParts(p.composition?.parts??[]).filter(q=>q.sourceQuote&&q.original!==q.text).length;
   const pendingHTML=(pending.length||revision)?`<details data-persona-pending><summary>有待核对改动，尚未应用</summary><p>批次完成不代表这些改动已确认；原有可用内容保留。可在本人物编辑或手动精修中核对。</p>${revision?`<p>待核对的当前描述</p><div class="sy-packet">${esc(revision.notes??'')}</div>`:''}${pending.map(q=>`<p>${esc(q.ref??'当前补充')} · 缺少完整依据或对应片段</p>${q.text?`<div class="sy-packet">${esc(q.text)}</div>`:''}`).join('')}</details>`:'';
   const quoteHTML=protectedQuotes?`<p>${protectedQuotes} 处历史语料改写不作为原话注入；原记录仍可追溯，当前只保留原书范例及已核对实说。</p>`:'';
-  const summary=p.composition?`<p>保留 ${kept} 个${sources?.length?'原书原文':'聊天档案'}片段；本次改写原设定 ${rewritten} 处。未修改部分沿用${sources?.length?'原文':'已保存底稿'}，不靠模型重写。</p>${rewritten?p.composition.changes.map(c=>`<details><summary>${esc(c.title)} · 第${esc(c.sourceFloors.join('、'))}楼依据</summary><p>修改前</p><div class="sy-packet">${esc(c.before)}</div><p>修改后</p><div class="sy-packet">${esc(c.after)}</div></details>`).join(''):`<p>本次没有改写任何原设定句子；如果剧情已经和原设定冲突，说明模型只追加了新的剧情变化，没有去改动冲突的原句。</p>`}${p.composition.rejectedExamples?`<p>${p.composition.rejectedExamples} 条语料未确认原话或说话人，未纳入示例；其他档案内容保留。</p>`:''}${p.composition.rejectedDevelopment?`<p>${p.composition.rejectedDevelopment} 项成长补充缺少对应正文依据，未纳入成长脉络；原档案及已保存内容保留，不会自动另开校对任务。</p>`:''}`:'<p>此为旧版或手工档案；不会在升级时重写。下次明确更新时建立原文保留版本。</p>';
+  const summary=p.composition?`<p>保留 ${kept} 个${sources?.length?'原书原文':'聊天档案'}片段；本次改写原设定 ${rewritten} 处。未修改部分沿用${sources?.length?'原文':'已保存底稿'}，不靠模型重写。</p>${rewritten?p.composition.changes.map(c=>`<details><summary>${esc(c.title)} · 第${esc(c.sourceFloors.join('、'))}楼依据</summary><p>修改前</p><div class="sy-packet">${esc(c.before)}</div><p>修改后</p><div class="sy-packet">${esc(c.after)}</div></details>`).join(''):`<p>本次未改写底稿。对特定对象的新态度可以与原有性格并存；是否冲突以本轮实际注入内容为准。</p>`}${p.composition.rejectedExamples?`<p>${p.composition.rejectedExamples} 条语料未确认原话或说话人，未纳入示例；其他档案内容保留。</p>`:''}${p.composition.rejectedDevelopment?`<p>${p.composition.rejectedDevelopment} 项成长补充缺少对应正文依据，未纳入成长脉络；原档案及已保存内容保留，不会自动另开校对任务。</p>`:''}`:'<p>此为旧版或手工档案；不会在升级时重写。下次明确更新时建立原文保留版本。</p>';
   return `<details data-persona-sources><summary>原书来源与本次修改 · ${bindings.length} 个条目</summary>${bindings.length?bindings.map(s=>`<p>${esc(s.book)} · ${esc(s.title)}</p>`).join(''):''}${hint}${pendingHTML}${quoteHTML}${summary}</details>`;
 }
 export function dynamicPersonaProgressText(d){
@@ -33,6 +33,8 @@ export function dynamicPersonaHTML(){return `<section data-view="dynamic-persona
 <div class="sy-card" data-persona-auto>
 <div class="sy-grid">${setting('dynamicPersonaEvery')}${setting('dynamicPersonaKeepRecent')}</div>
 ${field('当前聊天自动起算楼层','<input data-persona-start type="number" min="0" value="1">')}
+${setting('dynamicPersonaFactReviewEnabled',undefined,'复用人设 API，只核对派生事实；关闭不影响主更新或手动精修。')}
+<p data-persona-fact-review-status class="sy-help" role="status" hidden></p>
 <div class="sy-actions"><button type="button" data-persona-save>保存设置</button></div>
 </div>
 <div class="sy-card" data-persona-manual hidden>
@@ -57,14 +59,15 @@ ${personaRefinementHTML()}
 <div class="sy-actions"><button type="button" data-persona-profile-prev>上一组人物</button><button type="button" data-persona-profile-next>下一组人物</button><span data-persona-profile-page></span></div><div data-persona-profiles></div>
 </section>`;}
 export function mountDynamicPersona({panel,app,run,host=globalThis}){
-  const $=s=>panel.querySelector?.(s),root=$('[data-view="dynamic-persona"]'),drafts=new Map();let stamp='',scope='',profilePage=0,startDirty=false,promptDirty=false,manualDirty=false,manualPage=0,manualStamp='',previewStamp='',auditStamp='';
+  const $=s=>panel.querySelector?.(s),root=$('[data-view="dynamic-persona"]'),drafts=new Map();let stamp='',scope='',profilePage=0,startDirty=false,promptDirty=false,factReviewDirty=false,manualDirty=false,manualPage=0,manualStamp='',previewStamp='',auditStamp='';
   if(!root)return {paint(){},focus(){},select(){},tab(){},dispose(){}};
   const refinementView=mountPersonaRefinement({panel,app,run,host});
   $('[data-persona-source-audit]')?.addEventListener('toggle',()=>paint(app.state));
   const bind=(s,fn)=>$(s)?.addEventListener('click',e=>run(fn,{name:'dynamic-persona',button:e.currentTarget}));
   $('[data-persona-start]')?.addEventListener('input',()=>{startDirty=true;});$('[data-persona-prompt]')?.addEventListener('input',()=>{promptDirty=true;});
+  $('[data-setting="dynamicPersonaFactReviewEnabled"]')?.addEventListener('input',()=>{factReviewDirty=true;});
   // Only this form edits the cadence; summary cards read the saved values.
-  const save=async()=>{const patch={dynamicPersonaEvery:Number($('[data-setting="dynamicPersonaEvery"]')?.value),dynamicPersonaKeepRecent:Number($('[data-setting="dynamicPersonaKeepRecent"]')?.value)};await app.saveSettings(patch);await app.setDynamicPersonaStart(Number($('[data-persona-start]').value));startDirty=false;};
+  const save=async()=>{const patch={dynamicPersonaEvery:Number($('[data-setting="dynamicPersonaEvery"]')?.value),dynamicPersonaKeepRecent:Number($('[data-setting="dynamicPersonaKeepRecent"]')?.value),dynamicPersonaFactReviewEnabled:Boolean($('[data-setting="dynamicPersonaFactReviewEnabled"]')?.checked)};await app.saveSettings(patch);if($('[data-setting="dynamicPersonaFactReviewEnabled"]')?.checked===patch.dynamicPersonaFactReviewEnabled)factReviewDirty=false;await app.setDynamicPersonaStart(Number($('[data-persona-start]').value));startDirty=false;};
   bind('[data-persona-save]',save);
   bind('[data-persona-default]',()=>{$('[data-persona-prompt]').value=DYNAMIC_PERSONA_PROMPT;promptDirty=true;});
   bind('[data-persona-budget-save]',async()=>{const patch={dynamicPersonaPrompt:$('[data-persona-prompt]').value,dynamicPersonaMvuMode:$('[data-setting="dynamicPersonaMvuMode"]').value};for(const key of ['dynamicPersonaInputUnits','dynamicPersonaOutputTokens','dynamicPersonaDeadlineMs'])patch[key]=Number($('[data-setting="'+key+'"]').value);await app.saveSettings(patch);promptDirty=false;});
@@ -92,8 +95,10 @@ export function mountDynamicPersona({panel,app,run,host=globalThis}){
   bind('[data-persona-profile-prev]',()=>{profilePage=Math.max(0,profilePage-1);stamp='';paint(app.state);});bind('[data-persona-profile-next]',()=>{profilePage++;stamp='';paint(app.state);});
   function paint(s){
     const d=s.dynamicPersona??{profiles:[],batches:[]},nextScope=JSON.stringify(s.core?.scope);
-    if(scope!==nextScope){scope=nextScope;stamp=manualStamp=previewStamp='';startDirty=promptDirty=manualDirty=false;profilePage=manualPage=0;drafts.clear();$('[data-persona-profiles]').replaceChildren();$('[data-persona-manual-start]').value=1;$('[data-persona-manual-end]').value='';$('[data-persona-manual-size]').value=20;$('[data-persona-manual-handoff]').checked=true;clearPreview();}
+    if(scope!==nextScope){scope=nextScope;stamp=manualStamp=previewStamp='';startDirty=promptDirty=factReviewDirty=manualDirty=false;profilePage=manualPage=0;drafts.clear();$('[data-persona-profiles]').replaceChildren();$('[data-persona-manual-start]').value=1;$('[data-persona-manual-end]').value='';$('[data-persona-manual-size]').value=20;$('[data-persona-manual-handoff]').checked=true;clearPreview();}
     $('[data-persona-status]').textContent=`${s.settings.dynamicPersonaEnabled?'已启用':'未启用'} · ${d.message??'打开聊天后读取档案'}`;
+    if(!factReviewDirty)$('[data-setting="dynamicPersonaFactReviewEnabled"]').checked=Boolean(s.settings.dynamicPersonaFactReviewEnabled);
+    const factStatus=$('[data-persona-fact-review-status]');factStatus.textContent=d.factualReview?.message??'';factStatus.hidden=!factStatus.textContent;
     $('[data-persona-refinement-status]').textContent=d.reviewError??d.refinement?.message??'只在手动开始后调用精修模型。';
     refinementView.paint(s);
     $('[data-persona-failure]').hidden=!d.failureDetails;
