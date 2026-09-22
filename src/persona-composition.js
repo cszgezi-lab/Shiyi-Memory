@@ -282,7 +282,7 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   }
   const noteResult=mergePersonaNotes(row,previous?.composition?.pendingOnly?undefined:previous,editContext),notes=noteResult.notes;
   const composition={version:2,retiredParts:clone(previous?.composition?.retiredParts??[]),parts,notes,examples:currentPersonaExamples(examples,development.items),exampleArchive:examples.sort((a,b)=>b.floor-a.floor).slice(0,48),sceneEvidence,changes,noteChanges:noteResult.changes,pendingEdits:[...pendingEdits,...noteResult.pending],rejectedExamples,ignoredUpdates,development:development.items,rejectedDevelopment:development.rejected,...(!spans.length?{localMode:localPatches&&parts.length?'patches':'snapshot'}:{}),...(!parts.length?{sourceBaseline:sourcePersonaBaseline(notes,name,row.sourceFloors)}:{})};
-  composition.changeCheck=personaChangeCheck(row,{parts,changes,development:development.items,previousDevelopment:previous?.composition?.development??[],examples:composition.examples,messages,identity,name});
+  composition.changeCheck=personaChangeCheck(row,{parts,changes,development:development.items,previousDevelopment:previous?.composition?.development??[],examples:composition.examples,messages,identity,name,initial:!previous});
   if(composition.changeCheck.status==='pending'){
     // A request can complete while its proposed interpretation remains pending.
     // Keep independently verified speech, not unverified current-state claims.
@@ -315,8 +315,30 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   }).slice(0,48);
   const reviewedThrough=['changed','unchanged'].includes(composition.changeCheck.status)?Math.max(...messages.map(m=>m.index)):personaReviewedThrough(previous);
   if(Number.isInteger(reviewedThrough)&&reviewedThrough>=0)composition.reviewedThrough=reviewedThrough;
+  if(composition.changeCheck.status==='changed')retireExactSupersededInstructions(composition,identity);
   if(!composition.parts.length&&!composition.notes&&!composition.pendingRevision)throw fail('text','新人物尚无可独立阅读的有效概况','persona_fields',{personaIssue:'empty_profile'});
   return {text:personaCompositionText(composition,{hasSources:spans.length>0}),composition:clone(composition)};
+}
+
+/** An accepted arc can name the exact old instruction and still forget the
+ * part edit. Drop only that whole fragment from the current injection. Do not
+ * rewrite it, guess a shorter phrase, or touch quotes and other people. */
+function retireExactSupersededInstructions(composition,identity){
+  const canonical=value=>identity.resolve?.(String(value??''))?.key??foldName(String(value??''));
+  for(const arc of composition.development??[]){
+    const before=String(arc.before??'').trim(),target=canonical(arc.target);
+    if(before.length<8||!target||!String(arc.after??'').trim()||!String(arc.evidence??'').trim())continue;
+    const named=identity.mentions?.(before)?.some(p=>p.key===target)||foldName(before).includes(foldName(String(arc.target??'')));
+    if(!named)continue;
+    for(const part of composition.parts??[]){
+      if(part.status==='historical'||part.sourceQuote||String(part.text??'').trim()!==before)continue;
+      part.status='historical';
+      part.retirement={kind:'superseded_instruction',target:arc.target,scope:arc.scope??'',developmentKey:arc.key};
+      composition.changes=[...composition.changes??[],{key:part.key,title:part.title,before:part.text,after:part.text,status:'historical',sourceFloors:part.sourceFloors??[]}];
+    }
+    const paragraphs=String(composition.notes??'').split(/\n\s*\n/u),kept=paragraphs.filter(p=>p.trim()!==before);
+    if(kept.length!==paragraphs.length)composition.notes=kept.map(p=>p.trim()).filter(Boolean).join('\n\n');
+  }
 }
 
 export function personaCompositionText(composition,{hasSources=false}={}){

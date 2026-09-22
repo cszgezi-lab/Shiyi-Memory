@@ -495,8 +495,6 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
   }
   function wake({resume=false}={}){
     if(resume)paused=false;
-    refinement.wake();
-    factualReview.wake();
     const manualRunning=data.manualPlan?.status==='running';
     const changedManualFailure=data.manualPlan?.status==='failed'&&data.manualPlan.items.some(b=>b.status==='failed'&&['MODEL_OUTPUT_TRUNCATED','PERSONA_RESPONSE_INVALID','SUMMARY_RESPONSE_ERROR'].includes(b.errorCode)&&b.recoveryPolicy!==recoveryPolicy());
     if(disposed||!ready&&view.status!=='waiting'||paused&&!manualRunning&&!changedManualFailure||!settings().dynamicPersonaEnabled||!currentWorkspace?.isCurrent()||!canRun())return;
@@ -528,7 +526,6 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const backlog=success&&(data.manualPlan?.status==='running'||!manualId&&plan().ready);
       const requested=wakePending;wakePending=false;
       if(backlog||requested||bound!==currentWorkspace)wake();
-      else {refinement.wake();factualReview.wake();}
     };
     async function fail(error){
       if(error&&typeof error==='object')error.details={...error.details,modelRole:'dynamicPersona',personaStep,modelRequested};
@@ -673,8 +670,8 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       emit();
       if(manualId&&data.manualPlan.status!=='completed')return {message:view.message,level:'success',batches:1};
       // Selection/persistence only: never await the optional model request.
-      try{await refinement.enqueue(rows.map(p=>p.id),range.messages);}catch(error){diagnostic({run,task:'persona',phase:'refinement_queue',level:'warning',details:errorDiagnostics(error)});}
-      if(!manualId)try{await factualReview.enqueue(rows.map(p=>p.id),request.source);}catch(error){diagnostic({run,task:'persona',phase:'factual_review_queue',level:'warning',details:errorDiagnostics(error)});}
+      // Optional fact review and manual refinement are not part of the update.
+      // A saved switch or an old plan must not spend another model call.
       try{await syncMirror(world.cardName,bound);guard();}
       catch(error){guard();view={...view,status:'saved',message:`档案已保存；世界书镜像未完成：${failureText(error)}`};}
       return {message:view.message,level:pendingCount?'warning':'success',batches:1};

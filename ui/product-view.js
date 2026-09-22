@@ -119,7 +119,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
       <button type="button" data-summary-pause>暂停</button>
       ${kind==='persona'?'<button type="button" data-persona-resume-auto hidden>继续自动</button>':''}
     </div>
-    ${kind==='persona'?'<p class="sy-summary-settings sy-help" data-persona-task-status role="status" aria-live="polite"></p><p class="sy-help" data-persona-review-status hidden></p><button type="button" data-persona-review-retry hidden>恢复辅助精修</button>':''}
+    ${kind==='persona'?'<p class="sy-summary-settings sy-help" data-persona-task-status role="status" aria-live="polite"></p>':''}
     ${kind==='persona'?`<details class="sy-summary-settings" data-summary-persona-batches><summary>人设批次 <small data-persona-batch-count></small></summary><p class="sy-help">失败自动重试最多三次；成功批次不重跑。正式批次按累积依赖删除，确认时会列出受影响的后续范围；未完成候选只能整组撤下。</p><div class="sy-actions"><button type="button" data-persona-resume-batches>继续未完成</button><button type="button" data-persona-pause-batches>暂停任务</button></div><div class="sy-actions"><button type="button" data-persona-batch-prev>上一页</button><span data-persona-batch-page></span><button type="button" data-persona-batch-next>下一页</button></div><div class="sy-actions"><button type="button" data-persona-batch-select-page>选中本页</button><button type="button" data-persona-batch-clear>清空选择</button><button type="button" data-persona-batch-delete-selected>删除所选</button></div><p class="sy-help" data-persona-batch-selection role="status"></p><div data-persona-batch-rows></div></details>`:''}
     <p class="sy-help" data-summary-legend></p>
   </section>`;}).join('');
@@ -223,9 +223,6 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
        const blocked=s.enabled===false?'插件已暂停':s.foregroundBusy?'等待当前聊天回复／注入结束':null;
        const label=stopping?'正在停止':running?'正在处理':retrying?'等待自动重试':unfinished?(manual.status==='paused'?'已暂停':manual.status==='failed'?'未完成':'已排队'):current||d.status==='failed'?'未完成':d.status==='saved'?'已保存':d.paused?'自动已暂停':settings.dynamicPersonaEnabled?'自动等待':'自动未开启';
        const status=node.querySelector('[data-persona-task-status]');
-       const reviewStatus=node.querySelector('[data-persona-review-status]'),reviewRetry=node.querySelector('[data-persona-review-retry]');
-       if(reviewStatus){reviewStatus.hidden=!d.refinement?.manualPlan||!d.refinement?.message&&!d.reviewError;reviewStatus.textContent=d.reviewError??d.refinement?.message??'';}
-       if(reviewRetry)reviewRetry.hidden=!d.refinement?.manualPlan||d.refinement?.status!=='failed'&&!d.reviewError;
        const progress=unfinished?`已完成 ${manual.items.filter(b=>b.status==='saved').length}/${manual.items.length} 批；候选全部完成后应用。`:'';
        const failureCode=current?.errorCode??d.failureDetails?.code;
        const reason=Number.isInteger(d.failureDetails?.status)?`接口返回 HTTP ${d.failureDetails.status}`:({TIMEOUT:'接口响应超时',PROVIDER_HTTP_ERROR:'接口请求失败',PERSONA_RESPONSE_INVALID:'人物回答未通过检查',MODEL_OUTPUT_TRUNCATED:'模型回答被截断',INPUT_BUDGET_EXCEEDED:'本批超过输入预算',HISTORY_UNAVAILABLE:'聊天原文暂未就绪'})[failureCode]??String(current?.message??d.message??'未完成').split(/[。；]/)[0].slice(0,100);
@@ -434,7 +431,6 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  actions['auto-start']=async()=>{await saveAutomatic();await app.setAutomatic(true);fill();};actions['auto-pause']=async()=>{await app.setAutomatic(false);fill();};
  // 总结页第二行：动态人设「启用/暂停」按钮直接通过 application 操作；周期设到人设页调整。
  $('[data-persona-enable-inline]')?.addEventListener('click',()=>run(()=>app.setDynamicPersona(true),{name:'dynamic-persona',button:$('[data-persona-enable-inline]')}));
- $('[data-persona-review-retry]')?.addEventListener('click',e=>run(()=>app.retryDynamicPersonaReview(),{name:'dynamic-persona',button:e.currentTarget}));
  $('[data-persona-pause-inline]')?.addEventListener('click',()=>run(()=>app.pauseDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-pause-inline]')}));
  $('[data-persona-resume-batches]')?.addEventListener('click',()=>run(()=>app.queueDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-resume-batches]')}));
  $('[data-persona-pause-batches]')?.addEventListener('click',()=>run(()=>app.pauseDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-pause-batches]')}));

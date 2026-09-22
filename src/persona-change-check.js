@@ -11,12 +11,20 @@ export function personaReviewedThrough(profile){
   const saved=profile.composition?.reviewedThrough;
   return Number.isInteger(saved)&&saved>=0&&saved<=profile.through?saved:undefined;
 }
-export function personaChangeCheck(row,{parts,changes,development,previousDevelopment=[],examples,messages,identity,name}){
+export function personaChangeCheck(row,{parts,changes,development,previousDevelopment=[],examples,messages,identity,name,initial=false}){
   const value=row.changeCheck,issues=[];
   if(!value||!['changed','unchanged','uncertain'].includes(value.status))return {status:'unreviewed',issues:['未返回变化核对'],floors:row.sourceFloors};
   const evidence=Array.isArray(value.evidence)?value.evidence.filter(e=>typeof e?.quote==='string'&&e.quote.length>=4&&e.quote.length<=600&&messages.some(m=>m.index===e.floor&&m.text.includes(e.quote))&&identity.mentions(e.quote).some(p=>p.name===name)):[];
   if(!evidence.length)issues.push('缺少可定位的本人物核对依据');
-  const refs=Array.isArray(value.conflictRefs)?value.conflictRefs:null;
+  // A first source-free, unchanged biography has no B-reference universe.
+  // Recover only an omitted redundant empty list, never null/invalid values,
+  // existing revisions, source edits, or a proposed character transition.
+  const omittedEmpty=initial&&!parts.length&&!changes.length&&!development.length&&
+    value.status==='unchanged'&&value.expressionChanged===false&&value.conflictRefs===undefined&&
+    (row.updates===undefined||Array.isArray(row.updates)&&!row.updates.length)&&
+    (row.development===undefined||Array.isArray(row.development)&&!row.development.length)&&
+    (row.noteUpdates===undefined||Array.isArray(row.noteUpdates)&&!row.noteUpdates.length);
+  const refs=Array.isArray(value.conflictRefs)?value.conflictRefs:omittedEmpty?[]:null;
   if(!refs||refs.some(ref=>!parts.some(p=>p.ref===ref)))issues.push('冲突片段范围未确认');
   const keys=new Set(changes.map(c=>c.key));
   if(refs?.some(ref=>{const p=parts.find(p=>p.ref===ref);return p&&!keys.has(p.key);}))issues.push('声明的旧设定冲突尚未逐项修改');
