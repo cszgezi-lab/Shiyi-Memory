@@ -30,7 +30,7 @@ export function applyUserDirectives(profile){
   const lines=Array.isArray(profile?.userDirectives)?profile.userDirectives.map(item=>String(item??'').trim()).filter(Boolean):[];
   if(!lines.length)return profile;
   const head=`【强调】\n这里的句子优先于原书、语料和后文概括。冲突时只照这里做。\n${lines.join('\n')}`;
-  const tail=`【强调 · 收束】\n原书和旧口吻到此为止。下面这几句仍然有效：\n${lines.join('\n')}`;
+  const tail=`【强调 · 收束】\n和上面的档案冲突时，仍以这几句为准：\n${lines.join('\n')}`;
   let text=String(profile.text??'');
   if(text.startsWith(head))text=text.slice(head.length).replace(/^\n+/u,'');
   if(text.endsWith(tail))text=text.slice(0,-tail.length).replace(/\n+$/u,'');

@@ -15,9 +15,9 @@ export function personaDirectiveRequest(profile,instruction){
 只输出 JSON：{"directives":["……"]}。
 规则：
 1. 只写用户这次要求和已有强调里的内容，不补充用户没说的事实、经历、台词或新关系。
-2. 每条一句，写清是谁、对谁、现在默认怎么做；答应过的事写成「默认就这样做，不需要对方提醒」。
+2. 每条一句，写清是谁、对谁、现在怎样。保留用户说出的条件和对象。不要把用户没说的情节补成固定句式。
 3. 用户要求删除或改写旧条目时，按要求删除或替换；没提到的旧条目原样保留。
-4. 已经过去的顾虑、创伤若用户说不必再强调，写成「已缓解，不作为当前主要情绪」，不要复述原因经过。
+4. 用户要求去掉的旧内容从列表删除，或换成用户写出的当前说法。不要为被删内容再写一条说明。
 5. 最多 ${MAX_PERSONA_DIRECTIVES} 条，每条不超过 120 字，用简体中文，不写解释。`;
   const user=JSON.stringify({name:profile.name,aliases:profile.aliases??[],existingDirectives:existing,currentAttitudes:attitudes||'',instruction:text});
   return {messages:[{role:'system',content:system},{role:'user',content:user}]};
