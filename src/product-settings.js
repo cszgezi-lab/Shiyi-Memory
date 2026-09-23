@@ -34,7 +34,7 @@ const DEFINITIONS = [
   {key:'dynamicPersonaEvery',label:'人设每多少楼更新',defaultValue:10,type:'integer',min:1,max:200,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaKeepRecent',label:'保留最近楼数（推荐 2）',defaultValue:0,type:'integer',min:0,max:1000,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaInputUnits',label:'人设输入预算（估算）',defaultValue:24000,type:'integer',min:1000,max:1000000,consumers:['DynamicPersonaController']},
-  {key:'dynamicPersonaOutputTokens',label:'人设回复上限（Token）',defaultValue:8192,type:'integer',min:0,max:131072,consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaOutputTokens',label:'人设回复上限（Token，0 为不设上限）',defaultValue:0,type:'integer',min:0,max:131072,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaDeadlineMs',label:'人设请求超时（毫秒）',defaultValue:180000,type:'integer',min:1000,max:600000,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaEndpoint',label:'动态人设 API 地址',defaultValue:'',type:'string',maxLength:2048,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaModel',label:'动态人设模型',defaultValue:'',type:'string',maxLength:240,consumers:['DynamicPersonaController']},

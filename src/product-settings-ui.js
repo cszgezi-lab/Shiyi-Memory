@@ -10,7 +10,7 @@ const copy = {
   dynamicPersonaEvery:['每多少楼更新人物',''],
   dynamicPersonaKeepRecent:['保留最近多少楼（推荐 2）',''],
   dynamicPersonaInputUnits:['人设输入预算（估算）','推荐 24000；包含正文、原书和已有材料。超限会明确提示，不偷偷拆分你选的批次。'],
-  dynamicPersonaOutputTokens:['人设回复上限（Token）','推荐 8192，限制模型本次回复长度，不截断已保存的完整人物档案。'],
+  dynamicPersonaOutputTokens:['人设回复上限（Token，0 为不设上限）','默认 0：不发送上限，跟随接口上限，避免浓缩人物输出。设数值则限制本次回复长度；不影响已保存的完整档案。'],
   dynamicPersonaDeadlineMs:['人设请求超时（毫秒）','推荐 180000，即 3 分钟；后台更新，不增加前台召回等待时间。'],
   dynamicPersonaMvuMode:['人物演绎主次','推荐剧情主导：MVU 数值只作参考，不把人物锁在固定阶段。不会改写变量、阈值或脚本；旧卡也可选择严格阶段兼容。'],
   summaryRequestMode:['总结请求方式','推荐方式不强制服务端 JSON 模式；仍按预设输出、完整校验后保存。不支持流式的接口可选兼容非流式。'],
