@@ -14,7 +14,7 @@ export const PERSONA_DEVELOPMENT_RULE=`正文新人物与原书人物同等处�
 有明确转变时可另输出development:[{topic:"自由命名的变化主题",target:"具体对象；无对象填空串",before:"此前状态",after:"变化后的表现",cause:"原文明确的转变原因；未说明填空串",floor:1,evidence:"该楼支持变化的完整连续原文"}]。每项证据逐字引用本批正文，并包含人物归属与变化；没有足够依据就只保留有据概况，不编补原因。topic沿用previous.development同一主题，target沿用正式姓名；不能把不同对象合成泛泛的信任。只输出本批新增/改变的主题，程序保留其他主题，不用回显所有旧项。previous.development中的起点和转变供理解连续性，当前正文优先，倒叙只作历史，不能覆盖已有后续状态。首次text须可独立阅读；已有B/N仅修改必要段落，不能用development代替冲突段落的updates/noteUpdates，也不整篇回写text。语料examples保留能体现转变的真实原话及对象，不把私人心迹当作公开发言。无实质变化不输出该人物。`;
 
 export const PERSONA_CURRENT_ARC_RULE=`development是当前变化索引，不是事件清单。同一变化即使换了topic措辞，也要回填previous.development中的key；新主题省略key，不编造。target和scope界定对象与适用情境，沿用旧项的原值；不同对象、公开/私下、条件不同分别保留，不为压缩强合。可填scope（原文支持的情境，旧项无此字段时为空串）、phase:"current"或"historical"、storyTime（原文逐字明确的日期；未知省略）。倒叙项用historical，不覆盖当前项；来源楼号增加不等于时间推进。每个key输出一个当前完整after及仍有效的边界，origin/before/evidence留作追溯，被后续状态代替的早期说法不与当前说法同时当作必须演绎的指令。
-本批明确改变表达方式时，development.evidence尽量包含完整人物归属和有代表性的真实原话，不截掉条件/否定。examples可用developmentKey关联已给出的key，但必须逐字出自同条证据、同楼；未知就省略。选择几条不同情境的当前语料，不因强烈措辞更醒目就全选威胁/拒绝。本次修改的当前描述保持简洁，不回放origin/before和全部事件；原书片段中相冲突的旧口吻仍须用updates处理，未变稳定资料保留。`;
+本批明确改变表达方式时，development.evidence尽量包含完整人物归属和有代表性的真实原话，不截掉条件/否定。examples可用developmentKey关联已给出的key，但必须逐字出自同条证据、同楼；未知就省略。选择几条不同情境的当前语料，不因强烈措辞更醒目就全选威胁/拒绝。详略分层：对象是玩家（role=user）或attention权重≥3时，after写透现状、边界、表达与例外，五句以内；其余对象一两句；不回放origin/before和全部事件；原书片段中相冲突的旧口吻仍须用updates处理，未变稳定资料保留。`;
 
 const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{|@@/i;
 const generic=/^(?:旁白|叙述|系統|系统|剧情|選項|选项|时间|地點|地点|角色|人物|姓名|我|你|他|她|它|大家|众人|有人|路人|老师|先生|小姐|店员|玩家|用户|助手|assistant|user|system|narrator)$/i;

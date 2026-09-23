@@ -638,10 +638,18 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const liveSuppressed=data.profiles.filter(p=>p.deleted&&p.mergedInto);
       const previous=clone(manualId?(clean?data.manualPlan.workingProfiles:[...data.manualPlan.workingProfiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)),...data.profiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)&&isProtectedProfile(p))]):data.profiles);
       const replayContext={inputLimit:config.dynamicPersonaInputUnits,identityProfiles:clean?data.manualPlan.identityProfiles:personaRebuildIdentities(data.profiles,data.personaIdentities),...(clean?{materialsThrough:data.manualPlan.replaceFrom-1}:{})};
-      const request=personaRequest({messages:range.messages,world,previous,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction,...replayContext});
+      const buildPersonaRequest=(economy,messages=range.messages,priorDossier=previous)=>personaRequest({messages,world,previous:priorDossier,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction,...replayContext,...(economy?{arcReferenceVariant:'off',materialsThrough:-1}:{})});
+      let request=buildPersonaRequest(false),inputUnits=estimateUnits(JSON.stringify(request.messages));
+      // The input limit guards model attention, not a hard wall. Before failing
+      // a paid batch, drop the optional attention aids (memory material rows
+      // and arc references). Source, worldbook, the previous dossier and the
+      // floor range are never truncated; only a still-oversized request fails.
+      let economy=false;
+      if(inputUnits>config.dynamicPersonaInputUnits){economy=true;request=buildPersonaRequest(true);inputUnits=estimateUnits(JSON.stringify(request.messages));}
       if(request.readingReport)diagnostic({run,task:'persona',phase:'reading',level:request.readingReport.readingFallbacks?'warning':'info',details:request.readingReport});
       view={...view,worldbook:{status:world.status??'ready',cardName:world.cardName,books:[...new Set(world.entries?.map(e=>e.book)??[])],entries:world.entries?.length??0,safeFragments:world.spans?.length??0,audit:request.audit,guide:personaSourceGuide({...world,audit:request.audit})}};emit();
-      const inputUnits=estimateUnits(JSON.stringify(request.messages));if(inputUnits>config.dynamicPersonaInputUnits)throw Object.assign(new Error(`人设输入约 ${inputUnits} 单位，超过设置的 ${config.dynamicPersonaInputUnits}；未截断正文或改变楼数`),{code:'INPUT_BUDGET_EXCEEDED',details:{stage:'prepare',reason:'input_budget_exceeded',inputUnits,inputLimit:config.dynamicPersonaInputUnits}});
+      if(inputUnits>config.dynamicPersonaInputUnits)throw Object.assign(new Error(`人设输入约 ${inputUnits} 单位，超过设置的 ${config.dynamicPersonaInputUnits}；未截断正文或改变楼数`),{code:'INPUT_BUDGET_EXCEEDED',details:{stage:'prepare',reason:'input_budget_exceeded',inputUnits,inputLimit:config.dynamicPersonaInputUnits}});
+      if(economy)diagnostic({run,task:'persona',phase:'plan',level:'warning',details:{reason:'persona_input_soft_cap',inputUnits,inputLimit:config.dynamicPersonaInputUnits,droppedAids:['materials','arcReferences'],modelRole:'dynamicPersona'}});
       diagnostic({run,task:'persona',phase:'plan',details:{startIndex:next.nextStart,endIndex:next.nextEnd,sourceCount:range.messages.length,inputUnits,inputLimit:config.dynamicPersonaInputUnits,maxTokens:config.dynamicPersonaOutputTokens,plannedRequests:1,modelRole:'dynamicPersona'}});
       showStep('正在生成／检查人物档案（独立 API）');
       const fingerprint=sha256({recovery:PERSONA_RECOVERY_VERSION,sourceHash,request:request.messages,model:config.dynamicPersonaModel,endpoint:config.dynamicPersonaEndpoint,output:config.dynamicPersonaOutputTokens,previous});
@@ -649,7 +657,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       personaStep='cached_response';const cached=await bound.read(cacheKey,null);guard();
       const recoveryGuard=()=>{guard();if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k])))throw canceled();};
       const rows=await recoverPersonaBatch({messages:range.messages,previous,fingerprint,cached,inputLimit:config.dynamicPersonaInputUnits,guard:recoveryGuard,
-        makeRequest:(messages,previous)=>personaRequest({messages,world,previous,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction,...replayContext}),
+        makeRequest:(messages,previous)=>buildPersonaRequest(economy,messages,previous),
         send:async messages=>{personaStep='model_request';modelRequested=true;return client().chatCompletions({model:config.dynamicPersonaModel,messages,stream:true,...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})},{signal:controller.signal});},
         parse:(response,{messages,previous,request})=>{personaStep='parse_profile';return parsePersonaResponse(response,{messages,spans:request.spans,previous,identity:request.identity,developmentMessages:request.source,stageMode:config.dynamicPersonaMvuMode,preserveSources:true,collectFailures:true,diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});},
         save:value=>bound.write(cacheKey,value),diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});

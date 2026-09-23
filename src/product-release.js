@@ -1,2 +1,2 @@
-export const PRODUCT_VERSION = '0.21.62';
+export const PRODUCT_VERSION = '0.21.63';
 export const PRODUCT_REPOSITORY = 'https://github.com/cszgezi-lab/Shiyi-Memory';
