@@ -13,7 +13,7 @@ import { safeLogDetails } from './product-runtime-log.js';
 import { diagnosticRequestId, errorDiagnostics, jsonFailure, contentType } from './diagnostics.js';
 import { resolveEventMerges } from './event-consolidation.js';
 import { tokenizeChinese } from './retrieval.js';
-import { normalizeSummaryEnums, normalizePersonaValidity, repairableEnumTargets, createEnumRepairRequest, applyEnumCorrections, deferCommitmentStates } from './summary-enum-repair.js';
+import { normalizeSummaryEnums, normalizePersonaValidity, normalizeRecordIdentifiers, repairableEnumTargets, createEnumRepairRequest, applyEnumCorrections, deferCommitmentStates, quarantineInvalidEnums } from './summary-enum-repair.js';
 import {transientSummaryError,recoveryAttemptLimit,recoveryDelay,repairCategories,categoryRepairRequest,applyCategoryRepair,missingFloorRequest} from './summary-recovery.js';
 import {summaryTransportOptions} from './summary-transport.js';
 import { selectSummaryContext, summarySources } from './summary-context.js';
@@ -842,9 +842,10 @@ export class SummaryEngine {
           emit('normalize',{...baseDetails,...links,normalizedSourceRefs:normalizedModuleSourceRefs(parsed,expanded),compactFloors:expanded.summaryView.length,compactChanges:Object.keys(expanded).filter(k=>!['events','summaryView'].includes(k)&&Array.isArray(expanded[k])).reduce((n,k)=>n+expanded[k].length,0)},links.resolvedSourceTextHints||links.wholeFloorEventAnnotations?'warning':'success');
         }
         const normalizeDraftMetadata=(draft,purpose)=>{
-          const {output:enumOutput,...enumCounts}=normalizeSummaryEnums(draft);
+          const {output:identified,normalizedIdentifiers}=normalizeRecordIdentifiers(draft);
+          const {output:enumOutput,...enumCounts}=normalizeSummaryEnums(identified);
           const {output:value,...personaCounts}=normalizePersonaValidity(enumOutput);
-          const counts={...enumCounts,...personaCounts};
+          const counts={...(normalizedIdentifiers?{normalizedIdentifiers}:{}),...enumCounts,...personaCounts};
           if(Object.values(counts).some(n=>n>0))emit('normalize',{...baseDetails,...counts,...(purpose?{purpose}:{})},counts.misplacedEvidenceKinds||counts.unknownEvidenceTypes||counts.unknownKnowledgeMetadata||counts.unknownPersonaContexts||counts.restrictedPersonaScopes||counts.unknownEventPerspectives?'warning':'success');
           return value;
         };
@@ -989,6 +990,19 @@ export class SummaryEngine {
           newSourceIds: child.sourceMessages.map((message) => message.id),
         };
         let validation = validateDraftBundle(bundle,validationOptions);
+        // U199: one residual bad enum must not discard the whole paid batch.
+        // After every model-informed repair path, fields whose vocabulary has
+        // an explicit 'unknown' member fall back to it with a pending review
+        // marker; structural damage still fails at the final validation.
+        const tryQuarantineEnums=async()=>{
+          if(validation.valid)return;
+          const quarantined=quarantineInvalidEnums(bundle,validation);
+          if(!quarantined.paths.length)return;
+          bundle=quarantined.output;
+          validation=validateDraftBundle(bundle,validationOptions);
+          await keepResponse(bundle);
+          emit('records_deferred',{...baseDetails,deferredRecords:quarantined.paths.length,enumQuarantined:quarantined.paths.length},'warning');
+        };
         const deferred=deferCommitmentStates(bundle,validation);
         if(deferred.paths.length){
           bundle=deferred.output;validation=validateDraftBundle(bundle,validationOptions);
@@ -1031,10 +1045,9 @@ export class SummaryEngine {
               if(checked.valid){bundle=corrected;validation=checked;await keepResponse(bundle);emit('repair_complete',{...baseDetails,repairFields:repairTargets.length,elapsedMs:this.now()-repairStarted},'success');}
             }
             phase='validate';
-            if(!validation.valid){
-              emit('repair_failed',{...baseDetails,...safeLogDetails(validation),repairFields:repairTargets.length},'error');
-              throw new ValidationError('enum correction did not pass validation',{...validation,repairAttempted:true});
-            }
+            if(!validation.valid)emit('repair_failed',{...baseDetails,...safeLogDetails(validation),repairFields:repairTargets.length},'error');
+            await tryQuarantineEnums();
+            if(!validation.valid)throw new ValidationError('enum correction did not pass validation',{...validation,repairAttempted:true});
           }else emit('repair_skipped',{...baseDetails,inputLimit:configuredLimit,inputUnits:repairUnits,code:'INPUT_BUDGET_EXCEEDED'},'warning');
         }
         if(!validation.valid&&this.recoveryEnabled&&!this.verified){
@@ -1065,6 +1078,7 @@ export class SummaryEngine {
             }
           }
         }
+        await tryQuarantineEnums();
         if (!validation.valid) throw new ValidationError('summary DraftBundle failed validation', validation);
         const coverage = coverageState(bundle.coverage, sourceRefs);
         if (!coverage.complete) {

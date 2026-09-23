@@ -1,9 +1,19 @@
 // Absolute host floors, not turns or batchNumber * the current batch size.
 export function autoSummaryPlan(batches=[],{startFloor=1,batchSize=10,keepRecent=2,lastIndex=null}={}){
   if(!Number.isSafeInteger(startFloor)||startFloor<0||!Number.isSafeInteger(batchSize)||batchSize<1||!Number.isSafeInteger(keepRecent)||keepRecent<0)throw new Error('自动总结的起点、每批楼数和保留楼数无效');
-  const ranges=batches.filter(b=>b.status!=='deleted'&&(b.status==='saved'||b.savedOperationId)&&Number.isSafeInteger(b.startIndex)&&Number.isSafeInteger(b.endIndex)).sort((a,b)=>a.startIndex-b.startIndex);
+  // Ordering contract: the cursor only advances over SAVED batches, and the
+  // first unsaved batch (failed/interrupted/queued/staged) blocks everything
+  // after it. Cumulative batches build on their predecessors, so a middle
+  // failure must be retried in place — skipping it and continuing later
+  // produced out-of-order commits and revision conflicts.
+  const rows=batches.filter(b=>b.status!=='deleted'&&Number.isSafeInteger(b.startIndex)&&Number.isSafeInteger(b.endIndex)).sort((a,b)=>a.startIndex-b.startIndex||a.endIndex-b.endIndex);
+  const ranges=rows.filter(b=>b.status==='saved');
   let next=startFloor;
-  for(const b of ranges){if(b.startIndex>next)break;if(b.endIndex>=next)next=b.endIndex+1;}
+  for(const b of rows){
+    if(b.startIndex>next)break;
+    if(b.status!=='saved'){next=Math.max(startFloor,Math.min(next,b.startIndex));break;}
+    if(b.endIndex>=next)next=b.endIndex+1;
+  }
   const following=ranges.find(b=>b.startIndex>next),end=Math.min(next+batchSize-1,following?following.startIndex-1:Infinity),known=Number.isSafeInteger(lastIndex),eligibleEnd=known?lastIndex-keepRecent:null;
   const coverage=summaryCoverage(batches,{startFloor,lastIndex,keepRecent,batchSize});
   return {startFloor,coveredThrough:next-1,nextStart:next,nextEnd:end,batchSize,keepRecent,lastIndex:known?lastIndex:null,

@@ -116,6 +116,48 @@ export function repairableEnumTargets(bundle,validation) {
   return targets.every(Boolean)&&new Set(targets.map(t=>t.path)).size===targets.length?targets:[];
 }
 
+// Transport normalization only: some providers emit record ids and event
+// references as JSON numbers even though the contract treats them as opaque
+// strings. Both sides are stringified identically; what the id points at is
+// still decided by the full validator.
+export function normalizeRecordIdentifiers(output){
+  const value=clone(output);let normalizedIdentifiers=0;
+  const scalar=raw=>{if(typeof raw==='number'&&Number.isFinite(raw)){normalizedIdentifiers++;return String(raw);}return raw;};
+  for(const category of Object.keys(fields)){
+    // A non-array category is malformed input the validator must reject; the
+    // transport normalization never iterates or rewrites it.
+    for(const row of Array.isArray(value?.[category])?value[category]:[]){
+      if(!row||typeof row!=='object'||Array.isArray(row))continue;
+      if(Object.hasOwn(row,'id'))row.id=scalar(row.id);
+      if(Object.hasOwn(row,'eventRef'))row.eventRef=scalar(row.eventRef);
+      if(Array.isArray(row.eventRefs))row.eventRefs=row.eventRefs.map(scalar);
+    }
+  }
+  return {output:value,normalizedIdentifiers};
+}
+
+// A residual invalid enum no longer discards the whole paid batch. Fields
+// whose vocabulary contains 'unknown' fall back to that explicitly
+// unclassified value with a pending review marker; every other validator
+// (sources, coverage, structure) still runs and still fails on real damage.
+export function quarantineInvalidEnums(bundle,validation){
+  const value=clone(bundle),paths=[];
+  for(const issue of validation.validationIssues??[]){
+    const target=targetFor(value,issue.path);
+    if(!target||!enums[target.type].includes('unknown'))continue;
+    const current=target.record[target.field];
+    // 'required' is quarantined only for an absent/null/empty enum value; a
+    // required non-enum field (person, sources…) still fails validation.
+    const eligible=issue.reason==='invalid_enum'||issue.reason==='required'&&(typeof current!=='string'||!current.trim());
+    if(!eligible)continue;
+    const original=current;
+    target.record[target.field]='unknown';
+    target.record.enumReview={status:'pending',field:target.field,...(typeof original==='string'&&original.length<=160?{originalValue:original}:{})};
+    paths.push(issue.path);
+  }
+  return {output:value,paths};
+}
+
 // Unknown commitment state is a quarantined observation, NOT an accepted
 // promise. Keep the sourced text for targeted review instead of losing a
 // whole batch. Every other validator, including source and coverage, still runs.
