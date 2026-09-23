@@ -1,7 +1,7 @@
 import {clone,sha256} from './utils.js';
 import {foldName} from './persona-identity.js';
 import {storyTimeRange} from './temporal.js';
-export const PERSONA_IMPACT_RULE=`动态人设不是第二份事件记忆。客观事件、完整时间线和发生经过由记忆模块保存；这里优先回答“这些经历让此人对谁、在何种场合、如何说话与行动发生了什么变化”。当前描述（首次text或局部修改的段落）按对象归纳仍有效的态度、情感、边界和表达方式，把本批重大变化放在最前；同一关系是当前状态，不逐批追加日记。转变原因只留理解表现所必要的一句与楼号，不重复整段事件经过。
+export const PERSONA_IMPACT_RULE=`动态人设不是第二份事件记忆。客观事件、完整时间线和发生经过由记忆模块保存；这里优先回答“这些经历让此人对谁、在何种场合、如何说话与行动发生了什么变化”。当前描述与development按对象各写现在怎么对此人（态度、边界、表达），本批重大变化放最前；同一关系是当前状态，不逐批追加日记；答应过的默认照做，不写成要对方提醒；已缓解的顾虑只写剩余部分。转变原因只留一句与楼号，不重复事件经过。
 必须核对本批具实质变化的角色：是否明确答应改变态度，是否开始主动求助/表达依赖，是否只对特定对象放下防备，公开与私下是否不同，之后的行动是否延续该变化。不因“底色是傲娇/冷漠”等原设定把明确变化抹平，也不把一次情绪写成永久人格替换。沿用development的主题与对象更新当前after，before/origin只是历史，不是每轮重演的性格。保留其他仍有效的对象关系。
 examples优先选体现当前态度改变、措辞和表达方式的真实原话，写明对谁及情境；保留否定、条件与不确定性，不把威胁或玩笑升格为会执行的永久行为。稳定外貌、身份、独立爱好由底稿保留，不为缩短删除未变细节。应退出当前演绎的旧关系/口吻通过对应updates明确注明历史，不只追加矛盾结论。无依据不“彻底、完全、永远”强化。`;
 
@@ -106,12 +106,19 @@ export function mergePersonaDevelopment(updates,{previous=[],messages,identity,n
 }
 
 export function personaDevelopmentText(items){
-  if(!items.length)return '';
-  // Full origins and evidence remain in composition/checkpoints, not repeated
-  // as current narration instructions on every request.
-  return '【当前有据的角色表现 · 仅限所述对象与情境；旧阶段不是当前指令】\n'+[...items].sort((a,b)=>b.floor-a.floor).map(e=>[
-    `${e.topic}${e.target?' · 对'+e.target:''}${e.scope?' · '+e.scope:''}（第${e.floor}楼${e.storyTime?'；'+e.storyTime:''}）`,
-    `变化后：${e.after}`,e.cause?`本次转变缘由：${e.cause}`:'',
-    e.originChange?.cause&&e.originChange.floor!==e.floor?`形成这一变化的早期依据（第${e.originChange.floor}楼；历史缘由，不是旧态度指令）：${e.originChange.cause}`:'',
-  ].filter(Boolean).join('\n')).join('\n\n');
+  const current=items.filter(e=>e.phase!=='historical');
+  if(!current.length)return '';
+  // Group by the person this character is reacting to. The dossier is about
+  // attitudes toward people; the full event trail stays in memory records.
+  const groups=new Map();
+  for(const e of [...current].sort((a,b)=>b.floor-a.floor)){const key=e.target||'';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(e);}
+  const lines=[...groups].map(([target,rows])=>[
+    target?`▶ 对${target}`:'▶ 对所有人或自身',
+    ...rows.map(e=>[
+      `${e.topic}${e.scope?' · '+e.scope:''}（第${e.floor}楼${e.storyTime?'；'+e.storyTime:''}）：${e.after}`,
+      e.cause?`转变缘由：${e.cause}`:'',
+      e.originChange?.cause&&e.originChange.floor!==e.floor?`最早的转折（第${e.originChange.floor}楼，已过去）：${e.originChange.cause}`:'',
+    ].filter(Boolean).join('\n')),
+  ].join('\n'));
+  return '【对各人物的当前态度 · 按对象区分；已化解的旧顾虑不是现在的性格】\n'+lines.join('\n\n');
 }

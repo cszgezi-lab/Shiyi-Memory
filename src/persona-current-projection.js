@@ -26,8 +26,18 @@ export function personaTimelineFrame(records={},endFloor=Infinity){
  const result=frame?.stage?frame:null;
  frameCache.set(records,{endFloor,frame:result});return result;
 }
+export function applyUserDirectives(profile){
+  const lines=Array.isArray(profile?.userDirectives)?profile.userDirectives.map(item=>String(item??'').trim()).filter(Boolean):[];
+  if(!lines.length)return profile;
+  const head=`【强调】\n这里的句子优先于原书、语料和后文概括。冲突时只照这里做。\n${lines.join('\n')}`;
+  const tail=`【强调 · 收束】\n原书和旧口吻到此为止。下面这几句仍然有效：\n${lines.join('\n')}`;
+  let text=String(profile.text??'');
+  if(text.startsWith(head))text=text.slice(head.length).replace(/^\n+/u,'');
+  if(text.endsWith(tail))text=text.slice(0,-tail.length).replace(/\n+$/u,'');
+  return {...profile,text:[head,text,tail].filter(Boolean).join('\n\n')};
+}
 export function projectCurrentPersona(profile,frame=null){
- if(!profile?.composition||profile.manual||profile.locked)return profile;
+ if(!profile?.composition||profile.manual||profile.locked)return applyUserDirectives(profile);
  const cached=cache.get(profile),frameKey=frame?`${frame.floor}:${frame.stage}`:'';
  if(cached?.frameKey===frameKey)return cached.profile;
  const c=profile.composition,parts=compactPersonaParts(c.parts??[]),duplicates=(c.parts??[]).length-parts.length;
@@ -48,6 +58,6 @@ export function projectCurrentPersona(profile,frame=null){
   }).join('\n');
   text=`【当前叙事时点：${frame.stage}；第${frame.floor}楼明确指定。以下不同学段/年龄属于原设定参考，不据此改变当前场景；不推算未说明的年龄。】\n${text}`;
  }
- const projected={...profile,composition,text,projection:{version:1,duplicateParts:duplicates,timeline:frame}};
+ const projected=applyUserDirectives({...profile,composition,text,projection:{version:1,duplicateParts:duplicates,timeline:frame}});
  cache.set(profile,{frameKey,profile:projected});return projected;
 }
