@@ -1,6 +1,7 @@
 import { clone, stableStringify, sha256 } from './utils.js';
 import { sourceFloors, narrativeText,awarenessLabel,viaLabel } from './product-narrative.js';
 import { dictionaryQuery } from './product-dictionary.js';
+import { tokenizeChinese } from './retrieval.js';
 import { hasStoryTime } from './temporal.js';
 import { narrativeEvidence,evidenceWithoutPlanning } from './memory-evidence.js';
 
@@ -125,7 +126,15 @@ export function importantDialoguePacket(cards,query,dictionary,alreadyText=''){
   const matched=dictionaryQuery(query,{...dictionary,entries},{entityLimit:Infinity});
   const names=new Set(matched.entities);
   const matchedName=n=>names.has(n)||entries.some(e=>!e.disabled&&names.has(e.name)&&e.aliases?.includes(n)&&!e.ambiguous?.includes(n));
-  const selected=rows.filter(r=>[r.subject,r.target].some(matchedName)&&!alreadyText.includes(`关键台词：${r.subject}${r.target?` 对 ${r.target}`:''}：「${r.data.text}」${r.data.context?`〔${r.data.context}〕`:''}`));
+  const selected=rows.filter(r=>{
+    if(![r.subject,r.target].some(matchedName))return false;
+    if(alreadyText.includes(`关键台词：${r.subject}${r.target?` 对 ${r.target}`:''}：「${r.data.text}」${r.data.context?`〔${r.data.context}〕`:''}`))return false;
+    const blob=[r.data.text,r.data.context,r.data.meaning,r.record?.description,r.record?.title].filter(Boolean).join('\n');
+    const named=[...names].sort((a,b)=>b.length-a.length);
+    let rest=String(query??'');for(const name of named)rest=rest.split(name).join(' ');
+    const topics=[...new Set(tokenizeChinese(rest).filter(token=>token.length>1))];
+    return topics.some(token=>blob.includes(token));
+  });
 const text=selected.length?['[重要对话：历史原话及当时语境，不要求复读；说过不等于已经兑现，不改变未获知者的知识。]',...selected.map(r=>`${r.subject}${r.target?` 对 ${r.target}`:''}：「${r.data.text}」${r.data.provenance==='user_authored'?'〔用户编写，非程序核对的逐字原文〕':''}\n语境：${r.data.context||r.record.title||'见原事件'}${r.data.meaning?`；含义：${r.data.meaning}`:''}${r.record.temporal?`\n时间：${narrativeText(r.record.temporal)}`:''}\n${quoteAwareness(r.record)}\n来源：${sourceFloors(r.record).map(n=>`第${n}楼`).join('、')||'原记录'}`)].join('\n\n'):'';
   return {text,rows:selected};
 }

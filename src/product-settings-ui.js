@@ -32,7 +32,7 @@ const copy = {
   injectionEnabled:['自动注入相关记忆','发送聊天时，把相关记忆加入本轮请求。'],
   injectionLogEnabled:['保存注入日志','本聊天保留最近 30 次结果及注入片段；不保存 Key 或完整 API 请求，导出默认不含剧情内容。'],
   retrievalLimit:['历史记忆最多注入几条','不含全量人物档案。'],
-  retrievalBudgetUnits:['历史记忆注入长度上限','不限制人物档案。'],
+  retrievalBudgetUnits:['历史记忆注入长度上限','不限制每人当前属性。关系、台词和人设变化算在这条上限里。'],
   timeProtection:['注入日期参照','附带事件日期和时间关系。'],
   personaEnabled:['全量注入相关人物信息','整份带入已启用的属性、人设变化与关系，不设人物篇幅上限。'],
   performanceEnabled:['注入人物演绎参考','使用有记录依据的变化，不编造内心。'],

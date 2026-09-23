@@ -112,6 +112,30 @@ export function characterProfiles(cards=[]) {
   // the person instead of the card sinking as an unranked record in the list.
   return [...profiles.values()].map(profile=>({...profile,importanceLevel:Math.max(1,...profile.records.map(factImportance))}));
 }
+// Latest value of each field is standing context. An earlier row leaves that
+// card only when a strictly later source floor, or the same floor with a later
+// validFrom, identifies a successor. Same-moment disagreements stay together.
+export function currentAttributeRecords(records){
+  const groups=new Map();
+  for(const record of records){
+    if(record?.category!=='entityFactChanges'||!factSubject(record)||!factKey(record))continue;
+    const key=`${factSubject(record)}\0${factKey(record)}`;
+    const rows=groups.get(key)??[];rows.push(record);groups.set(key,rows);
+  }
+  const current=[],older=[];
+  const rank=record=>{
+    const floors=sourceFloors(record);
+    return {floor:floors.length?Math.max(...floors):-1,from:typeof record.validFrom==='string'?record.validFrom:''};
+  };
+  for(const rows of groups.values()){
+    const ordered=[...rows].sort((a,b)=>{const x=rank(a),y=rank(b);return y.floor-x.floor||y.from.localeCompare(x.from);});
+    const top=rank(ordered[0]),known=top.floor>=0||top.from!=='';
+    const kept=known?ordered.filter(record=>{const item=rank(record);return item.floor===top.floor&&item.from===top.from;}):ordered;
+    const keep=new Set(kept);
+    for(const record of ordered)(keep.has(record)?current:older).push(record);
+  }
+  return {current,older};
+}
 // Only identical fact payload AND guards may be omitted from a recall packet.
 // Different dates, belief holders, values or scoped custom modules stay distinct.
 export function sameFactForRecall(a,b){

@@ -4,7 +4,7 @@ import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './prod
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel,scopeLabel } from './product-narrative.js';
 import { hasStoryTime, storyDateOf } from './temporal.js';
 import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts } from './product-recall-packing.js';
-import { factValue, fullCharacterGroups, awarenessSubjectLabel, characterRecordSubjects, explicitSubjectNames, PERSON_RECORD_CATEGORIES } from './product-person-profiles.js';
+import { factValue, fullCharacterGroups, currentAttributeRecords, awarenessSubjectLabel, characterRecordSubjects, explicitSubjectNames, PERSON_RECORD_CATEGORIES } from './product-person-profiles.js';
 import {foldName} from './persona-identity.js';
 import {markMemoryStates,memoryHistoryIntent} from './memory-current-state.js';
 import { compileEventPacket } from './product-event-packet.js';
@@ -318,14 +318,29 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     return owners.length>0&&owners.every(name=>(dossierCoverage.get(foldName(canonical(name)))??-1)>=last);
   };
   const characters=fullCharacterGroups(selectRecallCards(cards,settings,{includeAwareness:true}).filter(c=>(historyIntent||!historicalIds.has(c.id))&&!coveredPersonaHistory(c)),characterQuery,lexicon);
-  characters.groups=characters.groups.filter(g=>!supplied.has(foldName(canonical(g.subject))));
-  const fullIds=new Set(characters.groups.flatMap(g=>g.records.map(r=>r.id)));
+  // A dynamic dossier replaces attitude prose. It does not replace standing
+  // attributes, so a mentioned person still gets every field's latest value.
+  const attributePlan=characters.groups.map(group=>{const {current,older}=currentAttributeRecords(group.records);return {...group,current,older};});
+  const standingIds=new Set(attributePlan.flatMap(group=>[...group.current,...group.records.filter(record=>record.category==='awarenessChanges')].map(record=>record.id)));
+  const olderFactIds=new Set(attributePlan.flatMap(group=>group.older.map(record=>record.id)));
+  const fullIds=standingIds;
   const tagLanes=settings.tagRecallEnabled===false?[]:matched.tags.map(tag=>({tag,limit:settings.tagCandidateLimit??4}));
   const categoryLanes=settings.distributedEnabled&&settings.distributedStrategy==='broadcast'
     ? [...new Set(selected.filter(c=>!fullIds.has(c.id)).map(c=>c.category))].filter(category=>category!=='summaryView').map(category=>({category,limit:settings.tagCandidateLimit??4})) : [];
   const channelFilter=settings.distributedEnabled&&settings.distributedStrategy==='leader_only'
     ? c=>(c.category==='knowledge'?'knowledge':'memory')===settings.distributedChannel : undefined;
-  const filter=c=>(historyIntent||!historicalIds.has(c.id))&&!fullIds.has(c.id)&&!coveredPersonaHistory(c)&&(!channelFilter||channelFilter(c));
+  const factAsked=record=>[record.field,record.fieldLabel,typeof record.to==='string'?record.to:''].filter(item=>typeof item==='string'&&item.trim().length>=2).some(item=>String(focusQuery).includes(item));
+  const attitudeBlob=record=>[record.description,record.recallSummary,record.title,record.aspect,record.context,record.scope,record.innerLife?.text,record.innerLife?.stage,...(record.keyDialogues??[]).flatMap(quote=>[quote.text,quote.context,quote.meaning])].filter(item=>typeof item==='string').join('\n');
+  const attitudeAsked=record=>{
+    if(!['relationshipChanges','personaChanges','performanceHints'].includes(record.category))return true;
+    if(historyIntent)return true;
+    const names=new Set(tokenizeChinese([record.from,record.to,record.subject,record.object,record.entity].filter(Boolean).join(' ')));
+    const topics=tokenizeChinese(focusQuery).filter(token=>token.length>1&&!names.has(token)&&!/^(什么|怎么|为什么|怎样|如何|现在|继续|然后|一下|来了|说了|说话)$/.test(token));
+    if(!topics.length)return false;
+    const blob=attitudeBlob(record);
+    return topics.some(token=>blob.includes(token));
+  };
+  const filter=c=>(historyIntent||!historicalIds.has(c.id))&&!fullIds.has(c.id)&&(historyIntent||!olderFactIds.has(c.id)||factAsked(c))&&attitudeAsked(c)&&!coveredPersonaHistory(c)&&(!channelFilter||channelFilter(c));
   const result = await retrieveMemories({ index, query: q, limit: Math.max(settings.retrievalLimit, settings.retrievalCandidateLimit ?? 24), vectorAdapter, reranker, signal,categoryLanes,filter,
     entityIds:matched.entities,tagLanes,
     totalTimeoutMs: settings.retrievalTimeoutMs,
@@ -392,18 +407,19 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const packetEntries=[];
   const packed = [], omitted = [], chosen=[],decisions=[];
   const characterParts=[],characterChosen=[];
-  for(const group of characters.groups){
+  for(const group of attributePlan){
     const parts=[];
-    for(const record of group.records){
-      const decision={id:record.id,title:recordTitle(record),category:record.category,reason:'人物档案全量',scores:{keyword:null,vector:null,fusion:null,final:null}};
+    for(const record of [...group.current,...group.records.filter(item=>item.category==='awarenessChanges')]){
+      const decision={id:record.id,title:recordTitle(record),category:record.category,reason:'当前属性',scores:{keyword:null,vector:null,fusion:null,final:null}};
       const coveredBy=coveredRecallRecord(record,record.description,characterChosen);
       if(coveredBy){decisions.push({...decision,status:'duplicate',coveredBy});omitted.push(record.id);continue;}
-      // Full payload, never recallSummary, query excerpts or a character cap.
+      // The current value stays complete. Relationship prose, quotes and older
+      // field values are not part of this card.
       parts.push(renderMemoryCard({...record,innerLife:null,innerLifeHistorical:false},{...settings,timeProtection:true},{body:record.description,detail:true,full:true}));
       characterChosen.push({record,body:record.description});packed.push(record);
-      decisions.push({...decision,status:'selected',detail:'full_character'});
+      decisions.push({...decision,status:'selected',detail:'current_field'});
     }
-    if(parts.length)characterParts.push(`[人物档案：${group.subject}]\n${parts.join('\n\n')}`);
+    if(parts.length)characterParts.push(`[当前属性：${group.subject}]\n${parts.join('\n\n')}`);
   }
   const diaryRows=settings.journalEnabled===false?[]:characterKeepsakes(characterChosen.map(r=>r.record),{withExpected:false}).diaries;
   const oldDiaryQuery=/当初|以前|过去|当时|日记|心迹|心路|阶段|为什么.*(?:信任|喜欢|拒绝)/u.test(focusQuery);
@@ -412,7 +428,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   // Count/length limits apply only to retrieved history, not to dossiers.
   // The header is charged once to history as before; dossiers cannot consume
   // the event allowance even when their full text exceeds it.
-  const characterText=characterParts.length?['[本轮涉及人物的完整档案；提及不等于在场，资料不自动赋予其他角色知情权。不同时间、对象与情境的记录按各自条件使用，不把变化历史视为同时生效。]',...characterParts].join('\n\n'):'';
+  const characterText=characterParts.length?['[本轮涉及人物的当前属性；每个字段只保留来源更晚的一条。提及不等于在场，资料不自动赋予其他角色知情权。关系、台词和人设变化按本场相关召回，不在这里整份展开。]',...characterParts].join('\n\n'):'';
   let memoryCount=0;
   let excerpts=0;
   const budget = settings.retrievalBudgetUnits;
@@ -489,7 +505,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   result.trace.index = prepared?.stats ?? { status: 'uncached', size: selected.length };
   result.trace.dictionary={matched:matched.terms,ambiguous:lexicon.entries.filter(e=>e.ambiguous.length).length};
   result.trace.evidence={quarantinedLinks:selected.reduce((n,c)=>n+(c.associationReviewCount??0),0)};
-  result.trace.characters={mode:'full',people:[...new Set(characters.groups.map(g=>g.subject))],records:characterChosen.length,units:estimateUnits(characterText),truncated:false};
+  result.trace.characters={mode:'current_fields',people:[...new Set(attributePlan.filter(group=>group.current.length).map(group=>group.subject))],records:characterChosen.length,units:estimateUnits(characterText),truncated:false};
   result.trace.knowledgeContext={eventIds:[...knowledgeContext.keys()],units:estimateUnits(contextText),unresolvedRecordIds:unresolvedKnowledge,mode:'explicit_link_brief',extraModelCalls:0};
   for(const event of knowledgeContext.values())decisions.push({id:event.id,title:recordTitle(event),category:'events',status:'selected',detail:'knowledge_context',reason:'解释已注入知情的明确关联事件'});
   result.trace.packing={selected:packed.length+knowledgeContext.size+dialogueCards.length,memorySelected:memoryCount,memoryUnits,expanded:0,excerpts,brief:memoryCount-excerpts,omitted:omitted.length,duplicates:decisions.filter(d=>d.status==='duplicate').length,decisions};
