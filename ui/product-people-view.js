@@ -236,6 +236,8 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
   const reviewRows=(profile?.reviewSuggestions??[]).map(s=>`<div class="sy-card"><div class="sy-packet">${esc(profile.composition?.parts?.find(p=>p.key===s.key)?.text??'片段已变化')}</div><p>${esc(s.reason)}</p><p class="sy-help">第${esc(s.evidence.floor)}楼依据：${esc(s.evidence.quote)}</p><button type="button" data-persona-history="${esc(s.key)}" data-profile="${esc(profile.id)}" data-history-value="true">确认移入历史（不删除）</button></div>`).join('');
   const archived=(profile?.composition?.parts??[]).filter(p=>p.status==='historical').map(p=>`<div class="sy-card"><div class="sy-packet">${esc(p.text)}</div><button type="button" data-persona-history="${esc(p.key)}" data-profile="${esc(profile.id)}" data-history-value="false">恢复当前设定</button></div>`).join('');
   const casting=personaCasting(group.profiles[0]?.casting);
+  const emphasis=profile?.userDirectives??[];
+  const emphasisHTML=profileId?`<details data-people-emphasis="${esc(profileId)}"><summary>强调 · ${emphasis.length ? `${emphasis.length} 条` : '未设置'}</summary><p class="sy-help">单独保存，不会被自动总结改掉。每次发消息时放在人物档案开头和结尾，并在你的消息前再送一次。一行一句，删掉某一行就是删除这条。</p><label>强调内容<textarea rows="4" data-emphasis-lines>${esc(emphasis.join('\n'))}</textarea></label><label>或者用大白话告诉模型要记住、修改或删掉什么<textarea rows="3" data-emphasis-ask placeholder="例如：纱月已经答应源以后都会软萌地对待他，不需要源每次提醒。"></textarea></label><div class="sy-actions"><button type="button" data-emphasis-draft>让模型整理</button><button type="button" data-emphasis-save>保存强调</button></div><p class="sy-help">「让模型整理」会用人设接口调用一次模型，结果只填进上面的框，保存后才生效。</p></details>`:'';
   const options=(values,current)=>Object.entries(values).map(([value,label])=>`<option value="${value}"${value===current?' selected':''}>${label}</option>`).join('');
   const profileRows = group.profiles.slice(0, 2).map(p => personFieldRow({
     label: p.locked ? '整份档案 · 已锁定' : `整份档案 · ${Number.isInteger(p.through) ? `依据至 #${p.through}` : '已保存'}`,
@@ -271,6 +273,7 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
   return `<div class="sy-person-head">
       <h4 data-people-title tabindex="-1">${esc(group.name)}</h4>
       ${profileId?`<details data-people-casting="${esc(profileId)}"><summary><span class="sy-casting-badge sy-casting-${casting.role}">${esc(personaCastingLabel(casting))}</span> · 调整定位</summary><div class="sy-grid"><label>性别<select data-casting-gender>${options(PERSONA_GENDERS,casting.gender)}</select></label><label>剧情定位<select data-casting-role>${options(PERSONA_ROLES,casting.role)}</select></label></div><label><input type="checkbox" data-casting-player${casting.playerControlled?' checked':''}>由玩家扮演（降低补充材料份额）</label><p class="sy-help">当前记录关注权重 ${personaAttentionWeight(casting)}：主角4、重要配角3、配角2、客串1；玩家角色1。影响主更新检查顺序与补充材料份额，不漏掉低权重人物的重大变化；性别不影响权重。</p><button type="button" data-casting-save>保存定位</button></details>`:''}
+      ${emphasisHTML}
       <p class="sy-help">${group.aliases.length ? `别称：${esc(group.aliases.join('、'))} · ` : ''}${esc(stats)}</p>
       <div class="sy-actions sy-person-bar"><button type="button" data-people-rename>改名</button><button type="button" data-people-merge-open>合并档案</button><button type="button" class="danger" data-people-remove>删除</button></div>
     </div>
@@ -396,6 +399,13 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     const button = event.target.closest('button');
     if (!button || button.disabled) return;
     if(button.hasAttribute('data-persona-history')){void run(()=>app.setDynamicPersonaPartHistorical(button.dataset.profile,button.dataset.personaHistory,button.dataset.historyValue==='true'),{name:'dynamic-persona',button});return;}
+    if(button.hasAttribute('data-emphasis-save')||button.hasAttribute('data-emphasis-draft')){
+      const box=button.closest('[data-people-emphasis]');if(!box)return;
+      const id=box.dataset.peopleEmphasis,lines=box.querySelector('[data-emphasis-lines]');
+      if(button.hasAttribute('data-emphasis-save'))void run(()=>app.editDynamicPersona(id,{userDirectives:lines.value.split(/\n/u)}),{name:'dynamic-persona',button});
+      else void run(async()=>{const result=await app.draftDynamicPersonaDirectives(id,box.querySelector('[data-emphasis-ask]').value);lines.value=result.directives.join('\n');},{name:'dynamic-persona',button});
+      return;
+    }
     if(button.hasAttribute('data-casting-save')){
       const box=button.closest('[data-people-casting]');
       if(box)void run(()=>app.editDynamicPersona(box.dataset.peopleCasting,{casting:{gender:box.querySelector('[data-casting-gender]').value,role:box.querySelector('[data-casting-role]').value,playerControlled:box.querySelector('[data-casting-player]').checked}}),{name:'dynamic-persona',button});

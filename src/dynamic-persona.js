@@ -365,7 +365,10 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       timer=setTimeout(()=>{timer=null;wake();},Math.max(100,historyRetryAt-now()));timer.unref?.();
     }
   }
-  const publicData=()=>{const {workingProfiles,...manual}=data.manualPlan??{};return {...data,profiles:data.profiles.map(p=>projectCurrentPersona(p,personaTimelineFrame(records()))),manualPlan:data.manualPlan?{...manual,stagedProfileCount:workingProfiles?.length??0}:null};};
+  // Emphasis lives beside the dossiers, keyed by name, so rollback, rebuild,
+  // batch deletion and undo (which restore old profile snapshots) keep it.
+  const withDirectives=p=>{const lines=data.directiveOverrides?.[foldName(p.name)];return lines?.length?{...p,userDirectives:lines}:p;};
+  const publicData=()=>{const {workingProfiles,...manual}=data.manualPlan??{};return {...data,profiles:data.profiles.map(p=>projectCurrentPersona(withDirectives(p),personaTimelineFrame(records()))),manualPlan:data.manualPlan?{...manual,stagedProfileCount:workingProfiles?.length??0}:null};};
   const emit=()=>notify({...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()});
   const plan=()=>autoSummaryPlan(data.batches,{startFloor:data.startFloor,batchSize:settings().dynamicPersonaEvery,keepRecent:settings().dynamicPersonaKeepRecent,lastIndex});
   function check(bound=currentWorkspace){if(disposed||bound!==currentWorkspace||!bound?.isCurrent())throw canceled();}
@@ -427,6 +430,8 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     data=saved??initial();
     const rebuildUnedited=data.manualPlan?.mode==='clean'&&data.manualPlan.liveHash===personaRebuildLiveHash(data.profiles);
     for(const p of data.profiles)if(Object.values(p.casting?.manual??{}).some(Boolean))data={...data,castingOverrides:rememberPersonaCasting(data.castingOverrides,p)};
+    // 0.21.59 kept emphasis on the profile itself; lift it out once.
+    for(const p of data.profiles)if(p.userDirectives?.length&&!data.directiveOverrides?.[foldName(p.name)])data={...data,directiveOverrides:{...data.directiveOverrides,[foldName(p.name)]:[...p.userDirectives]}};
     if(!saved&&!settings().dynamicPersonaEnabled){paused=false;ready=true;view={status:'ready',message:'动态人设尚未启用；不会调用人设 API'};emit();return;}
     let loadStep='history_tail';
     try{lastIndex=await historyTail();check(bound);loadStep='source_verify';
@@ -839,7 +844,9 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       check(bound);await bound.write(versionId,{kind:'persona-merge',profiles:[clone(target),clone(source)],merge:{sourceId,targetId}});check(bound);
       const merged={...mergePersonaProfiles(target,source),versionId};
       const profiles=data.profiles.map(p=>p.id===targetId?merged:p.id===sourceId?{...p,deleted:true,locked:true,manual:true,mergedInto:targetId,versionId}:p);
-      await save({...data,profiles},bound);
+      const overrides={...data.directiveOverrides},sourceLines=overrides[foldName(source.name)]??[];
+      if(sourceLines.length)overrides[foldName(target.name)]=[...new Set([...(overrides[foldName(target.name)]??[]),...sourceLines])].slice(0,8);
+      await save({...data,profiles,directiveOverrides:overrides},bound);
     });
     await mirrorAfterEdit();
     view={...view,status:'saved',message:`已将“${source.name}”并入“${target.name}”；保留档案、来源与历史版本，短名已作为别称`};emit();
@@ -864,12 +871,14 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     check(bound);const old=data.profiles.find(p=>p.id===id);if(!old)throw new Error('人物档案不存在');
     if(patch.text!==undefined&&(typeof patch.text!=='string'||!patch.text.trim()||unsafe.test(patch.text)))throw new Error('请输入人物档案文本，不要写入脚本代码');
     const aliasPatch=Object.hasOwn(patch,'aliases')?{aliases:personaAliases(patch.aliases),aliasPolicy:'manual'}:{};
-    const directivePatch=Object.hasOwn(patch,'userDirectives')?{userDirectives:normalizeUserDirectives(patch.userDirectives)}:{};
+    const directiveLines=Object.hasOwn(patch,'userDirectives')?normalizeUserDirectives(patch.userDirectives):null;
     const versionId=makeId('persona-version');await bound.write(versionId,{profiles:data.profiles});check(bound);
     const castingPatch=patch.casting?{casting:editPersonaCasting(old.casting,patch.casting)}:{};
     const metadataOnly=Object.keys(patch).every(k=>['casting','userDirectives','aliases'].includes(k));
-    const update={...old,...Object.fromEntries(['text','locked','deleted'].filter(k=>Object.hasOwn(patch,k)).map(k=>[k,patch[k]])),...(patch.text!==undefined&&patch.text!==old.text?{composition:null}:{}),...aliasPatch,...directivePatch,...castingPatch,versionId,manual:metadataOnly?old.manual:true};
-    await save({...data,...(patch.casting?{castingOverrides:rememberPersonaCasting(data.castingOverrides,update)}:{}),profiles:data.profiles.map(p=>p.id===id?update:patch.deleted===true&&settings().dynamicPersonaMvuMode!=='strict'&&foldName(p.name)===foldName(old.name)?{...p,deleted:true,locked:true,manual:true,versionId}:p)},bound);
+    const {userDirectives:_legacy,...base}=old;
+    const update={...base,...Object.fromEntries(['text','locked','deleted'].filter(k=>Object.hasOwn(patch,k)).map(k=>[k,patch[k]])),...(patch.text!==undefined&&patch.text!==old.text?{composition:null}:{}),...aliasPatch,...castingPatch,versionId,manual:metadataOnly?old.manual:true};
+    const overrides=directiveLines?{directiveOverrides:{...data.directiveOverrides,[foldName(old.name)]:directiveLines}}:{};
+    await save({...data,...overrides,...(patch.casting?{castingOverrides:rememberPersonaCasting(data.castingOverrides,update)}:{}),profiles:data.profiles.map(p=>p.id===id?update:patch.deleted===true&&settings().dynamicPersonaMvuMode!=='strict'&&foldName(p.name)===foldName(old.name)?{...p,deleted:true,locked:true,manual:true,versionId}:p)},bound);
   });await mirrorAfterEdit();}
   async function setPartHistorical(id,key,historical){
     check();const bound=currentWorkspace;await transact(async()=>{
@@ -887,13 +896,13 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
   async function draftDirectives(id,instruction){
     check();const bound=currentWorkspace,profile=data.profiles.find(p=>p.id===id&&!p.deleted);
     if(!profile)throw new Error('人物档案不存在');
-    const request=personaDirectiveRequest(profile,instruction);
+    const request=personaDirectiveRequest(withDirectives(profile),instruction);
     const config=settings();
     const reply=await client().chatCompletions({model:config.dynamicPersonaModel,messages:request.messages,stream:true,...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})});check(bound);
     return {directives:parsePersonaDirectiveResponse(reply)};
   }
   async function add(name,text){check();const bound=currentWorkspace;name=String(name??'').trim();text=String(text??'').trim();if(!name||!text||unsafe.test(text))throw new Error('请填写姓名和完整人物信息，不要包含脚本');personaAliases([name]);const identity=personaIdentity({previous:data.profiles,dictionary:dictionary(),aliases:settings().aliases});if(identity.resolve(name)?.profiles.length)throw new Error('已有这个人物的档案，请直接修改（简繁和已确认别称视为同一人）');const id=sha256([foldName(name),'supplement']).slice(0,24);const through=await historyTail();check(bound);lastIndex=through;await transact(()=>save({...data,profiles:[...data.profiles.filter(p=>p.id!==id),{id,name,characterId:sha256(['persona-character',foldName(name)]).slice(0,24),aliases:[],text,bindings:[],stage:'supplement',sourceFloors:[],through,manual:true,locked:true}]},bound));await mirrorAfterEdit();}
-  function profiles(){const rows=ready&&settings().dynamicPersonaEnabled&&currentWorkspace?.isCurrent()?data.profiles.filter(p=>!p.deleted&&(!p.composition?.pendingOnly||p.manual||p.locked)&&(lastIndex===null||p.through<=lastIndex)):[];return currentPersonaProfiles(rows,settings().dynamicPersonaMvuMode).map(p=>projectCurrentPersona(p,personaTimelineFrame(records())));}
+  function profiles(){const rows=ready&&settings().dynamicPersonaEnabled&&currentWorkspace?.isCurrent()?data.profiles.filter(p=>!p.deleted&&(!p.composition?.pendingOnly||p.manual||p.locked)&&(lastIndex===null||p.through<=lastIndex)):[];return currentPersonaProfiles(rows,settings().dynamicPersonaMvuMode).map(p=>projectCurrentPersona(withDirectives(p),personaTimelineFrame(records())));}
   async function inject(payload,{enabled=true}={}){
     if(!Array.isArray(payload?.messages))return;
     const bound=currentWorkspace,available=enabled?profiles():[];
