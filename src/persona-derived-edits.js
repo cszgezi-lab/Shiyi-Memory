@@ -3,7 +3,7 @@ import {personaIdentity,foldName} from './persona-identity.js';
 import {personaEditEvidence} from './persona-edit-evidence.js';
 import {hasPersonaSpeechEvidence,personaSpeechPairs,personaSpeechSpanEnd} from './persona-speech-evidence.js';
 
-const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{|@@/i;
+const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{(?!\s*(?:user|char)\s*\}\})|@@/i;
 const fail=message=>Object.assign(new Error(message),{code:'PERSONA_RESPONSE_INVALID'});
 const floor=value=>Number.isSafeInteger(value)&&value>=0;
 const text=value=>typeof value==='string'&&Boolean(value.trim())&&!unsafe.test(value);

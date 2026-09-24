@@ -2,7 +2,7 @@
 // user asked for as standing rules; saving is a separate, explicit edit.
 import {personaDevelopmentText} from './persona-development.js';
 
-const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{|@@/i;
+const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{(?!\s*(?:user|char)\s*\}\})|@@/i;
 export const MAX_PERSONA_DIRECTIVES=8;
 
 export function personaDirectiveRequest(profile,instruction){

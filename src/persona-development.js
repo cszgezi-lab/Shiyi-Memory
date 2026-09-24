@@ -16,7 +16,7 @@ export const PERSONA_DEVELOPMENT_RULE=`正文新人物与原书人物同等处�
 export const PERSONA_CURRENT_ARC_RULE=`development是当前变化索引，不是事件清单。同一变化即使换了topic措辞，也要回填previous.development中的key；新主题省略key，不编造。target和scope界定对象与适用情境，沿用旧项的原值；不同对象、公开/私下、条件不同分别保留，不为压缩强合。可填scope（原文支持的情境，旧项无此字段时为空串）、phase:"current"或"historical"、storyTime（原文逐字明确的日期；未知省略）。倒叙项用historical，不覆盖当前项；来源楼号增加不等于时间推进。每个key输出一个当前完整after及仍有效的边界，origin/before/evidence留作追溯，被后续状态代替的早期说法不与当前说法同时当作必须演绎的指令。
 本批明确改变表达方式时，development.evidence尽量包含完整人物归属和有代表性的真实原话，不截掉条件/否定。examples可用developmentKey关联已给出的key，但必须逐字出自同条证据、同楼；未知就省略。选择几条不同情境的当前语料，不因强烈措辞更醒目就全选威胁/拒绝。堆叠与详略按attention权重：权重≥3（含玩家role=user对象）自首建充实、随批次加深，after写透现状、边界、表达与例外，五句以内；权重1–2的配角客串始终一两句，不堆叠。`;
 
-const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{|@@/i;
+const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{(?!\s*(?:user|char)\s*\}\})|@@/i;
 const generic=/^(?:旁白|叙述|系統|系统|剧情|選項|选项|时间|地點|地点|角色|人物|姓名|我|你|他|她|它|大家|众人|有人|路人|老师|先生|小姐|店员|玩家|用户|助手|assistant|user|system|narrator)$/i;
 
 // A bounded lexical aid, never a source of invented profiles or world ownership.

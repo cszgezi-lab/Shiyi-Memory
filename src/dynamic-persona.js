@@ -40,7 +40,7 @@ const SPEECH_ACT_CHECK='台词中的动作只证明说话人提出要求、意�
 const initial=()=>({version:1,startFloor:1,paused:false,batches:[],profiles:[],manualPlan:null,mirror:{status:'not_created'}});
 const canceled=()=>Object.assign(new Error('人设任务已停止，已保存档案保留'),{code:'CANCELED'});
 const invalid=(reason,message,details={})=>Object.assign(new Error(message),{code:'PERSONA_RESPONSE_INVALID',details:{stage:'validate',reason,modelRole:'dynamicPersona',...details}});
-const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{|@@/i;
+const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{(?!\s*(?:user|char)\s*\}\})|@@/i;
 function normalizeUserDirectives(value){
   const lines=(Array.isArray(value)?value:String(value??'').split(/\n/u)).map(item=>String(item??'').trim()).filter(Boolean);
   if(lines.length>8)throw new Error('当前要求最多 8 句');
@@ -658,7 +658,10 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const recoveryGuard=()=>{guard();if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k])))throw canceled();};
       const rows=await recoverPersonaBatch({messages:range.messages,previous,fingerprint,cached,inputLimit:config.dynamicPersonaInputUnits,guard:recoveryGuard,
         makeRequest:(messages,previous)=>buildPersonaRequest(economy,messages,previous),
-        send:async messages=>{personaStep='model_request';modelRequested=true;return client().chatCompletions({model:config.dynamicPersonaModel,messages,stream:true,...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})},{signal:controller.signal});},
+        send:async messages=>{personaStep='model_request';modelRequested=true;const wire={model:config.dynamicPersonaModel,messages,stream:true,...(config.dynamicPersonaJsonMode?{response_format:{type:'json_object'}}:{}),...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})};let reply=await client().chatCompletions(wire,{signal:controller.signal});
+        // 某些网关对 response_format 返回空正文（计费但无内容）。自动去掉 JSON 模式重发一次。
+        if(config.dynamicPersonaJsonMode&&!String(reply?.choices?.[0]?.message?.content??'').trim()){diagnostic({run,task:'persona',phase:'response',level:'warning',details:{reason:'persona_json_mode_empty_fallback',modelRole:'dynamicPersona'}});const plain={...wire};delete plain.response_format;reply=await client().chatCompletions(plain,{signal:controller.signal});}
+        return reply;},
         parse:(response,{messages,previous,request})=>{personaStep='parse_profile';return parsePersonaResponse(response,{messages,spans:request.spans,previous,identity:request.identity,developmentMessages:request.source,stageMode:config.dynamicPersonaMvuMode,preserveSources:true,collectFailures:true,diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});},
         save:value=>bound.write(cacheKey,value),diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});
       const rejectedProfiles=rows.rejectedProfiles??[];

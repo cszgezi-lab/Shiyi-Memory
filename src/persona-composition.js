@@ -72,7 +72,7 @@ export function personaSceneEvidence(messages,identity,name,previous=[]){
   // actual action immediately after a closing dialogue quote discoverable.
   for(const m of messages)for(const piece of narrative(m.text))for(const raw of piece.match(/[^。！？\n]+[。！？]?/gu)??[]){
     const sentence=raw.trim();
-    if(!change.test(sentence)||sentence.length>600||/<%|%>|<\/?script\b|\{\{|@@|\[\[SHIYI_PERSONA:/i.test(sentence))continue;
+    if(!change.test(sentence)||sentence.length>600||/<%|%>|<\/?script\b|\{\{(?!\s*(?:user|char)\s*\}\})|@@|\[\[SHIYI_PERSONA:/i.test(sentence))continue;
     const people=identity.mentions(sentence);if(people.length!==1||people[0].key!==foldName(name))continue;
     const lead=foldName(sentence.trim()).split(change)[0],person=people[0];
     const alias=[person.name,...person.aliases].map(foldName).sort((a,b)=>b.length-a.length).find(n=>lead.startsWith(n));
@@ -193,7 +193,7 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
     // omitted list; never replace an explicit invalid/out-of-range list.
     const quotedFloor=evidenceMessages.find(m=>m.index===edit?.evidence?.floor&&typeof edit.evidence.quote==='string'&&edit.evidence.quote.trim()&&m.text.includes(edit.evidence.quote))?.index;
     const editFloors=edit?.sourceFloors===undefined&&quotedFloor!==undefined?[quotedFloor]:edit?.sourceFloors;
-    const issue=!part?'unknown_ref':touched.has(part.key)?'duplicate_ref':typeof edit?.text!=='string'||!edit.text.trim()?'empty_edit':!validFloors(editFloors)?'invalid_edit_floors':/<%|%>|<\/?script\b|\{\{|@@|\[\[SHIYI_PERSONA:/i.test(edit.text)?'unsafe_edit':null;
+    const issue=!part?'unknown_ref':touched.has(part.key)?'duplicate_ref':typeof edit?.text!=='string'||!edit.text.trim()?'empty_edit':!validFloors(editFloors)?'invalid_edit_floors':/<%|%>|<\/?script\b|\{\{(?!\s*(?:user|char)\s*\}\})|@@|\[\[SHIYI_PERSONA:/i.test(edit.text)?'unsafe_edit':null;
     if(issue)throw fail('text','局部修改没有唯一对应本人物原文或本批依据，原档案保留','persona_fields',{personaIssue:issue,editIndex});
     touched.add(part.key);
     if(edit.status==='historical'){
@@ -258,7 +258,7 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
     // Previously verified history can be outside this batch. If its floor is
     // supplied again, recheck the actual source instead of trusting an old tag.
     if(prior&&!m){if(!examples.some(p=>p.text===prior.text&&p.floor===prior.floor))examples.push(clone(prior));continue;}
-    if(!m||!hasPersonaSpeechEvidence(m.text,text,name,identity)||/<%|%>|<\/?script\b|\{\{|@@|\[\[SHIYI_PERSONA:/i.test([text,q?.to,q?.context].join('\n'))){rejectedExamples++;continue;}
+    if(!m||!hasPersonaSpeechEvidence(m.text,text,name,identity)||/<%|%>|<\/?script\b|\{\{(?!\s*(?:user|char)\s*\}\})|@@|\[\[SHIYI_PERSONA:/i.test([text,q?.to,q?.context].join('\n'))){rejectedExamples++;continue;}
     if(!examples.some(e=>e.text===text&&e.floor===q.floor))examples.push(prior?clone(prior):{text,floor:q.floor,to:typeof q.to==='string'?q.to:'',context:typeof q.context==='string'?q.context:'',kind:'source_quote'});
   }
   const sceneEvidence=personaSceneEvidence(messages,identity,name,previous?.composition?.sceneEvidence);
