@@ -261,7 +261,7 @@ export function parsePersonaResponse(response,{messages,spans,previous,identity,
       diagnostic({phase:'normalize',details:{reason:'persona_delta_text',profileIndex}});
     }
     const id=old[0]?.id??sha256([foldName(name),stage]).slice(0,24);if(seen.has(id))throw fail('name','同一人物重复返回多份档案','persona_duplicate');seen.add(id);
-    let text=omittedDeltaText?'':row.text.trim();for(const s of spans)text=text.replaceAll(s.id,`原设定·${s.name}`);
+    let text=omittedDeltaText?'':(typeof row.text==='string'?row.text.trim():'');for(const s of spans)text=text.replaceAll(s.id,`原设定·${s.name}`);
     text=text.replace(/\bprevious\b/g,'上一版档案');
     // A first-time source character needs the same quote/scene/arc identity
     // context as a worldbook character. This cannot create worldbook bindings.
