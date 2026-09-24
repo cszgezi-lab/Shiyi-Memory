@@ -36,7 +36,7 @@ const DEFINITIONS = [
   {key:'dynamicPersonaInputUnits',label:'人设输入预算（估算）',defaultValue:24000,type:'integer',min:1000,max:1000000,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaOutputTokens',label:'人设回复上限（Token，0 为不设上限）',defaultValue:0,type:'integer',min:0,max:131072,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaJsonMode',label:'人设强制 JSON 输出（接口需支持 response_format）',defaultValue:false,type:'boolean',consumers:['DynamicPersonaController']},
-  {key:'dynamicPersonaDeadlineMs',label:'人设请求超时（毫秒）',defaultValue:180000,type:'integer',min:1000,max:600000,consumers:['DynamicPersonaController']},
+  {key:'dynamicPersonaDeadlineMs',label:'人设请求超时（毫秒）',defaultValue:60000,type:'integer',min:1000,max:600000,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaEndpoint',label:'动态人设 API 地址',defaultValue:'',type:'string',maxLength:2048,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaModel',label:'动态人设模型',defaultValue:'',type:'string',maxLength:240,consumers:['DynamicPersonaController']},
   {key:'dynamicPersonaEndpointMode',label:'动态人设地址模式',defaultValue:'base',type:'enum',values:['base','exact'],consumers:['DynamicPersonaController']},

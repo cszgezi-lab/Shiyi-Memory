@@ -708,7 +708,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function publishSummaryReplacement(replacement,op){
     const rows=await workspace.read('summary-batches',[]);op.check();
-    const members=replacement.memberIds.map(id=>rows.find(b=>b.id===id));
+    // U236: 支持两种调用方式：
+    // 1) 单批发布：传入单个批记录，retire/discard 仅限与该批范围重叠的旧数据，
+    //    不等待其他成员批次完成，失败不影响其他已成功批次。
+    // 2) 整组发布（兼容旧接口）：传入 replacement 对象，所有成员必须已就绪。
+    const single=replacement&&!Array.isArray(replacement.memberIds);
+    const memberIds=single?[replacement.id]:replacement.memberIds;
+    const members=memberIds.map(id=>rows.find(b=>b.id===id));
     if(members.some(b=>!b?.replacementReady||b.status==='deleted'))return false;
     const view=await core.readMemoryView();op.check();
     if(replacement.editsHash&&replacementEditsHash(replacement.recordIds,view.controls)!==replacement.editsHash)throw Object.assign(new Error('覆盖期间旧记忆有新的人工修改，请撤下候选后重新预览；没有覆盖该修改'),{code:'SUMMARY_REBUILD_CONFLICT'});
@@ -717,12 +723,21 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const current=await core.readRange({startIndex:b.startIndex,endIndex:b.endIndex});op.check();
       if(current.status!=='ready'||current.sourceRevision!==b.sourceRevision)throw Object.assign(new Error(`覆盖候选 #${b.startIndex}–${b.endIndex} 的原文已变化；请撤下候选后重新覆盖，旧记忆保留`),{code:'SOURCE_INVALIDATED'});
     }
-    const retire=[...replacement.oldOperations,...members.flatMap(b=>b.attempts??[])];
-    // The refill hold and record switch use the SAME manifest pointer. A crash
-    // cannot publish a cutoff without also preserving its automatic pause.
-    await core.updateMemoryControls({operations:{...Object.fromEntries(retire.map(id=>[id,'deleted'])),...Object.fromEntries(members.map(b=>[b.operationId,'active']))},...(replacement.discardedTail?{automation:{summaryHold:{id:replacement.id,endIndex:replacement.requested.endIndex,discardedTail:replacement.discardedTail}}}:{})});op.check();
-    if(replacement.discardedTail){state.summaryHold={id:replacement.id,endIndex:replacement.requested.endIndex,discardedTail:replacement.discardedTail};state.savedThrough=replacement.requested.endIndex;}
-    await workspace.update('summary-batches',list=>list.map(b=>replacement.memberIds.includes(b.id)?{...b,status:'saved',savedOperationId:b.operationId,error:null}:replacement.oldIds.includes(b.id)?{...b,status:'deleted',replacedBy:replacement.id}:b),[]).catch(()=>{});
+    // U236: 逐批 retire 与该批范围重叠的旧操作，而非整组合集。
+    // 重叠范围来自 replacement 的 affected 批次；新批次生成依赖自身范围原文，
+    // 不依赖其他成员批次的旧数据，逐批发布安全且支持中途失败不影响其余。
+    // 兼容旧记录：affected 不存在时按整组 affected 回退到 oldIds 处理。
+    const affectedRows=single?(replacement.affected??[]):[];
+    const overlapFn=batch=>batch.startIndex<=members[0].endIndex&&batch.endIndex>=members[0].startIndex;
+    const retire=single
+      ?[...new Set(rows.filter(b=>affectedRows.some(a=>a.id===b.id)&&overlapFn(b)).flatMap(batchOperationIds))]
+      :[...replacement.oldOperations,...members.flatMap(b=>b.attempts??[])];
+    const oldBatchIds=single
+      ?rows.filter(b=>affectedRows.some(a=>a.id===b.id)&&overlapFn(b)).map(b=>b.id)
+      :replacement.oldIds;
+    await core.updateMemoryControls({operations:{...Object.fromEntries(retire.map(id=>[id,'deleted'])),...Object.fromEntries(members.map(b=>[b.operationId,'active']))},...(replacement.discardedTail&&!single?{automation:{summaryHold:{id:replacement.id,endIndex:replacement.requested.endIndex,discardedTail:replacement.discardedTail}}}:{})});op.check();
+    if(replacement.discardedTail&&!single){state.summaryHold={id:replacement.id,endIndex:replacement.requested.endIndex,discardedTail:replacement.discardedTail};state.savedThrough=replacement.requested.endIndex;}
+    await workspace.update('summary-batches',list=>list.map(b=>memberIds.includes(b.id)?{...b,status:'saved',savedOperationId:b.operationId,error:null}:oldBatchIds.includes(b.id)?{...b,status:'deleted',replacedBy:replacement.id}:b),[]).catch(()=>{});
     return true;
   }
   async function summarize(options={}){return logged('summary',run=>summarizeTask({...options,diagnosticRun:run}));}
@@ -764,7 +779,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         const prior=previous??(overwrite?.grouped?null:list.find(b=>sameBatchRange(b,range)));
         return {...prior,id:prior?.id??makeId('summary-batch'),number:prior?.number??Math.max(0,...list.map(b=>b.number??0))+i+1,groupId,plan,...range,focus,trigger,status:'queued',freshStart:resume?prior?.freshStart??!prior?.operationId:true,operationId:prior?.operationId??null,createdAt:prior?.createdAt??Date.now(),attempts:prior?.attempts??[]};
       });
-      const replacement=(resume?previous?.replacement:null)??(overwrite?.grouped?{id:groupId,memberIds:planned.map(p=>p.id),oldIds:overwrite.affected.map(b=>b.id),oldOperations:[...new Set(overwrite.affected.flatMap(batchOperationIds))],recipeHash:summaryRecipeHash(),requested:overwrite.requested,discardedTail:overwrite.discardedTail}:null);
+      const replacement=(resume?previous?.replacement:null)??(overwrite?.grouped?{id:groupId,memberIds:planned.map(p=>p.id),oldIds:overwrite.affected.map(b=>b.id),oldOperations:[...new Set(overwrite.affected.flatMap(batchOperationIds))],affected:overwrite.affected,recipeHash:summaryRecipeHash(),requested:overwrite.requested,discardedTail:overwrite.discardedTail}:null);
       if(replacement&&!resume){
         const view=await core.readMemoryView();op.check();
         replacement.recordIds=[...new Set(replacement.oldOperations.flatMap(id=>Object.values(batchRecords(view.records.history,id)).flat().map(r=>r.id)))];
@@ -826,7 +841,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           // This checkpoint is required: no old operation is retired before
           // every replacement member has a durable, source-verified result.
           await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
-          stagedOnly=!await publishSummaryReplacement(currentBatch.replacement,op);
+          // U236: 每批成功后立即单独发布该批次，不依赖其他成员批次。
+          stagedOnly=!await publishSummaryReplacement({...currentBatch.replacement,id:currentBatch.id,affected:currentBatch.replacement.affected},op);
         }else{
           await core.updateMemoryControls({operations:{...Object.fromEntries(currentBatch.attempts.map(id=>[id,'deleted'])),[operationId]:'active'}});op.check();
           currentBatch={...currentBatch,status:'saved',savedOperationId:operationId,requests:result.requests,updatedAt:Date.now()};
@@ -1074,7 +1090,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(row.status==='saved'){summaryFeedback('info','该批总结已保存，无需重复总结；索引未完成时可单独补建。','manual');return {status:'saved',requests:0};}
     if(!['failed','interrupted','queued'].includes(row.status))throw new Error('此批次当前不能续跑');
     if(row.replacementReady&&row.replacement){
-      const op=begin();try{const applied=await publishSummaryReplacement(row.replacement,op);await refresh();return {status:applied?'saved':'staged',requests:0};}finally{op.finish();}
+      // U236: 单独继续该批次，不等待或影响其他成员批次。
+      const op=begin();try{const applied=await publishSummaryReplacement({...row.replacement,id:row.id,affected:row.replacement.affected},op);await refresh();return {status:applied?'saved':'staged',requests:0};}finally{op.finish();}
     }
     return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id,resume:true,trigger:row.trigger??'manual'});
   }
@@ -1083,15 +1100,28 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(!ids.length){const message='没有未完成的总结批次；如需补建向量，请点击“补建全部未完成索引”，不会重新总结。';summaryFeedback('info',message,'manual');return {status:'idle',processed:0,failed:0,message,level:'info'};}
     return manageBatches(ids,'retry');
   }
-  async function manageBatches(ids,action){
+  async function manageBatches(ids,action,options={}){
     assertCurrent();if(active)throw new Error('请先停止总结');
     let selected=[...new Set(ids)];const rows=await workspace.read('summary-batches',[]);
     if(action==='delete'||action==='restore'){
       const groups=new Set(rows.filter(b=>selected.includes(b.id)&&b.replacement&&!b.savedOperationId).map(b=>b.replacement.id));
       selected=[...new Set([...selected,...rows.filter(b=>groups.has(b.replacement?.id)).map(b=>b.id)])];
+      // U237: 人设连续性需要时，显式 cascade=true 才级联——保持默认单批删除语义不变。
+      // 任何被删的 saved 批次，后续所有 saved 批次一起删（按 startIndex 排序）。
+      // 失败的批次保留，方便用户重试；进行中的新批次保留。
+      if(action==='delete'&&options.cascade===true){
+        const deletedStarts=rows.filter(b=>selected.includes(b.id)&&b.status==='saved'&&Number.isInteger(b.startIndex)).map(b=>b.startIndex);
+        if(deletedStarts.length){
+          const minStart=Math.min(...deletedStarts);
+          const cascaded=rows.filter(b=>b.status==='saved'&&Number.isInteger(b.startIndex)&&b.startIndex>minStart);
+          if(cascaded.length)selected=[...new Set([...selected,...cascaded.map(b=>b.id)])];
+        }
+      }
     }
     const targets=selected.map(id=>rows.find(b=>b.id===id));
     if(!targets.length||targets.some(b=>!b))throw new Error('请选择仍存在的批次');
+    const directCount=ids.length;
+    const cascadedCount=selected.length-directCount;
     const token=epoch,version=cancelVersion;
     if(action==='regenerate'||action==='retry'){
       if(targets.some(b=>!Number.isInteger(b.startIndex)||!Number.isInteger(b.endIndex)))throw new Error('所选旧批次没有楼层范围，请取消选择');
@@ -1119,11 +1149,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     assertCurrent(token);await core.updateMemoryControls({operations});assertCurrent(token);
     await workspace.update('summary-batches',list=>list.map(row=>selected.includes(row.id)?{...row,status:action==='delete'?'deleted':'saved',savedOperationId:savedBatchOperation(row),operationId:action==='restore'?savedBatchOperation(row):row.operationId}:row),[]);
-    await refresh();setMessage(action==='delete'?`已撤下 ${targets.length} 批；已应用记忆可恢复，未应用候选不会进入正式记忆；聊天原文未改变`:`已恢复 ${targets.length} 批`);
+    await refresh();setMessage(action==='delete'?cascadedCount>0?`已撤下 ${directCount} 批（另有 ${cascadedCount} 批因人设连续性自动撤下）；已应用记忆可恢复，未应用候选不会进入正式记忆；聊天原文未改变`:`已撤下 ${targets.length} 批；已应用记忆可恢复，未应用候选不会进入正式记忆；聊天原文未改变`:`已恢复 ${targets.length} 批`);
     // 撤下或恢复批次都会改变真实覆盖，起算楼层跟着回到正确位置（删除的楼层重新变成待总结）。
     try{await syncAutoStartFloor();}catch(error){void reportError(error,{task:'summary',stage:'auto_start_floor'});}
   }
-  async function deleteBatch(id){return manageBatches([id],'delete');}
+  async function deleteBatch(id,options={}){return manageBatches([id],'delete',options);}
   async function deleteRecord(id){
     return deleteRecords([id]);
   }

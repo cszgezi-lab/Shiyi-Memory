@@ -51,7 +51,7 @@ export async function recoverPersonaBatch({messages,previous,fingerprint,cached,
   else{
    state.requestCount++;requestCount++;
    if(job.repair)diagnostic({phase:'repair_request',details:{personaIssue:job.issue,editIndex:job.editIndex,recoveryCalls:state.requestCount-1,accepted:state.candidates.length,pendingItems:state.jobs.length}});
-   response=await send(request.messages);guard();
+   response=await send(request.messages,{repair:!!job.repair});guard();
   }
   let rows;
   try{
