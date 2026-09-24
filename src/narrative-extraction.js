@@ -9,9 +9,13 @@
  */
 import {qualitySourceSegments} from './source-evidence.js';
 
+// Hard limits are off by default for input-size guard rails (sourceChars,
+// tags). The remaining caps catch genuinely dangerous or runaway inputs;
+// they are not user-facing correctness checks.
 export const NARRATIVE_EXTRACTION_LIMITS = Object.freeze({
-  sourceChars: 65536, rules: 16, patternChars: 256, regexAtoms: 128,
-  regexWork: 4000000, matches: 2048, tags: 2048, tagChars: 2048, tagDepth: 64,
+  sourceChars: Number.POSITIVE_INFINITY, tags: Number.POSITIVE_INFINITY, tagChars: 8192,
+  rules: 16, patternChars: 1024, regexAtoms: 512,
+  regexWork: 4000000, matches: 65536, tagDepth: 64,
 });
 
 export const DEFAULT_NARRATIVE_EXTRACTION_CONFIG = Object.freeze({
@@ -31,6 +35,13 @@ export const NARRATIVE_EXTRACTION_PRESETS = Object.freeze([
     ])})}),
   Object.freeze({id: 'prefer-chinese', name: '完整双语配对优先中文',
     config: Object.freeze({...DEFAULT_NARRATIVE_EXTRACTION_CONFIG, preferChinese: true})}),
+  Object.freeze({id: 'thinking-strip', name: '示例：抓 <content> 正文 / 剥 <thinking> 思维链',
+    config: Object.freeze({...DEFAULT_NARRATIVE_EXTRACTION_CONFIG, rules: Object.freeze([
+      Object.freeze({id: 'content', name: '抓正文 <content>', enabled: true,
+        kind: 'include', tag: 'content', capture: 0}),
+      Object.freeze({id: 'thinking', name: '剥 <thinking> 思维链', enabled: true,
+        kind: 'exclude', tag: 'thinking', capture: 0}),
+    ])})}),
 ]);
 export const NARRATIVE_PRESETS = NARRATIVE_EXTRACTION_PRESETS;
 
@@ -113,7 +124,7 @@ function inspectPattern(pattern) {
       prefixOpen = false;
     } else if (c === '\\') {
       const next = pattern[i++];
-      if (!next || /[0-9k]/.test(next)) fail('不支持反向引用或数字转义。');
+      if (!next || /[0-9k]/.test(next)) fail('不支持反向引用或数字转义，请使用捕获组或直接写字符。');
       if ('pPuUxXc'.includes(next)) fail('请使用实际字符或简单字符类，暂不支持此转义。');
       if ('bB'.includes(next)) { prefixOpen = false; quantifiable = false; continue; }
       if ('dDsSwW'.includes(next)) prefixOpen = false;
@@ -294,7 +305,6 @@ function scanTags(text, names) {
     end++; cursor = end;
     const selfClosing = /\/\s*>$/.test(text.slice(start, end));
     tokens.push([start, end, name, Boolean(head[1]), selfClosing]);
-    if (tokens.length > NARRATIVE_EXTRACTION_LIMITS.tags) fail('标签数量超过安全上限。');
     if (!names.has(name)) continue;
     if (head[1]) {
       const open = stack.at(-1);
@@ -522,7 +532,6 @@ export function readNarrative(source, value = {}, options) {
   const config = checked.config;
   if (!safeChars) return {segments: base, stats, warnings, structuralContext};
   const active = config.rules.filter(rule => rule.enabled);
-  if (text.length > NARRATIVE_EXTRACTION_LIMITS.sourceChars) return fallback('原文超过 65536 字符的提取安全上限；');
   const budget = {work: 0, matches: 0};
   try {
     const names = new Set([...CONTEXT_TAGS, ...active.filter(rule => rule.tag).map(rule => rule.tag.toLowerCase()), ...(config.preferChinese ? ['ja', 'zh', 'cn'] : [])]);
@@ -530,7 +539,7 @@ export function readNarrative(source, value = {}, options) {
     structuralContext = structuralSlices(source, base, markup);
     if (!config.enabled || (!active.length && !config.preferChinese)) return {segments: base, stats, warnings, structuralContext};
     const relevantBroken = [...markup.broken].filter(name => CONTEXT_TAGS.includes(name) || active.some(rule => rule.tag?.toLowerCase() === name));
-    if (relevantBroken.length) return fallback(`标签 ${relevantBroken.join('、')} 不完整；`);
+    if (relevantBroken.length) warnings.push(`标签 ${relevantBroken.join('、')} 不完整；将按现有片段输出。`);
     const includes = [], excludes = [];
     for (const rule of active) {
       const compiled = compileRule(rule);
@@ -540,15 +549,26 @@ export function readNarrative(source, value = {}, options) {
         ranges = intersect(union(blocks.map(block => rule.capture === 1 ? [block.bodyStart, block.bodyEnd] : [block.start, block.end])), safeRanges);
         budget.matches += blocks.length;
         if (budget.matches > NARRATIVE_EXTRACTION_LIMITS.matches) fail('匹配数量超过安全上限。');
-        if (rule.kind === 'include' && !ranges.length) return fallback(`标签 ${compiled.tag} 缺失或没有安全正文；`);
+        // A rule with no matches simply contributes nothing; the caller may
+        // still have other rules or fall through to the safe default below.
       } else ranges = regexRanges(text, safeRanges, compiled, rule.capture, budget);
       stats.ruleMatches.push({id: rule.id, kind: rule.kind, matches: ranges.length});
       if (ranges.length) stats.matchedRules++;
       (rule.kind === 'include' ? includes : excludes).push(...ranges);
     }
     stats.matchCount = budget.matches;
-    let selected = active.some(rule => rule.kind === 'include') ? union(includes) : safeRanges;
-    if (!selected.some(([a, b]) => meaningful(text.slice(a, b)))) return fallback('提取规则未找到有效正文；');
+    const includeRules = active.filter(rule => rule.kind === 'include');
+    const includeHit = includeRules.some(rule => {
+      const found = stats.ruleMatches.find(m => m.id === rule.id && m.kind === 'include');
+      return found && found.matches > 0;
+    });
+    if (includeRules.length && !includeHit) {
+      warnings.push(`所配的提取规则没有命中：${includeRules.map(rule => rule.id).join('、')}；已保留原文供检查。`);
+    }
+    // If at least one include rule actually matched, narrow the result down
+    // to those matches. Otherwise keep the full safe text — refusing the
+    // user's "I want this anyway" request by stripping it down would be worse.
+    let selected = includeHit ? union(includes) : safeRanges;
     const protectedRanges = [];
     for (const block of markup.blocks.filter(block => CONTEXT_TAGS.includes(block.name))) {
       protectedRanges.push([block.start, block.end]);

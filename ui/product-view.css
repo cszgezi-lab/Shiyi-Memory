@@ -1,4 +1,4 @@
-#shiyi-product-shell{--sy-accent:#86b3a5;--sy-border:color-mix(in srgb,currentColor 18%,transparent);font:inherit;color:inherit;width:100%;min-width:0;line-height:1.6}
+﻿#shiyi-product-shell{--sy-accent:#86b3a5;--sy-border:color-mix(in srgb,currentColor 18%,transparent);font:inherit;color:inherit;width:100%;min-width:0;line-height:1.6}
 #shiyi-product-shell *{box-sizing:border-box;min-width:0}
 #shiyi-product-shell .sy-shell{border:1px solid var(--sy-border);border-radius:16px;overflow:clip;background:color-mix(in srgb,var(--SmartThemeBlurTintColor,#20252e) 95%,transparent)}
 #shiyi-product-shell .sy-brand{display:flex;align-items:center;gap:12px;padding:16px;cursor:pointer;list-style:none;font-size:20px;font-weight:700}
@@ -131,8 +131,8 @@
 #shiyi-product-shell .sy-batch-row>summary::-webkit-details-marker {display:none;}
 #shiyi-product-shell .sy-batch-row [data-select-batch] {grid-column:1;grid-row:1 / span 2;margin:0;}
 #shiyi-product-shell .sy-batch-row .sy-batch-title,#shiyi-product-shell .sy-batch-row .sy-batch-status {grid-column:2;}
-#shiyi-product-shell .sy-batch-row .sy-batch-title::before {content:'▸ ';}
-#shiyi-product-shell .sy-batch-row[open] .sy-batch-title::before {content:'▾ ';}
+#shiyi-product-shell .sy-batch-row .sy-batch-title::before {content:'鈻?';}
+#shiyi-product-shell .sy-batch-row[open] .sy-batch-title::before {content:'鈻?';}
 #shiyi-product-shell .sy-batch-status {display:block;margin:4px 0 0 16px;font:400 13px/1.5 system-ui,sans-serif;opacity:.8;}
 #shiyi-product-shell .sy-batch-status[data-state=failed],#shiyi-product-shell .sy-batch-error {color:#ed9292;}
 #shiyi-product-shell .sy-batch-pagination {display:flex;gap:8px;align-items:center;justify-content:space-between;margin:12px 0;}
@@ -187,7 +187,7 @@
 #shiyi-product-shell [data-custom-modules]:not([open]) {grid-column:auto;}
 #shiyi-product-shell [data-view=memory]>.sy-help {display:none;}
 #shiyi-product-shell .sy-filters {margin:8px 0;}
-/* 重要度：五级星标，颜色随等级变化，让重要事件一眼跳出来。 */
+/* 閲嶈搴︼細浜旂骇鏄熸爣锛岄鑹查殢绛夌骇鍙樺寲锛岃閲嶈浜嬩欢涓€鐪艰烦鍑烘潵銆?*/
 #shiyi-product-shell .sy-stars {font-size:12px;letter-spacing:-.5px;margin-right:6px;white-space:nowrap;font-weight:400;}
 #shiyi-product-shell .sy-lv1 {color:#6f7b86;}
 #shiyi-product-shell .sy-lv2 {color:#7fa3b8;}
@@ -328,7 +328,7 @@
 #shiyi-product-shell [data-kb-doc] .sy-packet{max-height:360px;overflow:auto}
 #shiyi-product-shell [data-kb-edit-text]{width:100%;box-sizing:border-box;min-height:160px}
 
-/* ── 0.21.22 palette: 靛青纸白 (owner-picked), one token set for every module ──
+/* 鈹€鈹€ 0.21.22 palette: 闈涢潚绾哥櫧 (owner-picked), one token set for every module 鈹€鈹€
    Applied last so it overrides the older per-module colour rules without
    rewriting them; tile metrics (48px / 13px) and layout are untouched. */
 #shiyi-product-shell{
@@ -358,8 +358,8 @@
 #shiyi-product-shell .sy-stars{margin-right:6px}
 #shiyi-product-shell .sy-person-bar button.danger,#shiyi-product-shell .sy-row-remove{color:var(--sy-danger)}
 
-/* ── People (0.21.22): a horizontal person strip, then one character with each
-   section as the same one-line field. First tap opens, second tap edits. ── */
+/* 鈹€鈹€ People (0.21.22): a horizontal person strip, then one character with each
+   section as the same one-line field. First tap opens, second tap edits. 鈹€鈹€ */
 #shiyi-product-shell .sy-people-wrap{display:flex;flex-direction:column;gap:2px}
 #shiyi-product-shell .sy-person-strip{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:2px 0 8px;border-bottom:1px solid var(--sy-border);margin-bottom:8px}
 #shiyi-product-shell .sy-person-strip input{flex:0 0 auto;width:5.5em;min-height:32px;font-size:12px;padding:2px 8px;border-radius:999px;border:1px solid var(--sy-border);background:transparent;color:inherit}
@@ -389,8 +389,8 @@
 #shiyi-product-shell .sy-field-bar button{min-height:30px;font-size:12.5px;padding:3px 10px}
 #shiyi-product-shell .sy-person-empty{padding:14px 0;font-size:13px;opacity:.7}
 
-/* ── Memory overview (0.21.23): progress ring, one-line toolbar, tiles with the
-   count above the name, and the recently changed records. ── */
+/* 鈹€鈹€ Memory overview (0.21.23): progress ring, one-line toolbar, tiles with the
+   count above the name, and the recently changed records. 鈹€鈹€ */
 #shiyi-product-shell .sy-progress{display:flex;align-items:center;gap:10px;padding:11px 12px;margin:10px 0;border:1px solid var(--sy-border);border-radius:var(--sy-radius);background:color-mix(in srgb,currentColor 3%,transparent)}
 #shiyi-product-shell .sy-dial{flex:0 0 auto;width:58px;height:58px;border-radius:50%;display:grid;place-items:center;--p:0;background:conic-gradient(var(--sy-accent) calc(var(--p) * 1%),color-mix(in srgb,currentColor 14%,transparent) 0)}
 #shiyi-product-shell .sy-dial>span{width:46px;height:46px;border-radius:50%;background:color-mix(in srgb,var(--SmartThemeBlurTintColor,#fff) 96%,transparent);display:grid;place-items:center;font:600 16px/1 system-ui,sans-serif;font-variant-numeric:tabular-nums;color:inherit}
@@ -412,8 +412,8 @@
 #shiyi-product-shell .sy-recent-row>span:first-child{flex:1;min-width:0;overflow-wrap:anywhere}
 #shiyi-product-shell .sy-recent-row em{font-style:normal;opacity:.55;font-size:12px;white-space:nowrap}
 #shiyi-product-shell .sy-recent-row>span:last-child{opacity:.4}
-/* ── Summary page (0.21.26): two module cards with a pie of recorded floors, the
-   five tabs, and the runtime log kept at the bottom of the page. ── */
+/* 鈹€鈹€ Summary page (0.21.26): two module cards with a pie of recorded floors, the
+   five tabs, and the runtime log kept at the bottom of the page. 鈹€鈹€ */
 #shiyi-product-shell .sy-summary-module{display:grid;grid-template-columns:66px minmax(0,1fr);gap:10px;align-items:start;border:1px solid var(--sy-border);border-radius:var(--sy-radius);padding:10px 12px;margin:9px 0;background:color-mix(in srgb,currentColor 2%,transparent)}
 #shiyi-product-shell .sy-pie{width:66px;height:66px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--sy-accent) 0deg 360deg)}
 #shiyi-product-shell .sy-pie>span{width:42px;height:42px;border-radius:50%;background:color-mix(in srgb,var(--SmartThemeBlurTintColor,#fff) 96%,transparent);display:grid;place-items:center;font:600 13px/1 system-ui,sans-serif;font-variant-numeric:tabular-nums;color:inherit}
@@ -433,9 +433,9 @@
 #shiyi-product-shell .sy-category-grid small{font:400 12.5px/1.3 system-ui,sans-serif;opacity:.85;white-space:nowrap}
 #shiyi-product-shell .sy-feature-switches{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}
 #shiyi-product-shell .sy-feature-switches button{display:inline-flex;align-items:center;justify-content:center;gap:5px;flex:0 0 auto;min-height:32px;margin:0;padding:5px 10px;border:1px solid #656a70;border-radius:6px;background:#454a50;color:#fff;font:500 12px/1.4 system-ui,sans-serif;white-space:nowrap;box-shadow:none}
-#shiyi-product-shell .sy-feature-switches button::before{content:'−';width:10px;text-align:center}
+#shiyi-product-shell .sy-feature-switches button::before{content:'';width:10px;text-align:center}
 #shiyi-product-shell .sy-feature-switches button[aria-pressed="true"]{background:#2e7d61;border-color:#409877}
-#shiyi-product-shell .sy-feature-switches button[aria-pressed="true"]::before{content:'✓'}
+#shiyi-product-shell .sy-feature-switches button[aria-pressed="true"]::before{content:''}
 #shiyi-product-shell .sy-feature-switches button:focus-visible{outline:2px solid currentColor;outline-offset:2px}
 #shiyi-product-shell .sy-feature-switches button:disabled{opacity:.65;cursor:wait}
 :root .sy-casting-badge{display:inline-block;padding:2px 8px;border-radius:12px;background:#e8ecf0;color:#334155;font-size:12px;border:1px solid #b8c1cc}
@@ -443,3 +443,19 @@
 :root .sy-casting-core{background:#dff1ef;color:#215d57;border-color:#95c7c0}
 :root .sy-casting-support{background:#e2edfa;color:#2b5282;border-color:#a1badb}
 :root .sy-casting-guest{background:#f4eee1;color:#755d2f;border-color:#cebe9b}
+
+/* v0.21.69 · 提取规则 DIY 一行折叠卡片 */
+#shiyi-product-shell .sy-ext-row{display:flex;align-items:center;gap:6px;padding:8px 10px;background:#fbfaf5;border:1px solid #ebe8de;border-radius:8px;cursor:pointer}
+#shiyi-product-shell .sy-ext-row-title{font-size:12px;color:#4a4a4a;flex:1 1 auto;font-weight:600}
+#shiyi-product-shell .sy-ext-row-meta{font-size:10px;color:#8a8676}
+#shiyi-product-shell .sy-ext-card{background:#fbfaf5;border:1px solid #ebe8de;border-radius:8px;padding:8px 10px;margin-top:8px}
+#shiyi-product-shell .sy-ext-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+#shiyi-product-shell .sy-ext-title{font-size:12px;font-weight:600;color:#4a4a4a;flex:1 1 auto}
+#shiyi-product-shell .sy-ext-body{margin-top:8px}
+#shiyi-product-shell .sy-onoff{position:relative;width:26px;height:14px;background:#cdd2db;border-radius:7px;cursor:pointer;flex-shrink:0;display:inline-block;vertical-align:middle}
+#shiyi-product-shell .sy-onoff::after{content:'';position:absolute;top:2px;left:2px;width:10px;height:10px;background:#fff;border-radius:50%}
+#shiyi-product-shell .sy-onoff.on{background:#5b3aa7}
+#shiyi-product-shell .sy-onoff.on::after{left:14px}
+#shiyi-product-shell .sy-btn.tiny{padding:2px 6px;font-size:10px;min-height:22px}
+#shiyi-product-shell .sy-btn.sy-primary{background:#5b3aa7;color:#fff;border-color:#5b3aa7}
+
