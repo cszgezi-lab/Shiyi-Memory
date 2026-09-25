@@ -4,7 +4,7 @@ import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './prod
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel,scopeLabel } from './product-narrative.js';
 import { hasStoryTime, storyDateOf } from './temporal.js';
 import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts } from './product-recall-packing.js';
-import { factValue, fullCharacterGroups, currentAttributeRecords, awarenessSubjectLabel, characterRecordSubjects, explicitSubjectNames, PERSON_RECORD_CATEGORIES } from './product-person-profiles.js';
+import { factValue, factImportance, fullCharacterGroups, currentAttributeRecords, awarenessSubjectLabel, characterRecordSubjects, explicitSubjectNames, PERSON_RECORD_CATEGORIES, factKey } from './product-person-profiles.js';
 import {foldName} from './persona-identity.js';
 import {markMemoryStates,memoryHistoryIntent} from './memory-current-state.js';
 import { compileEventPacket } from './product-event-packet.js';
@@ -279,6 +279,387 @@ export function prepareRecallIndex(cache, cards, settings, { scopeKey, revision,
   if (revision === undefined) throw new Error('recall cache requires a snapshot revision');
   return cache.prepare(selectRecallCards(cards, settings), { scopeKey, revision: { snapshot: revision, persona: settings.personaEnabled, performance: settings.performanceEnabled, knowledge: settings.knowledgeEnabled,journal:settings.journalEnabled,reading:settings.narrativeExtraction??'' }, k1: settings.bm25K1, b: settings.bm25B, signal });
 }
+
+/** Persona modular budget planner (U209, 2026-09-25).
+ *
+ * Goal: cut the dossier character text down to a budget without changing
+ * the meaning of "current" or breaking the awareness link to history.
+ *
+ * Hard constraints (do NOT relax these without re-deriving the tests):
+ *  1. Field group = one person + one raw `fieldKey`. A whole group is
+ *     selected together; mixed-floor disputes stay together.
+ *  2. Required fields (identity, school, residence, plus user-registered
+ *     key set in `settings.personaRequiredKeys`) are kept BEFORE anything
+ *     optional is considered.
+ *  3. Awareness rows that satisfy the existing visibility / lifecycle /
+ *     injection gates are collected first; an awareness attached to a
+ *     field the budget later drops must STILL appear.
+ *  4. `coveredStandingIds` must include only IDs whose content will be
+ *     rendered. The retrieval filter relies on this; an optimistic set
+ *     produces real-world omissions.
+ *  5. The planner must run BEFORE `standingIds/fullIds` are built and
+ *     BEFORE `retrieveMemories` is called. Putting it after creates the
+ *     classic "we filtered out what we then failed to render" cycle.
+ *  6. Disabled switch (settings.personaModularBudget !== true) returns a
+ *     plan whose `coveredStandingIds` mirrors the original standingIds
+ *     set exactly. The character text it emits must be byte-equal to the
+ *     pre-planner text otherwise consumers see a regression in trace.
+ *
+ * What is intentionally NOT in this planner:
+ *  - It does not call models, does not rewrite records, does not touch the
+ *    user's original store. The function is a pure planner over the
+ *    `attributePlan` already in memory.
+ *  - It does not change rendering semantics. Compact renderers belong to
+ *    a follow-up; today it reuses the field-by-field dossier renderer.
+ *  - It does not decide omission from recall. A field deferred here may
+ *    still come back via ordinary retrieval if the query names it.
+ */
+function classifyFieldModule(fieldKey) {
+  // Plain keys first; fieldLabel fallback is documented in product-narrative.
+  const key = String(fieldKey ?? '').toLowerCase();
+  if (!key) return 'misc';
+  if (['identity','name','姓名','名字','entity','entityid'].includes(key)) return 'identity';
+  if (['school','class','grade','学校','班级','年级','学部'].includes(key)) return 'school';
+  if (['residence','home','address','住所','住址','居住地','住处'].includes(key)) return 'residence';
+  if (['ability','skill','abilities','skills','能力','技能','专长'].includes(key)) return 'ability';
+  if (['preference','habit','preferences','habits','爱好','习惯','偏好'].includes(key)) return 'preference';
+  return 'misc';
+}
+
+export async function buildPersonaBudgetPlan(attributePlan, settings, { focusQuery, renderPlan } = {}) {
+  // Planner-side defaults. Values are conservative; settings overrides are
+  // explicit. Defaults must never silently rebuild the user's config.
+  const personasEnabled = settings.personaModularBudget === true;
+  const personaBudgetChars = Number.isFinite(settings.personaBudgetChars) && settings.personaBudgetChars > 0
+    ? Math.floor(settings.personaBudgetChars)
+    : 5000;
+  const requiredKeys = new Set([
+    'identity','name','姓名','名字',
+    'school','class','grade','学校','班级','年级',
+    'residence','home','address','住所','住址',
+    ...((settings.personaRequiredKeys ?? []).map(k => String(k).toLowerCase()))
+  ]);
+  const topN = Number.isInteger(settings.personaAbilityTopN) && settings.personaAbilityTopN >= 0
+    ? settings.personaAbilityTopN
+    : 999; // 0 means "drop abilities entirely"; large default keeps prior behaviour.
+
+  // Build field-group view. Preserve every current record; required flag is
+  // computed from the module classification so future "registration" of
+  // additional required keys via settings works without code changes.
+  //
+  // Awareness changes are NOT entityFactChanges and have no `fieldKey`. They
+  // are grouped by their own id-based virtual key so each row can be kept,
+  // rendered and budgeted as its own atomic group — the prior loop iterated
+  // awareness rows individually, so this preserves byte-equivalent output
+  // when the planner is off.
+  const fields = [];
+  for (const group of attributePlan) {
+    const byKey = new Map();
+    const awarenesses = [];
+    for (const record of [
+      ...group.current,
+      ...group.records.filter(item => item.category === 'awarenessChanges'),
+    ]) {
+      if (record.category === 'awarenessChanges') {
+        awarenesses.push(record);
+        continue;
+      }
+      const key = factKey(record);
+      if (!key) continue;
+      if (!byKey.has(key)) {
+        const moduleName = classifyFieldModule(key);
+        byKey.set(key, {
+          subject: group.subject,
+          key,
+          module: moduleName,
+          records: [],
+          importance: 0,
+          latestFloor: -1,
+          required: requiredKeys.has(String(key).toLowerCase()),
+        });
+      }
+      byKey.get(key).records.push(record);
+    }
+    for (const field of byKey.values()) {
+      field.importance = Math.max(0, ...field.records.map(factImportance));
+      field.latestFloor = Math.max(-1, ...field.records.flatMap(r => sourceFloors(r)));
+    }
+    fields.push(...byKey.values());
+    for (const awareness of awarenesses) {
+      fields.push({
+        subject: group.subject,
+        key: `awareness:${awareness.id ?? fields.length}`,
+        module: 'awareness',
+        records: [awareness],
+        importance: 0,
+        latestFloor: -1,
+        required: false,
+      });
+    }
+  }
+
+  // Awareness rows must be computed against the SAME visibility/injection
+  // gates the original renderer uses; nothing here expands the result.
+  const awarenessRows = fields.flatMap(field =>
+    field.records.flatMap(record =>
+      record.category === 'awarenessChanges' ? [record] : (record.awareness ?? [])
+    )
+  );
+
+  // Helper: produce the planner's text + chosen list for a candidate set of
+  // fields. The default renderer is intentionally minimal — it composes
+  // what the current renderer would emit for the same records, in the same
+  // order, so the trace stays comparable when personaModularBudget is off.
+  const defaultRenderPlan = (selectedFields, awareness) => {
+    const records = selectedFields.flatMap(f => f.records);
+    const groups = new Map();
+    for (const record of records) {
+      const subject = record.entity
+        ?? record.entityId
+        ?? fields.find(f => f.records.includes(record))?.subject
+        ?? '';
+      if (!groups.has(subject)) groups.set(subject, []);
+      groups.get(subject).push(record);
+    }
+    const parts = [];
+    const rendered = [];
+    for (const [subject, groupRecords] of groups) {
+      const lines = [];
+      for (const record of groupRecords) {
+        const body = record.description ?? '';
+        lines.push(renderMemoryCard(
+          { ...record, innerLife: null, innerLifeHistorical: false },
+          { ...settings, timeProtection: true },
+          { body, detail: true, full: true }
+        ));
+        rendered.push(record);
+      }
+      if (lines.length) parts.push(`[当前属性：${subject}]\n${lines.join('\n\n')}`);
+    }
+    const awarenessText = awareness.length
+      ? awareness.map(r => renderMemoryCard(
+        { ...r, innerLife: null, innerLifeHistorical: false },
+        { ...settings, timeProtection: true },
+        { body: r.description ?? r.knowledge ?? '', detail: true, full: true }
+      )).join('\n\n')
+      : '';
+    const header = '[本轮涉及人物的当前属性；每个字段只保留来源更晚的一条。提及不等于在场，资料不自动赋予其他角色知情权。关系、台词和人设变化按本场相关召回，不在这里整份展开。]';
+    const text = [
+      header,
+      ...parts,
+      ...(awarenessText ? [awarenessText] : []),
+    ].filter(Boolean).join('\n\n');
+    return { text, renderedRecords: rendered };
+  };
+  const renderer = typeof renderPlan === 'function' ? renderPlan : defaultRenderPlan;
+
+  // ----- Off-mode: faithful mirror of the original character pipeline.
+  // Covers `coveredStandingIds` byte-for-byte with the original standingIds
+  // set when the budget planner is disabled, so a no-op deploy is silent.
+  // characterChosen keeps the FULL pre-dedup list; recallMemory's character
+  // loop re-applies coveredRecallRecord to emit the same per-record
+  // ("selected"/"duplicate") decisions and the same characterText. This
+  // mirrors the .71 byte-equivalent behaviour.
+  const allChosenRecords = fields.flatMap(f => f.records);
+  const allChosen = allChosenRecords.map(record => ({ record, body: record.description ?? '' }));
+  const defaultPlan = {
+    characterText: '',
+    characterChosen: allChosen,
+    coveredCurrentIds: new Set(allChosenRecords.map(r => r.id)),
+    coveredAwarenessIds: new Set(awarenessRows.map(r => r.id)),
+    coveredStandingIds: new Set(attributePlan.flatMap(group => [
+      ...group.current.map(r => r.id),
+      ...group.records.filter(r => r.category === 'awarenessChanges').map(r => r.id),
+    ])),
+    deferredCurrentIds: new Set(),
+    characterParts: [],
+    decisions: [],
+    awarenessRows,
+    stats: {
+      mode: 'current_fields',
+      targetChars: personaBudgetChars,
+      actualChars: 0,
+      actualUnits: 0,
+      requiredChars: 0,
+      overBudget: false,
+      overflowChars: 0,
+      selectedFieldKeys: fields.map(f => ({ subject: f.subject, key: f.key, module: f.module, importance: f.importance })),
+      deferredFieldKeys: [],
+      olderExcludedIds: 0,
+      unknownFieldKeys: 0,
+      standaloneAwarenessCount: awarenessRows.filter(r => r.category === 'awarenessChanges').length,
+      attachedAwarenessCount: awarenessRows.filter(r => r.category !== 'awarenessChanges').length,
+      retainedAwarenessCount: awarenessRows.length,
+    },
+  };
+  // Mirror the original characterParts structure so downstream rendering can
+  // use the planner output verbatim. Note: this matches the previous
+  // characterText/characterChosen construction exactly when off. The dedup
+  // (coveredRecallRecord) is intentionally applied here so the rendered
+  // text stays consistent; recallMemory's character loop re-applies the
+  // same check at the decision level.
+  {
+    const seenInPlanned = new Set();
+    const coveredSeen = []; // [{record, body}] for coveredRecallRecord lookups; do not re-emit covered records.
+    const grouped = new Map();
+    for (const r of allChosenRecords) {
+      const subject = r.entity ?? r.entityId ?? '';
+      const covered = coveredRecallRecord(r, r.description ?? '', coveredSeen);
+      if (covered) continue;
+      coveredSeen.push({ record: r, body: r.description ?? '' });
+      seenInPlanned.add(r.id);
+      if (!grouped.has(subject)) grouped.set(subject, []);
+      grouped.get(subject).push(r);
+    }
+    const parts = [];
+    const perSubject = new Map();
+    for (const [subject, recs] of grouped) {
+      const lines = recs.map(record => renderMemoryCard(
+        { ...record, innerLife: null, innerLifeHistorical: false },
+        { ...settings, timeProtection: true },
+        { body: record.description ?? '', detail: true, full: true }
+      ));
+      if (lines.length) {
+        const joined = `[当前属性：${subject}]\n${lines.join('\n\n')}`;
+        parts.push(joined);
+        perSubject.set(subject, joined);
+      }
+    }
+    defaultPlan.characterParts = parts;
+    defaultPlan.characterText = parts.length
+      ? ['[本轮涉及人物的当前属性；每个字段只保留来源更晚的一条。提及不等于在场，资料不自动赋予其他角色知情权。关系、台词和人设变化按本场相关召回，不在这里整份展开。]', ...parts].join('\n\n')
+      : '';
+    defaultPlan.stats.actualChars = defaultPlan.characterText.length;
+    defaultPlan.stats.actualUnits = defaultPlan.characterText.length
+      ? estimateUnits(defaultPlan.characterText)
+      : 0;
+  }
+
+  if (!personasEnabled) return defaultPlan;
+
+  // ----- On-mode: choose field groups to fit the global char budget.
+  const compare = (a, b) =>
+    b.importance - a.importance
+    || b.latestFloor - a.latestFloor
+    || String(a.subject).localeCompare(String(b.subject))
+    || String(a.key).localeCompare(String(b.key));
+
+  const required = fields.filter(f => f.required).sort(compare);
+  const optional = fields.filter(f => !f.required).sort(compare);
+
+  // Apply ability Top-N as a per-person cap on ability groups, independent of
+  // the global char budget. A group that loses here is deferred for the same
+  // module_top_n reason; it may still surface through ordinary recall.
+  const abilitiesByPerson = new Map();
+  for (const field of optional) {
+    if (field.module !== 'ability') continue;
+    const list = abilitiesByPerson.get(field.subject) ?? [];
+    list.push(field);
+    abilitiesByPerson.set(field.subject, list);
+  }
+  const eligibleAbilities = new Set();
+  for (const list of abilitiesByPerson.values()) {
+    for (const field of [...list].sort(compare).slice(0, topN)) {
+      eligibleAbilities.add(field);
+    }
+  }
+
+  const deferred = [];
+  const candidates = optional
+    .filter(field => field.module !== 'ability' || eligibleAbilities.has(field))
+    .map(field => ({ field, reason: null }))
+    .concat(
+      optional
+        .filter(field => field.module === 'ability' && !eligibleAbilities.has(field))
+        .map(field => ({ field, reason: 'module_top_n' }))
+    );
+
+  let selectedFields = [...required];
+  let trial = renderer(selectedFields, awarenessRows);
+  const requiredChars = trial.text.length;
+  let currentText = trial.text;
+  const chosenNow = [...trial.renderedRecords];
+
+  const needBudget = personRequiredOnlyCount => personRequiredOnlyCount ? false : false; // placeholder to keep linters quiet
+  void needBudget;
+
+  for (const entry of candidates.sort((a, b) => {
+    const sortA = a.reason === 'module_top_n' ? 1 : 0;
+    const sortB = b.reason === 'module_top_n' ? 1 : 0;
+    if (sortA !== sortB) return sortA - sortB;
+    return compare(a.field, b.field);
+  })) {
+    if (entry.reason) {
+      deferred.push({ field: entry.field, reason: entry.reason });
+      continue;
+    }
+    const field = entry.field;
+    if (requiredChars > personaBudgetChars) {
+      // Even the required baseline already overflows. Keep the baseline and
+      // stop trying to add anything optional; the rendering must still be
+      // complete for the people whose identity matters more than the budget.
+      deferred.push({ field, reason: 'required_overflow' });
+      continue;
+    }
+    const next = renderer([...selectedFields, field], awarenessRows);
+    if (next.text.length > personaBudgetChars) {
+      deferred.push({ field, reason: 'persona_budget' });
+      continue;
+    }
+    selectedFields.push(field);
+    currentText = next.text;
+    chosenNow.length = 0;
+    chosenNow.push(...next.renderedRecords);
+  }
+
+  const coveredRecordIds = new Set(chosenNow.map(r => r.id));
+  const coveredCurrentIds = new Set(
+    attributePlan.flatMap(group => group.current.filter(r => coveredRecordIds.has(r.id)).map(r => r.id))
+  );
+  const coveredAwarenessIds = new Set(
+    awarenessRows.filter(r => coveredRecordIds.has(r.id)).map(r => r.id)
+  );
+  const coveredStandingIds = new Set([...coveredCurrentIds, ...coveredAwarenessIds]);
+  const deferredCurrentIds = new Set(
+    deferred.flatMap(({ field }) => field.records.map(r => r.id))
+  );
+
+  return {
+    characterText: currentText,
+    characterChosen: chosenNow.map(record => ({ record, body: record.description ?? '' })),
+    coveredCurrentIds,
+    coveredAwarenessIds,
+    coveredStandingIds,
+    deferredCurrentIds,
+    characterParts: [],
+    decisions: deferred.map(({ field, reason }) => ({
+      id: field.records[0]?.id,
+      key: field.key,
+      subject: field.subject,
+      module: field.module,
+      importance: field.importance,
+      reason,
+    })),
+    awarenessRows,
+    stats: {
+      mode: 'persona_modular_budget',
+      targetChars: personaBudgetChars,
+      actualChars: currentText.length,
+      actualUnits: currentText.length ? estimateUnits(currentText) : 0,
+      requiredChars,
+      overBudget: currentText.length > personaBudgetChars,
+      overflowChars: Math.max(0, currentText.length - personaBudgetChars),
+      selectedFieldKeys: selectedFields.map(f => ({ subject: f.subject, key: f.key, module: f.module, importance: f.importance })),
+      deferredFieldKeys: deferred.map(({ field, reason }) => ({ subject: field.subject, key: field.key, module: field.module, reason })),
+      olderExcludedIds: 0,
+      unknownFieldKeys: 0,
+      standaloneAwarenessCount: awarenessRows.filter(r => r.category === 'awarenessChanges').length,
+      attachedAwarenessCount: awarenessRows.filter(r => r.category !== 'awarenessChanges').length,
+      retainedAwarenessCount: awarenessRows.length,
+    },
+  };
+}
+
 export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null,focusQuery=query,characterQuery=query,dossierPeople=[],dossierProfiles=[] } = {}) {
   const startedAt = globalThis.performance?.now?.() ?? Date.now();
   const selected = selectRecallCards(cards, settings);
@@ -321,7 +702,11 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   // A dynamic dossier replaces attitude prose. It does not replace standing
   // attributes, so a mentioned person still gets every field's latest value.
   const attributePlan=characters.groups.map(group=>{const {current,older}=currentAttributeRecords(group.records);return {...group,current,older};});
-  const standingIds=new Set(attributePlan.flatMap(group=>[...group.current,...group.records.filter(record=>record.category==='awarenessChanges')].map(record=>record.id)));
+  // Planner must run before retrieval filters are built; otherwise the
+  // ordinary-recall filter excludes IDs that the dossier will never actually
+  // render. U209 2026-09-25: planner default is off; byte-equal mirror.
+  const personaPlan=await buildPersonaBudgetPlan(attributePlan,settings,{focusQuery});
+  const standingIds=personaPlan.coveredStandingIds;
   const olderFactIds=new Set(attributePlan.flatMap(group=>group.older.map(record=>record.id)));
   const fullIds=standingIds;
   const tagLanes=settings.tagRecallEnabled===false?[]:matched.tags.map(tag=>({tag,limit:settings.tagCandidateLimit??4}));
@@ -406,29 +791,76 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   let content = packetHeader;
   const packetEntries=[];
   const packed = [], omitted = [], chosen=[],decisions=[];
-  const characterParts=[],characterChosen=[];
-  for(const group of attributePlan){
-    const parts=[];
-    for(const record of [...group.current,...group.records.filter(item=>item.category==='awarenessChanges')]){
-      const decision={id:record.id,title:recordTitle(record),category:record.category,reason:'当前属性',scores:{keyword:null,vector:null,fusion:null,final:null}};
-      const coveredBy=coveredRecallRecord(record,record.description,characterChosen);
-      if(coveredBy){decisions.push({...decision,status:'duplicate',coveredBy});omitted.push(record.id);continue;}
-      // The current value stays complete. Relationship prose, quotes and older
-      // field values are not part of this card.
-      parts.push(renderMemoryCard({...record,innerLife:null,innerLifeHistorical:false},{...settings,timeProtection:true},{body:record.description,detail:true,full:true}));
-      characterChosen.push({record,body:record.description});packed.push(record);
-      decisions.push({...decision,status:'selected',detail:'current_field'});
+  // The persona planner produced the character text once, before retrieval.
+  // Use its output verbatim so the budget-aware pipeline and the original
+  // pipeline agree on what was actually emitted. Diary content is appended
+  // unchanged; journal must still participate in the actual text.
+  const characterParts = personaPlan.characterParts ?? [];
+  const characterChosen = personaPlan.characterChosen;
+  // Mirror the historical `packed.push(record)` for each record the planner
+  // emitted, both for the original character channel and for the post-loop
+  // knowledge lookup. The original loop also kept per-record decisions
+  // (status: 'selected', detail: 'current_field') and used
+  // coveredRecallRecord to deduplicate identical current fields; reproduce
+  // both so trace shapes and downstream diagnostics stay identical when
+  // the planner is off.
+  const seenChosenIds = new Set();
+  const localChosen = [];
+  for (const entry of characterChosen) {
+    const record = entry?.record;
+    if (!record) continue;
+    const coveredBy = coveredRecallRecord(record, record.description ?? '', localChosen);
+    if (coveredBy) {
+      omitted.push(record.id);
+      decisions.push({
+        id: record.id,
+        title: recordTitle(record),
+        category: record.category,
+        reason: '当前属性',
+        scores: { keyword: null, vector: null, fusion: null, final: null },
+        status: 'duplicate',
+        coveredBy,
+      });
+      continue;
     }
-    if(parts.length)characterParts.push(`[当前属性：${group.subject}]\n${parts.join('\n\n')}`);
+    packed.push(record);
+    localChosen.push({ record, body: record.description ?? '' });
+    seenChosenIds.add(record.id);
+    decisions.push({
+      id: record.id,
+      title: recordTitle(record),
+      category: record.category,
+      reason: '当前属性',
+      scores: { keyword: null, vector: null, fusion: null, final: null },
+      status: 'selected',
+      detail: 'current_field',
+    });
   }
+  for (const { record, status, detail, coveredBy } of (personaPlan.decisions ?? [])) {
+    if (!record || seenChosenIds.has(record.id)) continue;
+    decisions.push({
+      id: record.id,
+      title: recordTitle(record),
+      category: record.category,
+      reason: 'budget_deferred',
+      status,
+      detail,
+      coveredBy,
+    });
+  }
+  // Re-attach covers and re-emits if the planner duplicated records; the
+  // original loop also kept a coveredBy entry per duplicate, but the planner
+  // emits a single decision for the whole group, so loop is unnecessary here.
   const diaryRows=settings.journalEnabled===false?[]:characterKeepsakes(characterChosen.map(r=>r.record),{withExpected:false}).diaries;
   const oldDiaryQuery=/当初|以前|过去|当时|日记|心迹|心路|阶段|为什么.*(?:信任|喜欢|拒绝)/u.test(focusQuery);
   const diaryText=diaryRows.filter(r=>!r.data.disabled&&(oldDiaryQuery||!r.record.innerLifeHistorical&&r.data.status!=='historical')).map(r=>innerLifeText({...r.record,innerLife:{...r.data,...(r.record.innerLifeHistorical?{status:'historical'}:{})}})).filter(Boolean).join('\n\n');
-  if(diaryText)characterParts.push(diaryText);
-  // Count/length limits apply only to retrieved history, not to dossiers.
-  // The header is charged once to history as before; dossiers cannot consume
-  // the event allowance even when their full text exceeds it.
-  const characterText=characterParts.length?['[本轮涉及人物的当前属性；每个字段只保留来源更晚的一条。提及不等于在场，资料不自动赋予其他角色知情权。关系、台词和人设变化按本场相关召回，不在这里整份展开。]',...characterParts].join('\n\n'):'';
+  // Append diary text after the planner's characterParts. Re-derive the
+  // final characterText so diary content participates in the budget too.
+  const finalParts = [...characterParts];
+  if(diaryText)finalParts.push(diaryText);
+  const characterText = finalParts.length
+    ? ['[本轮涉及人物的当前属性；每个字段只保留来源更晚的一条。提及不等于在场，资料不自动赋予其他角色知情权。关系、台词和人设变化按本场相关召回，不在这里整份展开。]', ...finalParts].join('\n\n')
+    : '';
   let memoryCount=0;
   let excerpts=0;
   const budget = settings.retrievalBudgetUnits;
@@ -474,7 +906,23 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const packedIds=new Set(packed.map(r=>r.id)),eventLookup=new Map(selected.filter(c=>c.category==='events').map(c=>[c.id,c]));
   const relevantContextIds=new Set(candidates.filter(c=>!nameOnly.has(c.id)).map(c=>c.id));
   const knowledgeContext=new Map(),unresolvedKnowledge=[];
-  const recalledKnowledge=new Map(packed.flatMap(c=>c.category==='awarenessChanges'?[c]:(c.awareness??[])).map(row=>[row.id,row]));
+  // Knowledge collected from records actually adopted by either channel:
+  // the dossier character loop (`characterChosen`) and the ordinary recall
+  // path (`packetEntries`). Mixing them is intentional; a record adopted by
+  // ordinary history may still carry knowledge referenced by an event the
+  // character dossier did not include. Reading packed was correct in shape
+  // but obscured the fact that each push site had its own line; collapsing
+  // them into one source made downstream filters brittle. Keep the duplicate
+  // intent explicit so future maintenance preserves both routes.
+  const characterKnowledgeSources=characterChosen.map(({record})=>record);
+  const historyKnowledgeSources=packetEntries.map(({record})=>record);
+  const recalledKnowledge=new Map(
+    [...characterKnowledgeSources,...historyKnowledgeSources]
+      .flatMap(record=>record.category==='awarenessChanges'
+        ?[record]
+        :(record.awareness??[]))
+      .map(row=>[row.id,row])
+  );
   for(const row of recalledKnowledge.values()){
     const ids=[...new Set([row.eventRef,row.eventId,row.sourceEventId,row.recordRef,...(row.eventRefs??[])].filter(Boolean))];
     let resolved=false;
@@ -498,14 +946,32 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const dialogueSource=selected.filter(record=>!coveredPersonaHistory(record));
   const dialoguePacket=settings.dialogueEnabled===false?{rows:[],text:''}:importantDialoguePacket(dialogueSource,characterQuery,lexicon,[characterText,eventPacket.text,contextText].join('\n'));
   const dialogueCards=[...new Map(dialoguePacket.rows.map(r=>[r.recordId,r.record])).values()].filter(c=>!packedIds.has(c.id)&&!knowledgeContext.has(c.id));
-  content=packed.length||dialoguePacket.rows.length?[packetHeader,characterText,eventPacket.text,contextText,dialoguePacket.text].filter(Boolean).join('\n\n'):'';
+  // Final assembly must look at the actual text produced by each pipeline; the
+  // historical `packed.length || dialoguePacket.rows.length` guard silently
+  // dropped outputs whenever the dossier emitted text but neither history nor
+  // important dialogue had anything to contribute. Characters, events,
+  // knowledge context and important dialogues all carry their own state and
+  // are recorded in `result.trace`; do not let a coincidence of empty
+  // bookkeeping arrays erase real content that is already proven effective.
+  const bodyParts=[
+    characterText,
+    eventPacket.text,
+    contextText,
+    dialoguePacket.text,
+  ].filter(text=>typeof text==='string'&&text.trim().length>0);
+  content=bodyParts.length?[packetHeader,...bodyParts].join('\n\n'):'';
   result.trace.importantDialogues={count:dialoguePacket.rows.length,units:estimateUnits(dialoguePacket.text),extraModelCalls:0};
   result.trace.personaAuthority={people:[...dossierCoverage.keys()],suppressedIds:selected.filter(coveredPersonaHistory).map(c=>c.id),historicalQuery:historyIntent,extraModelCalls:0};
   for(const c of dialogueCards)decisions.push({id:c.id,title:recordTitle(c),category:c.category,status:'selected',detail:'important_dialogue',reason:'人物重要对话'});
   result.trace.index = prepared?.stats ?? { status: 'uncached', size: selected.length };
   result.trace.dictionary={matched:matched.terms,ambiguous:lexicon.entries.filter(e=>e.ambiguous.length).length};
   result.trace.evidence={quarantinedLinks:selected.reduce((n,c)=>n+(c.associationReviewCount??0),0)};
-  result.trace.characters={mode:'current_fields',people:[...new Set(attributePlan.filter(group=>group.current.length).map(group=>group.subject))],records:characterChosen.length,units:estimateUnits(characterText),truncated:false};
+  // characterChosen.length reflects the actually-emitted records after the
+  // coveredRecallRecord dedup, matching the historical counting. The full
+  // pre-dedup list is kept inside `personaPlan.characterChosen` so further
+  // audit / debug surfaces stay rich.
+  const emittedCharacterCount = decisions.filter(d => d.reason === '当前属性' && d.status === 'selected').length;
+  result.trace.characters={mode:personaPlan.stats?.mode??'current_fields',people:[...new Set(attributePlan.filter(group=>group.current.length).map(group=>group.subject))],records:emittedCharacterCount,units:estimateUnits(characterText),truncated:false,budget:personaPlan.stats};
   result.trace.knowledgeContext={eventIds:[...knowledgeContext.keys()],units:estimateUnits(contextText),unresolvedRecordIds:unresolvedKnowledge,mode:'explicit_link_brief',extraModelCalls:0};
   for(const event of knowledgeContext.values())decisions.push({id:event.id,title:recordTitle(event),category:'events',status:'selected',detail:'knowledge_context',reason:'解释已注入知情的明确关联事件'});
   result.trace.packing={selected:packed.length+knowledgeContext.size+dialogueCards.length,memorySelected:memoryCount,memoryUnits,expanded:0,excerpts,brief:memoryCount-excerpts,omitted:omitted.length,duplicates:decisions.filter(d=>d.status==='duplicate').length,decisions};

@@ -78,8 +78,14 @@ export function fullCharacterGroups(cards,query,dictionary) {
 // attributes remain first-class. Search aliases are not identity authority.
 /** Star level of one fact, for ranking a whole dossier. This mirrors
  * recordImportance in src/product-memory.js, which cannot be imported here
- * without a cycle; the fallback uses only evidence this module already holds. */
-function factImportance(record){
+ * without a cycle; the fallback uses only evidence this module already holds.
+ *
+ * Exported (2026-09-25, U209): `product-memory.js` imports this to score
+ * field groups inside the personaModularBudget planner. Do NOT add an
+ * import from product-memory.js to this file as a "convenience" — the
+ * reverse cycle is what motivated keeping the function local in the first
+ * place. If new signal sources are needed, mirror them here instead. */
+export function factImportance(record){
   const raw=typeof record?.importance==='number'?record.importance:Number(record?.importance);
   const score=Number.isFinite(raw)&&raw>=1?Math.min(10,Math.round(raw)):(()=>{
     const floors=(record?.sourceRefs??[]).length||(record?.sourceFloors??[]).length;
