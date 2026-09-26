@@ -944,7 +944,8 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   // records. Apply the dossier coverage rule here too, or covered relationship
   // history returns after ordinary retrieval correctly filtered it out.
   const dialogueSource=selected.filter(record=>!coveredPersonaHistory(record));
-  const dialoguePacket=settings.dialogueEnabled===false?{rows:[],text:''}:importantDialoguePacket(dialogueSource,characterQuery,lexicon,[characterText,eventPacket.text,contextText].join('\n'));
+  const dialogueBudget=Math.min(1200,Math.max(0,Math.floor((settings.retrievalBudgetUnits??10000)*0.12)));
+  const dialoguePacket=settings.dialogueEnabled===false?{rows:[],text:''}:importantDialoguePacket(dialogueSource,characterQuery,lexicon,[characterText,eventPacket.text,contextText].join('\n'),{topicQuery:focusQuery,maxRows:4,maxUnits:dialogueBudget});
   const dialogueCards=[...new Map(dialoguePacket.rows.map(r=>[r.recordId,r.record])).values()].filter(c=>!packedIds.has(c.id)&&!knowledgeContext.has(c.id));
   // Final assembly must look at the actual text produced by each pipeline; the
   // historical `packed.length || dialoguePacket.rows.length` guard silently
