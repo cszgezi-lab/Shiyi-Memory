@@ -711,24 +711,15 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const recoveryGuard=()=>{guard();if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k])))throw canceled();};
       const rows=await recoverPersonaBatch({messages:range.messages,previous,fingerprint,cached,inputLimit:config.dynamicPersonaInputUnits,guard:recoveryGuard,
         makeRequest:(messages,previous)=>buildPersonaRequest(economy,messages,previous),
-        send:async (messages,options)=>{personaStep='model_request';modelRequested=true;const wire={model:config.dynamicPersonaModel,messages,stream:true,...(config.dynamicPersonaJsonMode?{response_format:{type:'json_object'}}:{}),...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})};
-         // 修复请求只针对 1 个角色且输入已大幅缩减，30 秒未返回即可视为失败，
-         // 避免无效占用配额与背景重试链。正常请求走默认 60 秒（dynamicPersonaDeadlineMs）。
-         // 用嵌套 AbortController 而非外层 controller，防止误取消同批次其他进行中的请求。
-         const repairTimeoutMs=30000,deadline=options?.repair?repairTimeoutMs:null;
-         let deadlineAbort=null,deadlineTimer=null;
-         if(deadline){deadlineAbort=new AbortController();deadlineTimer=setTimeout(()=>{try{deadlineAbort.abort('persona repair deadline exceeded');}catch{}},deadline);deadlineTimer.unref?.();}
-         const linkedAbort=new AbortController();
-         const linkAbort=()=>{try{linkedAbort.abort(controller.signal?.reason??'outer aborted');}catch{}};
-         if(controller.signal?.aborted)linkAbort();else controller.signal?.addEventListener('abort',linkAbort,{once:true});
-         deadlineAbort?.signal.addEventListener('abort',()=>linkAbort(),{once:true});
-         const chatOptions={signal:linkedAbort.signal};
-         try{
-          let reply=await client().chatCompletions(wire,chatOptions);
-          // 某些网关对 response_format 返回空正文（计费但无内容）。自动去掉 JSON 模式重发一次。
-          if(config.dynamicPersonaJsonMode&&!String(reply?.choices?.[0]?.message?.content??'').trim()){diagnostic({run,task:'persona',phase:'response',level:'warning',details:{reason:'persona_json_mode_empty_fallback',modelRole:'dynamicPersona'}});const plain={...wire};delete plain.response_format;reply=await client().chatCompletions(plain,chatOptions);}
-          return reply;
-         }finally{if(deadlineTimer)clearTimeout(deadlineTimer);controller.signal?.removeEventListener('abort',linkAbort);}
+        send:async messages=>{personaStep='model_request';modelRequested=true;const wire={model:config.dynamicPersonaModel,messages,stream:true,...(config.dynamicPersonaJsonMode?{response_format:{type:'json_object'}}:{}),...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})};
+         // Corrections may still carry the whole selected source range and can
+         // wait for provider quota. Use the configured transport deadline for
+         // both initial and repair calls; the batch signal handles cancellation.
+         const chatOptions={signal:controller.signal};
+         let reply=await client().chatCompletions(wire,chatOptions);
+         // 某些网关对 response_format 返回空正文（计费但无内容）。自动去掉 JSON 模式重发一次。
+         if(config.dynamicPersonaJsonMode&&!String(reply?.choices?.[0]?.message?.content??'').trim()){diagnostic({run,task:'persona',phase:'response',level:'warning',details:{reason:'persona_json_mode_empty_fallback',modelRole:'dynamicPersona'}});const plain={...wire};delete plain.response_format;reply=await client().chatCompletions(plain,chatOptions);}
+         return reply;
         },
         parse:(response,{messages,previous,request})=>{personaStep='parse_profile';return parsePersonaResponse(response,{messages,spans:request.spans,previous,identity:request.identity,developmentMessages:request.source,stageMode:config.dynamicPersonaMvuMode,preserveSources:true,collectFailures:true,diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});},
         save:value=>bound.write(cacheKey,value),diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});
