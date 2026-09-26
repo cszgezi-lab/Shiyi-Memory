@@ -222,13 +222,26 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
   // budget. Chinese characters take 3 UTF-8 bytes each, so this is also
   // a character ceiling in practice (~470 CJK chars).
   const NOTE_TEXT_MAX=1400;
+  // NOTE_TEXT_MAX counts UTF-8 bytes; we cannot rely on Node's Buffer in the
+  // browser/sandboxed extension host, so compute the byte length directly.
+  const utf8ByteLength=t=>{
+    let n=0;
+    for(let i=0;i<t.length;i++){
+      const c=t.charCodeAt(i);
+      if(c<0x80)n+=1;
+      else if(c<0x800)n+=2;
+      else if(c>=0xD800&&c<=0xDBFF){n+=4;i++;} // surrogate pair -> 4 bytes
+      else n+=3;
+    }
+    return n;
+  };
   const truncateNote=t=>{
     if(!t)return t;
-    if(Buffer.byteLength(t,'utf8')<=NOTE_TEXT_MAX)return t;
+    if(utf8ByteLength(t)<=NOTE_TEXT_MAX)return t;
     // Paragraph-aware: keep the LAST NOTE_TEXT_MAX bytes (most recent notes
     // carry the present; older prose is referenced via disk/full dossier).
-    let bytes=Buffer.byteLength(t,'utf8'),lo=0,hi=t.length;
-    while(lo<hi){const mid=(lo+hi+1)>>1;if(Buffer.byteLength(t.slice(t.length-mid),'utf8')<=NOTE_TEXT_MAX)lo=mid;else hi=mid-1;}
+    let bytes=utf8ByteLength(t),lo=0,hi=t.length;
+    while(lo<hi){const mid=(lo+hi+1)>>1;if(utf8ByteLength(t.slice(t.length-mid))<=NOTE_TEXT_MAX)lo=mid;else hi=mid-1;}
     return t.slice(t.length-lo);
   };
   const noteText=p=>{

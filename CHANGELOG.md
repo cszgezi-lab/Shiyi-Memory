@@ -1,5 +1,10 @@
 # 更新记录
 
+## 0.21.74
+
+- 紧急修复：动态人设 `truncateNote` 之前依赖 Node 全局 `Buffer.byteLength`，在浏览器/TT 扩展沙箱里 `Buffer` 未定义，导致 `prepare_profile` 阶段抛 `ReferenceError`，全量重跑全部批均卡同一行。改为内联 `utf8ByteLength` 纯 JS 实现 UTF-8 字节计数，沙箱零依赖；行为与原来对 1400 字节上限的判断完全一致
+- 仅修改 `src/dynamic-persona.js`；不动 API、模型、预算、周期、预设、原世界书、已保存记忆和现有 UI
+
 ## 0.21.73
 
 - 动态人设请求体整治：`user.previous` 不再重发整段累积人设 text，无原书绑定的纯聊天角色只发 `noteParts` + 本批涉及的 `examples`，并加 `NOTE_TEXT_MAX=1400` 字节级 cap（尾部截取，保留最近累积）。`user.materials` 在 `weightedPersonaMaterials` 加 `MATERIAL_TEXT_CAP=220` 单行字节 cap，长条人物志/日记不再独占请求体。`examples` 改走 `currentPersonaExamples` 精选（limit=6），按 arc + 目标 + 情境分散。综合下来人设请求体从 ~250KB 降到 ~95KB。
