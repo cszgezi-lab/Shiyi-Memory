@@ -1404,18 +1404,18 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(!committedRecall&&!recallBusy)committedRecall=captureRecallSnapshot();
     const snapshot=committedRecall;
     const messages = payload.messages;
-    const {intent:query,context,characterContext}=sceneRecallQuery(messages);
+    const {intent:query}=sceneRecallQuery(messages);
     const diagnosticRun=await runtimeLog.start('recall'),onlineController=new AbortController();
     try {
       let result;
       try{
-        result = await withTimeout(preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,signal:onlineController.signal,publish:false }), recallDeadlineMs(), '本轮记忆召回');
+        result = await withTimeout(preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,signal:onlineController.signal,publish:false }), recallDeadlineMs(), '本轮记忆召回');
       }catch(error){
         // 在线部分太慢：这一轮直接用本地检索结果，聊天不因此少一份记忆。
         if(error?.code!=='TIMEOUT')throw error;
         onlineController.abort();
         runtimeLog.record({run:diagnosticRun,task:'recall',phase:'prepared',level:'warning',details:safeLogDetails({reason:'online_too_slow',stage:'validate',elapsedMs:Date.now()-started,code:'TIMEOUT',modelRole:'embedding'})});
-        result = await preview(query, { online:false,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,publish:false });
+        result = await preview(query, { online:false,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,publish:false });
         result.degraded=true;
       }
       assertCurrent(token); if (revision !== recallSafetyRevision || !enabled || !core.settings.injectionEnabled){audit('changed');return;}

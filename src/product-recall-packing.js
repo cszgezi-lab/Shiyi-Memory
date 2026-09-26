@@ -20,15 +20,10 @@ export function auxiliaryInjectionReason(payload){
 
 export function sceneRecallQuery(messages=[]) {
   const text=m=>typeof m?.content==='string'?m.content:Array.isArray(m?.content)?m.content.filter(p=>p?.type==='text').map(p=>p.text??'').join('\n'):'';
-  const rows=messages.filter(m=>['user','assistant'].includes(m?.role)),latest=rows.filter(m=>m.role==='user').at(-1);
-  const intent=text(latest),prior=rows.filter(m=>m.role==='assistant').at(-1);
-  const narrative=text(prior).replace(/<(think|thinking)\b[^>]*>[\s\S]*?<\/\1>/gi,'').trim();
-  const context=narrative.length>1600?`${narrative.slice(0,400)}\n${narrative.slice(-1200)}`:narrative;
-  // Previous assistant prose supplies search context for pronouns/"continue";
-  // never read system prompts/worldbooks as if they were the current scene.
-  // Keep the full recent narrative for local roster matching. Only the search
-  // query sent to optional retrieval services uses the compact context above.
-  return {intent,context,characterContext:narrative};
+  // The host already sends previous assistant turns to the model. Reusing that
+  // prose as a retrieval query expands old scene terms and every named person's
+  // standing fields, even when the current turn asks for something else.
+  return {intent:text(messages.filter(m=>m?.role==='user').at(-1)),context:'',characterContext:''};
 }
 
 // Only verified event links or identical evidence qualify. Similar wording,

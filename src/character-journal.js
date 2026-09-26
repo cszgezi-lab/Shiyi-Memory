@@ -121,38 +121,48 @@ export function editKeepsakePatch(record,{kind,index,data,remove=false}){
 }
 export function importantDialoguePacket(cards,query,dictionary,alreadyText='',{topicQuery=query,maxRows=4,maxUnits=1200}={}){
   // This is an extra route for old speech, beyond quotes already present in
-  // retrieved events and the current persona. A scene name alone must not
-  // reopen every line spoken there. Keep the broader context for resolving
-  // pronouns/names, but take topical intent only from the latest user turn.
+  // retrieved events and the current persona. The current user turn is the
+  // sole source of topics and people; old assistant prose is already in the
+  // host request and must not reopen every line from an earlier scene.
   const ask=String(topicQuery??'');
   const asksForSpeech=/(?:说|讲|提|回应|回答).{0,12}(?:什么|哪句|哪些|怎么|如何)|(?:什么|哪句|哪些|怎么|如何).{0,12}(?:说|讲|回应|回答)|(?:找|回忆|复述|引用).{0,12}(?:原话|台词)|(?:原话|台词).{0,12}(?:是什么|有哪些|哪句|什么)/u.test(ask);
-  if(!asksForSpeech||maxRows<=0||maxUnits<=0)return {text:'',rows:[]};
+  if(!ask.trim()||maxRows<=0||maxUnits<=0)return {text:'',rows:[]};
   const rows=characterKeepsakes(cards,{withExpected:false}).dialogues.filter(r=>r.data.status!=='historical'&&!r.data.disabled);
   const entries=[...(dictionary.entries??[])];
   for(const n of new Set(rows.flatMap(r=>[r.subject,r.target]).filter(Boolean)))if(!entries.some(e=>e.name===n||e.aliases?.includes(n)))entries.push({name:n,aliases:[],indexWords:[],ambiguous:[],kind:'人物'});
   const lexicon={...dictionary,entries};
-  const focused=dictionaryQuery(ask,lexicon,{entityLimit:Infinity}).entities.filter(name=>entries.some(e=>e.name===name&&e.kind==='人物'));
-  const matched=dictionaryQuery(query,lexicon,{entityLimit:Infinity});
-  const names=new Set(focused.length?focused:matched.entities);
+  const matched=dictionaryQuery(ask,lexicon,{entityLimit:Infinity});
+  const focused=matched.entities.filter(name=>entries.some(e=>e.name===name&&e.kind==='人物'));
+  const names=new Set(focused);
   const matchedName=n=>names.has(n)||entries.some(e=>!e.disabled&&names.has(e.name)&&e.aliases?.includes(n)&&!e.ambiguous?.includes(n));
-  const named=[...names].sort((a,b)=>b.length-a.length);
+  const named=matched.terms.filter(term=>names.has(term.name)).flatMap(term=>term.matched);
   let rest=ask;for(const name of named)rest=rest.split(name).join(' ');
-  const topics=[...new Set(tokenizeChinese(rest).filter(token=>token.length>1&&!/^(?:什么|哪句|哪些|怎么|如何|原话|台词|说过|说了|说话|回答|回应|时间|时候|角色|人物|剧情|场景|当前|现在)$/u.test(token)))];
+  const sceneTopics=[...new Set(tokenizeChinese(rest).filter(token=>token.length>1&&!/^(?:什么|哪句|哪些|怎么|如何|原话|台词|说过|说了|说话|回答|回应|时间|时候|角色|人物|剧情|场景|当前|现在)$/u.test(token)))];
+  const places=matched.terms.filter(term=>entries.some(e=>e.name===term.name&&e.kind==='地点')).flatMap(term=>term.matched);
+  let topical=rest;for(const place of places)topical=topical.split(place).join(' ');
+  topical=topical.replace(/来到|走进|回到|进入|接着|继续|然后/gu,' ');
+  const topics=[...new Set(tokenizeChinese(topical).filter(token=>token.length>1&&!/^(?:什么|哪句|哪些|怎么|如何|原话|台词|说过|说了|说话|回答|回应|时间|时候|角色|人物|剧情|场景|当前|现在|来到|走进|回到|进入|接着|继续|然后)$/u.test(token)))];
+  // Tokenization yields overlapping Chinese n-grams. Count the longest
+  // concrete overlaps so one place name cannot look like several topics.
+  const maximal=terms=>terms.filter(term=>!terms.some(other=>other.length>term.length&&other.includes(term)));
   const selected=rows.map((r,index)=>{
     if(![r.subject,r.target].some(matchedName))return false;
     if(alreadyText.includes(`关键台词：${r.subject}${r.target?` 对 ${r.target}`:''}：「${r.data.text}」${r.data.context?`〔${r.data.context}〕`:''}`))return false;
-    const speech=[r.data.text,r.data.context,r.data.meaning].filter(Boolean).join('\n');
-    const title=String(r.record?.title??'');
-    const direct=topics.filter(token=>speech.includes(token));
-    const scene=topics.filter(token=>!speech.includes(token)&&title.includes(token));
-    if(topics.length&&!direct.length&&!scene.length)return false;
+    const speech=[r.data.text,r.data.meaning].filter(Boolean).join('\n');
+    const sceneText=[r.record?.location,r.record?.title,r.data.context].filter(v=>typeof v==='string').join('\n');
+    const direct=maximal(topics.filter(token=>speech.includes(token)));
+    const substantive=direct.filter(token=>!sceneText.includes(token));
+    const scene=maximal(sceneTopics.filter(token=>sceneText.includes(token)));
+    // Narrative use needs content overlap beyond the old scene label. A
+    // direct request for past speech can also use the scene to locate it.
+    if(asksForSpeech?(!direct.length&&!scene.length&&topics.length>0):!substantive.length)return false;
     const floor=Math.max(-1,...sourceFloors(r.record));
-    return {r,index,score:direct.reduce((n,t)=>n+t.length*3,0)+scene.reduce((n,t)=>n+t.length,0)+(focused.some(name=>name===r.subject)?6:0),floor};
+    return {r,index,score:substantive.reduce((n,t)=>n+t.length*4,0)+direct.reduce((n,t)=>n+t.length*2,0)+(asksForSpeech?scene.reduce((n,t)=>n+t.length,0):0)+(focused.some(name=>name===r.subject)?6:0),floor};
   }).filter(Boolean).sort((a,b)=>b.score-a.score||b.floor-a.floor||a.index-b.index);
   const header='[重要对话：历史原话及当时语境，不要求复读；说过不等于已经兑现，不改变未获知者的知识。]';
   const chosen=[],parts=[header];
   for(const {r} of selected){
-    if(chosen.length>=maxRows)break;
+    if(chosen.length>=Math.min(maxRows,asksForSpeech?4:2))break;
     const part=`${r.subject}${r.target?` 对 ${r.target}`:''}：「${r.data.text}」${r.data.provenance==='user_authored'?'〔用户编写，非程序核对的逐字原文〕':''}\n语境：${r.data.context||r.record.title||'见原事件'}${r.data.meaning?`；含义：${r.data.meaning}`:''}${r.record.temporal?`\n时间：${narrativeText(r.record.temporal)}`:''}\n${quoteAwareness(r.record)}\n来源：${sourceFloors(r.record).map(n=>`第${n}楼`).join('、')||'原记录'}`;
     if(estimateUnits([...parts,part].join('\n\n'))>maxUnits)continue;
     chosen.push(r);parts.push(part);
