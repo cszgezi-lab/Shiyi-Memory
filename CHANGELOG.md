@@ -1,5 +1,18 @@
 # 更新记录
 
+## 0.21.73
+
+- 动态人设请求体整治：`user.previous` 不再重发整段累积人设 text，无原书绑定的纯聊天角色只发 `noteParts` + 本批涉及的 `examples`，并加 `NOTE_TEXT_MAX=1400` 字节级 cap（尾部截取，保留最近累积）。`user.materials` 在 `weightedPersonaMaterials` 加 `MATERIAL_TEXT_CAP=220` 单行字节 cap，长条人物志/日记不再独占请求体。`examples` 改走 `currentPersonaExamples` 精选（limit=6），按 arc + 目标 + 情境分散。综合下来人设请求体从 ~250KB 降到 ~95KB。
+- 单元测试 1667 项 / 1660 pass / 0 fail / 7 skipped，与 0.21.72 baseline 一致。
+- 真实 581–590 / 591–600 重跑验证仍待用户允许调用额度。
+
+## 0.21.72
+
+- content 组装条件修复：之前 `product-memory.js` 行 500 只看 `packed.length || dialoguePacket.rows.length`，在“人物 dossier 有输出但普通检索 + 重要对话都空”时返回空字符串丢内容；改为按 4 个实际文本通道（characterText / eventPacket.text / contextText / dialoguePacket.text）任一非空就拼装。
+- 显式合并人物通道与普通检索通道到 `recalledKnowledge`：之前 `packed.flatMap(...)` 一行间接合并，改成 `characterChosen + packetEntries` 两源并集，避免路径误用（如只读 characterChosen）导致普通检索知情背景丢失。
+- `personaModularBudget` 全量实施：从 `product-person-profiles.js` 导出 `factImportance`（避免反向 import 引入循环）；在 `product-memory.js` 新增 `buildPersonaBudgetPlan()`，在 `attributePlan` 之后、`standingIds` 之前插入，按字段组（subject + factKey）选择，先必保后可选，必保字段溢出也只记录、不抛错；awareness 不能跟着可选被裁字段一起丢，默认关闭（settings 启用才生效，不迁移用户现有配置）；runtime 1663 测试 + 21 native + mobile 20 floors packed 全过。
+- 远程 main head = `746934f79095e3b75c1dead6d494ab950bb8d8c0`，runtimeChecksumSha256 = `44ffb7e42171f55586ebe69dadda40b1884b32cfce0bc9306524ff228fa9952a`。
+
 ## 0.21.62
 
 - 提到的人物固定注入每个属性字段的最新一条，以及这个人的知情。关系、人设变化、演绎参考和台词改为按本场内容召回，并计入历史记忆长度上限。更早的同字段值留在历史，问到该字段或明确问过去时仍可召回。动态人设仍整段替换已绑定的原书条目。
