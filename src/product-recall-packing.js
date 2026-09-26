@@ -116,14 +116,26 @@ export function nameOnlyRecallCandidates(candidates,query,dictionary,rerankedIds
   // BM25 query already expands these aliases; judging the original alias only
   // here would discard the correct canonical match as "name only". Related
   // index words stay off, and ambiguous/disabled aliases still do not expand.
-  const exactEntities=dictionaryQuery(rest,dictionary,{expandTopics:false}).entities;
-  const topicalQuery=[rest,...exactEntities.filter(name=>(dictionary.entries??[]).some(e=>e.name===name&&e.kind!=='人物'))].join(' ');
+  const matched=dictionaryQuery(rest,dictionary,{expandTopics:false});
+  const exactEntities=matched.entities;
+  const places=matched.terms.filter(term=>(dictionary.entries??[]).some(e=>e.name===term.name&&e.kind==='地点')).flatMap(term=>term.matched);
+  let withoutPlaces=rest;for(const place of places)withoutPlaces=withoutPlaces.split(place.toLocaleLowerCase()).join(' ');
+  const hasOtherTopic=tokenizeChinese(withoutPlaces).some(t=>t.length>1&&!generic.test(t));
+  const topicalQuery=[hasOtherTopic?withoutPlaces:rest,...exactEntities.filter(name=>(dictionary.entries??[]).some(e=>e.name===name&&e.kind!=='人物'&&(!hasOtherTopic||e.kind!=='地点')))].join(' ');
   const topics=[...new Set(tokenizeChinese(topicalQuery).filter(t=>t.length>1&&!generic.test(t)))];
   if(!topics.length)return new Set();
   // Don't qualify an unrelated event via attached knowledge, expanded tags
-  // or the participants of an associated event. Judge its own actual content.
-  const hasTopic=c=>topics.some(t=>[c.record.description,c.record.recallSummary,c.record.title,
-    c.record.content,c.record.knowledge,c.record.field,c.record.to].filter(v=>typeof v==='string').join('\n').toLocaleLowerCase().includes(t));
+  // or the participants of an associated event. A quote owned by this event
+  // can prove its own topic, but its broad scene/context cannot. If a concrete
+  // longer match exists, a stray two-character verb cannot qualify old scenes.
+  const topicStrength=c=>{
+    const blob=[c.record.description,c.record.recallSummary,c.record.title,c.record.content,c.record.knowledge,c.record.field,c.record.to,
+      ...(c.record.keyDialogues??[]).flatMap(q=>[q.text,q.meaning])].filter(v=>typeof v==='string').join('\n').toLocaleLowerCase();
+    return Math.max(0,...topics.filter(t=>blob.includes(t)).map(t=>t.length));
+  };
+  const strengths=new Map(candidates.map(c=>[c.id,topicStrength(c)]));
+  const strongest=Math.max(0,...strengths.values());
+  const hasTopic=c=>(strengths.get(c.id)??0)>=(strongest>=3&&['events','summaryView'].includes(c.record.category)?3:2);
   const topical=candidates.filter(hasTopic);if(!topical.length)return new Set();
   const linked=new Set(topical.flatMap(c=>c.record.category==='events'?[c.id]:refs(c.record)));
   const ranked=new Set(rerankedIds.map(String));

@@ -662,6 +662,11 @@ export async function buildPersonaBudgetPlan(attributePlan, settings, { focusQue
 
 export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null,focusQuery=query,characterQuery=query,dossierPeople=[],dossierProfiles=[] } = {}) {
   const startedAt = globalThis.performance?.now?.() ?? Date.now();
+  // Ordinary event cards provide facts and source context. Verbatim historical
+  // keyDialogues have one bounded request-time owner below; otherwise a place
+  // name can select several event cards and each card silently adds two quotes.
+  // Detail/full views continue to render their complete saved dialogues.
+  const ordinaryRenderSettings={...settings,dialogueEnabled:false};
   const selected = selectRecallCards(cards, settings);
   const prepared = indexCache ? await prepareRecallIndex(indexCache, selected, settings, { scopeKey, revision, signal }) : null;
   const index = prepared?.index ?? new LocalBM25Index(selected, { k1: settings.bm25K1, b: settings.bm25B });
@@ -784,7 +789,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const rescue=candidates.map((c,i)=>{
     const excerpt=sourceExcerptFor(c.record);
     const novel=excerpt?evidenceTerms(c.record,queryTokens,personNames).filter(t=>!represented.includes(t)&&excerpt.toLocaleLowerCase().includes(t)):[];
-    const standalone=excerpt?renderMemoryCard(c.record,settings,{body:`${c.record.recallSummary||c.record.description}\n${sourceQuote(c.record,excerpt)}`,query:focusQuery}):'';
+    const standalone=excerpt?renderMemoryCard(c.record,ordinaryRenderSettings,{body:`${c.record.recallSummary||c.record.description}\n${sourceQuote(c.record,excerpt)}`,query:focusQuery}):'';
     return {c,i,novel, fits:standalone&&estimateUnits(`${packetHeader}\n\n${standalone}`)<=settings.retrievalBudgetUnits};
   }).filter(r=>r.novel.length&&r.fits).sort((a,b)=>b.novel.length-a.novel.length||a.i-b.i)[0];
   if(rescue)candidates=[{...rescue.c,queryCoverageRescue:true},...candidates.filter(c=>c.id!==rescue.c.id)];
@@ -878,7 +883,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     const decision={id:item.id,title:recordTitle(item.record),category:item.record.category,reason:item.queryCoverageRescue?'原文补充未覆盖的检索细节':item.queryPartCoverage?'分别覆盖本轮的问题':recallSelectionReason(item),scores:{keyword:item.localScore??null,vector:item.vectorScore??null,fusion:item.fusionScore??null,final:item.score??null}};
     if(nameOnly.has(item.id)&&!sourceExcerpt&&!item.queryPlanCoverage){omitted.push(item.id);decisions.push({...decision,status:'name_only'});continue;}
     if(coveredBy){decisions.push({...decision,status:'duplicate',coveredBy});omitted.push(item.id);continue;}
-    let part = renderMemoryCard(item.record, settings,{body,query:focusQuery});
+    let part = renderMemoryCard(item.record, ordinaryRenderSettings,{body,query:focusQuery});
     const candidatePacket=()=>compileEventPacket([...packetEntries,{record:item.record,text:part}]);
     let trial=candidatePacket();
     let usedBody=body,usedExcerpt=Boolean(excerpt||sourceExcerpt);
@@ -889,7 +894,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
       // conditions. Never replace a source-backed restriction with a shorter
       // potentially unconditional claim merely to fit the history budget.
       if(sourceExcerpt){omitted.push(item.id);decisions.push({...decision,status:'budget',detail:'source_evidence_omitted'});continue;}
-      part=renderMemoryCard(item.record,settings,{body:brief,query:focusQuery});usedBody=brief;usedExcerpt=false;trial=candidatePacket();
+      part=renderMemoryCard(item.record,ordinaryRenderSettings,{body:brief,query:focusQuery});usedBody=brief;usedExcerpt=false;trial=candidatePacket();
     }
     if (memoryCount >= settings.retrievalLimit || estimateUnits(`${packetHeader}\n\n${trial.text}`) > budget) { omitted.push(item.id);decisions.push({...decision,status:memoryCount>=settings.retrievalLimit?'limit':'budget'});continue; }
     packed.push(item.record);packetEntries.push({record:item.record,text:part});chosen.push({record:item.record,body:usedBody});content = `${packetHeader}\n\n${trial.text}`;
@@ -939,7 +944,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     }
     if(!resolved)unresolvedKnowledge.push(row.id);
   }
-  const contextText=knowledgeContext.size?['[知情所指的事件背景：仅解释具体事实的来龙去脉，不扩大任何角色的知情范围；知情状态仍以人物条目为准。]',...[...knowledgeContext.values()].map(event=>renderMemoryCard(event,{...settings,timeProtection:true},{body:event.recallSummary||event.description,query:focusQuery}))].join('\n\n'):'';
+  const contextText=knowledgeContext.size?['[知情所指的事件背景：仅解释具体事实的来龙去脉，不扩大任何角色的知情范围；知情状态仍以人物条目为准。]',...[...knowledgeContext.values()].map(event=>renderMemoryCard(event,{...ordinaryRenderSettings,timeProtection:true},{body:event.recallSummary||event.description,query:focusQuery}))].join('\n\n'):'';
   // The important-dialogue lane is another injection route over the same
   // records. Apply the dossier coverage rule here too, or covered relationship
   // history returns after ordinary retrieval correctly filtered it out.

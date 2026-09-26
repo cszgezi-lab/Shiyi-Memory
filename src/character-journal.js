@@ -145,20 +145,28 @@ export function importantDialoguePacket(cards,query,dictionary,alreadyText='',{t
   // Tokenization yields overlapping Chinese n-grams. Count the longest
   // concrete overlaps so one place name cannot look like several topics.
   const maximal=terms=>terms.filter(term=>!terms.some(other=>other.length>term.length&&other.includes(term)));
-  const selected=rows.map((r,index)=>{
+  // A phrase shared by much of an old scene ("交接", for example) is not
+  // enough to select a particular line in unrelated current narration.
+  const frequency=new Map(topics.map(token=>[token,rows.filter(r=>[r.data.text,r.data.meaning].filter(Boolean).join('\n').includes(token)).length]));
+  const distinctive=token=>(frequency.get(token)??0)<=Math.max(2,Math.ceil(rows.length*0.15));
+  const candidates=rows.map((r,index)=>{
     if(![r.subject,r.target].some(matchedName))return false;
     if(alreadyText.includes(`关键台词：${r.subject}${r.target?` 对 ${r.target}`:''}：「${r.data.text}」${r.data.context?`〔${r.data.context}〕`:''}`))return false;
     const speech=[r.data.text,r.data.meaning].filter(Boolean).join('\n');
     const sceneText=[r.record?.location,r.record?.title,r.data.context].filter(v=>typeof v==='string').join('\n');
     const direct=maximal(topics.filter(token=>speech.includes(token)));
     const substantive=direct.filter(token=>!sceneText.includes(token));
+    const specific=substantive.filter(distinctive);
     const scene=maximal(sceneTopics.filter(token=>sceneText.includes(token)));
-    // Narrative use needs content overlap beyond the old scene label. A
-    // direct request for past speech can also use the scene to locate it.
-    if(asksForSpeech?(!direct.length&&!scene.length&&topics.length>0):!substantive.length)return false;
+    // Narrative use needs distinctive content beyond the old scene label.
+    // Direct speech questions can fall back to that scene when no specific
+    // quoted content is available.
+    if(asksForSpeech?(!direct.length&&!scene.length&&topics.length>0):!specific.length)return false;
     const floor=Math.max(-1,...sourceFloors(r.record));
-    return {r,index,score:substantive.reduce((n,t)=>n+t.length*4,0)+direct.reduce((n,t)=>n+t.length*2,0)+(asksForSpeech?scene.reduce((n,t)=>n+t.length,0):0)+(focused.some(name=>name===r.subject)?6:0),floor};
-  }).filter(Boolean).sort((a,b)=>b.score-a.score||b.floor-a.floor||a.index-b.index);
+    return {r,index,specific,score:specific.reduce((n,t)=>n+t.length*8,0)+substantive.reduce((n,t)=>n+t.length*4,0)+direct.reduce((n,t)=>n+t.length*2,0)+(asksForSpeech?scene.reduce((n,t)=>n+t.length,0):0)+(focused.some(name=>name===r.subject)?6:0),floor};
+  }).filter(Boolean);
+  const selected=(asksForSpeech&&candidates.some(c=>c.specific.length)?candidates.filter(c=>c.specific.length):candidates)
+    .sort((a,b)=>b.score-a.score||b.floor-a.floor||a.index-b.index);
   const header='[重要对话：历史原话及当时语境，不要求复读；说过不等于已经兑现，不改变未获知者的知识。]';
   const chosen=[],parts=[header];
   for(const {r} of selected){
