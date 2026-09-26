@@ -15,7 +15,7 @@ import {editPersonaCasting,inferPersonaCasting,PERSONA_CASTING_RULE,rememberPers
 import {PERSONA_CHANGE_CHECK_RULE,personaReviewedThrough} from './persona-change-check.js';
 import {PERSONA_EDIT_RULE,PERSONA_STYLE_RETIRE_RULE,PERSONA_QUOTED_PROSE_RULE,retirablePersonaStyle,personaStyleGroups,personaProjectedSourceParts,personaNoteParts,markPersonaQuoteParts,personaProseQuotes,personaSourcePartText,safePersonaQuotedProse} from './persona-edit-evidence.js';
 import {projectCurrentPersona,personaTimelineFrame} from './persona-current-projection.js';
-import {PERSONA_COMPOSITION_RULE,PERSONA_OUTPUT_CHECK_RULE,personaParts,personaMaterials,personaReviewFocus,composePersona,personaSpokenAliases,personaCompositionText} from './persona-composition.js';
+import {PERSONA_COMPOSITION_RULE,PERSONA_OUTPUT_CHECK_RULE,personaParts,personaMaterials,personaReviewFocus,composePersona,personaSpokenAliases,personaCompositionText,currentPersonaExamples} from './persona-composition.js';
 import {createPersonaRefinement,personaRefinementRequest} from './persona-refinement.js';
 import {applyPersonaDerivedUpdates,parsePersonaDerivedUpdates} from './persona-derived-edits.js';
 import {createPersonaFactualReview,personaFactSettingsHash} from './persona-factual-review.js';
@@ -205,10 +205,50 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
   const originals=[...groups.values()].map(g=>({id:g.id,name:g.name,aliases:g.aliases,parts:promptParts(personaParts(spans.filter(s=>s.ownerKey===foldName(g.name)),known.find(p=>foldName(p.name)===foldName(g.name))))}));
   for(const p of known)if(!p.bindings?.length&&!groups.has(foldName(p.name))){const parts=personaParts([],p);if(parts.length)originals.push({name:p.name,source:'chat',aliases:[...(identity.resolve(p.name)?.visibleAliases??[])],parts:promptParts(parts)});}
   const modeRule=(stageMode==='strict'?'当前选择严格MVU阶段兼容：人物演绎限于当前数值阶段，不跨越其明确边界。':'当前选择剧情主导：MVU只作参考，不用数值阶段否定已发生的剧情。previous的最近完整档案继续有效，不因MVU阶段改变自动回退；正文中的共同关系需实际双方确认。')+(readings.length?'\n'+NARRATIVE_READING_RULE:'');
+  // previous.text must never duplicate the original baseline.
+  // When originals include this persona, the baseline is in original.parts;
+  // send only noteParts (= composition.notes deduped against carried parts).
+  // When originals do NOT include this persona, personaNoteParts is the
+  // single source of truth: it yields composition.notes for modern dossiers
+  // (already deduped against parts) and falls back to profile.text for
+  // legacy dossiers that pre-date composition. The legacy path also
+  // preserves arbitrary saved prose that the previous behavior used to
+  // emit via personaDossierText — never personaDossierText itself, which
+  // re-emits composition.parts and is the documented cause of the
+  // 122–257KB request bodies before this change (U210).
+  // The full composition.notes and profile.text live on disk; for the
+  // request body we cap each persona's previous.text to NOTE_TEXT_MAX
+  // bytes so a single verbose dossier cannot dominate the per-batch
+  // budget. Chinese characters take 3 UTF-8 bytes each, so this is also
+  // a character ceiling in practice (~470 CJK chars).
+  const NOTE_TEXT_MAX=1400;
+  const truncateNote=t=>{
+    if(!t)return t;
+    if(Buffer.byteLength(t,'utf8')<=NOTE_TEXT_MAX)return t;
+    // Paragraph-aware: keep the LAST NOTE_TEXT_MAX bytes (most recent notes
+    // carry the present; older prose is referenced via disk/full dossier).
+    let bytes=Buffer.byteLength(t,'utf8'),lo=0,hi=t.length;
+    while(lo<hi){const mid=(lo+hi+1)>>1;if(Buffer.byteLength(t.slice(t.length-mid),'utf8')<=NOTE_TEXT_MAX)lo=mid;else hi=mid-1;}
+    return t.slice(t.length-lo);
+  };
+  const noteText=p=>{
+    const parts=personaNoteParts(p);
+    if(parts.length)return truncateNote(parts.map(q=>q.text).join('\n\n'));
+    const legacy=String(p?.text??'').trim();
+    return legacy?truncateNote(legacy):legacy;
+  };
   const prior=known.map(p=>({name:p.name,casting:p.casting,userDirectives:p.userDirectives??[],aliases:[...(identity.resolve(p.name)?.visibleAliases??[])],noteParts:personaNoteParts(p).map((q,i)=>({ref:q.ref,paragraph:i+1})),
-    // The exact effective baseline is already in original.parts. Sending it
-    // again in previous.text doubles input, not evidence or model attention.
-    text:originals.some(o=>o.name===p.name)&&p.composition?personaNoteParts(p).map(q=>q.text).join('\n\n'):personaDossierText(p),baselineInOriginal:originals.some(o=>o.name===p.name),examples:p.composition?.examples,development:p.composition?.development?.map(({timeAnchor,...d})=>({...d,scope:d.scope??''})),locked:p.locked,through:p.through,currentStage:stageMode!=='strict'||!p.bindings?.length||p.bindings.every(b=>spans.some(s=>s.id===b.id&&s.stage===b.stage))}));
+    // The exact effective baseline is already in original.parts when the
+    // persona has a worldbook binding. When it does not, the chat-supplied
+    // composition.parts are carried inside noteParts via personaDossierText's
+    // inputs. Either way we send exactly one channel, never both.
+    text:noteText(p),baselineInOriginal:originals.some(o=>o.name===p.name),
+    // Truncate examples to the same arc key + diversity + limit as the
+    // reading projection. Legacy saved dossiers still get to advertise all of
+    // their examples here because the personaRequest otherwise becomes an
+    // unbounded echo of the dossier's growth, not a per-batch input.
+    examples:p.composition?.examples?(function(){const project=currentPersonaExamples(p.composition.examples,p.composition.development,6);return project.length?project:p.composition.examples.slice(0,6);})():p.composition?.examples,
+    development:p.composition?.development?.map(({timeAnchor,...d})=>({...d,scope:d.scope??''})),locked:p.locked,through:p.through,currentStage:stageMode!=='strict'||!p.bindings?.length||p.bindings.every(b=>spans.some(s=>s.id===b.id&&s.stage===b.stage))}));
   const namedFloors=new Map();for(const m of source)for(const p of identity.mentions(m.text)){if(!namedFloors.has(p.key))namedFloors.set(p.key,[]);if(!namedFloors.get(p.key).includes(m.index))namedFloors.get(p.key).push(m.index);}
   const evidenceFloors=identity.people.filter(p=>namedFloors.has(p.key)).map(p=>({name:p.name,floors:namedFloors.get(p.key)}));
   const request={messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n${PERSONA_CASTING_RULE}\n${PERSONA_CHANGE_CHECK_RULE}\n姓名用original/previous的正式姓名；简称、昵称、简繁写法不创建另一角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}\n${PERSONA_DEVELOPMENT_RULE}\n${PERSONA_IMPACT_RULE}\noriginal.parts已完整提供底稿；previous.text只提供未重复的当前补充。底稿与补充合读，不因不重复发送就认为属性丢失。narrativeFrame是原文明确的全局时点；新的明确切换优先，不把原卡默认年龄/学段写成当前状态。\n${PERSONA_OUTPUT_CHECK_RULE}\nevidenceFloors仅是明确姓名的来源楼号索引，不是结论保证；仍从source逐字引用核对语义，不需回显。`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),narrativeFrame:frame,characterCandidates:personaCharacterCandidates(source,identity),attention:known.map(p=>({name:p.name,weight:personaAttentionWeight(p.casting)})),original:originals,materials:weightedPersonaMaterials(personaMaterials(records,identity,mentioned,Math.min(endFloor,materialsThrough)),known),previous:prior,reviewFocus:personaReviewFocus(source,identity),evidenceFloors})}],source,spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};

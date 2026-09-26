@@ -9,9 +9,19 @@ export function personaCasting(value={}){
 export function personaAttentionWeight(value){const c=personaCasting(value);return c.playerControlled?1:({lead:4,core:3,support:2,unknown:2,guest:1}[c.role]);}
 // Allocate supplemental memory rows, not story truth. Every represented person
 // receives one before weighted extra slots; raw source and baseline are intact.
+// Row text is length-capped so a single verbose journal row cannot dominate
+// the request; readers can still follow the source unit + floor index for
+// exact quote/length if needed.
+const MATERIAL_TEXT_CAP=220;
+const truncateMaterial=row=>{
+  if(typeof row?.text!=='string'||row.text.length<=MATERIAL_TEXT_CAP)return row;
+  const head=row.text.slice(0,MATERIAL_TEXT_CAP);
+  const tail=row.text.length-MATERIAL_TEXT_CAP;
+  return {...row,text:head,truncated:true,originalChars:row.text.length,omittedChars:tail};
+};
 export function weightedPersonaMaterials(rows,profiles,limit=24){
   const casts=new Map(profiles.map(p=>[foldName(p.name),p.casting])),groups=new Map();
-  for(const row of [...rows].sort((a,b)=>Math.max(...b.floors)-Math.max(...a.floors))){const key=foldName(row.name);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(row);}
+  for(const row of [...rows].sort((a,b)=>Math.max(...b.floors)-Math.max(...a.floors))){const key=foldName(row.name);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(truncateMaterial(row));}
   const names=[...groups.keys()].sort((a,b)=>personaAttentionWeight(casts.get(b))-personaAttentionWeight(casts.get(a))),out=[];
   for(const key of names)out.push(groups.get(key).shift());
   const max=Math.max(limit,names.length);
