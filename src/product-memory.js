@@ -660,7 +660,7 @@ export async function buildPersonaBudgetPlan(attributePlan, settings, { focusQue
   };
 }
 
-export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null,focusQuery=query,characterQuery=query,dossierPeople=[],dossierProfiles=[] } = {}) {
+export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null,focusQuery=query,ordinaryQuery=focusQuery,characterQuery=query,dossierPeople=[],dossierProfiles=[] } = {}) {
   const startedAt = globalThis.performance?.now?.() ?? Date.now();
   // Ordinary event cards provide facts and source context. Verbatim historical
   // keyDialogues have one bounded request-time owner below; otherwise a place
@@ -714,6 +714,12 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const standingIds=personaPlan.coveredStandingIds;
   const olderFactIds=new Set(attributePlan.flatMap(group=>group.older.map(record=>record.id)));
   const fullIds=standingIds;
+  const directPeople=new Set(characters.people.map(foldName));
+  const directPersonOnly=c=>{
+    if(query===focusQuery||!['entityFactChanges','relationshipChanges','personaChanges','performanceHints'].includes(c.category))return true;
+    const subjects=characterRecordSubjects(c);
+    return !subjects.length||subjects.some(name=>directPeople.has(foldName(name)));
+  };
   const tagLanes=settings.tagRecallEnabled===false?[]:matched.tags.map(tag=>({tag,limit:settings.tagCandidateLimit??4}));
   const categoryLanes=settings.distributedEnabled&&settings.distributedStrategy==='broadcast'
     ? [...new Set(selected.filter(c=>!fullIds.has(c.id)).map(c=>c.category))].filter(category=>category!=='summaryView').map(category=>({category,limit:settings.tagCandidateLimit??4})) : [];
@@ -730,7 +736,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     const blob=attitudeBlob(record);
     return topics.some(token=>blob.includes(token));
   };
-  const filter=c=>(historyIntent||!historicalIds.has(c.id))&&!fullIds.has(c.id)&&(historyIntent||!olderFactIds.has(c.id)||factAsked(c))&&attitudeAsked(c)&&!coveredPersonaHistory(c)&&(!channelFilter||channelFilter(c));
+  const filter=c=>(historyIntent||!historicalIds.has(c.id))&&!fullIds.has(c.id)&&(historyIntent||!olderFactIds.has(c.id)||factAsked(c))&&attitudeAsked(c)&&directPersonOnly(c)&&!coveredPersonaHistory(c)&&(!channelFilter||channelFilter(c));
   const result = await retrieveMemories({ index, query: q, limit: Math.max(settings.retrievalLimit, settings.retrievalCandidateLimit ?? 24), vectorAdapter, reranker, signal,categoryLanes,filter,
     entityIds:matched.entities,tagLanes,
     totalTimeoutMs: settings.retrievalTimeoutMs,
@@ -869,7 +875,25 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   let memoryCount=0;
   let excerpts=0;
   const budget = settings.retrievalBudgetUnits;
-  const nameOnly=nameOnlyRecallCandidates(candidates,focusQuery,lexicon,result.trace.rerank.status==='passed'?(result.trace.rerank.scores??[]).map(s=>s.id):[]);
+  const nameOnly=nameOnlyRecallCandidates(candidates,ordinaryQuery,lexicon,result.trace.rerank.status==='passed'?(result.trace.rerank.scores??[]).map(s=>s.id):[]);
+  // A current help/commitment continuation needs the encounter that created
+  // the saved plan. Promote at most one uniquely matching source event, using
+  // exact source revisions; shared people, topic words or dates are insufficient.
+  if(/帮忙|协助|支援|委托|约定|答应|承诺|赴约/u.test(focusQuery)){
+    for(const plan of candidates.filter(c=>c.record.category==='commitmentChanges'&&!nameOnly.has(c.id)&&['accepted','proposed'].includes(c.record.state))){
+      const sourceRefs=plan.record.sourceRefs??[];
+      if(sourceRefs.length<2)continue;
+      const planText=String(plan.record.content??plan.record.description??'');
+      const planTerms=[...new Set(tokenizeChinese(planText).filter(term=>term.length>=3))];
+      const matches=selected.filter(event=>event.category==='events'&&filter(event)&&sourceRefs.every(ref=>(event.sourceRefs??[]).some(other=>sameSource(ref,other)))&&
+        planTerms.filter(term=>String(event.description??'').includes(term)).length>=2);
+      if(matches.length!==1)continue;
+      const event=matches[0],existing=candidates.find(c=>c.id===event.id);
+      candidates=[plan,{...existing,id:event.id,record:event,channels:existing?.channels??['category_local'],sourceProvenance:true},...candidates.filter(c=>c.id!==event.id&&c.id!==plan.id)];
+      nameOnly.delete(event.id);
+      break;
+    }
+  }
   for (const item of candidates) {
     // Disputes/corrections must retain the full qualification and outcome;
     // a short label could repeat a denied claim while omitting its denial.
@@ -880,7 +904,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     const sourceExcerpt=item.queryPlanCoverage&&item.record.category==='summaryView'?originalSourceText(item.record):sourceExcerptFor(item.record);
     const body=[excerpt?`${brief}\n相关经过：${excerpt}`:brief,sourceExcerpt?sourceQuote(item.record,sourceExcerpt):''].filter(Boolean).join('\n');
     const coveredBy=coveredRecallRecord(item.record,body,chosen);
-    const decision={id:item.id,title:recordTitle(item.record),category:item.record.category,reason:item.queryCoverageRescue?'原文补充未覆盖的检索细节':item.queryPartCoverage?'分别覆盖本轮的问题':recallSelectionReason(item),scores:{keyword:item.localScore??null,vector:item.vectorScore??null,fusion:item.fusionScore??null,final:item.score??null}};
+    const decision={id:item.id,title:recordTitle(item.record),category:item.record.category,reason:item.sourceProvenance?'同源约定的原始事件':item.queryCoverageRescue?'原文补充未覆盖的检索细节':item.queryPartCoverage?'分别覆盖本轮的问题':recallSelectionReason(item),scores:{keyword:item.localScore??null,vector:item.vectorScore??null,fusion:item.fusionScore??null,final:item.score??null}};
     if(nameOnly.has(item.id)&&!sourceExcerpt&&!item.queryPlanCoverage){omitted.push(item.id);decisions.push({...decision,status:'name_only'});continue;}
     if(coveredBy){decisions.push({...decision,status:'duplicate',coveredBy});omitted.push(item.id);continue;}
     let part = renderMemoryCard(item.record, ordinaryRenderSettings,{body,query:focusQuery});

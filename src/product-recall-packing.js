@@ -18,12 +18,22 @@ export function auxiliaryInjectionReason(payload){
     ?'variable_update':null;
 }
 
-export function sceneRecallQuery(messages=[]) {
+export function sceneRecallQuery(messages=[],sceneMessages=[]) {
   const text=m=>typeof m?.content==='string'?m.content:Array.isArray(m?.content)?m.content.filter(p=>p?.type==='text').map(p=>p.text??'').join('\n'):'';
   // The host already sends previous assistant turns to the model. Reusing that
   // prose as a retrieval query expands old scene terms and every named person's
   // standing fields, even when the current turn asks for something else.
-  return {intent:text(messages.filter(m=>m?.role==='user').at(-1)),context:'',characterContext:''};
+  const users=messages.filter(m=>m?.role==='user').map(text),fallback=users.at(-1)??'';
+  const latest=sceneMessages.at(-1);
+  const raw=latest?.role==='user'&&typeof latest.text==='string'?latest.text.trim():'';
+  // Only trust the chat source when that exact turn is also present in the
+  // assembled request. It may have been wrapped in a long user-side preset.
+  if(!raw||!users.some(user=>user.includes(raw)))return {intent:fallback,context:'',characterContext:''};
+  const prior=sceneMessages.slice(0,-1).filter(m=>m?.role==='assistant').at(-1);
+  const summaries=[...String(prior?.text??'').matchAll(/<summary>([\s\S]*?)<\/summary>/giu)];
+  const continuation=/昨天|前天|上次|刚才|之前|那(?:个|些|两)|这(?:个|些)|继续|接着|帮忙|委托|答应|约定/u.test(raw);
+  const context=continuation?String(summaries.at(-1)?.[1]??'').replace(/<[^>]*>/gu,'').trim().slice(0,500):'';
+  return {intent:raw,context,characterContext:''};
 }
 
 // Only verified event links or identical evidence qualify. Similar wording,

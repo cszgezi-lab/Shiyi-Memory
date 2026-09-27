@@ -1384,7 +1384,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const lookup=context?`${query}\n最近剧情参照：${context}\n当前询问：${query}`:query;
     if(!clock)try{clock=sceneClockFromMessages(await core.sceneMessages?.()??[]);}catch(error){op.check();void reportError(error,{task:'recall',stage:'prepare'});clock={date:null,status:'unavailable',source:'scene'};}
     op.check();
-    const result = await recallMemory(cards, lookup, {...settings,storyDate:clock.date??''}, { ...(online ? await retrievalAdapters(selectRecallCards(cards, settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:snapshot?.dictionary??activeDictionary(),focusQuery:query,characterQuery:[query,characterContext].filter(Boolean).join('\n'),dossierPeople,dossierProfiles });
+    const result = await recallMemory(cards, lookup, {...settings,storyDate:clock.date??''}, { ...(online ? await retrievalAdapters(selectRecallCards(cards, settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:snapshot?.dictionary??activeDictionary(),focusQuery:query,ordinaryQuery:context?[query,context].join('\n'):query,characterQuery:[query,characterContext].filter(Boolean).join('\n'),dossierPeople,dossierProfiles });
     result.sceneClock=clock;
     op.check(); if (snapshot?safetyRevision!==recallSafetyRevision:revision!==recallRevision) throw new Error('记忆或设置已更新，请重新检索');
     if(publish){state.preview = result; notify();}return result;
@@ -1404,18 +1404,20 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(!committedRecall&&!recallBusy)committedRecall=captureRecallSnapshot();
     const snapshot=committedRecall;
     const messages = payload.messages;
-    const {intent:query}=sceneRecallQuery(messages);
+    let sceneMessages=[];
+    try{sceneMessages=await core.sceneMessages?.()??[];}catch{/* The assembled request remains the fallback. */}
+    const {intent:query,context,characterContext}=sceneRecallQuery(messages,sceneMessages);
     const diagnosticRun=await runtimeLog.start('recall'),onlineController=new AbortController();
     try {
       let result;
       try{
-        result = await withTimeout(preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,signal:onlineController.signal,publish:false }), recallDeadlineMs(), '本轮记忆召回');
+        result = await withTimeout(preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,signal:onlineController.signal,publish:false }), recallDeadlineMs(), '本轮记忆召回');
       }catch(error){
         // 在线部分太慢：这一轮直接用本地检索结果，聊天不因此少一份记忆。
         if(error?.code!=='TIMEOUT')throw error;
         onlineController.abort();
         runtimeLog.record({run:diagnosticRun,task:'recall',phase:'prepared',level:'warning',details:safeLogDetails({reason:'online_too_slow',stage:'validate',elapsedMs:Date.now()-started,code:'TIMEOUT',modelRole:'embedding'})});
-        result = await preview(query, { online:false,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,publish:false });
+        result = await preview(query, { online:false,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,publish:false });
         result.degraded=true;
       }
       assertCurrent(token); if (revision !== recallSafetyRevision || !enabled || !core.settings.injectionEnabled){audit('changed');return;}
