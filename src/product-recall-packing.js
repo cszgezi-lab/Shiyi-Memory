@@ -24,16 +24,26 @@ export function sceneRecallQuery(messages=[],sceneMessages=[]) {
   // prose as a retrieval query expands old scene terms and every named person's
   // standing fields, even when the current turn asks for something else.
   const users=messages.filter(m=>m?.role==='user').map(text),fallback=users.at(-1)??'';
+  // A host can append a long user-role instruction block after the actual
+  // turn. Detect that message structurally: adjacent user roles, a much
+  // longer trailing block, and multiple list rules. No preset wording or
+  // story vocabulary is assumed.
+  const last=messages.at(-1),previous=messages.at(-2),priorText=text(previous);
+  const ruleLines=String(fallback).split(/\r?\n/u).filter(line=>/^\s*(?:[-*•]|\d+[.)、])\s*\S/u.test(line)).length;
+  const supplemental=last?.role==='user'&&previous?.role==='user'&&priorText.trim()&&fallback.length>=800&&fallback.length>=priorText.length*2&&ruleLines>=4;
+  const requestTurn=supplemental?priorText:'';
   const latest=sceneMessages.at(-1);
   const raw=latest?.role==='user'&&typeof latest.text==='string'?latest.text.trim():'';
   // Only trust the chat source when that exact turn is also present in the
   // assembled request. It may have been wrapped in a long user-side preset.
-  if(!raw||!users.some(user=>user.includes(raw)))return {intent:fallback,context:'',characterContext:''};
-  const prior=sceneMessages.slice(0,-1).filter(m=>m?.role==='assistant').at(-1);
+  const trusted=Boolean(raw&&users.slice(-2).some(user=>user.includes(raw)));
+  const intent=trusted?raw:requestTurn||fallback;
+  if(!trusted&&!requestTurn)return {intent,context:'',characterContext:''};
+  const prior=(latest?.role==='assistant'?sceneMessages:sceneMessages.slice(0,-1)).filter(m=>m?.role==='assistant').at(-1);
   const summaries=[...String(prior?.text??'').matchAll(/<summary>([\s\S]*?)<\/summary>/giu)];
-  const continuation=/昨天|前天|上次|刚才|之前|那(?:个|些|两)|这(?:个|些)|继续|接着|帮忙|委托|答应|约定/u.test(raw);
+  const continuation=/昨天|前天|上次|刚才|之前|那(?:个|些|两)|这(?:个|些)|继续|接着|帮忙|委托|答应|约定/u.test(intent);
   const context=continuation?String(summaries.at(-1)?.[1]??'').replace(/<[^>]*>/gu,'').trim().slice(0,500):'';
-  return {intent:raw,context,characterContext:''};
+  return {intent,context,characterContext:''};
 }
 
 // Only verified event links or identical evidence qualify. Similar wording,
@@ -114,7 +124,7 @@ export function coverLocalQuestionParts(candidates,query,index,{filter,dictionar
 // matters to a concrete question. This only rejects topic-unrelated local matches
 // when another candidate supplies actual topic evidence. Broad continuation,
 // semantic hits, reranked rows and explicit event dependencies are untouched.
-export function nameOnlyRecallCandidates(candidates,query,dictionary,rerankedIds=[]){
+export function nameOnlyRecallCandidates(candidates,query,dictionary,rerankedIds=[],allRecords=[],currentQuery=query){
   const original=String(query??'').toLocaleLowerCase();
   const names=[...new Set((dictionary.entries??[]).filter(e=>!e.disabled&&e.kind==='人物')
     .flatMap(e=>[e.name,...(e.aliases??[])].filter(n=>!(e.ambiguous??[]).includes(n))))]
@@ -134,6 +144,20 @@ export function nameOnlyRecallCandidates(candidates,query,dictionary,rerankedIds
   const topicalQuery=[hasOtherTopic?withoutPlaces:rest,...exactEntities.filter(name=>(dictionary.entries??[]).some(e=>e.name===name&&e.kind!=='人物'&&(!hasOtherTopic||e.kind!=='地点')))].join(' ');
   const topics=[...new Set(tokenizeChinese(topicalQuery).filter(t=>t.length>1&&!generic.test(t)))];
   if(!topics.length)return new Set();
+  // A generic three-character phrase elsewhere in the request must not erase
+  // a rarer two-character scene cue in an event involving the named person.
+  // Check rarity against the searchable event corpus, not just the top hits.
+  const mentionedPeople=new Set(dictionaryQuery(String(currentQuery??'').toLocaleLowerCase(),dictionary,{expandTopics:false}).entities
+    .filter(name=>(dictionary.entries??[]).some(e=>e.kind==='人物'&&e.name===name)).map(name=>name.toLocaleLowerCase()));
+  const eventCorpus=allRecords.filter(record=>record.category==='events');
+  const exactTitleIds=new Set(eventCorpus.filter(record=>String(record.title??'').toLocaleLowerCase().trim()===String(currentQuery??'').toLocaleLowerCase().trim()).map(record=>record.id));
+  const shortTopics=topics.filter(term=>[...term].length===2);
+  const ownEventText=record=>[record.description,record.recallSummary,record.title].filter(v=>typeof v==='string').join('\n').toLocaleLowerCase();
+  const ownTexts=eventCorpus.map(ownEventText),floorTexts=eventCorpus.map(record=>String(record.linkedFloorText??'').toLocaleLowerCase());
+  const frequency=new Map();
+  const termFrequency=(term,kind)=>{const key=`${kind}:${term}`;if(!frequency.has(key))frequency.set(key,(kind==='own'?ownTexts:floorTexts).filter(text=>text.includes(term)).length);return frequency.get(key);};
+  const rareLimit=Math.max(1,Math.floor(eventCorpus.length*0.03));
+  const pairTermLimit=Math.max(2,Math.floor(eventCorpus.length*0.15));
   // Don't qualify an unrelated event via attached knowledge, expanded tags
   // or the participants of an associated event. A quote owned by this event
   // can prove its own topic, but its broad scene/context cannot. If a concrete
@@ -145,7 +169,18 @@ export function nameOnlyRecallCandidates(candidates,query,dictionary,rerankedIds
   };
   const strengths=new Map(candidates.map(c=>[c.id,topicStrength(c)]));
   const strongest=Math.max(0,...strengths.values());
-  const hasTopic=c=>(strengths.get(c.id)??0)>=(strongest>=3&&['events','summaryView'].includes(c.record.category)?3:2);
+  const rareOwnEventCue=c=>{
+    if(c.record.category!=='events'||(exactTitleIds.size&&!exactTitleIds.has(c.id))||!mentionedPeople.size||
+      !(c.record.participants??[]).some(name=>mentionedPeople.has(String(name).toLocaleLowerCase())))return false;
+    const own=ownEventText(c.record),floor=String(c.record.linkedFloorText??'').toLocaleLowerCase();
+    const ownMatches=shortTopics.filter(term=>own.includes(term)),floorMatches=shortTopics.filter(term=>floor.includes(term));
+    if(ownMatches.some(term=>termFrequency(term,'own')<=rareLimit)||
+      floorMatches.some(term=>termFrequency(term,'floor')<=rareLimit))return true;
+    const bounded=ownMatches.filter(term=>termFrequency(term,'own')<=pairTermLimit);
+    return bounded.some((a,i)=>bounded.slice(i+1).some(b=>
+      ![...a].some(ch=>b.includes(ch))&&ownTexts.filter(text=>text.includes(a)&&text.includes(b)).length<=rareLimit));
+  };
+  const hasTopic=c=>(strengths.get(c.id)??0)>=(strongest>=3&&['events','summaryView'].includes(c.record.category)?3:2)||rareOwnEventCue(c);
   const topical=candidates.filter(hasTopic);if(!topical.length)return new Set();
   const linked=new Set(topical.flatMap(c=>c.record.category==='events'?[c.id]:refs(c.record)));
   const ranked=new Set(rerankedIds.map(String));

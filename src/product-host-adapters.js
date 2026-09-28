@@ -125,7 +125,12 @@ export function normalizeHostMessage(message, index) {
   }
   return {
     id,
-    role: message.role ?? message.name ?? (message.is_system ? 'system' : message.is_user ? 'user' : 'assistant'),
+    // TT's saved JSONL uses `name` for a display name, not a role. Its
+    // is_user/is_system flags identify the author; taking name first turned
+    // every player turn into a custom role and broke current-turn recall.
+    role: message.is_system===true?'system':message.is_user===true?'user':
+      ['user','assistant','system'].includes(message.role)?message.role:message.is_user===false?'assistant':
+      ['user','assistant','system'].includes(message.name)?message.name:'assistant',
     text,
     version,
     hash: digest,

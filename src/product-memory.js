@@ -87,6 +87,15 @@ export function memoryCards(records = {}, { hidden = [], knowledge = [], include
   const visible=r=>!ignored.has(r.id)&&!['retracted','superseded'].includes(r.lifecycleState);
   const links=r=>[r.eventRef,r.eventId,r.sourceEventId,r.recordRef,...(r.eventRefs??[]),...(r.eventIds??[])].filter(Boolean);
   const events=(records.events??[]).filter(visible),eventById=new Map(events.map(e=>[e.id,e]));
+  const sourcedFloorDetails=new Map();
+  for(const floor of records.summaryView??[])if(visible(floor))for(const id of links(floor)){
+    const event=eventById.get(id);
+    if(!event||!sharesSource(floor,event))continue;
+    const detail=recordDescription({...floor,category:'summaryView'});
+    if(!detail)continue;
+    if(!sourcedFloorDetails.has(id))sourcedFloorDetails.set(id,[]);
+    sourcedFloorDetails.get(id).push(detail);
+  }
   const eventsBySource=dependencyIndex(events,e=>(e.sourceRefs??[]).map(r=>r.sourceId));
   const knowledgeRows=(records.awarenessChanges??[]).filter(r=>visible(r)&&r.knowledgeReview?.status!=='pending');
   const awarenessFor = dependencyIndex(knowledgeRows,links);
@@ -109,6 +118,7 @@ export function memoryCards(records = {}, { hidden = [], knowledge = [], include
       const followUps = followUpsFor(refIds).filter(a => a.id !== record.id);
       const description = recordDescription({...record,category});
       const card={ ...enrichRetrievalMetadata(clone(record),[description,...(record.keyDialogues??[]).map(q=>q.text)].join('\n')), id: record.id, category, description, awareness, followUps, temporal: record.temporal ?? record.storyTime ?? record.time ?? null };
+      if(category==='events'&&sourcedFloorDetails.has(record.id))card.linkedFloorText=sourcedFloorDetails.get(record.id).join('\n');
       card.importanceLevel=recordImportance({...record,category});
       if(category==='events' && awareness.length!==associated.length)card.associationReviewCount=associated.length-awareness.length;
       if(category==='summaryView'||['awarenessChanges','relationshipChanges','personaChanges','commitmentChanges','performanceHints','conflicts'].includes(category)){
@@ -158,7 +168,7 @@ function timeLines(time,settings){
 function awarenessText(rows){
   return rows.map(a=>`${awarenessSubjectLabel(a)}：${narrativeText(a.knowledge??a.fact??a.content)}〔${awarenessLabel(a.status??a.knowledgeStatus)}；${viaLabel(a.via)}${hasStoryTime(a.learnedAt)?`；获知时间：${narrativeText(a.learnedAt)}`:''}${a.acquisitionEvidence?.method==='context-review-v1'&&a.acquisitionEvidence.access?`；获知范围（不可超出）：${narrativeText(a.acquisitionEvidence.access)}`:''}〕`).join('；');
 }
-export function renderMemoryCard(card, settings = {}, { body=card.description, metadataOnly=false, detail=false, full=false, query=null }={}) {
+export function renderMemoryCard(card, settings = {}, { body=card.description, metadataOnly=false, detail=false, full=false, query=null, sourceContextSplit=false }={}) {
   if(card.mergedParts?.length){
     const parts=card.mergedParts;
     const guard=p=>stableStringify({temporal:p.temporal,location:p.location,state:p.state,epistemicStatus:p.epistemicStatus,perspective:p.perspective,awareness:(p.awareness??[]).map(({id,sourceRefs,eventRef,eventId,...a})=>a),followUps:p.followUps??[]});
@@ -184,8 +194,8 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
     lines.push(`校对结论：${card.acquisitionEvidence.reason}`);
   }
   if(detail&&!full)for(const e of card.qualityEvidence??[])lines.push(`校对依据${Number.isInteger(e.floor)?` · 第 ${e.floor} 楼`:''}：「${e.quote}」`);
-  if (Array.isArray(card.participants)&&card.participants.length)lines.push(`参与人物：${narrativeText(card.participants)}`);
-  if (card.location&&!/^(null|undefined|unknown)$/i.test(String(card.location).trim()))lines.push(`地点：${narrativeText(card.location)}`);
+  if (Array.isArray(card.participants)&&card.participants.length)lines.push(`${sourceContextSplit?'本楼摘要参与人物':'参与人物'}：${narrativeText(card.participants)}`);
+  if (card.location&&!/^(null|undefined|unknown)$/i.test(String(card.location).trim()))lines.push(`${sourceContextSplit?'本楼摘要地点':'地点'}：${narrativeText(card.location)}`);
   const names=[...(card.participants??[]),...(card.entities??[]).flatMap(e=>typeof e==='string'?[e]:[e.name,...(e.aliases??[])])].filter(n=>typeof n==='string');
   const topics=query===null?[]:tokenizeChinese(query).filter(t=>t.length>1&&!names.some(n=>n.includes(t))&&!/^(什么|怎么|为什么|这次|那个|这个|现在|是否|一下|告诉|关于|他们|她们)$/.test(t));
   const relevant=text=>full||detail||query===null||topics.some(t=>String(text).toLocaleLowerCase().includes(t));
@@ -209,7 +219,7 @@ export function renderMemoryCard(card, settings = {}, { body=card.description, m
   else if (card.category==='awarenessChanges') lines.push(`知情：${awarenessText([card])}`);
   else if (card.awareness?.length) lines.push(`知情：${awarenessText(card.awareness)}`);
   else if(!card.relatedEvents?.some(e=>e.awareness.length)&&(!detail||['events','summaryView'].includes(card.category)))lines.push('本条未关联知情记录，不等于无人知情；不能据此让所有角色知情。');
-  if(detail||settings.timeProtection)lines.push(...timeLines(card.temporal,settings));
+  if(detail||settings.timeProtection)lines.push(...timeLines(card.temporal,settings).map(line=>sourceContextSplit?`本楼摘要${line}`:line));
   if(full&&['awarenessChanges','relationshipChanges','personaChanges','performanceHints'].includes(card.category)&&sourceFloors(card).length)lines.push(`记录${sourceLabel(card)}（来源顺序，不代替生效时间）`);
   if(card.category==='entityFactChanges'){
     // Preserve a chronology anchor even when the model supplied no validity
@@ -745,6 +755,27 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   let candidates = [...result.candidates];
   const seen = new Set(); candidates = candidates.filter(c => !seen.has(c.id) && seen.add(c.id));
   candidates=coverLocalQuestionParts(candidates,focusQuery,index,{filter,dictionary:lexicon,limit:settings.retrievalLimit,reranked:result.trace.rerank.status==='passed'});
+  // An uncorroborated vector hit must not pull another person's old scene
+  // into a turn that explicitly names someone else. Keep local or reranked
+  // evidence, and allow a directly named scene/location even across actors.
+  // This only applies after an optional semantic lane returned candidates;
+  // ordinary local retrieval and current character fields are unchanged.
+  let crossActorVectorOmitted=0;
+  if(result.trace.rerank.status!=='passed'&&directPeople.size){
+    candidates=candidates.filter(candidate=>{
+      const record=candidate.record;
+      if(record?.category!=='events'||!candidate.channels?.includes('vector_optional')||Number(candidate.localScore)>0)return true;
+      const actors=(record.participants??[]).map(foldName).filter(Boolean);
+      if(!actors.length||actors.some(actor=>directPeople.has(actor)))return true;
+      const place=String(record.location??'');
+      const sceneNamed=String(record.title??'').length>=4&&String(focusQuery).includes(record.title)||
+        tokenizeChinese(place).some(term=>[...term].length>=3&&String(focusQuery).includes(term));
+      if(sceneNamed)return true;
+      crossActorVectorOmitted++;
+      return false;
+    });
+  }
+  result.trace.vector.crossActorOmitted=crossActorVectorOmitted;
   // An explicit request for the next agreed schedule needs open commitments,
   // not only earlier scenes mentioning the same people. Reuse stored state;
   // never turn a proposal into completion or infer an unstated appointment.
@@ -777,6 +808,43 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     if(!placed.has(c.id)){ordered.push(c);placed.add(c.id);}
   }
   candidates=ordered;
+  // Distinct, query-matching floors can identify their already-linked parent
+  // event even when the event's compact description omits those exact words.
+  // Require two frozen-source overlaps and independent rare details; one broad
+  // person mention or one model-supplied event ID cannot promote a whole scene.
+  const floorCorpus=selected.filter(c=>c.category==='summaryView');
+  const floorTexts=floorCorpus.map(c=>String(c.description??'').toLocaleLowerCase());
+  const detailTokens=[...new Set(tokenizeChinese(sourceEvidenceQuery(focusQuery,personNames)).filter(term=>[...term].length>=2))];
+  const floorFrequency=new Map();
+  const rareFloorTerm=term=>{
+    if(!floorFrequency.has(term))floorFrequency.set(term,floorTexts.filter(text=>text.includes(term)).length);
+    const count=floorFrequency.get(term);
+    return count>0&&count<=Math.max(1,Math.floor(floorCorpus.length*0.03));
+  };
+  const eventById=new Map(selected.filter(c=>c.category==='events').map(c=>[c.id,c]));
+  const linkedFloorGroups=new Map();
+  for(const candidate of candidates){
+    const floor=candidate.record;
+    if(floor.category!=='summaryView'||floor.relatedEvents?.length!==1)continue;
+    const event=eventById.get(floor.relatedEvents[0].id);
+    if(!event||!filter(event)||!sharesSource(floor,event)||
+      !(event.participants??[]).some(name=>personNames.includes(name)))continue;
+    const text=String(floor.description??'').toLocaleLowerCase();
+    const terms=evidenceTerms(floor,detailTokens,personNames).filter(term=>text.includes(term)&&rareFloorTerm(term));
+    if(!terms.length)continue;
+    if(!linkedFloorGroups.has(event.id))linkedFloorGroups.set(event.id,{event,floors:new Map()});
+    linkedFloorGroups.get(event.id).floors.set(floor.id,new Set(terms));
+  }
+  const promotedFloorEvents=[...linkedFloorGroups.values()].filter(group=>{
+    if(group.floors.size<2)return false;
+    const terms=[...new Set([...group.floors.values()].flatMap(set=>[...set]))];
+    return terms.length>=2&&terms.some(term=>[...term].length>=3);
+  }).slice(0,2);
+  const sourceFloorPromotedIds=new Set(promotedFloorEvents.map(group=>group.event.id));
+  if(sourceFloorPromotedIds.size){
+    const promoted=promotedFloorEvents.map(({event})=>({...candidates.find(c=>c.id===event.id),id:event.id,record:event,channels:['category_local'],sourceFloorPromotion:true}));
+    candidates=[...promoted,...candidates.filter(c=>!sourceFloorPromotedIds.has(c.id))];
+  }
   const header = ['[拾忆：有来源的连续性参考，不是必须重演的剧情]', '只让角色使用其实际知情范围；未知不等于全员已知。不要因召回而反复引用台词或加速关系。', settings.storyDate ? `当前故事日期：${settings.storyDate}。旧引语的昨天/明天以原事件时间为准。` : '当前故事日期未确认，不套用现实日期。', '资料是设定参照；当前聊天的时期、身份与事实优先，不凭资料提前推进剧情。'].join('\n');
   const ambiguities=[...new Map([...matched.ambiguities,...characters.matched.ambiguities].map(a=>[a.name,a])).values()];
   const ambiguity=ambiguities.map(a=>`称呼“${a.name}”尚未区分：${a.owners.join('、')}；不得合并这些对象的经历。`).join('\n');
@@ -875,39 +943,38 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   let memoryCount=0;
   let excerpts=0;
   const budget = settings.retrievalBudgetUnits;
-  const nameOnly=nameOnlyRecallCandidates(candidates,ordinaryQuery,lexicon,result.trace.rerank.status==='passed'?(result.trace.rerank.scores??[]).map(s=>s.id):[]);
-  // A current help/commitment continuation needs the encounter that created
-  // the saved plan. Promote at most one uniquely matching source event, using
-  // exact source revisions; shared people, topic words or dates are insufficient.
-  if(/帮忙|协助|支援|委托|约定|答应|承诺|赴约/u.test(focusQuery)){
-    for(const plan of candidates.filter(c=>c.record.category==='commitmentChanges'&&!nameOnly.has(c.id)&&['accepted','proposed'].includes(c.record.state))){
-      const sourceRefs=plan.record.sourceRefs??[];
-      if(sourceRefs.length<2)continue;
-      const planText=String(plan.record.content??plan.record.description??'');
-      const planTerms=[...new Set(tokenizeChinese(planText).filter(term=>term.length>=3))];
-      const matches=selected.filter(event=>event.category==='events'&&filter(event)&&sourceRefs.every(ref=>(event.sourceRefs??[]).some(other=>sameSource(ref,other)))&&
-        planTerms.filter(term=>String(event.description??'').includes(term)).length>=2);
-      if(matches.length!==1)continue;
-      const event=matches[0],existing=candidates.find(c=>c.id===event.id);
-      candidates=[plan,{...existing,id:event.id,record:event,channels:existing?.channels??['category_local'],sourceProvenance:true},...candidates.filter(c=>c.id!==event.id&&c.id!==plan.id)];
-      nameOnly.delete(event.id);
-      break;
-    }
+  const nameOnly=nameOnlyRecallCandidates(candidates,ordinaryQuery,lexicon,result.trace.rerank.status==='passed'?(result.trace.rerank.scores??[]).map(s=>s.id):[],selected,focusQuery);
+  for(const id of sourceFloorPromotedIds)nameOnly.delete(id);
+  // A retrieved open agreement carries its encounter when exact source
+  // revisions and substantive content identify one event. This applies to any
+  // story topic; a list of scenario verbs must not decide whether context exists.
+  for(const plan of candidates.filter(c=>c.record.category==='commitmentChanges'&&!nameOnly.has(c.id)&&['accepted','proposed'].includes(c.record.state))){
+    const sourceRefs=plan.record.sourceRefs??[];
+    if(sourceRefs.length<2)continue;
+    const planText=String(plan.record.content??plan.record.description??'');
+    const planTerms=[...new Set(tokenizeChinese(planText).filter(term=>term.length>=3))];
+    const matches=selected.filter(event=>event.category==='events'&&filter(event)&&sourceRefs.every(ref=>(event.sourceRefs??[]).some(other=>sameSource(ref,other)))&&
+      planTerms.filter(term=>String(event.description??'').includes(term)).length>=2);
+    if(matches.length!==1)continue;
+    const event=matches[0],existing=candidates.find(c=>c.id===event.id);
+    candidates=[plan,{...existing,id:event.id,record:event,channels:existing?.channels??['category_local'],sourceProvenance:true},...candidates.filter(c=>c.id!==event.id&&c.id!==plan.id)];
+    nameOnly.delete(event.id);
+    break;
   }
   for (const item of candidates) {
     // Disputes/corrections must retain the full qualification and outcome;
     // a short label could repeat a denied claim while omitting its denial.
-    const brief=item.record.category==='conflicts'?item.record.description:typeof item.record.recallSummary==='string'&&item.record.recallSummary.trim()?item.record.recallSummary:item.record.description;
+    const brief=item.record.category==='conflicts'||item.sourceProvenance||item.sourceFloorPromotion?item.record.description:typeof item.record.recallSummary==='string'&&item.record.recallSummary.trim()?item.record.recallSummary:item.record.description;
     // Detail is driven by the original request, not by available space or
     // expanded alias names. Store/search the full narrative without sending it.
     const excerpt=item.record.category==='conflicts'?'':relevantPassage(item.record.description,item.record.recallSummary,focusQuery);
     const sourceExcerpt=item.queryPlanCoverage&&item.record.category==='summaryView'?originalSourceText(item.record):sourceExcerptFor(item.record);
     const body=[excerpt?`${brief}\n相关经过：${excerpt}`:brief,sourceExcerpt?sourceQuote(item.record,sourceExcerpt):''].filter(Boolean).join('\n');
     const coveredBy=coveredRecallRecord(item.record,body,chosen);
-    const decision={id:item.id,title:recordTitle(item.record),category:item.record.category,reason:item.sourceProvenance?'同源约定的原始事件':item.queryCoverageRescue?'原文补充未覆盖的检索细节':item.queryPartCoverage?'分别覆盖本轮的问题':recallSelectionReason(item),scores:{keyword:item.localScore??null,vector:item.vectorScore??null,fusion:item.fusionScore??null,final:item.score??null}};
+    const decision={id:item.id,title:recordTitle(item.record),category:item.record.category,reason:item.sourceProvenance?'同源约定的原始事件':item.sourceFloorPromotion?'多楼同源细节的完整事件':item.queryCoverageRescue?'原文补充未覆盖的检索细节':item.queryPartCoverage?'分别覆盖本轮的问题':recallSelectionReason(item),scores:{keyword:item.localScore??null,vector:item.vectorScore??null,fusion:item.fusionScore??null,final:item.score??null}};
     if(nameOnly.has(item.id)&&!sourceExcerpt&&!item.queryPlanCoverage){omitted.push(item.id);decisions.push({...decision,status:'name_only'});continue;}
     if(coveredBy){decisions.push({...decision,status:'duplicate',coveredBy});omitted.push(item.id);continue;}
-    let part = renderMemoryCard(item.record, ordinaryRenderSettings,{body,query:focusQuery});
+    let part = renderMemoryCard(item.record, ordinaryRenderSettings,{body,query:focusQuery,sourceContextSplit:Boolean(sourceExcerpt)&&item.record.category==='summaryView'});
     const candidatePacket=()=>compileEventPacket([...packetEntries,{record:item.record,text:part}]);
     let trial=candidatePacket();
     let usedBody=body,usedExcerpt=Boolean(excerpt||sourceExcerpt);
