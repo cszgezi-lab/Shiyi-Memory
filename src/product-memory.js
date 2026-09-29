@@ -685,6 +685,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const historicalIds=new Set(markMemoryStates(cards,{dictionary:lexicon}).filter(c=>c.stateHistorical).map(c=>c.id));
   // A person's alias expands identity, not every topic in their lifetime.
   const matched=dictionaryQuery(query,lexicon,{expandTopics:false}),q=matched.query;
+  const focused = query === focusQuery ? null : dictionaryQuery(focusQuery, lexicon, {expandTopics:false});
   const personNames=(lexicon.entries??[]).filter(e=>e.kind==='人物').flatMap(e=>[e.name,...(e.aliases??[])]);
   const queryTokens=tokenizeChinese(sourceEvidenceQuery(dictionaryQuery(focusQuery,lexicon,{expandTopics:false}).query,personNames));
   const evidenceExcerpts=new Map();
@@ -780,6 +781,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const filter=c=>actorRelevant(c)&&(historyIntent||!historicalIds.has(c.id))&&!fullIds.has(c.id)&&(historyIntent||!olderFactIds.has(c.id)||factAsked(c))&&attitudeAsked(c)&&directPersonOnly(c)&&!coveredPersonaHistory(c)&&(!channelFilter||channelFilter(c));
   const retrievalStarted=globalThis.performance?.now?.()??Date.now();
   const result = await retrieveMemories({ index, query: q, limit: Math.max(settings.retrievalLimit, settings.retrievalCandidateLimit ?? 24), vectorAdapter, reranker, signal,categoryLanes,filter,
+    focus: focused ? {query: focused.query, entityIds: focused.entities} : null,
     entityIds:matched.entities,tagLanes,
     totalTimeoutMs: settings.retrievalTimeoutMs,
     vectorTimeoutMs: settings.vectorTimeoutMs, vectorOptions: { rankConstant: settings.fusionRankConstant, localWeight: settings.fusionLocalWeight, vectorWeight: settings.vectorWeight },

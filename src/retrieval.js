@@ -403,6 +403,20 @@ async function hydrateCandidates(candidates, repository, scope, trace) {
   return hydrated;
 }
 
+const compareCandidates = (a, b) => b.score - a.score || (b.localScore ?? 0) - (a.localScore ?? 0) || String(a.id).localeCompare(String(b.id));
+
+function reserveCategoryPool(candidates, lanes, categories, capacity) {
+  const reserved = [];
+  for (const lane of [...lanes, ...categories]) {
+    const hit = candidates.find(c => (lane.tag ? c.record?.tags?.includes(lane.tag) : c.record?.category === lane.category) && !reserved.some(r => r.id === c.id));
+    if (hit && reserved.length < Math.floor(capacity / 2)) reserved.push(hit);
+  }
+  const ids = new Set(reserved.map(c => c.id));
+  const baseline = candidates.filter(c => !ids.has(c.id)).slice(0, capacity - reserved.length);
+  const pool = [...baseline, ...reserved].sort(compareCandidates), pooled = new Set(pool.map(c => c.id));
+  return { candidates: [...pool, ...candidates.filter(c => !pooled.has(c.id))], reserved };
+}
+
 /**
  * Local retrieval is always the baseline. Optional vector and rerank adapters
  * can add ordering information but never become a source of facts.
@@ -414,6 +428,7 @@ export async function retrieveMemories({
   entityIds = [],
   tagLanes = [],
   categoryLanes = [],
+  focus = null,
   filter,
   vectorAdapter = null,
   reranker = null,
@@ -434,6 +449,34 @@ export async function retrieveMemories({
   const tagged=lanes.map(lane=>({...lane,candidates:index.search(query,{limit:lane.limit,entityIds,filter:r=>keywordFilter(r)&&Array.isArray(r.tags)&&r.tags.includes(lane.tag)})}));
   const categories=categoryLanes.slice(0,12).filter(l=>typeof l.category==='string'&&Number.isSafeInteger(l.limit)&&l.limit>0).map(l=>({...l,limit:Math.min(l.limit,20)}));
   const classified=categories.map(lane=>({...lane,candidates:index.search(query,{limit:lane.limit,entityIds,filter:r=>keywordFilter(r)&&r.category===lane.category})}));
+  const capacity = Math.max(1, Math.min(rerankOptions.maxCandidates ?? limit, limit));
+  const maxFocusCapacity = Math.floor(capacity / 2);
+  const distinctFocus = maxFocusCapacity > 0 && typeof focus?.query === 'string' && focus.query.trim() && normalizeText(focus.query) !== normalizeText(query);
+  // A long auxiliary scene must not decide all candidates for a short current
+  // question. Reuse the same index and filters; reserve at most half of the
+  // existing pool, leaving the other half available for contextual references.
+  // Corpus frequency keeps ubiquitous pronouns from reserving unrelated rows.
+  const specificTerm = term => [...term].length >= 2 && (index.docFrequency?.get(term) ?? Infinity) <= Math.max(2, (index.documents?.size ?? 0) / 5);
+  const focusSpecific = candidate => candidate.exactEntities?.length || (candidate.termMatches ?? []).some(specificTerm);
+  const focusLocal = distinctFocus ? index.search(focus.query, { limit: Math.max(limit, rerankOptions.maxCandidates ?? limit), entityIds: focus.entityIds ?? [], filter: keywordFilter }).filter(focusSpecific) : [];
+  // A rare two-character reference can still be a pronoun. One short match
+  // may keep one candidate, but cannot claim half the pool on rarity alone.
+  const matchedPositions = new Set(), focusText = normalizeText(focus?.query).toLocaleLowerCase();
+  for (const term of new Set(focusLocal.flatMap(c => c.termMatches ?? []).filter(specificTerm))) {
+    const at = focusText.indexOf(term);
+    if (at >= 0) for (let i = at; i < at + term.length; i++) matchedPositions.add(i);
+  }
+  const focusCapacity = focusLocal.some(c => c.exactEntities?.length) || matchedPositions.size >= 4 ? maxFocusCapacity : Math.min(1, maxFocusCapacity);
+  const focusCategories = focusLocal.length ? categories.map(lane => ({...lane, candidates: index.search(focus.query, {limit: lane.limit, entityIds: focus.entityIds ?? [], filter: r => keywordFilter(r) && r.category === lane.category}).filter(focusSpecific)})) : [];
+  const focusById = new Map(focusLocal.map(c => [String(c.id), c]));
+  for (const lane of focusCategories) for (const candidate of lane.candidates) if (!focusById.has(String(candidate.id))) focusById.set(String(candidate.id), candidate);
+  const focusRanks = new Map(focusLocal.map((c, i) => [String(c.id), i + 1]));
+  const rankConstant = Number.isFinite(vectorOptions.rankConstant) ? Math.max(1, Number(vectorOptions.rankConstant)) : 60;
+  const focused = reserveCategoryPool([...focusById.values()].map(candidate => {
+    const rank = focusRanks.get(String(candidate.id));
+    const categoryRank = focusCategories.reduce((best, lane) => {const i = lane.candidates.findIndex(c => c.id === candidate.id); return i < 0 ? best : Math.min(best, i + 1);}, Infinity);
+    return {...candidate, localScore: candidate.score, score: (rank ? 1 / (rankConstant + rank) : 0) + (Number.isFinite(categoryRank) ? .25 / (rankConstant + categoryRank) : 0)};
+  }).sort(compareCandidates), [], focusCategories, focusCapacity).candidates.slice(0, focusCapacity);
   const onlineStartedAt = monotonicNow();
   const finiteTimeout = (value, fallback) => Number.isFinite(value) && value > 0 ? value : fallback;
   const vectorDeadline = finiteTimeout(vectorTimeoutMs ?? vectorOptions.timeoutMs ?? vectorOptions.deadlineMs ?? vectorAdapter?.timeoutMs, DEFAULT_VECTOR_TIMEOUT_MS);
@@ -447,11 +490,17 @@ export async function retrieveMemories({
   const byId = new Map(local.map((candidate) => [String(candidate.id), candidate]));
   for(const lane of tagged)for(const item of lane.candidates){const candidate=byId.get(String(item.id))??item;candidate.channels=[...new Set([...candidate.channels,'tag_local'])];byId.set(String(item.id),candidate);}
   for(const lane of classified)for(const item of lane.candidates){const candidate=byId.get(String(item.id))??item;candidate.channels=[...new Set([...candidate.channels,'category_local'])];byId.set(String(item.id),candidate);}
+  for (const item of focused) {
+    const candidate = byId.get(String(item.id)) ?? {...item, score: item.localScore};
+    candidate.channels = [...new Set([...candidate.channels, 'focus_local'])];
+    byId.set(String(item.id), candidate);
+  }
   const trace = {
     query: String(query ?? ''),
     local: { status: 'passed', count: local.length, channel: 'bm25_cjk+entity_exact' },
     tags: {status:lanes.length?'active':'not_triggered',lanes:tagged.map(l=>({tag:l.tag,limit:l.limit,local:l.candidates.length}))},
     categories: {status:categories.length?'active':'disabled',lanes:classified.map(l=>({category:l.category,limit:l.limit,local:l.candidates.length}))},
+    focus: {status: distinctFocus ? focused.length ? 'active' : 'no_specific_match' : 'not_needed', count: focusLocal.length, reserved: focused.length, capacity: focusCapacity, ids: focused.map(c => c.id)},
     vector: { status: vectorAdapter ? 'pending' : 'disabled' },
     rerank: { status: reranker ? 'pending' : 'disabled', calls: 0 },
     fusion: { algorithm: 'weighted_rrf', rankConstant: 60, weights: { local: 1, vector: 1 } },
@@ -526,7 +575,6 @@ export async function retrieveMemories({
       trace.timings.vectorMs = monotonicNow() - stageStarted;
     }
   }
-  const rankConstant = Number.isFinite(vectorOptions.rankConstant) ? Math.max(1, Number(vectorOptions.rankConstant)) : 60;
   const localWeight = Number.isFinite(vectorOptions.localWeight) ? Math.max(0, Number(vectorOptions.localWeight)) : 1;
   const vectorWeight = Number.isFinite(vectorOptions.vectorWeight) ? Math.max(0, Number(vectorOptions.vectorWeight)) : 1;
   trace.fusion = { algorithm: 'weighted_rrf', rankConstant, weights: { local: localWeight, vector: vectorWeight } };
@@ -540,19 +588,22 @@ export async function retrieveMemories({
     candidate.fusionScore = (localRank ? localWeight / (rankConstant + localRank) : 0) + (vectorRank ? vectorWeight / (rankConstant + vectorRank) : 0) + (Number.isFinite(tagRank)?0.5*localWeight/(rankConstant+tagRank):0) + (Number.isFinite(categoryRank)?0.25*localWeight/(rankConstant+categoryRank):0);
     candidate.score = candidate.fusionScore;
     return candidate;
-  }).sort((a, b) => b.score - a.score || (b.localScore ?? 0) - (a.localScore ?? 0) || String(a.id).localeCompare(String(b.id)));
+  }).sort(compareCandidates);
   if(lanes.length||categories.length){
-    const capacity=Math.max(1,Math.min(rerankOptions.maxCandidates??limit,limit));
-    const reserved=[];
-    for(const lane of [...lanes,...categories]){const hit=candidates.find(c=>(lane.tag?c.record?.tags?.includes(lane.tag):c.record?.category===lane.category)&&!reserved.some(r=>r.id===c.id));if(hit&&reserved.length<Math.floor(capacity/2))reserved.push(hit);}
-    const ids=new Set(reserved.map(c=>c.id));
-    const baseline=candidates.filter(c=>!ids.has(c.id)).slice(0,capacity-reserved.length);
     // Reserve room in the rerank pool without demoting an already top-ranked
     // exact/tag hit to its tail (especially when reranking is disabled).
-    const pool=[...baseline,...reserved].sort((a,b)=>b.score-a.score||(b.localScore??0)-(a.localScore??0)||String(a.id).localeCompare(String(b.id))),pooled=new Set(pool.map(c=>c.id));
-    candidates=[...pool,...candidates.filter(c=>!pooled.has(c.id))];
+    const reservation = reserveCategoryPool(candidates, lanes, categories, capacity), reserved = reservation.reserved;
+    candidates = reservation.candidates;
     trace.tags.reserved=reserved.length;
     trace.categories.reserved=reserved.filter(c=>categories.some(l=>c.record?.category===l.category)).length;
+  }
+  if (focused.length) {
+    const ids = new Set(focused.map(c => String(c.id)));
+    const protectedRows = candidates.filter(c => ids.has(String(c.id)));
+    const rest = candidates.filter(c => !ids.has(String(c.id)));
+    const pool = [...protectedRows, ...rest.slice(0, capacity - protectedRows.length)].sort(compareCandidates);
+    const pooled = new Set(pool.map(c => c.id));
+    candidates = [...pool, ...candidates.filter(c => !pooled.has(c.id))];
   }
   throwIfAborted(signal);
   if (reranker && remaining() <= 0) {
