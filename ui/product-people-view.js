@@ -5,7 +5,7 @@ import { characterKeepsakes } from '../src/character-journal.js';
 import { characterRecordSubjects, explicitSubjectNames, factKey } from '../src/product-person-profiles.js';
 import { sourceLabel, recordTitle, epistemicLabel } from '../src/product-narrative.js';
 import { esc } from '../src/product-settings-ui.js';
-import {PERSONA_GENDERS,PERSONA_ROLES,personaCasting,personaCastingLabel,personaAttentionWeight} from '../src/persona-casting.js';
+import {PERSONA_GENDERS,PERSONA_ROLES,personaCasting,personaCastingLabel,personaAttentionWeight,applyPersonaCasting} from '../src/persona-casting.js';
 import {markMemoryStates} from '../src/memory-current-state.js';
 import {sha256} from '../src/utils.js';
 
@@ -115,6 +115,8 @@ export function peopleGroups(snapshot = {}) {
   }
   return [...groups.values()].map(group => ({
     ...group,
+    casting:applyPersonaCasting({name:group.name,casting:group.profiles[0]?.casting},snapshot.dynamicPersona?.castingOverrides).casting,
+    indexWords:(dictionary.entries??[]).find(e=>nameKey(e.name)===nameKey(group.name))?.indexWords??[],
     profiles: currentPersonaProfiles(group.profiles, settings.dynamicPersonaMvuMode),
     fieldCount: new Set(group.facts.map(factKey).filter(k => k != null)).size,
     relationships: newestFirst(group.relationships),
@@ -161,17 +163,19 @@ const peopleMergeHTML = (profiles, pendingName = '') => {
   </details>`;
 };
 
-const personaBindHTML = (group, profiles) => {
-  if (!group || !group.ambiguous && group.profiles.length || !profiles.length) return '';
+const personaBindHTML = (group, profiles, people=[]) => {
+  if (!group || !group.ambiguous && group.profiles.length) return '';
+  const memoryPeople=people.filter(p=>!p.ambiguous&&!p.profiles.length&&p.key!==group.key);
+  if(!profiles.length&&!memoryPeople.length)return '';
   const ordered = [...profiles]
     .sort((a, b) => b.name.length - a.name.length || a.name.localeCompare(b.name, 'zh-CN'))
   const foldedName = nameKey(group.name);
   const likely = ordered.filter(p => nameKey(p.name).includes(foldedName));
   const options = ordered
     .map(p => `<option value="${esc(p.id)}"${likely.length === 1 && likely[0].id === p.id ? ' selected' : ''}>${esc(p.name)}${p.bindings?.length ? ' · 已关联原书' : ''}</option>`)
-    .join('');
+    .join('')+memoryPeople.map(p=>`<option value="person:${esc(p.key)}">${esc(p.name)} · 记忆人物</option>`).join('');
   return `<details open class="sy-people-persona-bind" data-people-persona-bind>
-    <summary>把“${esc(group.name)}”归入已有动态人设</summary>
+    <summary>把“${esc(group.name)}”归入已有${memoryPeople.length?'人物':'动态人设'}</summary>
     <p class="sy-help">${group.ambiguous?'这个称呼目前对应多人，系统不会擅自猜测归属。':'这个名字来自记忆记录，尚未关联动态档案；若是已有角色的简称，可在这里确认归属。'}选择正确的人物后，若称呼已有正式档案会直接合并；否则保存为目标档案的手工别称。当前称呼下已有的心迹、台词、属性会随身份归属统一显示。不调用模型、不改原文、不改原世界书；合并仍保留可恢复版本。</p>
     <label>归入档案<select data-people-persona-bind-target aria-label="把称呼归入人物档案">${options}</select></label>
     <button type="button" data-people-persona-bind-commit>确认归入所选人物</button>
@@ -229,13 +233,13 @@ const fieldGroup = (title, count, rows, empty, { category = '', add = '' } = {})
   <header><span>${esc(title)} <small>${count}</small></span>${add ? `<button type="button" data-people-add="${esc(add)}">新增</button>` : ''}</header>
   ${rows || `<p class="sy-help">${esc(empty)}</p>`}
 </section>`;
-export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], editing = '') {
+export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], editing = '',allPeople=[]) {
   if (!group) return '<p class="sy-person-empty">还没有人物。整理一段聊天后会自动出现，也可以直接新建一个角色。</p>';
   const profileId = group.profiles[0]?.id ?? '';
   const profile=group.profiles[0];
   const reviewRows=(profile?.reviewSuggestions??[]).map(s=>`<div class="sy-card"><div class="sy-packet">${esc(profile.composition?.parts?.find(p=>p.key===s.key)?.text??'片段已变化')}</div><p>${esc(s.reason)}</p><p class="sy-help">第${esc(s.evidence.floor)}楼依据：${esc(s.evidence.quote)}</p><button type="button" data-persona-history="${esc(s.key)}" data-profile="${esc(profile.id)}" data-history-value="true">确认移入历史（不删除）</button></div>`).join('');
   const archived=(profile?.composition?.parts??[]).filter(p=>p.status==='historical').map(p=>`<div class="sy-card"><div class="sy-packet">${esc(p.text)}</div><button type="button" data-persona-history="${esc(p.key)}" data-profile="${esc(profile.id)}" data-history-value="false">恢复当前设定</button></div>`).join('');
-  const casting=personaCasting(group.profiles[0]?.casting);
+  const casting=personaCasting(group.casting??group.profiles[0]?.casting);
   const emphasis=profile?.userDirectives??[];
   const emphasisHTML=profileId?`<details data-people-emphasis="${esc(profileId)}"><summary>强调 · ${emphasis.length ? `${emphasis.length} 条` : '未设置'}</summary><p class="sy-help">单独保存，不会被自动总结改掉。每次发消息时放在人物档案开头和结尾，并在你的消息前再送一次。一行一句，删掉某一行就是删除这条。</p><label>强调内容<textarea rows="4" data-emphasis-lines>${esc(emphasis.join('\n'))}</textarea></label><label>或者用大白话告诉模型要记住、修改或删掉什么<textarea rows="3" data-emphasis-ask placeholder="例如：对某个人现在按你写的方式相处。已有的句子会保留，除非你说明要改或删。"></textarea></label><div class="sy-actions"><button type="button" data-emphasis-draft>让模型整理</button><button type="button" data-emphasis-save>保存强调</button></div><p class="sy-help">「让模型整理」会用人设接口调用一次模型，结果只填进上面的框，保存后才生效。</p></details>`:'';
   const options=(values,current)=>Object.entries(values).map(([value,label])=>`<option value="${value}"${value===current?' selected':''}>${label}</option>`).join('');
@@ -272,13 +276,13 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
   const stats = `${group.fieldCount} 项属性 · 关系 ${relationThreads.length} 组${(group.relationships?.length ?? 0) > relationThreads.length ? `（${group.relationships.length} 条历程）` : ''} · 约定 ${currentCommitments.length} 项 · 人设变化 ${group.personaChanges?.length ?? 0} · 心迹 ${group.diaries.length} · 台词 ${group.dialogues.length}`;
   return `<div class="sy-person-head">
       <h4 data-people-title tabindex="-1">${esc(group.name)}</h4>
-      ${profileId?`<details data-people-casting="${esc(profileId)}"><summary><span class="sy-casting-badge sy-casting-${casting.role}">${esc(personaCastingLabel(casting))}</span> · 调整定位</summary><div class="sy-grid"><label>性别<select data-casting-gender>${options(PERSONA_GENDERS,casting.gender)}</select></label><label>剧情定位<select data-casting-role>${options(PERSONA_ROLES,casting.role)}</select></label></div><label><input type="checkbox" data-casting-player${casting.playerControlled?' checked':''}>由玩家扮演（降低补充材料份额）</label><p class="sy-help">当前记录关注权重 ${personaAttentionWeight(casting)}：主角4、重要配角3、配角2、客串1；玩家角色1。影响主更新检查顺序与补充材料份额，不漏掉低权重人物的重大变化；性别不影响权重。</p><button type="button" data-casting-save>保存定位</button></details>`:''}
+      ${!group.ambiguous?`<details data-people-casting="${esc(profileId||group.name)}"><summary><span class="sy-casting-badge sy-casting-${casting.role}">${esc(personaCastingLabel(casting))}</span> · 调整定位</summary><div class="sy-grid"><label>性别<select data-casting-gender>${options(PERSONA_GENDERS,casting.gender)}</select></label><label>剧情定位<select data-casting-role>${options(PERSONA_ROLES,casting.role)}</select></label></div><label><input type="checkbox" data-casting-player${casting.playerControlled?' checked':''}>由玩家扮演（降低补充材料份额）</label><p class="sy-help">当前记录关注权重 ${personaAttentionWeight(casting)}：主角4、重要配角3、配角2、客串1；玩家角色1。影响主更新检查顺序与补充材料份额，不漏掉低权重人物的重大变化；性别不影响权重。</p><button type="button" data-casting-save>保存定位</button></details>`:''}
       ${emphasisHTML}
       <p class="sy-help">${group.aliases.length ? `别称：${esc(group.aliases.join('、'))} · ` : ''}${esc(stats)}</p>
       <div class="sy-actions sy-person-bar"><button type="button" data-people-rename>改名</button><button type="button" data-people-merge-open>合并档案</button><button type="button" class="danger" data-people-remove>删除</button></div>
     </div>
     ${group.ambiguous ? '<p class="sy-help" role="status">此称呼对应多人，暂不归入任何人的档案。请从全部记录核对姓名或在召回字典中确认别称。</p>' : ''}
-    ${personaBindHTML(group, allProfiles)}
+    ${personaBindHTML(group, allProfiles,allPeople)}
     ${reviewRows||archived?`<details class="sy-card"><summary>人设整理建议与历史</summary>${reviewRows}${archived?`<details><summary>已移入历史</summary>${archived}</details>`:''}</details>`:''}
     ${peopleMergeHTML(allProfiles, group.ambiguous ? group.name : '')}
     ${fieldGroup('人物属性', group.fieldCount, factRows, '还没有属性记录。', { category: 'entityFactChanges', add: 'attribute' })}
@@ -299,7 +303,7 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
   const root = panel.querySelector?.('[data-view="people"]');
   if (!root) return { paint(){}, focus(){}, select(){} };
   const $ = selector => root.querySelector?.(selector);
-  let scope, stamp = '', rendered = '', groups = [], selected = '', editing = '', stripStamp = '', query = '', sourceCards = [];
+  let scope, stamp = '', rendered = '', renderedPerson='', groups = [], selected = '', editing = '', stripStamp = '', query = '', sourceCards = [];
   const origins = row => (row.origins?.length ? row.origins : [row]).map(origin => {
     const record=sourceCards.find(c=>c.id===origin.recordId);
     if(!record)throw new Error('来源记忆已变化，请刷新人物页');
@@ -320,15 +324,26 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
       + '<button type="button" data-people-add="person">新角色</button>'
       + (visible.length ? '' : '<small>没有匹配的角色</small>');
     if (strip && rebuildStrip && stripStamp !== stripMarkup) {
+      const left=strip.scrollLeft??0;
       stripStamp = stripMarkup;
       if (typeof strip.insertAdjacentHTML === 'function' && typeof strip.querySelectorAll === 'function') {
         for (const node of [...strip.querySelectorAll('input,button,small')]) node.remove();
         strip.insertAdjacentHTML('beforeend', stripMarkup);
       } else strip.innerHTML = stripMarkup;
+      strip.scrollLeft=left;
     }
     const allProfiles = groups.flatMap(g => g.profiles);
-    const detail = !group && groups.length ? '<p class="sy-empty">没有匹配的人物，试试其他姓名或别称。</p>' : peopleDetailHTML(group, allProfiles, editing);
-    if (detail !== rendered) { $('[data-people-detail]').innerHTML = detail; rendered = detail; }
+    const detail = !group && groups.length ? '<p class="sy-empty">没有匹配的人物，试试其他姓名或别称。</p>' : peopleDetailHTML(group, allProfiles, editing,groups);
+    if (detail !== rendered) {
+      const node=$('[data-people-detail]'),samePerson=renderedPerson===selected;
+      const opened=samePerson?[...(node.querySelectorAll?.('details')??[])].map((d,i)=>d.open?i:-1).filter(i=>i>=0):[];
+      const scroll=[];
+      if(samePerson)for(let parent=node;parent;parent=parent.parentElement)scroll.push([parent,parent.scrollTop??0,parent.scrollLeft??0]);
+      node.innerHTML = detail;
+      for(const [i,d] of [...(node.querySelectorAll?.('details')??[])].entries())if(opened.includes(i))d.open=true;
+      for(const [parent,top,left] of scroll){parent.scrollTop=top;parent.scrollLeft=left;}
+      rendered = detail;renderedPerson=selected;
+    }
   }
   /** 「新增」只跳到记忆页的同一个编辑器，不在这里再造第二份表单。 */
   function addFor(kind, button) {
@@ -349,7 +364,7 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
   function paint(snapshot) {    if (root.hidden) return;
     const nextScope = JSON.stringify(snapshot.scope ?? snapshot.core?.scope ?? app?.core?.state?.scope ?? null);
     if (scope !== nextScope) {
-      scope = nextScope; selected = ''; stamp = ''; rendered = ''; editing = ''; stripStamp = ''; query = '';
+      scope = nextScope; selected = ''; stamp = ''; rendered = ''; renderedPerson='';editing = ''; stripStamp = ''; query = '';
     }
     const revision = snapshot.peopleRevision;
     const nextStamp = revision != null ? `revision:${revision}`
@@ -408,7 +423,8 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     }
     if(button.hasAttribute('data-casting-save')){
       const box=button.closest('[data-people-casting]');
-      if(box)void run(()=>app.editDynamicPersona(box.dataset.peopleCasting,{casting:{gender:box.querySelector('[data-casting-gender]').value,role:box.querySelector('[data-casting-role]').value,playerControlled:box.querySelector('[data-casting-player]').checked}}),{name:'dynamic-persona',button});
+      const group=groups.find(g=>g.key===selected);
+      if(box&&group&&!group.ambiguous)void run(()=>app.setPersonCasting(group.name,{gender:box.querySelector('[data-casting-gender]').value,role:box.querySelector('[data-casting-role]').value,playerControlled:box.querySelector('[data-casting-player]').checked}),{name:'dynamic-persona',button});
       return;
     }
     if (button.hasAttribute('data-people-key')) {
@@ -421,7 +437,8 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
     // 字段行：第一次点整行展开，展开后点内容或「修改」才进编辑。
     if (button.dataset.peopleAdd) { addFor(button.dataset.peopleAdd, button); return; }
     if (button.hasAttribute('data-people-merge-open')) {
-      const box = root.querySelector('[data-people-merge]');
+      const group=groups.find(g=>g.key===selected);
+      const box = root.querySelector(!group?.profiles.length?'[data-people-persona-bind]':'[data-people-merge]');
       if (box) { box.open = !box.open; box.scrollIntoView({ block: 'nearest' }); }
       return;
     }
@@ -511,10 +528,12 @@ export function mountPeopleView({ panel, app, run, host, setPage, onSelect }) {
       const group = groups.find(g => g.key === selected);
       const targetId = root.querySelector('[data-people-persona-bind-target]')?.value;
       const profiles = groups.flatMap(g => g.profiles);
-      const target = profiles.find(p => p.id === targetId);
+      const memoryTarget=String(targetId??'').startsWith('person:')?groups.find(g=>g.key===targetId.slice(7)&&!g.ambiguous&&!g.profiles.length):null;
+      const target = profiles.find(p => p.id === targetId)??memoryTarget;
       if (!group || !group.ambiguous && group.profiles.length || !group.name || !target) return;
       void run(async () => {
         if (await host.confirm?.(`将称呼“${group.name}”归入“${target.name}”？若已有同名正式档案会一并合并；原文、原世界书和来源记录不改。`) !== true) return;
+        if(memoryTarget)return app.saveDictionaryEntry({name:target.name,aliases:[...new Set([...target.aliases,group.name,...group.aliases])],indexWords:target.indexWords});
         return app.bindDynamicPersona?.(group.name, target.id)
           ?? app.editDynamicPersona(target.id, { aliases: [...(target.aliases ?? []), group.name] });
       }, { name: 'dynamic-persona', button });

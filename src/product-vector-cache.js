@@ -1,4 +1,4 @@
-import { sha256, throwIfAborted, abortError } from './utils.js';
+import { sha256, throwIfAborted, abortError, yieldLocalWork } from './utils.js';
 import { isVectorCollection,retainVectorPages,readVectorPage } from './product-vector-storage.js';
 
 export function vectorNorm(vector) {
@@ -66,7 +66,7 @@ export class ProductVectorCache {
         const norm = validVectorEntry(entry)?vectorNorm(entry.vector):0;
         if (norm && typeof entry.hash === 'string') entries.set(id, { ...entry, norm,segmentNorms:entry.segments?.map(vectorNorm) });
         if (++processed % 128 === 0) {
-          await new Promise(resolve => setTimeout(resolve, 0));
+          await yieldLocalWork();
           throwIfAborted(signal);
           if (generation !== this.generation || this.pending !== pending) throw abortError('vector scope changed');
         }
@@ -124,7 +124,7 @@ export class ProductVectorCache {
         if (Number.isFinite(score)) matches.push({ id: card.id, score, embeddingSpace: fingerprint, tags:card.tags??[],category:card.category });
       }
       if (++processed % 128 === 0) {
-        await new Promise(resolve => setTimeout(resolve, 0));
+        await yieldLocalWork();
         check();
       }
     }
@@ -139,7 +139,7 @@ export class ProductVectorCache {
         let dot=0;for(let i=0;i<v.length;i++)dot+=v[i]*query.vector[i];
         const score=dot/(vectorNorm(v)*query.norm);pagedScores.set(ref.id,Math.max(pagedScores.get(ref.id)??-Infinity,score));
       }
-      await new Promise(resolve=>setTimeout(resolve,0));check();
+      await yieldLocalWork();check();
     }
     for(const [id,score]of pagedScores){const card=byId.get(id);if(Number.isFinite(score))matches.push({id,score,embeddingSpace:fingerprint,tags:card.tags??[],category:card.category});}
     check();

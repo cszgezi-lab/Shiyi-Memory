@@ -300,7 +300,7 @@ async function invokeReranker(reranker, query, candidates, options, signal) {
     });
     return { candidates: reordered, status: 'passed', attempted: true, scores: ranks };
   } catch (error) {
-    return { candidates, status: 'fallback', attempted: true, reason: error?.code === 'TIMEOUT' ? 'timeout' : error.message };
+    return { candidates, status: 'fallback', attempted: true, reason: error?.code === 'TIMEOUT' ? 'timeout' : error?.code==='RECALL_LANE_COOLDOWN'?'cooldown':error.message };
   }
 }
 
@@ -519,8 +519,9 @@ export async function retrieveMemories({
       }
     } catch (error) {
       throwIfAborted(signal);
-      trace.vector = { status: 'fallback', reason: error.message };
-      trace.fallbacks.push({ channel: 'vector', reason: error.message });
+      const reason=error?.code==='RECALL_LANE_COOLDOWN'?'cooldown':error.message;
+      trace.vector = { status: 'fallback', reason };
+      trace.fallbacks.push({ channel: 'vector', reason });
     } finally {
       trace.timings.vectorMs = monotonicNow() - stageStarted;
     }

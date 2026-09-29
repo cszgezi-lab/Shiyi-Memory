@@ -36,7 +36,7 @@ import { createCredentialStore, credentialOrigin } from './product-credentials.j
 import { createRuntimeLog, safeLogDetails } from './product-runtime-log.js';
 import { buildDictionary, normalizeTerms, KNOWLEDGE_ANALYSIS_PROMPT, parseKnowledgeAnalysis, updateDictionaryOverride, normalizeTags } from './product-dictionary.js';
 import { fullSearchText } from './product-narrative.js';
-import { sceneRecallQuery, auxiliaryInjectionReason } from './product-recall-packing.js';
+import { sceneRecallQuery, auxiliaryInjectionReason, injectionTiming } from './product-recall-packing.js';
 import { sceneClockFromMessages } from './temporal.js';
 import { QUALITY_STORE_KEY,QUALITY_PROMPT,memoryQualityIssues,qualityGroups,qualityStatus,qualityEntryCurrent,qualityReviewedIds,qualityFingerprint,validateQualityReview,validateQualityReviewPartial,projectQualityRecords,finishQualityAttempt } from './product-memory-quality.js';
 import {planQuality,qualityTargets,qualityRows,mergeQualityEntry} from './product-quality-plan.js';
@@ -82,7 +82,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let recallSafetyRevision = 0, committedRecall = null;
   let autoTimer=null,autoPending=false,autoTask=null,autoHistoryAttempts=0,autoRetryAt=0;
   let foreground=false,injecting=0,autoFailureCount=0,autoFailureRange='';
-  let dictionaryRevision=-1, dictionaryCache=null;
+  let dictionaryRevision=-1, dictionaryCache=null,dictionaryProfiles=null;
   let recallBusy = 0, moduleSourceBaseline=null;
   let vectorTimer=null,vectorJob=null,vectorCheckVersion=0,vectorStorageFailure=null;
   let vectorStopped=false,recallReaders=0;
@@ -125,7 +125,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     else {queueAutomaticSummary();dynamicPersona.wake();wakeVectors();}
   }
   const recordedErrors=new WeakSet(),diagnosticJobs=new Set(),transportRuns=new Map(),queuedRequests=new Map();
-  const rerankLane=createRecallLaneBackoff();
+  // A normal generated reply can outlast a 30 s circuit. Keep repeated query
+  // embedding timeouts from charging the next turn again before recovery.
+  const rerankLane=createRecallLaneBackoff(),vectorLane=createRecallLaneBackoff({cooldownMs:120000});
   function trackDiagnostic(work){const job=Promise.resolve(work).catch(()=>{});diagnosticJobs.add(job);void job.finally(()=>diagnosticJobs.delete(job));return job;}
   function reportError(error,{task='operation',stage='ui',modelRole,action,level='error'}={}){
     if(error&&typeof error==='object'){if(recordedErrors.has(error))return Promise.resolve();recordedErrors.add(error);}
@@ -166,7 +168,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const resumeAutomaticTasks=()=>{if(host.document?.visibilityState==='hidden')return;queueAutomaticSummary();dynamicPersona.wake();};
   host.document?.addEventListener?.('visibilitychange',resumeAutomaticTasks);host.addEventListener?.('online',resumeAutomaticTasks);
   function activeDictionary(){
-    if(dictionaryRevision!==recallRevision||!dictionaryCache){dictionaryCache=buildDictionary([...(state.stale?[]:state.cards.filter(c=>c.category!=='conflicts')),...(core.settings.knowledgeEnabled?knowledgeCache.filter(c=>!state.hidden.includes(c.id)):[])],{aliases:core.settings.aliases,automatic:core.settings.dictionaryEnabled});dictionaryRevision=recallRevision;}
+    const profiles=state.dynamicPersona?.profiles??[],identityKey=JSON.stringify(profiles.map(p=>[p.name,p.aliases,p.deleted]));
+    if(dictionaryRevision!==recallRevision||dictionaryProfiles!==identityKey||!dictionaryCache){dictionaryCache=buildDictionary([...(state.stale?[]:state.cards.filter(c=>c.category!=='conflicts')),...(core.settings.knowledgeEnabled?knowledgeCache.filter(c=>!state.hidden.includes(c.id)):[])],{aliases:core.settings.aliases,automatic:core.settings.dictionaryEnabled,profiles:state.stale?[]:profiles});dictionaryRevision=recallRevision;dictionaryProfiles=identityKey;}
     return dictionaryCache;
   }
   function captureRecallSnapshot(){
@@ -492,16 +495,26 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           return;
         }
         injecting++;providerScheduler.setForeground?.(true);dynamicPersona.interruptReview();
+        const preparation=injectionTiming(host.document);
         try{
         // The host can still hold a request prepared before a chat switch. Do
         // not put either the new chat's recall or persona in that old payload.
         if(personaWorldbook.foreignRequest(payload)){await personaWorldbook.finalize(payload,[]);return;}
         const requestEpoch=epoch;
+        let sourceMessages=[];try{sourceMessages=await core.sceneMessages?.()??[];}catch{/* Use assembled request when the source is unavailable. */}
+        const recallQuery=sceneRecallQuery(payload.messages,sourceMessages);
+        // Persona selection still needs present actors from the recent scene,
+        // but never preset rules pretending to be dialogue. A retried reply is
+        // excluded along with its invented or withdrawn character mentions.
+        const sourceScene=recallQuery.source==='chat_source'&&sourceMessages.at(-1)?.role==='assistant'?sourceMessages.slice(0,-1):sourceMessages;
+        const sceneQuery=recallQuery.source!=='request_user'?[sourceScene.filter(m=>m.role==='assistant').at(-1)?.text??'',recallQuery.intent].join('\n'):undefined;
+        preparation.mark('sourceMs');
         let personaInjection;
-        if(!injectedPayloads.has(payload))try{personaInjection=await dynamicPersona.inject(payload,{enabled});}catch(error){void reportError(error,{task:'persona',stage:'prepare'});}
+        if(!injectedPayloads.has(payload))try{personaInjection=await dynamicPersona.inject(payload,{enabled,sceneQuery});}catch(error){void reportError(error,{task:'persona',stage:'prepare'});}
+        preparation.mark('personaMs');
         if(requestEpoch!==epoch){await personaWorldbook.finalize(payload,[]);return;}
-        await inject(payload,{dossierPeople:personaInjection?.people??[],dossierProfiles:personaInjection?.profiles??[],personaInjection});
-        }finally{injecting--;providerScheduler.setForeground?.(foregroundBusy());if(!foregroundBusy()){queueAutomaticSummary();dynamicPersona.wake();}}
+        await inject(payload,{dossierPeople:personaInjection?.people??[],dossierProfiles:personaInjection?.profiles??[],personaInjection,preparation,recallQuery});
+        }finally{preparation.finish();injecting--;providerScheduler.setForeground?.(foregroundBusy());if(!foregroundBusy()){queueAutomaticSummary();dynamicPersona.wake();}}
       }));
       try{bindings.push(hostAdapter.subscribe('WORLDINFO_ENTRIES_LOADED',payload=>enabled?personaWorldbook.applyLoaded(payload,dynamicPersona.profiles()).catch(error=>{void reportError(error,{task:'persona',stage:'prepare'});}):undefined));}catch{/* Optional capability must not disable automatic summary. */}
       // TT awaits event listeners. Never attach the model's lifetime to the
@@ -1376,7 +1389,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try {
     // Foreground recall owns the cache snapshot. Drain one canceled background
     // checkpoint before loading it; maintenance must not clear a live query.
-    if(online&&vectorJob){const pending=vectorJob;pending.cancel();await pending.done;op.check();}
+    let backgroundWaitMs=0,backgroundFallback=false;
+    if(online&&vectorJob){const pending=vectorJob,waitAt=Date.now();pending.cancel();try{await withTimeout(pending.done,1000,'后台索引退出');}catch(error){if(error?.code!=='TIMEOUT')throw error;online=false;backgroundFallback=true;}backgroundWaitMs=Date.now()-waitAt;op.check();}
     const revision = snapshot?.revision??recallRevision;
     const safetyRevision=snapshot?.safetyRevision??recallSafetyRevision;
     const settings=snapshot?.settings??core.settings;
@@ -1386,47 +1400,49 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     op.check();
     const result = await recallMemory(cards, lookup, {...settings,storyDate:clock.date??''}, { ...(online ? await retrievalAdapters(selectRecallCards(cards, settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:snapshot?.dictionary??activeDictionary(),focusQuery:query,ordinaryQuery:context?[query,context].join('\n'):query,characterQuery:[query,characterContext].filter(Boolean).join('\n'),dossierPeople,dossierProfiles });
     result.sceneClock=clock;
+    result.trace.timings.backgroundWaitMs=backgroundWaitMs;
+    if(backgroundFallback){result.degraded=true;result.trace.vector={status:'skipped',reason:'background_pending'};}
     op.check(); if (snapshot?safetyRevision!==recallSafetyRevision:revision!==recallRevision) throw new Error('记忆或设置已更新，请重新检索');
     if(publish){state.preview = result; notify();}return result;
     } finally { signal?.removeEventListener('abort',abort);recallReaders--;op.finish(); }
   }
-  async function inject(payload,{dossierPeople=[],dossierProfiles=[],personaInjection}={}) {
+  async function inject(payload,{dossierPeople=[],dossierProfiles=[],personaInjection,preparation=injectionTiming(host.document),recallQuery:sourceQuery}={}) {
     if (!payload || !Array.isArray(payload.messages) || injectedPayloads.has(payload)) return;
     const log=injectionLog,started=Date.now(),initialToken=epoch;
-    const audit=(status,options={})=>{if(log&&core.settings.injectionLogEnabled)log.append({status,persona:personaInjection,budgetUnits:core.settings.retrievalBudgetUnits,elapsedMs:Date.now()-started,...options});};
+    let querySource='unknown';
+    const audit=(status,options={})=>{const stages=preparation.finish();if(log&&core.settings.injectionLogEnabled)log.append({status,persona:personaInjection,preparation:stages,querySource,budgetUnits:core.settings.retrievalBudgetUnits,elapsedMs:Date.now()-started,...options});};
     if(!enabled||!core.settings.injectionEnabled){injectedPayloads.add(payload);audit('disabled');return;}
     if(state.stale||!workspace?.isCurrent()){injectedPayloads.add(payload);audit(state.stale?'stale':'unavailable');return;}
     injectedPayloads.add(payload);
     await syncModulesQuietly();
+    preparation.mark('syncMs');
     if(state.stale||!workspace?.isCurrent()||epoch!==initialToken){audit('changed');return;}
     const token = epoch;
     const revision = recallSafetyRevision;
     if(!committedRecall&&!recallBusy)committedRecall=captureRecallSnapshot();
-    const snapshot=committedRecall;
+    const snapshot=committedRecall?{...committedRecall,dictionary:activeDictionary()}:null;
     const messages = payload.messages;
     let sceneMessages=[];
-    try{sceneMessages=await core.sceneMessages?.()??[];}catch{/* The assembled request remains the fallback. */}
-    const {intent:query,context,characterContext}=sceneRecallQuery(messages,sceneMessages);
-    const diagnosticRun=await runtimeLog.start('recall'),onlineController=new AbortController();
+    if(!sourceQuery)try{sceneMessages=await core.sceneMessages?.()??[];}catch{/* The assembled request remains the fallback. */}
+    const recallQuery=sourceQuery??sceneRecallQuery(messages,sceneMessages);
+    const {intent:query,context,characterContext}=recallQuery;querySource=recallQuery.source;
+    if(!sourceQuery)preparation.mark('sourceMs');
+    const diagnosticRun=await runtimeLog.start('recall');
     try {
-      let result;
-      try{
-        result = await withTimeout(preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,signal:onlineController.signal,publish:false }), recallDeadlineMs(), '本轮记忆召回');
-      }catch(error){
-        // 在线部分太慢：这一轮直接用本地检索结果，聊天不因此少一份记忆。
-        if(error?.code!=='TIMEOUT')throw error;
-        onlineController.abort();
-        runtimeLog.record({run:diagnosticRun,task:'recall',phase:'prepared',level:'warning',details:safeLogDetails({reason:'online_too_slow',stage:'validate',elapsedMs:Date.now()-started,code:'TIMEOUT',modelRole:'embedding'})});
-        result = await preview(query, { online:false,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,publish:false });
-        result.degraded=true;
-      }
+      // Retrieval already bounds both optional network stages and retains its
+      // local candidates on failure. An outer timeout used to throw that work
+      // away, repeat projection/indexing and overwrite the online trace.
+      const result = await preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,publish:false });
+      preparation.mark('recallMs');
       assertCurrent(token); if (revision !== recallSafetyRevision || !enabled || !core.settings.injectionEnabled){audit('changed');return;}
       const role = ['system','user'].includes(core.settings.injectionRole) ? core.settings.injectionRole : 'system';
       const external=externalState({full:true});
       let content=result.text;
       // Explicitly configured authoritative values are part of character
       // context, not something to silently omit when an event budget is small.
-      if(external!=='未配置'&&external!=='{}')content+=`${content?'\n':''}外部权威状态（只读，不改写 MVU；变量不自动赋予角色知情权）：${external}`;
+      const externalText=external!=='未配置'&&external!=='{}'?`外部权威状态（只读，不改写 MVU；变量不自动赋予角色知情权）：${external}`:'';
+      if(externalText)content+=`${content?'\n':''}${externalText}`;
+      result.trace.budget={...result.trace.budget,externalUnits:estimateUnits(externalText)};
       if(!content){audit('empty',{query,result});return;}
       const item = { role, content };
       // The host awaits this event before serializing this same messages array.
@@ -1455,8 +1471,6 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       notify();
     } catch(error) { void reportError(error,{task:'recall',stage:'background'});audit(token===epoch?'failed':'changed',{query});if(token===epoch)setMessage('本轮记忆未加入请求：来源变化或检索失败'); }
   }
-  // 一轮注入最多花多久（本地检索 + 两条在线通道合计），超过就用已有结果继续。
-  const recallDeadlineMs=()=>{const total=Number(core.settings.retrievalTimeoutMs);if(total>0)return Math.max(500,total);return Math.max(1000,(Number(core.settings.vectorTimeoutMs)||4000)+(Number(core.settings.rerankTimeoutMs)||4000)+1200);};
   const vectorBudgetMs=()=>Math.max(100,Number(core.settings.vectorTimeoutMs)||4000);
   const rerankBudgetMs=()=>Math.max(100,Number(core.settings.rerankTimeoutMs)||4000);
   async function retrievalAdapters(cards) {
@@ -1468,7 +1482,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       try { c = client('embedding'); } catch (error) { failure = error; }
       const fingerprint = c ? sha256({endpoint:c.profile.url, model:c.profile.model}) : 'unconfigured';
       const bound = workspace;
-      options.vectorAdapter = { embeddingSpace:fingerprint, async search({query,limit,signal,tagLanes,categoryLanes,filter}) {
+      options.vectorAdapter = { embeddingSpace:fingerprint, search(args) {
+        // Keep the circuit around the whole optional lane: its deadline also
+        // covers index loading. Repeated failures must not tax every send.
+        return vectorLane(`${stableStringify(boundScope)}:${fingerprint}`,()=>searchVector(args),{signal:args.signal});
+      }};
+      async function searchVector({query,limit,signal,tagLanes,categoryLanes,filter}) {
         if (failure) throw failure;
         const key=`vectors-${fingerprint.slice(0,20)}`;
         const index=await combinedVectorEntries(bound,key,{signal});
@@ -1484,7 +1503,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         const result = await vectorCache.search(index, searchCards, q, {limit, fingerprint, signal,tagLanes,categoryLanes});
         result.coverage = { indexed: searchCards.filter(card => { const entry = index.get(card.id); return entry?.hash === vectorCache.hash(card) && (entry.dimension??entry.vector.length) === q.vector.length; }).length, total: searchCards.length };
         return result;
-      }};
+      }
     }
     if (core.settings.rerankEnabled) {
       let c, failure;
@@ -1744,7 +1763,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const application={previewSummary,saveCharacterKeepsake,editPersonProfile,catchUpAutomatic:()=>summarize({missingOnly:true}),inspectAutomaticProgress:()=>logged('summary',async run=>{await inspectAutomaticProgress();runtimeLog.record({run,task:'summary',phase:'complete',level:'success',details:{}});return {batches:0};}),setAutoStartFloor,setAutomatic,processAutomatic:()=>logged('summary',run=>autoSummary({force:true})),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
     inspectDynamicPersona:()=>logged('persona',async run=>{await dynamicPersona.load();const result=await dynamicPersona.inspect();runtimeLog.record({run,task:'persona',phase:'complete',level:'success',details:{}});return result;}),
     queueDynamicPersona,
-    processDynamicPersona:async()=>logged('persona',async run=>{await dynamicPersona.load();return dynamicPersona.process({force:true,retry:true});}),pauseDynamicPersona:()=>{personaCommandVersion++;return logged('persona',()=>dynamicPersona.pause());},setDynamicPersonaStart:floor=>dynamicPersona.setStart(floor),editDynamicPersona:(id,patch)=>dynamicPersona.edit(id,patch),draftDynamicPersonaDirectives:(id,instruction)=>logged('persona',()=>dynamicPersona.draftDirectives(id,instruction)),bindDynamicPersona:(name,targetId)=>dynamicPersona.bind(name,targetId),mergeDynamicPersona:(sourceId,targetId)=>dynamicPersona.merge(sourceId,targetId),undoDynamicPersona:id=>dynamicPersona.undo(id),addDynamicPersona:(name,text)=>dynamicPersona.add(name,text),
+    processDynamicPersona:async()=>logged('persona',async run=>{await dynamicPersona.load();return dynamicPersona.process({force:true,retry:true});}),pauseDynamicPersona:()=>{personaCommandVersion++;return logged('persona',()=>dynamicPersona.pause());},setDynamicPersonaStart:floor=>dynamicPersona.setStart(floor),editDynamicPersona:(id,patch)=>dynamicPersona.edit(id,patch),setPersonCasting:(name,patch)=>dynamicPersona.setCasting(name,patch),draftDynamicPersonaDirectives:(id,instruction)=>logged('persona',()=>dynamicPersona.draftDirectives(id,instruction)),bindDynamicPersona:(name,targetId)=>dynamicPersona.bind(name,targetId),mergeDynamicPersona:(sourceId,targetId)=>dynamicPersona.merge(sourceId,targetId),undoDynamicPersona:id=>dynamicPersona.undo(id),addDynamicPersona:(name,text)=>dynamicPersona.add(name,text),
     previewDynamicPersonaManual:async options=>{await dynamicPersona.load();return dynamicPersona.previewManual(options);},
     async previewNarrativeExtraction({text,floor,config=core.settings.narrativeExtraction}={}){
       if(typeof text==='string')return narrativePreview({id:'local-preview',text},config);

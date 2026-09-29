@@ -19,12 +19,12 @@ export function rerankDocument(record,body,query,maxChars=720){
 }
 
 // Per-connection transient circuit, not a persisted setting or a model queue.
-// A down reranker should not charge another full timeout for every user send.
+// A down optional service should not charge a full timeout for every send.
 export function createRecallLaneBackoff({now=Date.now,cooldownMs=30000}={}){
  const lanes=new Map();
  return async function run(key,work,{signal}={}){
   const state=lanes.get(key)??{failures:0,until:0};
-  if(now()<state.until)throw Object.assign(new Error('在线重排暂时冷却，本轮沿用本地与向量结果'),{code:'RECALL_LANE_COOLDOWN'});
+  if(now()<state.until)throw Object.assign(new Error('在线检索通道暂时冷却，本轮沿用其他可用结果'),{code:'RECALL_LANE_COOLDOWN'});
   let abort;
   try{
    if(signal?.aborted)throw signal.reason;

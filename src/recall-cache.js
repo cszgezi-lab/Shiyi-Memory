@@ -1,8 +1,8 @@
 import { LocalBM25Index } from './retrieval.js';
-import { abortError, stableStringify, throwIfAborted } from './utils.js';
+import { abortError, stableStringify, throwIfAborted, yieldLocalWork } from './utils.js';
 
 const now = () => globalThis.performance?.now?.() ?? Date.now();
-const yieldToHost = () => new Promise(resolve => setTimeout(resolve, 0));
+const yieldToHost = yieldLocalWork;
 
 /** One instance per application, never shared across users or chats.
  * Callers supply an immutable snapshot revision and reject in-flight results

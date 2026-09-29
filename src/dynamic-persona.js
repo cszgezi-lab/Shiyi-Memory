@@ -188,7 +188,7 @@ export function personaDossierText(profile){
   return blocks.filter(Boolean).join('\n\n');
 }
 const personaSourceMessages=(messages,readingConfig,readings=[])=>messages.map(m=>{if(readingConfig||/<\/?sy_(?:context|private)\b/i.test(m.text??'')){const r=narrativeReading(m,readingConfig);readings.push(r);return {...m,text:r.chunks.map(p=>p.text).join('\n')};}return {...m,text:qualitySourceSegments(m).map(s=>s.text).join('')};});
-export function personaRequest({messages,world,previous,prompt,dictionary,aliases='',stageMode='narrative',records={},readingConfig='',identityProfiles=[],materialsThrough=Infinity,inputLimit=12000,arcReferenceVariant='arc-reference'}){
+export function personaRequest({messages,world,previous,prompt,dictionary,aliases='',stageMode='narrative',records={},readingConfig='',identityProfiles=[],castingOverrides={},materialsThrough=Infinity,inputLimit=12000,arcReferenceVariant='arc-reference'}){
   const readings=[];
   const source=personaSourceMessages(messages,readingConfig,readings);
   const text=source.map(m=>m.text).join('\n');
@@ -201,6 +201,7 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
   // Edit refs/before must address saved text, never the whitespace-normalized
   // reading projection; narrative frame is supplied separately below.
   const known=currentPersonaProfiles(previous.filter(p=>!p.deleted&&mentioned.has(foldName(p.name))),stageMode).sort((a,b)=>personaAttentionWeight(b.casting)-personaAttentionWeight(a.casting));
+  const attentionProfiles=[...mentioned].map(key=>applyPersonaCasting(known.find(p=>foldName(p.name)===key)??{name:identity.people.find(p=>p.key===key)?.name??key},castingOverrides)).sort((a,b)=>personaAttentionWeight(b.casting)-personaAttentionWeight(a.casting));
   const promptParts=raw=>{const parts=personaProjectedSourceParts(raw),retireGroups=new Map(personaStyleGroups(parts).flatMap(g=>g.map(p=>[p.key,g.map(p=>p.ref)])));return parts.filter(p=>p.original.trim()&&p.status!=='historical').map(p=>{const protectedQuotes=p.sourceQuote&&p.source!=='chat'?personaProseQuotes(p.original):null,group=retireGroups.get(p.key);return {ref:p.ref,title:p.title,text:personaSourcePartText(p),...(p.sourceQuote?protectedQuotes?{editable:'surrounding_prose',protectedQuotes}:{editable:false,kind:'source_style_quote',retirable:Boolean(group),...(group?.length>1?{retireTogether:group}:{})}:{})};});};
   const originals=[...groups.values()].map(g=>({id:g.id,name:g.name,aliases:g.aliases,parts:promptParts(personaParts(spans.filter(s=>s.ownerKey===foldName(g.name)),known.find(p=>foldName(p.name)===foldName(g.name))))}));
   for(const p of known)if(!p.bindings?.length&&!groups.has(foldName(p.name))){const parts=personaParts([],p);if(parts.length)originals.push({name:p.name,source:'chat',aliases:[...(identity.resolve(p.name)?.visibleAliases??[])],parts:promptParts(parts)});}
@@ -264,7 +265,7 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
     development:p.composition?.development?.map(({timeAnchor,...d})=>({...d,scope:d.scope??''})),locked:p.locked,through:p.through,currentStage:stageMode!=='strict'||!p.bindings?.length||p.bindings.every(b=>spans.some(s=>s.id===b.id&&s.stage===b.stage))}));
   const namedFloors=new Map();for(const m of source)for(const p of identity.mentions(m.text)){if(!namedFloors.has(p.key))namedFloors.set(p.key,[]);if(!namedFloors.get(p.key).includes(m.index))namedFloors.get(p.key).push(m.index);}
   const evidenceFloors=identity.people.filter(p=>namedFloors.has(p.key)).map(p=>({name:p.name,floors:namedFloors.get(p.key)}));
-  const request={messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n${PERSONA_CASTING_RULE}\n${PERSONA_CHANGE_CHECK_RULE}\n姓名用original/previous的正式姓名；简称、昵称、简繁写法不创建另一角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}\n${PERSONA_DEVELOPMENT_RULE}\n${PERSONA_IMPACT_RULE}\noriginal.parts已完整提供底稿；previous.text只提供未重复的当前补充。底稿与补充合读，不因不重复发送就认为属性丢失。narrativeFrame是原文明确的全局时点；新的明确切换优先，不把原卡默认年龄/学段写成当前状态。\n${PERSONA_OUTPUT_CHECK_RULE}\nevidenceFloors仅是明确姓名的来源楼号索引，不是结论保证；仍从source逐字引用核对语义，不需回显。`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),narrativeFrame:frame,characterCandidates:personaCharacterCandidates(source,identity),attention:known.map(p=>({name:p.name,weight:personaAttentionWeight(p.casting)})),original:originals,materials:weightedPersonaMaterials(personaMaterials(records,identity,mentioned,Math.min(endFloor,materialsThrough)),known),previous:prior,reviewFocus:personaReviewFocus(source,identity),evidenceFloors})}],source,spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
+  const request={messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n${PERSONA_CASTING_RULE}\n${PERSONA_CHANGE_CHECK_RULE}\n姓名用original/previous的正式姓名；简称、昵称、简繁写法不创建另一角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}\n${PERSONA_DEVELOPMENT_RULE}\n${PERSONA_IMPACT_RULE}\noriginal.parts已完整提供底稿；previous.text只提供未重复的当前补充。底稿与补充合读，不因不重复发送就认为属性丢失。narrativeFrame是原文明确的全局时点；新的明确切换优先，不把原卡默认年龄/学段写成当前状态。\n${PERSONA_OUTPUT_CHECK_RULE}\nevidenceFloors仅是明确姓名的来源楼号索引，不是结论保证；仍从source逐字引用核对语义，不需回显。`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),narrativeFrame:frame,characterCandidates:personaCharacterCandidates(source,identity),attention:attentionProfiles.map(p=>({name:p.name,weight:personaAttentionWeight(p.casting),casting:p.casting})),original:originals,materials:weightedPersonaMaterials(personaMaterials(records,identity,mentioned,Math.min(endFloor,materialsThrough)),attentionProfiles),previous:prior,reviewFocus:personaReviewFocus(source,identity),evidenceFloors})}],source,spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
   request.messages[0].content+='\n'+SPEECH_ACT_CHECK;
   const decorated=applyPersonaArcReferences(request.messages,{variant:arcReferenceVariant,inputLimit});
   // Preserve every source/context value, but end with the current evidence
@@ -690,7 +691,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const liveBefore=clone(data.profiles);
       const liveSuppressed=data.profiles.filter(p=>p.deleted&&p.mergedInto);
       const previous=clone(manualId?(clean?data.manualPlan.workingProfiles:[...data.manualPlan.workingProfiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)),...data.profiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)&&isProtectedProfile(p))]):data.profiles);
-      const replayContext={inputLimit:config.dynamicPersonaInputUnits,identityProfiles:clean?data.manualPlan.identityProfiles:personaRebuildIdentities(data.profiles,data.personaIdentities),...(clean?{materialsThrough:data.manualPlan.replaceFrom-1}:{})};
+      const replayContext={inputLimit:config.dynamicPersonaInputUnits,castingOverrides:data.castingOverrides,identityProfiles:clean?data.manualPlan.identityProfiles:personaRebuildIdentities(data.profiles,data.personaIdentities),...(clean?{materialsThrough:data.manualPlan.replaceFrom-1}:{})};
       const buildPersonaRequest=(economy,messages=range.messages,priorDossier=previous)=>personaRequest({messages,world,previous:priorDossier,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction,...replayContext,...(economy?{arcReferenceVariant:'off',materialsThrough:-1}:{})});
       let request=buildPersonaRequest(false),inputUnits=estimateUnits(JSON.stringify(request.messages));
       // The input limit guards model attention, not a hard wall. Before failing
@@ -937,6 +938,18 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     view={...view,status:'saved',message:`已将称呼“${alias}”归入“${target.name}”；心迹、台词、属性与来源将统一显示`};emit();
     return {status:'bound',alias,targetId,merged:false};
   }
+  async function setCasting(name,patch){
+    check();const bound=currentWorkspace;name=String(name??'').trim();personaAliases([name]);
+    if(!name)throw new Error('请选择人物');
+    await transact(async()=>{
+      check(bound);
+      const identity=personaIdentity({previous:data.profiles,dictionary:dictionary(),aliases:settings().aliases});
+      name=identity.resolve(name)?.name??name;
+      const prior=data.castingOverrides?.[foldName(name)]??data.profiles.find(p=>foldName(p.name)===foldName(name))?.casting;
+      const casting=editPersonaCasting(prior,patch),castingOverrides=rememberPersonaCasting(data.castingOverrides,{name,casting});
+      await save({...data,castingOverrides,profiles:data.profiles.map(p=>applyPersonaCasting(p,castingOverrides))},bound);
+    });
+  }
   async function edit(id,patch){check();const bound=currentWorkspace;await transact(async()=>{
     check(bound);const old=data.profiles.find(p=>p.id===id);if(!old)throw new Error('人物档案不存在');
     if(patch.text!==undefined&&(typeof patch.text!=='string'||!patch.text.trim()||unsafe.test(patch.text)))throw new Error('请输入人物档案文本，不要写入脚本代码');
@@ -973,12 +986,12 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
   }
   async function add(name,text){check();const bound=currentWorkspace;name=String(name??'').trim();text=String(text??'').trim();if(!name||!text||unsafe.test(text))throw new Error('请填写姓名和完整人物信息，不要包含脚本');personaAliases([name]);const identity=personaIdentity({previous:data.profiles,dictionary:dictionary(),aliases:settings().aliases});if(identity.resolve(name)?.profiles.length)throw new Error('已有这个人物的档案，请直接修改（简繁和已确认别称视为同一人）');const id=sha256([foldName(name),'supplement']).slice(0,24);const through=await historyTail();check(bound);lastIndex=through;await transact(()=>save({...data,profiles:[...data.profiles.filter(p=>p.id!==id),{id,name,characterId:sha256(['persona-character',foldName(name)]).slice(0,24),aliases:[],text,bindings:[],stage:'supplement',sourceFloors:[],through,manual:true,locked:true}]},bound));await mirrorAfterEdit();}
   function profiles(){const rows=ready&&settings().dynamicPersonaEnabled&&currentWorkspace?.isCurrent()?data.profiles.filter(p=>!p.deleted&&(!p.composition?.pendingOnly||p.manual||p.locked)&&(lastIndex===null||p.through<=lastIndex)):[];return currentPersonaProfiles(rows,settings().dynamicPersonaMvuMode).map(p=>projectCurrentPersona(withDirectives(p),personaTimelineFrame(records())));}
-  async function inject(payload,{enabled=true}={}){
+  async function inject(payload,{enabled=true,sceneQuery}={}){
     if(!Array.isArray(payload?.messages))return;
     const bound=currentWorkspace,available=enabled?profiles():[];
     // Select from actual recent dialogue before expanding worldbook markers.
     // Source/system prose is never itself a reason to inject every character.
-    const query=payload.messages.filter(m=>m.role!=='system').slice(-4).map(m=>typeof m.content==='string'?m.content.replace(/\[\[SHIYI_PERSONA:[^\]]+\]\]/g,''):'').join('\n');
+    const query=typeof sceneQuery==='string'?sceneQuery:payload.messages.filter(m=>m.role!=='system').slice(-4).map(m=>typeof m.content==='string'?m.content.replace(/\[\[SHIYI_PERSONA:[^\]]+\]\]/g,''):'').join('\n');
     const identities=personaIdentity({previous:available,dictionary:dictionary(),aliases:settings().aliases,source:query});
     const selectedPeople=new Set(identities.mentions(query).map(p=>p.key));
     const relevant=available.filter(p=>selectedPeople.has(foldName(p.name)));
@@ -994,5 +1007,5 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,coverage:{replacedEntries:finalized?.replacedEntries??0,replacedFragments:finalized?.replacedFragments??0,restoredFragments:finalized?.restoredFragments??0,owned:audit.filter(a=>a.status==='owned').length,shared:audit.filter(a=>a.status==='shared').length,unresolved:audit.filter(a=>['unresolved','unsupported'].includes(a.status)).length},profiles:selected.map(p=>({id:p.id,name:p.name,through:p.through,reviewStatus:p.composition?.changeCheck?.status,reviewedThrough:personaReviewedThrough(p),chars:p.text.length,mode:used.has(p.id)?'replacement':'supplement'})),text:selected.map(p=>`${p.name}：\n${p.text}`).join('\n\n')}};emit();
     return clone(view.lastInjection);
   }
-  return {load,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,setPartHistorical,bind,merge,undo,add,profiles,inject,syncMirror,previewDeleteBatch,deletePersonaBatch,restorePersonaBatch,draftDirectives,previewReview,startReview,manageReview,applyReview,reviewMarkdown:()=>personaRefinementMarkdown(data.refinement),interruptReview:()=>Promise.all([refinement.interrupt(),factualReview.interrupt()]),interruptFactReview:()=>factualReview.interrupt(),retryReview:()=>refinement.retry(),processReview:()=>refinement.process(),processFactReview:()=>factualReview.process(),export:()=>clone(data),async dispose(){disposed=true;refinement.dispose();await factualReview.dispose();stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};
+  return {load,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,setCasting,setPartHistorical,bind,merge,undo,add,profiles,inject,syncMirror,previewDeleteBatch,deletePersonaBatch,restorePersonaBatch,draftDirectives,previewReview,startReview,manageReview,applyReview,reviewMarkdown:()=>personaRefinementMarkdown(data.refinement),interruptReview:()=>Promise.all([refinement.interrupt(),factualReview.interrupt()]),interruptFactReview:()=>factualReview.interrupt(),retryReview:()=>refinement.retry(),processReview:()=>refinement.process(),processFactReview:()=>factualReview.process(),export:()=>clone(data),async dispose(){disposed=true;refinement.dispose();await factualReview.dispose();stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};
 }

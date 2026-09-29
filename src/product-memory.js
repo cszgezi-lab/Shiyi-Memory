@@ -3,7 +3,7 @@ import { estimateUnits, clone, stableStringify } from './utils.js';
 import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './product-dictionary.js';
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel,scopeLabel } from './product-narrative.js';
 import { hasStoryTime, storyDateOf } from './temporal.js';
-import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts } from './product-recall-packing.js';
+import { coveredRecallRecord, recallSelectionReason, nameOnlyRecallCandidates, coverLocalQuestionParts, recallActorFilter } from './product-recall-packing.js';
 import { factValue, factImportance, fullCharacterGroups, currentAttributeRecords, awarenessSubjectLabel, characterRecordSubjects, explicitSubjectNames, PERSON_RECORD_CATEGORIES, factKey } from './product-person-profiles.js';
 import {foldName} from './persona-identity.js';
 import {markMemoryStates,memoryHistoryIntent} from './memory-current-state.js';
@@ -694,7 +694,21 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   };
   // Only an actually inserted current dossier can replace the full-person lane.
   // Its historical records remain ordinary searchable candidates, not deleted.
-  const canonical=name=>{const matches=(lexicon.entries??[]).filter(e=>!e.disabled&&[e.name,...(e.aliases??[])].some(n=>foldName(n)===foldName(name))&&!(e.ambiguous??[]).some(n=>foldName(n)===foldName(name)));return matches.length===1?matches[0].name:name;};
+  // Resolve each spelling once per immutable recall. Re-scanning the whole
+  // dictionary for every field/candidate dominated long-history local search.
+  const canonicalNames=new Map(),canonicalResults=new Map();
+  for(const e of lexicon.entries??[]){
+    if(e.disabled)continue;
+    const ambiguous=new Set((e.ambiguous??[]).map(foldName));
+    for(const key of new Set([e.name,...(e.aliases??[])].map(foldName))){
+      if(ambiguous.has(key))continue;
+      const matches=canonicalNames.get(key)??[];matches.push(e.name);canonicalNames.set(key,matches);
+    }
+  }
+  const canonical=name=>{
+    if(!canonicalResults.has(name)){const matches=canonicalNames.get(foldName(name));canonicalResults.set(name,matches?.length===1?matches[0]:name);}
+    return canonicalResults.get(name);
+  };
   const supplied=new Set(dossierPeople.map(name=>foldName(canonical(name))));
   const dossierCoverage=new Map();
   for(const profile of dossierProfiles??[]){
@@ -746,12 +760,32 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     const blob=attitudeBlob(record);
     return topics.some(token=>blob.includes(token));
   };
-  const filter=c=>(historyIntent||!historicalIds.has(c.id))&&!fullIds.has(c.id)&&(historyIntent||!olderFactIds.has(c.id)||factAsked(c))&&attitudeAsked(c)&&directPersonOnly(c)&&!coveredPersonaHistory(c)&&(!channelFilter||channelFilter(c));
+  const actorScope=recallActorFilter(selected,lexicon,focusQuery),actorDecisions=new WeakMap();
+  const actorRelevant=c=>{
+    if(actorDecisions.has(c))return actorDecisions.get(c);
+    let relevant=actorScope(c);
+    // One floor may contain several scenes. Its short summary's participant
+    // list cannot veto a concrete, source-backed excerpt from another scene.
+    if(!relevant&&c.category==='summaryView'){
+      // Check the small scene index first. Opening every original floor here
+      // would turn a cheap index filter into a full-archive prose scan.
+      const indexedActors=(c.entities??[]).filter(e=>e.kind==='人物').map(e=>e.name);
+      if(indexedActors.length&&actorScope({...c,participants:indexedActors})){
+        const excerpt=sourceExcerptFor(c),actors=excerpt?dictionaryQuery(excerpt,lexicon,{expandTopics:false,entityLimit:Infinity}).entities.filter(n=>lexicon.entries.some(e=>e.name===n&&e.kind==='人物')):[];
+        relevant=actors.length>0&&actorScope({...c,participants:actors});
+      }
+    }
+    actorDecisions.set(c,relevant);return relevant;
+  };
+  const filter=c=>actorRelevant(c)&&(historyIntent||!historicalIds.has(c.id))&&!fullIds.has(c.id)&&(historyIntent||!olderFactIds.has(c.id)||factAsked(c))&&attitudeAsked(c)&&directPersonOnly(c)&&!coveredPersonaHistory(c)&&(!channelFilter||channelFilter(c));
+  const retrievalStarted=globalThis.performance?.now?.()??Date.now();
   const result = await retrieveMemories({ index, query: q, limit: Math.max(settings.retrievalLimit, settings.retrievalCandidateLimit ?? 24), vectorAdapter, reranker, signal,categoryLanes,filter,
     entityIds:matched.entities,tagLanes,
     totalTimeoutMs: settings.retrievalTimeoutMs,
     vectorTimeoutMs: settings.vectorTimeoutMs, vectorOptions: { rankConstant: settings.fusionRankConstant, localWeight: settings.fusionLocalWeight, vectorWeight: settings.vectorWeight },
     rerankOptions: { timeoutMs: settings.rerankTimeoutMs, maxCandidates: settings.rerankMaxCandidates, sourcePersonNames: personNames } });
+  const packingStarted=globalThis.performance?.now?.()??Date.now();
+  result.trace.timings.prepareMs=retrievalStarted-startedAt;
   let candidates = [...result.candidates];
   const seen = new Set(); candidates = candidates.filter(c => !seen.has(c.id) && seen.add(c.id));
   candidates=coverLocalQuestionParts(candidates,focusQuery,index,{filter,dictionary:lexicon,limit:settings.retrievalLimit,reranked:result.trace.rerank.status==='passed'});
@@ -776,6 +810,7 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     });
   }
   result.trace.vector.crossActorOmitted=crossActorVectorOmitted;
+  result.trace.actorScope={omittedEvents:selected.filter(c=>c.category==='events'&&!actorRelevant(c)).length};
   // An explicit request for the next agreed schedule needs open commitments,
   // not only earlier scenes mentioning the same people. Reuse stored state;
   // never turn a proposal into completion or infer an unstated appointment.
@@ -1036,12 +1071,13 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     if(!resolved)unresolvedKnowledge.push(row.id);
   }
   const contextText=knowledgeContext.size?['[知情所指的事件背景：仅解释具体事实的来龙去脉，不扩大任何角色的知情范围；知情状态仍以人物条目为准。]',...[...knowledgeContext.values()].map(event=>renderMemoryCard(event,{...ordinaryRenderSettings,timeProtection:true},{body:event.recallSummary||event.description,query:focusQuery}))].join('\n\n'):'';
+  const ordinaryText=(dialogue='')=>[packetHeader,eventPacket.text,dialogue].filter(Boolean).join('\n\n');
   // The important-dialogue lane is another injection route over the same
   // records. Apply the dossier coverage rule here too, or covered relationship
   // history returns after ordinary retrieval correctly filtered it out.
-  const dialogueSource=selected.filter(record=>!coveredPersonaHistory(record));
-  const dialogueBudget=Math.min(1200,Math.max(0,Math.floor((settings.retrievalBudgetUnits??10000)*0.12)));
-  const dialoguePacket=settings.dialogueEnabled===false?{rows:[],text:''}:importantDialoguePacket(dialogueSource,focusQuery,lexicon,[characterText,eventPacket.text,contextText].join('\n'),{maxRows:4,maxUnits:dialogueBudget});
+  const dialogueSource=selected.filter(record=>!coveredPersonaHistory(record)&&actorRelevant(record));
+  const dialogueBudget=Math.min(1200,Math.max(0,Math.floor(budget*0.12)),Math.max(0,budget-estimateUnits(ordinaryText())-2));
+  const dialoguePacket=settings.dialogueEnabled===false?{rows:[],text:''}:importantDialoguePacket(dialogueSource,focusQuery,lexicon,[characterText,eventPacket.text,contextText].join('\n'),{maxRows:4,maxUnits:dialogueBudget,includeRow:row=>actorRelevant({...row.record,category:'events',participants:[row.subject,row.target].filter(Boolean)})});
   const dialogueCards=[...new Map(dialoguePacket.rows.map(r=>[r.recordId,r.record])).values()].filter(c=>!packedIds.has(c.id)&&!knowledgeContext.has(c.id));
   // Final assembly must look at the actual text produced by each pipeline; the
   // historical `packed.length || dialoguePacket.rows.length` guard silently
@@ -1070,9 +1106,11 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   const emittedCharacterCount = decisions.filter(d => d.reason === '当前属性' && d.status === 'selected').length;
   result.trace.characters={mode:personaPlan.stats?.mode??'current_fields',people:[...new Set(attributePlan.filter(group=>group.current.length).map(group=>group.subject))],records:emittedCharacterCount,units:estimateUnits(characterText),truncated:false,budget:personaPlan.stats};
   result.trace.knowledgeContext={eventIds:[...knowledgeContext.keys()],units:estimateUnits(contextText),unresolvedRecordIds:unresolvedKnowledge,mode:'explicit_link_brief',extraModelCalls:0};
+  result.trace.budget={ordinaryUnits:bodyParts.length?estimateUnits(ordinaryText(dialoguePacket.text)):0,ordinaryLimit:budget,currentUnits:estimateUnits(characterText),contextOmitted:0};
   for(const event of knowledgeContext.values())decisions.push({id:event.id,title:recordTitle(event),category:'events',status:'selected',detail:'knowledge_context',reason:'解释已注入知情的明确关联事件'});
   result.trace.packing={selected:packed.length+knowledgeContext.size+dialogueCards.length,memorySelected:memoryCount,memoryUnits,expanded:0,excerpts,brief:memoryCount-excerpts,omitted:omitted.length,duplicates:decisions.filter(d=>d.status==='duplicate').length,decisions};
   result.trace.packing.eventPacket={groups:eventPacket.groups,groupedRecords:eventPacket.groupedRecords,sharedLines:eventPacket.sharedLines,beforeChars:eventPacket.beforeChars,afterChars:eventPacket.afterChars,savedChars:eventPacket.savedChars};
   result.trace.timings.recallMs = (globalThis.performance?.now?.() ?? Date.now()) - startedAt;
+  result.trace.timings.packingMs=(globalThis.performance?.now?.()??Date.now())-packingStarted;
   return { status: 'preview', previewOnly: true, sent: false, degraded: result.trace.degraded, text: content, cards: [...packed,...knowledgeContext.values(),...dialogueCards], usedUnits: content ? estimateUnits(content) : 0, omitted, trace: result.trace };
 }

@@ -119,7 +119,7 @@ export function editKeepsakePatch(record,{kind,index,data,remove=false}){
   if(index===null)list.push(q);else list[index]=q;
   return {keyDialogues:list};
 }
-export function importantDialoguePacket(cards,query,dictionary,alreadyText='',{topicQuery=query,maxRows=4,maxUnits=1200}={}){
+export function importantDialoguePacket(cards,query,dictionary,alreadyText='',{topicQuery=query,maxRows=4,maxUnits=1200,includeRow=()=>true}={}){
   // This is an extra route for old speech, beyond quotes already present in
   // retrieved events and the current persona. The current user turn is the
   // sole source of topics and people; old assistant prose is already in the
@@ -127,7 +127,7 @@ export function importantDialoguePacket(cards,query,dictionary,alreadyText='',{t
   const ask=String(topicQuery??'');
   const asksForSpeech=/(?:说|讲|提|回应|回答).{0,12}(?:什么|哪句|哪些|怎么|如何)|(?:什么|哪句|哪些|怎么|如何).{0,12}(?:说|讲|回应|回答)|(?:找|回忆|复述|引用).{0,12}(?:原话|台词)|(?:原话|台词).{0,12}(?:是什么|有哪些|哪句|什么)/u.test(ask);
   if(!ask.trim()||maxRows<=0||maxUnits<=0)return {text:'',rows:[]};
-  const rows=characterKeepsakes(cards,{withExpected:false}).dialogues.filter(r=>r.data.status!=='historical'&&!r.data.disabled);
+  const rows=characterKeepsakes(cards,{withExpected:false}).dialogues.filter(r=>r.data.status!=='historical'&&!r.data.disabled&&includeRow(r));
   const entries=[...(dictionary.entries??[])];
   for(const n of new Set(rows.flatMap(r=>[r.subject,r.target]).filter(Boolean)))if(!entries.some(e=>e.name===n||e.aliases?.includes(n)))entries.push({name:n,aliases:[],indexWords:[],ambiguous:[],kind:'人物'});
   const lexicon={...dictionary,entries};

@@ -112,7 +112,7 @@ export function dictionaryKinds(entries=[]){
   for(const entry of entries)if(!entry.deleted)counts[entry.kind]=(counts[entry.kind]??0)+1;
   return counts;
 }
-export function buildDictionary(cards=[],{aliases='',automatic=true}={}) {
+export function buildDictionary(cards=[],{aliases='',automatic=true,profiles=[]}={}) {
   const words=new Map(),tagSources=new Map();
   const names=[...new Set(cards.flatMap(c=>normalizeTerms(c.entities).filter(t=>t.kind==='人物').map(t=>t.name)))];
   for(const raw of cards){
@@ -134,7 +134,19 @@ export function buildDictionary(cards=[],{aliases='',automatic=true}={}) {
     }
     for(const tag of normalizeTags(card.tags)){const list=tagSources.get(tag)??new Set();list.add(card.id);tagSources.set(tag,list);}
   }
+  // Reuse saved dossier identity, never infer kinship or expand biography into
+  // search topics. Manual exclusions and shared-alias ambiguity still win.
+  if(automatic)for(const term of normalizeTerms(profiles.filter(p=>!p.deleted).map(p=>({name:p.name,aliases:p.aliases,kind:'人物'})))){
+    const id=key(term.name),previous=words.get(id)??{...term,sources:[],manual:false,disabled:false};
+    words.set(id,{...previous,kind:'人物',aliases:[...new Set([...previous.aliases,...term.aliases])]});
+  }
   for(const term of manualDictionary(aliases)){const previous=words.get(key(term.name));words.set(key(term.name),{...term,sources:previous?.sources??[],kind:previous?.kind??term.kind});}
+  const canonicalProfiles=new Set(profiles.filter(p=>!p.deleted).map(p=>key(p.name)));
+  for(const [id,term] of words){
+    if(term.manual||term.disabled||term.kind!=='人物'||canonicalProfiles.has(id))continue;
+    const targets=[...words.values()].filter(p=>!p.disabled&&key(p.name)!==id&&(p.manual||profiles.some(profile=>!profile.deleted&&profile.aliasPolicy==='manual'&&key(profile.name)===key(p.name)))&&p.aliases.some(a=>key(a)===id));
+    if(targets.length===1){targets[0].sources=[...targets[0].sources,...term.sources].slice(0,12);words.delete(id);}
+  }
   // Shared nicknames are not resolved by popularity or last-write-wins.
   const owners=new Map();
   for(const term of words.values())if(!term.disabled)for(const name of [term.name,...term.aliases]){const set=owners.get(key(name))??new Set();set.add(key(term.name));owners.set(key(name),set);}

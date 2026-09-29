@@ -2,6 +2,21 @@ import { stableStringify } from './utils.js';
 import { sameFactForRecall } from './product-person-profiles.js';
 import { tokenizeChinese } from './retrieval.js';
 import { dictionaryQuery } from './product-dictionary.js';
+import { foldName } from './persona-identity.js';
+
+// Wall time includes time in background or with the process suspended. It is
+// not CPU time. Older logs without this probe cannot recover that distinction.
+export function injectionTiming(document,now=Date.now){
+  const start=now(),stages={};let markAt=start,last=start,hiddenMs=0,transitions=0,done=null;
+  const visibility=()=>['visible','hidden'].includes(document?.visibilityState)?document.visibilityState:'unknown';
+  const initial=visibility();let current=initial;
+  const sample=()=>{const at=now();if(current==='hidden')hiddenMs+=Math.max(0,at-last);last=at;const next=visibility();if(next!==current)transitions++;current=next;};
+  document?.addEventListener?.('visibilitychange',sample);
+  return {mark(name){const at=now();stages[name]=Math.max(0,at-markAt);markAt=at;},finish(){
+    if(done)return done;sample();document?.removeEventListener?.('visibilitychange',sample);
+    done={...stages,totalMs:Math.max(0,last-start),hiddenMs,visibilityStart:initial,visibilityEnd:current,visibilityChanges:transitions};return done;
+  }};
+}
 
 const normalized = value => String(value ?? '').toLocaleLowerCase().replace(/\s+/gu, '').replace(/[。！？]+$/u,'');
 const refs = record => [...new Set([record.eventRef, record.eventId, ...(record.eventRefs ?? []), ...(record.relatedEvents ?? []).map(e => e.id)].filter(Boolean))];
@@ -33,17 +48,63 @@ export function sceneRecallQuery(messages=[],sceneMessages=[]) {
   const supplemental=last?.role==='user'&&previous?.role==='user'&&priorText.trim()&&fallback.length>=800&&fallback.length>=priorText.length*2&&ruleLines>=4;
   const requestTurn=supplemental?priorText:'';
   const latest=sceneMessages.at(-1);
-  const raw=latest?.role==='user'&&typeof latest.text==='string'?latest.text.trim():'';
+  const sourceUser=sceneMessages.filter(m=>m?.role==='user'&&typeof m.text==='string'&&m.text.trim()).at(-1);
+  const raw=sourceUser?.text.trim()??'';
   // Only trust the chat source when that exact turn is also present in the
   // assembled request. It may have been wrapped in a long user-side preset.
-  const trusted=Boolean(raw&&users.slice(-2).some(user=>user.includes(raw)));
+  // Presets may add several user messages plus an assistant prefill. During
+  // regeneration the source still contains the reply being replaced, while
+  // the assembled request ends at the retained player turn. Look across the
+  // request, and reject an old anchor if its following real reply is included.
+  const rawAt=raw?messages.findLastIndex(m=>m?.role==='user'&&text(m).includes(raw)):-1;
+  const followingReply=latest?.role==='assistant'&&typeof latest.text==='string'?latest.text.trim():'';
+  const staleAnchor=rawAt>=0&&followingReply&&messages.slice(rawAt+1).some((m,i,tail)=>m?.role==='assistant'&&
+    (text(m).includes(followingReply)||tail.slice(i+1).some(next=>next?.role==='user')));
+  const trusted=rawAt>=0&&!staleAnchor&&!(followingReply&&requestTurn&&!requestTurn.includes(raw));
   const intent=trusted?raw:requestTurn||fallback;
-  if(!trusted&&!requestTurn)return {intent,context:'',characterContext:''};
-  const prior=(latest?.role==='assistant'?sceneMessages:sceneMessages.slice(0,-1)).filter(m=>m?.role==='assistant').at(-1);
+  const source=trusted?'chat_source':requestTurn?'request_before_rules':'request_user';
+  if(!trusted&&!requestTurn)return {intent,context:'',characterContext:'',source};
+  const prior=(latest?.role==='assistant'&&!trusted?sceneMessages:sceneMessages.slice(0,-1)).filter(m=>m?.role==='assistant').at(-1);
   const summaries=[...String(prior?.text??'').matchAll(/<summary>([\s\S]*?)<\/summary>/giu)];
   const continuation=/昨天|前天|上次|刚才|之前|那(?:个|些|两)|这(?:个|些)|继续|接着|帮忙|委托|答应|约定/u.test(intent);
   const context=continuation?String(summaries.at(-1)?.[1]??'').replace(/<[^>]*>/gu,'').trim().slice(0,500):'';
-  return {intent,context,characterContext:''};
+  return {intent,context,characterContext:'',source};
+}
+
+// Person scope applies to every retrieval lane and linked-floor promotion.
+// An actor shared by most events is not sufficient to connect two otherwise
+// separate companions' experiences. Frequency only narrows retrieval here;
+// it never assigns a character's identity, importance or knowledge.
+export function recallActorFilter(records,dictionary,query){
+  const people=(dictionary.entries??[]).filter(e=>!e.disabled&&e.kind==='人物');
+  for(const name of new Set(records.filter(r=>r.category==='events').flatMap(r=>r.participants??[])))
+    if(typeof name==='string'&&name.length>1&&![...(dictionary.entries??[]),...people].some(e=>e.name===name||(e.aliases??[]).includes(name)))people.push({name,kind:'人物',aliases:[]});
+  const owners=new Map();
+  for(const p of people)for(const n of [p.name,...(p.aliases??[])]){const key=foldName(n),set=owners.get(key)??new Set();if(!(p.ambiguous??[]).some(a=>foldName(a)===key))set.add(foldName(p.name));owners.set(key,set);}
+  const canonical=name=>{const key=foldName(name),set=owners.get(key);return set?.size===1?[...set][0]:key;};
+  const mentioned=new Set(dictionaryQuery(query,{...dictionary,entries:people},{expandTopics:false,entityLimit:Infinity}).entities.map(canonical));
+  const events=records.filter(r=>r.category==='events'),counts=new Map();
+  for(const e of events)for(const n of new Set((e.participants??[]).map(canonical)))counts.set(n,(counts.get(n)??0)+1);
+  const specific=[...mentioned].filter(n=>events.length<8||(counts.get(n)??0)<events.length*.6);
+  const focus=new Set(specific.length?specific:mentioned);
+  const text=String(query??'');
+  let topic=text;
+  for(const name of people.flatMap(p=>[p.name,...(p.aliases??[])]).sort((a,b)=>b.length-a.length))topic=topic.split(name).join(' ');
+  const terms=[...new Set(tokenizeChinese(topic).filter(t=>t.length>=2))];
+  const rare=terms.filter(t=>events.filter(e=>String(e.title??'').includes(t)).length===1);
+  const evaluate=record=>{
+    if(!focus.size||!['events','summaryView'].includes(record.category))return true;
+    const actors=(record.participants??[]).map(canonical).filter(Boolean);
+    if(!actors.length||actors.some(n=>focus.has(n)))return true;
+    // An explicitly requested scene can legitimately involve other actors.
+    if(String(record.title??'').length>=4&&text.includes(record.title))return true;
+    const place=typeof record.location==='string'?record.location:'';
+    if(place.length>=2&&text.includes(place)&&/谈|提|回忆|想起|那件|旧事/u.test(topic))return true;
+    const hits=rare.filter(t=>String(record.title??'').includes(t));
+    const distinct=hits.filter(t=>!hits.some(other=>other.length>t.length&&other.includes(t)));
+    return distinct.length>=2&&distinct.reduce((n,t)=>n+t.length,0)>=4;
+  };
+  const cache=new WeakMap();return record=>{if(!cache.has(record))cache.set(record,evaluate(record));return cache.get(record);};
 }
 
 // Only verified event links or identical evidence qualify. Similar wording,
