@@ -24,9 +24,15 @@ export function vectorIndexCoverage(cards, entries, hash) {
  * exported to settings, reports or other application instances.
  */
 export class ProductVectorCache {
-  constructor() { this.generation = 0; this.clear(); }
+  constructor({ maxNumericValues = 4 * 1024 * 1024 } = {}) {
+    // Exact Float64 storage: bounded independently of history length, with no
+    // quantization or persisted format change. Options are for host/test use.
+    this.maxNumericValues = Math.max(0, Math.min(8 * 1024 * 1024, Math.floor(Number(maxNumericValues) || 0)));
+    this.generation = 0; this.clear();
+  }
   clear() {
     this.releasePages?.();this.releasePages=null;this.pages=new Map();
+    this.compiledPages=new Map();this.numericValues=0;this.workspaceIds=new WeakMap();this.nextWorkspaceId=0;
     this.generation++;
     this.workspace = null; this.key = null; this.entries = null; this.pending = null;
     this.queries = new Map(); this.hashes = new WeakMap();
@@ -107,8 +113,10 @@ export class ProductVectorCache {
     for (const card of cards) {
       const entry = entries.get(card.id);
       if(entry?.hash===this.hash(card)&&entry.parts&&entry.dimension===query.vector.length){
+        if(!this.workspaceIds.has(entry.workspace))this.workspaceIds.set(entry.workspace,++this.nextWorkspaceId);
+        const workspaceId=this.workspaceIds.get(entry.workspace);
         for(const [part,ref]of entry.parts.entries()){
-          const address=`${entry.workspace.scope?JSON.stringify(entry.workspace.scope):''}:${ref.key}`;
+          const address=`${workspaceId}:${ref.key}`;
           if(!paged.has(address))paged.set(address,{key:ref.key,workspace:entry.workspace,items:[]});
           paged.get(address).items.push({id:card.id,hash:entry.hash,part,slot:ref.slot});
         }
@@ -128,16 +136,46 @@ export class ProductVectorCache {
         check();
       }
     }
-    // Read each small page once. Do not materialize the whole vector database
-    // (and several JSON copies) just to search it on a phone.
-    for(const [address,group]of paged){
-      check();let page=this.pages.get(address);
+    // A four-raw-page cache repeatedly rereads the whole index on every scan.
+    // Keep validated doubles and norms under a numeric budget instead. During
+    // an oversized scan, retain the already warm subset: ordinary LRU would
+    // evict every page just before the following scan needs it again.
+    const wantedPages=new Set(paged.keys());
+    const readPage=async(address,group)=>{
+      check();const cached=this.compiledPages.get(address);
+      if(cached&&cached.workspace===group.workspace){this.compiledPages.delete(address);this.compiledPages.set(address,cached);return cached.items;}
+      let page=this.pages.get(address);
       if(!page){page=await readVectorPage(group.workspace,group.key);check();this.pages.set(address,page);while(this.pages.size>4)this.pages.delete(this.pages.keys().next().value);}
-      for(const ref of group.items){
-        const item=page[ref.slot],v=item?.vector;
-        if(item?.id!==ref.id||item.hash!==ref.hash||item.part!==ref.part||v?.length!==query.vector.length||!vectorNorm(v))throw new Error('索引分块与记忆不一致');
+      // Another preview may have finished the same read while this one waited.
+      // Reuse its compiled page without charging the memory budget twice.
+      const completed=this.compiledPages.get(address);
+      if(completed&&completed.workspace===group.workspace)return completed.items;
+      let values=0;
+      const items=page.map(item=>{
+        const norm=vectorNorm(item?.vector);
+        if(!norm)return {id:item?.id,hash:item?.hash,part:item?.part,vector:null,norm:0};
+        values+=item.vector.length;
+        return {id:item.id,hash:item.hash,part:item.part,vector:new Float64Array(item.vector),norm};
+      });
+      if(values<=this.maxNumericValues){
+        for(const [key,entry]of this.compiledPages){
+          if(this.numericValues+values<=this.maxNumericValues)break;
+          if(!wantedPages.has(key)){this.compiledPages.delete(key);this.numericValues-=entry.values;}
+        }
+        if(this.numericValues+values<=this.maxNumericValues){this.compiledPages.set(address,{items,values,workspace:group.workspace});this.numericValues+=values;}
+      }
+      return items;
+    };
+    const groups=[...paged];
+    // At most four bridge reads/decoded pages are in flight. Score in original
+    // order, preserving ties, floating-point accumulation and fail-closed use.
+    for(let start=0;start<groups.length;start+=4){
+      const batch=groups.slice(start,start+4),pages=await Promise.all(batch.map(([address,group])=>readPage(address,group)));check();
+      for(let p=0;p<batch.length;p++)for(const ref of batch[p][1].items){
+        const item=pages[p][ref.slot],v=item?.vector;
+        if(item?.id!==ref.id||item.hash!==ref.hash||item.part!==ref.part||v?.length!==query.vector.length||!item.norm)throw new Error('索引分块与记忆不一致');
         let dot=0;for(let i=0;i<v.length;i++)dot+=v[i]*query.vector[i];
-        const score=dot/(vectorNorm(v)*query.norm);pagedScores.set(ref.id,Math.max(pagedScores.get(ref.id)??-Infinity,score));
+        const score=dot/(item.norm*query.norm);pagedScores.set(ref.id,Math.max(pagedScores.get(ref.id)??-Infinity,score));
       }
       await yieldLocalWork();check();
     }
