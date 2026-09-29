@@ -424,6 +424,26 @@
 #shiyi-product-shell .sy-module-meta p[data-summary-covered]{font-weight:600}
 #shiyi-product-shell .sy-module-actions{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
 #shiyi-product-shell .sy-summary-settings{grid-column:1/-1;min-width:0}
+#shiyi-product-shell :is([data-summary-memory-batches],[data-summary-persona-batches],.sy-tag-settings){border-top:1px solid var(--sy-border);padding-top:7px}
+#shiyi-product-shell :is([data-summary-memory-batches],[data-summary-persona-batches],.sy-tag-settings)>summary{font:600 13px/1.5 system-ui,sans-serif;min-height:36px;cursor:pointer}
+#shiyi-product-shell .sy-tag-settings{margin:8px 0 4px}
+#shiyi-product-shell .sy-tag-settings [data-view="extraction"]{color:inherit}
+#shiyi-product-shell .sy-tag-settings .sy-ext-row-meta{color:inherit;opacity:.75;font-size:12px}
+#shiyi-product-shell [data-summary-memory-batches] .sy-batch-row{padding:6px 8px;margin:3px 0;border-radius:6px}
+#shiyi-product-shell [data-summary-memory-batches] .sy-batch-row>summary{font:500 12px/1.35 system-ui,sans-serif}
+#shiyi-product-shell [data-summary-memory-batches] .sy-batch-status{font-size:11px;margin:0;opacity:.75}
+#shiyi-product-shell .sy-persona-batch-row{display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--sy-border);font:500 12px/1.4 system-ui,sans-serif}
+#shiyi-product-shell .sy-persona-batch-row input{width:18px;height:18px;flex:0 0 18px;accent-color:var(--sy-accent)}
+#shiyi-product-shell .sy-persona-batch-row .sy-persona-batch-content{flex:1;display:flex;justify-content:space-between;gap:6px;align-items:center}
+#shiyi-product-shell .sy-persona-batch-row .sy-persona-batch-marker{width:18px;flex:0 0 18px;text-align:center;opacity:.5}
+#shiyi-product-shell .sy-persona-batch-row small{font:400 11px/1.4 system-ui,sans-serif;opacity:.78}
+#shiyi-product-shell [data-persona-batch-detail]:not([hidden]){padding:8px;border:1px solid var(--sy-border);border-radius:6px;font-size:12px;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-dictionary-row>summary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:1px 8px;align-items:center;cursor:pointer;font-size:12px;list-style:none}
+#shiyi-product-shell .sy-dictionary-row>summary::-webkit-details-marker{display:none}
+#shiyi-product-shell .sy-dictionary-row>summary strong{font-size:13px}
+#shiyi-product-shell .sy-dictionary-row>summary span{text-align:right;opacity:.85}
+#shiyi-product-shell .sy-dictionary-row>summary small{grid-column:1/-1;font-size:11px;opacity:.75}
+#shiyi-product-shell .sy-dictionary-detail{padding:7px 0 3px;font-size:12px}
 #shiyi-product-shell .sy-summary-module>.sy-help{grid-column:1/-1;margin:2px 0 0}
 #shiyi-product-shell .sy-recent-log{border-top:1px solid var(--sy-border);margin-top:14px;padding-top:10px}
 #shiyi-product-shell .sy-recent-log h3{font-size:15px;margin:0 0 4px}

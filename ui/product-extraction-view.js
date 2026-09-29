@@ -28,8 +28,7 @@ function ruleSummary(draft){
 
 function collapsedCardHTML(summary){
   return `<div class="sy-ext-row" data-ext-card-collapsed>
-    <span class="sy-onoff on" data-ext-toggle-on></span>
-    <b class="sy-ext-row-title">提取规则 DIY</b>
+    <b class="sy-ext-row-title">当前规则</b>
     <small class="sy-ext-row-meta" data-ext-row-meta>${esc(summary)}</small>
     <button type="button" class="sy-btn tiny" data-ext-expand>展开 ▾</button>
   </div>`;
@@ -43,7 +42,7 @@ function expandedCardHTML(draft, presets){
   return `<div class="sy-ext-card" data-ext-card-expanded>
     <div class="sy-ext-head">
       <span class="sy-onoff ${draft.enabled!==false?'on':''}" data-ext-switch></span>
-      <span class="sy-ext-title">提取规则 DIY</span>
+      <span class="sy-ext-title">标签提取规则</span>
       <button type="button" class="sy-btn tiny" data-ext-collapse>收起 ▴</button>
       <button type="button" class="sy-btn tiny sy-primary" data-extraction-save>保存规则</button>
       <button type="button" class="sy-btn tiny" data-extraction-add>＋ 新增规则</button>
@@ -63,10 +62,10 @@ function expandedCardHTML(draft, presets){
   </div>`;
 }
 
-export function extractionHTML(){
+export function extractionHTML({embedded=false}={}){
   const draft = defaultNarrativeExtractionConfig();
   return `<section data-view="extraction" hidden>
-<header class="sy-section-heading"><small>读取，不改写</small><h3>正文提取</h3></header>
+${embedded?'':'<header class="sy-section-heading"><small>读取，不改写</small><h3>正文提取</h3></header>'}
 <p class="sy-help" data-extraction-status role="status"></p>
 <div data-extraction-shell>${collapsedCardHTML(ruleSummary(draft))}</div>
 </section>`;

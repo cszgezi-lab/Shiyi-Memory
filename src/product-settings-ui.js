@@ -11,7 +11,7 @@ const copy = {
   dynamicPersonaKeepRecent:['保留最近多少楼（推荐 2）',''],
   dynamicPersonaInputUnits:['人设输入预算（估算）','推荐 24000；包含正文、原书和已有材料。超限会明确提示，不偷偷拆分你选的批次。'],
   dynamicPersonaOutputTokens:['人设回复上限（Token，0 为不设上限）','默认 0：不发送上限，跟随接口上限，避免浓缩人物输出。设数值则限制本次回复长度；不影响已保存的完整档案。'],
-  dynamicPersonaJsonMode:['人设强制 JSON 输出','接口支持 response_format 时可显著减少 JSON 断裂失败；接口不支持会报错，此时关闭本项即可。'],
+  dynamicPersonaJsonMode:['人设强制 JSON 输出','仅供支持 response_format 的接口按需开启。空响应可能触发一次不带此参数的重试；普通人设更新无需开启。'],
   dynamicPersonaDeadlineMs:['人设请求超时（毫秒）','推荐 60000，即 1 分钟；后台更新，不增加前台召回等待时间。初次生成与纠错请求均使用此上限。'],
   dynamicPersonaMvuMode:['人物演绎主次','推荐剧情主导：MVU 数值只作参考，不把人物锁在固定阶段。不会改写变量、阈值或脚本；旧卡也可选择严格阶段兼容。'],
   summaryRequestMode:['总结请求方式','推荐方式不强制服务端 JSON 模式；仍按预设输出、完整校验后保存。不支持流式的接口可选兼容非流式。'],
@@ -75,7 +75,7 @@ Object.assign(names,{'chat-stream':'酒馆兼容 · 流式（推荐）','chat-bu
 Object.assign(names,{narrative:'剧情主导 · MVU作参考（推荐）',strict:'严格遵守 MVU 阶段（兼容）'});
 
 export function setting(key, label, help, placeholder = '') {
-  if(key==='summaryPresets')return '<p class="sy-help">总提示词和各模块填写规则，可到“总结 → 总结预设”修改。</p>';
+  if(key==='summaryPresets')return '<p class="sy-help">总提示词和各模块填写规则，可到“总结 → 主总结设置”修改。</p>';
   const d = registry[key]; if (!d || d.persisted === false) throw new Error(`未知设置：${key}`);
   const [name, hint] = [label ?? copy[key]?.[0] ?? d.label, help ?? copy[key]?.[1] ?? ''];
   let input;
@@ -104,7 +104,7 @@ export const SETTING_GROUPS = Object.freeze({
 export function settingsSection(kind) {
   const keys = SETTING_GROUPS[kind];
   if (kind === 'recording') return card('共同记录偏好',fields(['recordingRules','focusMode'])+'<p class="sy-help">正常游戏只需配置 API 与自动楼层规则。下方校对不是必需，开启会增加请求与等待；已有选择不会因升级改变。</p>'+advanced('可选校对（额外调用）',['summaryReviewEnabled','summaryStaged','autoMergeEnabled','autoQualityEnabled','qualityBatchRecords'])+button('per-call-mode','使用单次主总结（关闭额外校对）')+'<p class="sy-help">双次复核：每批两次；分工总结：每批两次；自动校对与合并还会按候选追加请求。双次模式超过预算会提示调整，不暗中拆批。</p>'+advanced('总结高级设置',['messageCount','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize']));
-  if (kind === 'automatic') return card('自动总结',setting('autoSummaryEnabled').replace('<input','<input disabled')+fields(['autoSummaryEvery','autoKeepRecent'])+field('当前聊天从哪楼起算','<input data-auto-start type="number" min="0" value="1">')+'<p class="sy-help">新聊天默认从 #1；需要包含开场白可填 #0。老聊天会接着已连续总结的楼层处理。改起点只改变后续处理范围，不伪造此前的总结。</p><div class="sy-packet" data-auto-progress role="status"></div><div class="sy-actions"><button type="button" data-action="auto-save">保存自动设置</button></div><div class="sy-actions"><button type="button" data-action="auto-start">启用自动</button><button type="button" data-action="auto-pause">暂停自动</button><button type="button" data-action="auto-process">处理下一批</button></div>');
+  if (kind === 'automatic') return card('自动总结',setting('autoSummaryEnabled').replace('<input','<input disabled')+fields(['autoSummaryEvery','autoKeepRecent'])+field('当前聊天从哪楼起算','<input data-auto-start type="number" min="0" value="1">')+'<p class="sy-help">新聊天默认从第 1 楼；需要包含开场白可填 0。老聊天会接着已连续总结的楼层处理。改起点只改变后续处理范围，不伪造此前的总结。</p><div class="sy-packet" data-auto-progress role="status"></div><div class="sy-actions"><button type="button" data-action="auto-save">保存自动设置</button></div><div class="sy-actions"><button type="button" data-action="auto-start">启用自动</button><button type="button" data-action="auto-pause">暂停自动</button><button type="button" data-action="auto-process">处理下一批</button></div>');
   if (kind === 'injection') return card('把记忆交给 AI', '<p class="sy-help">相关人物带入整份已启用档案；关键台词与当前心迹随人物使用，私密想法不赋予其他角色知情。动态人设在人物模块独立开关；本轮实际内容可看“召回 → 注入日志”。</p>'+fields(keys.slice(0,8)) + advanced('注入位置与日志', keys.slice(8)));
   if (kind === 'vectors') return card('向量索引',fields(keys));
   if (kind === 'retrieval') return card('召回策略', fields(['rerankEnabled','retrievalCandidateLimit','rerankMaxCandidates']) + advanced('标签辅助召回',['tagRecallEnabled','tagCandidateLimit']) + advanced('关键词与融合',['bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant']) + advanced('分类检索',['distributedEnabled','distributedStrategy','distributedChannel']) + advanced('超时保护',['retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs']));
@@ -124,7 +124,8 @@ export const API_INFO = Object.freeze({
   rerank: { prefix:'rerank', title:'重排模型', help:'从候选记忆里挑出更相关的内容，让注入更精简。', resource:'/rerank' },
 });
 export function apiSettingsHTML() {
-  return Object.entries(API_INFO).sort(([a],[b])=>['summary','dynamicPersona','personaReview','supplement','assistant','knowledge','embedding','rerank'].indexOf(a)-['summary','dynamicPersona','personaReview','supplement','assistant','knowledge','embedding','rerank'].indexOf(b)).map(([kind, {prefix, title, help, resource}]) => `<section class="sy-card sy-api-card" data-api-card="${kind}"><div class="sy-top"><h4>${title}</h4>${['embedding','rerank'].includes(kind) ? button(`recommend-${kind}`, '补齐推荐值') : ''}</div><p class="sy-help">${help}</p>
+  const order=['summary','dynamicPersona','assistant','knowledge','embedding','rerank','personaReview','supplement'];
+  const renderCard=([kind, {prefix, title, help, resource}]) => `<section class="sy-card sy-api-card" data-api-card="${kind}"><div class="sy-top"><h4>${title}</h4>${['embedding','rerank'].includes(kind) ? button(`recommend-${kind}`, '补齐推荐值') : ''}</div><p class="sy-help">${help}</p>
     ${['assistant','supplement','knowledge'].includes(kind) ? setting(kind==='knowledge'?'knowledgeFollowAssistant':`${kind}FollowSummary`) + `<p class="sy-inherited sy-help" data-inherited="${kind}"></p>` : ''}
     <div data-api-fields="${kind}">
     <div data-api-connection="${kind}">
@@ -137,7 +138,12 @@ export function apiSettingsHTML() {
     ${setting(`${prefix}Model`, '模型名称', '', kind==='supplement'?'留空沿用总结模型；也可选择快速模型':'选择列表中的模型，或手动填写')}
     <p class="sy-help" role="status" data-model-status="${kind}"></p></div>
     <details class="sy-advanced"><summary>高级连接选项（通常不用改）</summary>${setting(`${prefix}EndpointMode`, '地址如何使用', `默认只补 ${resource}，绝不补 /v1。填完整接口地址时可选“不补路径”。`)}${setting(`${prefix}AuthMode`, 'Key 发送方式', '一般保持“标准 Key”；不需要 Key 可留空或选“无需 Key”。只有服务商明确要求时才改用 x-api-key。')}${field('模型列表地址（可选）', `<input data-models-url="${kind}" placeholder="留空时按 API 地址推导 /models" autocomplete="off">`)}</details>
-    </div>${kind==='knowledge'?setting('knowledgeOutputTokens'):''}<div class="sy-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></section>`).join('') + card('请求设置', setting('summaryRequestMode') + advanced('旧版请求兼容选项',['summaryStreaming']) + setting('chatRequestsPerMinute') + setting('summaryDeadlineMs') + setting('deadlineMs') + setting('assistantBudgetUnits') + setting('assistantOutputTokens'));
+    </div>${kind==='knowledge'?setting('knowledgeOutputTokens'):''}<div class="sy-actions">${button(`save-api-${kind}`, '保存', true)}${button(`test-${kind}`, '测试连接')}</div></section>`;
+  const entries=Object.entries(API_INFO).sort(([a],[b])=>order.indexOf(a)-order.indexOf(b));
+  const main=entries.filter(([kind])=>!['personaReview','supplement'].includes(kind)).map(renderCard).join('');
+  const optional=entries.filter(([kind])=>['personaReview','supplement'].includes(kind)).map(renderCard).join('');
+  return main+`<details class="sy-card sy-advanced" data-optional-models><summary>可选模型与人设兼容</summary><p class="sy-help">仅在使用辅助精修或额外整理时配置；已有连接和 Key 保留。</p>${optional}${setting('dynamicPersonaJsonMode')}${button('save-persona-compat','保存人设兼容设置')}</details>`
+    +`<details class="sy-card sy-advanced" data-request-compatibility><summary>请求兼容与超时</summary>${setting('summaryRequestMode')}${advanced('旧版请求兼容选项',['summaryStreaming'])}${setting('chatRequestsPerMinute')}${setting('summaryDeadlineMs')}${setting('deadlineMs')}${setting('assistantBudgetUnits')}${setting('assistantOutputTokens')}</details>`;
 }
 
 // Upgrade opt-in: never replace a custom endpoint, model, or a deliberate zero/false.
