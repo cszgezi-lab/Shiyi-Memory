@@ -885,7 +885,7 @@ export function createProductShellController({
     testConnection,
     setSessionCredential,
     readMemoryView,
-    async updateMemoryControls(patch){if(!repository||!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');const token=currentToken(),session=state.session;const check=()=>{if(!tokenValid(token,session))throw new Error('聊天已变化');};check();return repository.updateControls(session.scope,patch,{check});},
+    async updateMemoryControls(patch){if(!repository||!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');const token=currentToken(),session=state.session;const check=()=>{if(!tokenValid(token,session))throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};check();return repository.updateControls(session.scope,patch,{check});},
     remember,
     sourceValidity,
     workspace() {

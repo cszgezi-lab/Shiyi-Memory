@@ -2,6 +2,15 @@ import {PERSONA_ISSUES} from './persona-validation.js';
 // Shared, content-free diagnostics. Never serialize Error.message, API bodies,
 // headers, URLs, user filenames or arbitrary server error objects into exports.
 export const DIAGNOSTIC_REASONS = Object.freeze({
+  persona_source_changed:'原文校验发现变化，已归档并撤下受影响的人设批次，自动更新暂停',
+  persona_plan_created:'已保存人设计划；正式档案与批次尚未替换',
+  persona_plan_discarded:'已归档并放弃本次人设候选计划，正式档案保留',
+  persona_append_saved:'新增人设批次已保存，早期正式批次保留',
+  persona_range_applied:'手动人设计划整组完成，已按范围应用；保留与撤下批次数见记录',
+  persona_rebuild_applied:'人设重建整组完成，已按确认范围替换并保留归档',
+  persona_batches_deleted:'已按累积依赖撤下所选及后续人设批次，归档已保存',
+  persona_batches_restored:'已核对原文并恢复上次撤下的人设批次',
+  persona_start_changed:'已修改人设起算楼层，已有正式批次保留',
   queue_foreground:'正在生成聊天回复，后台请求等待本轮结束',
   log_io_timeout:'日志存储响应超时；本次保留在内存，不阻止任务或日志导出',
   export_module_unavailable:'宿主文件导出接口加载失败，可复制日志文本',

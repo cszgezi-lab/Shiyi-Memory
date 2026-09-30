@@ -131,8 +131,7 @@
 #shiyi-product-shell .sy-batch-row>summary::-webkit-details-marker {display:none;}
 #shiyi-product-shell .sy-batch-row [data-select-batch] {grid-column:1;grid-row:1 / span 2;margin:0;}
 #shiyi-product-shell .sy-batch-row .sy-batch-title,#shiyi-product-shell .sy-batch-row .sy-batch-status {grid-column:2;}
-#shiyi-product-shell .sy-batch-row .sy-batch-title::before {content:'鈻?';}
-#shiyi-product-shell .sy-batch-row[open] .sy-batch-title::before {content:'鈻?';}
+#shiyi-product-shell .sy-batch-row .sy-batch-title::before {content:none;}
 #shiyi-product-shell .sy-batch-status {display:block;margin:4px 0 0 16px;font:400 13px/1.5 system-ui,sans-serif;opacity:.8;}
 #shiyi-product-shell .sy-batch-status[data-state=failed],#shiyi-product-shell .sy-batch-error {color:#ed9292;}
 #shiyi-product-shell .sy-batch-pagination {display:flex;gap:8px;align-items:center;justify-content:space-between;margin:12px 0;}
@@ -432,11 +431,11 @@
 #shiyi-product-shell [data-summary-memory-batches] .sy-batch-row{padding:6px 8px;margin:3px 0;border-radius:6px}
 #shiyi-product-shell [data-summary-memory-batches] .sy-batch-row>summary{font:500 12px/1.35 system-ui,sans-serif}
 #shiyi-product-shell [data-summary-memory-batches] .sy-batch-status{font-size:11px;margin:0;opacity:.75}
-#shiyi-product-shell .sy-persona-batch-row{display:flex;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px solid var(--sy-border);font:500 12px/1.4 system-ui,sans-serif}
-#shiyi-product-shell .sy-persona-batch-row input{width:18px;height:18px;flex:0 0 18px;accent-color:var(--sy-accent)}
-#shiyi-product-shell .sy-persona-batch-row .sy-persona-batch-content{flex:1;display:flex;justify-content:space-between;gap:6px;align-items:center}
-#shiyi-product-shell .sy-persona-batch-row .sy-persona-batch-marker{width:18px;flex:0 0 18px;text-align:center;opacity:.5}
-#shiyi-product-shell .sy-persona-batch-row small{font:400 11px/1.4 system-ui,sans-serif;opacity:.78}
+#shiyi-product-shell .sy-persona-batch-row{display:grid;grid-template-columns:22px minmax(0,1fr);align-items:center;gap:8px;padding:6px 8px;margin:3px 0;border:1px solid var(--sy-border);border-radius:6px;background:color-mix(in srgb,currentColor 2%,transparent);font:500 12px/1.35 system-ui,sans-serif;cursor:pointer}
+#shiyi-product-shell .sy-persona-batch-row input{width:20px;height:20px;min-width:20px;margin:0;accent-color:var(--sy-accent)}
+#shiyi-product-shell .sy-persona-batch-row input:disabled{cursor:default;opacity:.5}
+#shiyi-product-shell .sy-persona-batch-row .sy-persona-batch-content{display:flex;flex-direction:column;gap:3px;align-items:flex-start;overflow-wrap:anywhere}
+#shiyi-product-shell .sy-persona-batch-row small{font:400 11px/1.35 system-ui,sans-serif;opacity:.75}
 #shiyi-product-shell [data-persona-batch-detail]:not([hidden]){padding:8px;border:1px solid var(--sy-border);border-radius:6px;font-size:12px;overflow-wrap:anywhere}
 #shiyi-product-shell .sy-dictionary-row>summary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:1px 8px;align-items:center;cursor:pointer;font-size:12px;list-style:none}
 #shiyi-product-shell .sy-dictionary-row>summary::-webkit-details-marker{display:none}
@@ -464,18 +463,20 @@
 :root .sy-casting-support{background:#e2edfa;color:#2b5282;border-color:#a1badb}
 :root .sy-casting-guest{background:#f4eee1;color:#755d2f;border-color:#cebe9b}
 
-/* v0.21.69 · 提取规则 DIY 一行折叠卡片 */
-#shiyi-product-shell .sy-ext-row{display:flex;align-items:center;gap:6px;padding:8px 10px;background:#fbfaf5;border:1px solid #ebe8de;border-radius:8px;cursor:pointer}
-#shiyi-product-shell .sy-ext-row-title{font-size:12px;color:#4a4a4a;flex:1 1 auto;font-weight:600}
-#shiyi-product-shell .sy-ext-row-meta{font-size:10px;color:#8a8676}
-#shiyi-product-shell .sy-ext-card{background:#fbfaf5;border:1px solid #ebe8de;border-radius:8px;padding:8px 10px;margin-top:8px}
+/* 标签规则沿用宿主明暗主题，避免浅色卡片与深色主题文字叠在一起。 */
+#shiyi-product-shell .sy-ext-row{display:flex;align-items:center;gap:6px;padding:8px 10px;background:var(--sy-surface);border:1px solid var(--sy-border);border-radius:8px;cursor:pointer;color:inherit}
+#shiyi-product-shell .sy-ext-row-title{font-size:13px;color:inherit;flex:1 1 auto;font-weight:600}
+#shiyi-product-shell .sy-ext-row-meta{font-size:12px;color:inherit;opacity:.8}
+#shiyi-product-shell .sy-ext-card{background:var(--sy-surface);border:1px solid var(--sy-border);border-radius:8px;padding:8px 10px;margin-top:8px;color:inherit}
 #shiyi-product-shell .sy-ext-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-#shiyi-product-shell .sy-ext-title{font-size:12px;font-weight:600;color:#4a4a4a;flex:1 1 auto}
+#shiyi-product-shell .sy-ext-title{font-size:14px;font-weight:600;color:inherit;flex:1 1 auto}
 #shiyi-product-shell .sy-ext-body{margin-top:8px}
-#shiyi-product-shell .sy-onoff{position:relative;width:26px;height:14px;background:#cdd2db;border-radius:7px;cursor:pointer;flex-shrink:0;display:inline-block;vertical-align:middle}
+#shiyi-product-shell .sy-onoff{position:relative;width:26px;height:14px;background:color-mix(in srgb,currentColor 30%,transparent);border-radius:7px;cursor:pointer;flex-shrink:0;display:inline-block;vertical-align:middle}
 #shiyi-product-shell .sy-onoff::after{content:'';position:absolute;top:2px;left:2px;width:10px;height:10px;background:#fff;border-radius:50%}
-#shiyi-product-shell .sy-onoff.on{background:#5b3aa7}
+#shiyi-product-shell .sy-onoff.on{background:var(--sy-accent)}
 #shiyi-product-shell .sy-onoff.on::after{left:14px}
-#shiyi-product-shell .sy-btn.tiny{padding:2px 6px;font-size:10px;min-height:22px}
-#shiyi-product-shell .sy-btn.sy-primary{background:#5b3aa7;color:#fff;border-color:#5b3aa7}
+#shiyi-product-shell [data-view="extraction"] .sy-btn.tiny{padding:6px 9px;font-size:12px;min-height:36px}
+#shiyi-product-shell [data-view="extraction"] .sy-btn.sy-primary{background:var(--sy-accent);color:#fff;border-color:var(--sy-accent)}
+#shiyi-product-shell [data-view="extraction"] .sy-empty{opacity:.75}
+#shiyi-product-shell [data-view="extraction"] :is(input,textarea)::placeholder{color:inherit;opacity:.65}
 
