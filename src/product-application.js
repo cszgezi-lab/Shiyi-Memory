@@ -679,7 +679,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const mode=view.controls?.operations?.[item.operationId];
       const records=batchRecords(view.records?.history,item.operationId);
       const scheduled=item.status==='queued'&&item.freshStart;
-      const status=scheduled?'queued':mode==='active'?'saved':mode==='deleted'?'deleted':item.status==='running'&&!active?'interrupted':item.status;
+      const cutoff=view.controls?.automation?.summaryHold;
+      const abandonedTail=Boolean(cutoff&&item.replacement&&cutoff.id===item.replacement.id&&item.endIndex>cutoff.endIndex);
+      const status=abandonedTail?'deleted':scheduled?'queued':mode==='active'?'saved':mode==='deleted'?'deleted':item.status==='running'&&!active?'interrupted':item.status;
       return {...item,status,...(!scheduled&&mode==='active'?{error:null,savedOperationId:item.operationId}:{}),records,counts:Object.fromEntries(MEMORY_CATEGORIES.map(k=>[k,records[k].length]))};
     });
     if(view.controls?.automation?.summaryHold){
@@ -721,40 +723,38 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function publishSummaryReplacement(replacement,op){
     const rows=await workspace.read('summary-batches',[]);op.check();
-    // U236: 支持两种调用方式：
-    // 1) 单批发布：传入单个批记录，retire/discard 仅限与该批范围重叠的旧数据，
-    //    不等待其他成员批次完成，失败不影响其他已成功批次。
-    // 2) 整组发布（兼容旧接口）：传入 replacement 对象，所有成员必须已就绪。
-    const single=replacement&&!Array.isArray(replacement.memberIds);
-    const memberIds=single?[replacement.id]:replacement.memberIds;
+    // Existing formal coverage is replaced atomically (U118). Individual
+    // candidates can be retried, regenerated and split without publishing
+    // an incomplete replacement or retiring the original tail.
+    const memberIds=replacement.memberIds;
     const members=memberIds.map(id=>rows.find(b=>b.id===id));
     if(members.some(b=>!b?.replacementReady||b.status==='deleted'))return false;
     const view=await core.readMemoryView();op.check();
+    if(members.some(b=>view.controls?.operations?.[b.operationId]==='deleted'))throw Object.assign(new Error('所选候选已被删除，未重新应用；可在回收站恢复仍开放的任务'),{code:'CANCELED'});
     if(replacement.editsHash&&replacementEditsHash(replacement.recordIds,view.controls)!==replacement.editsHash)throw Object.assign(new Error('覆盖期间旧记忆有新的人工修改，请撤下候选后重新预览；没有覆盖该修改'),{code:'SUMMARY_REBUILD_CONFLICT'});
     if(summaryRecipeHash()!==replacement.recipeHash)throw Object.assign(new Error('覆盖期间记录规则已变化；请撤下候选后重新覆盖，旧记忆保留'),{code:'SOURCE_INVALIDATED'});
     for(const b of members){
       const current=await core.readRange({startIndex:b.startIndex,endIndex:b.endIndex});op.check();
       if(current.status!=='ready'||current.sourceRevision!==b.sourceRevision)throw Object.assign(new Error(`覆盖候选 #${b.startIndex}–${b.endIndex} 的原文已变化；请撤下候选后重新覆盖，旧记忆保留`),{code:'SOURCE_INVALIDATED'});
     }
-    // U236: 逐批 retire 与该批范围重叠的旧操作，而非整组合集。
-    // 重叠范围来自 replacement 的 affected 批次；新批次生成依赖自身范围原文，
-    // 不依赖其他成员批次的旧数据，逐批发布安全且支持中途失败不影响其余。
-    // 兼容旧记录：affected 不存在时按整组 affected 回退到 oldIds 处理。
-    const affectedRows=single?(replacement.affected??[]):[];
-    const overlapFn=batch=>batch.startIndex<=members[0].endIndex&&batch.endIndex>=members[0].startIndex;
-    const retire=single
-      ?[...new Set(rows.filter(b=>affectedRows.some(a=>a.id===b.id)&&overlapFn(b)).flatMap(batchOperationIds))]
-      :[...replacement.oldOperations,...members.flatMap(b=>b.attempts??[])];
-    const oldBatchIds=single
-      ?rows.filter(b=>affectedRows.some(a=>a.id===b.id)&&overlapFn(b)).map(b=>b.id)
-      :replacement.oldIds;
-    await core.updateMemoryControls({operations:{...Object.fromEntries(retire.map(id=>[id,'deleted'])),...Object.fromEntries(members.map(b=>[b.operationId,'active']))},...(replacement.discardedTail&&!single?{automation:{summaryHold:{id:replacement.id,endIndex:replacement.requested.endIndex,discardedTail:replacement.discardedTail}}}:{})});op.check();
-    if(replacement.discardedTail&&!single){state.summaryHold={id:replacement.id,endIndex:replacement.requested.endIndex,discardedTail:replacement.discardedTail};state.savedThrough=replacement.requested.endIndex;}
-    await workspace.update('summary-batches',list=>list.map(b=>memberIds.includes(b.id)?{...b,status:'saved',savedOperationId:b.operationId,error:null}:oldBatchIds.includes(b.id)?{...b,status:'deleted',replacedBy:replacement.id}:b),[]).catch(()=>{});
+    // Source reads can yield to settings or manual edits. Verify the current
+    // commit snapshot again, including authoritative deletion controls, before
+    // activating any cached candidate.
+    const currentView=await core.readMemoryView();op.check();
+    if(members.some(b=>currentView.controls?.operations?.[b.operationId]==='deleted'))throw Object.assign(new Error('所选候选已被删除，没有重新应用'),{code:'CANCELED'});
+    if(replacement.editsHash&&replacementEditsHash(replacement.recordIds,currentView.controls)!==replacement.editsHash)throw Object.assign(new Error('覆盖期间旧记忆有新的人工修改，没有覆盖该修改'),{code:'SUMMARY_REBUILD_CONFLICT'});
+    if(summaryRecipeHash()!==replacement.recipeHash)throw Object.assign(new Error('覆盖期间记录规则已变化，旧记忆保留；请重新建立覆盖计划'),{code:'SOURCE_INVALIDATED'});
+    const canceledIds=replacement.canceledIds??[];
+    const retire=[...replacement.oldOperations,...members.flatMap(b=>b.attempts??[]),...rows.filter(b=>canceledIds.includes(b.id)).flatMap(batchOperationIds)];
+    const oldBatchIds=replacement.oldIds;
+    const hold=replacement.discardedTail||replacement.explicitCutoff?{id:replacement.id,endIndex:replacement.requested.endIndex,discardedTail:replacement.discardedTail}:null;
+    await core.updateMemoryControls({operations:{...Object.fromEntries(retire.map(id=>[id,'deleted'])),...Object.fromEntries(members.map(b=>[b.operationId,'active']))},...(hold?{automation:{summaryHold:hold}}:{})});op.check();
+    if(hold){state.summaryHold=hold;state.savedThrough=replacement.requested.endIndex;}
+    await workspace.update('summary-batches',list=>list.map(b=>memberIds.includes(b.id)?{...b,status:'saved',savedOperationId:b.operationId,error:null}:oldBatchIds.includes(b.id)||canceledIds.includes(b.id)?{...b,status:'deleted',replacedBy:replacement.id}:b),[]).catch(()=>{});
     return true;
   }
   async function summarize(options={}){return logged('summary',run=>summarizeTask({...options,diagnosticRun:run}));}
-  async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null,resume=false,missingOnly=false,previewHash=null,diagnosticRun}={}){
+  async function summarizeTask({count,startIndex,endIndex,batchSize,focus='',trigger='manual',replaceBatchId=null,resume=false,rebuildCandidate=false,missingOnly=false,previewHash=null,diagnosticRun}={}){
     const taskStarted=Date.now();let firstRequestAt=null,modelMs=0,publishMs=0;
     if(trigger==='manual'&&!replaceBatchId){
       const version=cancelVersion;
@@ -786,14 +786,14 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         if(list.some(b=>b.replacement&&b.status!=='deleted'&&b.status!=='saved'&&b.startIndex<=overwrite.endIndex&&b.endIndex>=overwrite.startIndex))throw new Error('所选范围已有未完成覆盖候选，请继续未完成批次，或在批次管理撤下候选后重建');
         ranges=overwrite.ranges;
       }
-      if(resume&&previous?.groupId)groupId=previous.groupId;
-      const plan=resume&&previous?.plan?previous.plan:{startIndex:ranges[0].startIndex,endIndex:ranges.at(-1).endIndex,batchSize};
+      if((resume||rebuildCandidate)&&previous?.groupId)groupId=previous.groupId;
+      const plan=(resume||rebuildCandidate)&&previous?.plan?previous.plan:{startIndex:ranges[0].startIndex,endIndex:ranges.at(-1).endIndex,batchSize};
       let planned=ranges.map((range,i)=>{
         const prior=previous??(overwrite?.grouped?null:list.find(b=>sameBatchRange(b,range)));
         return {...prior,id:prior?.id??makeId('summary-batch'),number:prior?.number??Math.max(0,...list.map(b=>b.number??0))+i+1,groupId,plan,...range,focus,trigger,status:'queued',freshStart:resume?prior?.freshStart??!prior?.operationId:true,operationId:prior?.operationId??null,createdAt:prior?.createdAt??Date.now(),attempts:prior?.attempts??[]};
       });
-      const replacement=(resume?previous?.replacement:null)??(overwrite?.grouped?{id:groupId,memberIds:planned.map(p=>p.id),oldIds:overwrite.affected.map(b=>b.id),oldOperations:[...new Set(overwrite.affected.flatMap(batchOperationIds))],affected:overwrite.affected,recipeHash:summaryRecipeHash(),requested:overwrite.requested,discardedTail:overwrite.discardedTail}:null);
-      if(replacement&&!resume){
+      const replacement=((resume||rebuildCandidate)?previous?.replacement:null)??(overwrite?.grouped?{id:groupId,memberIds:planned.map(p=>p.id),oldIds:overwrite.affected.map(b=>b.id),oldOperations:[...new Set(overwrite.affected.flatMap(batchOperationIds))],affected:overwrite.affected,recipeHash:summaryRecipeHash(),requested:overwrite.requested,discardedTail:overwrite.discardedTail}:null);
+      if(replacement&&!resume&&!rebuildCandidate){
         const view=await core.readMemoryView();op.check();
         replacement.recordIds=[...new Set(replacement.oldOperations.flatMap(id=>Object.values(batchRecords(view.records.history,id)).flat().map(r=>r.id)))];
         replacement.editsHash=replacementEditsHash(replacement.recordIds,view.controls);
@@ -854,8 +854,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           // This checkpoint is required: no old operation is retired before
           // every replacement member has a durable, source-verified result.
           await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
-          // U236: 每批成功后立即单独发布该批次，不依赖其他成员批次。
-          stagedOnly=!await publishSummaryReplacement({...currentBatch.replacement,id:currentBatch.id,affected:currentBatch.replacement.affected},op);
+          stagedOnly=!await publishSummaryReplacement(currentBatch.replacement,op);
         }else{
           await core.updateMemoryControls({operations:{...Object.fromEntries(currentBatch.attempts.map(id=>[id,'deleted'])),[operationId]:'active'}});op.check();
           currentBatch={...currentBatch,status:'saved',savedOperationId:operationId,requests:result.requests,updatedAt:Date.now()};
@@ -1088,10 +1087,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function regenerateBatch(id){
     assertCurrent();const rows=await workspace.read('summary-batches',[]),row=rows.find(b=>b.id===id);
     if(!row)throw new Error('批次不存在');
-    if(row.replacement&&row.status!=='saved'&&row.status!=='deleted')throw new Error('覆盖候选请使用继续未完成；重新选择范围前先在批次管理撤下候选');
     if(row.replacedBy||row.status==='deleted'&&rows.some(b=>b.id!==row.id&&b.status==='saved'&&b.startIndex<=row.endIndex&&b.endIndex>=row.startIndex))throw new Error('旧批次已被范围覆盖，请从手动总结选择需要重新覆盖的范围');
     if(!Number.isInteger(row.startIndex)||!Number.isInteger(row.endIndex))throw new Error('旧版未保存楼层范围，请在手动总结中指定范围重新整理');
-    return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id});
+    return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id,rebuildCandidate:Boolean(row.replacement&&row.status!=='saved'&&row.status!=='deleted')});
   }
   async function retryBatch(id){
     // A stale retry button can be clicked again before the busy UI paints.
@@ -1102,9 +1100,17 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(!row)throw new Error('批次不存在');
     if(row.status==='saved'){summaryFeedback('info','该批总结已保存，无需重复总结；索引未完成时可单独补建。','manual');return {status:'saved',requests:0};}
     if(!['failed','interrupted','queued'].includes(row.status))throw new Error('此批次当前不能续跑');
+    if(!row.replacementReady&&!row.freshStart&&row.operationId&&core.inspectSummaryResume){
+      const recovery=await core.inspectSummaryResume(row.operationId,{focus:row.focus});assertCurrent();
+      if(recovery.revisionChanged&&!recovery.hasCachedResponse&&!recovery.hasCommittedChildren){
+        summaryFeedback('info','其它批次已保存，本批尚无可复用的成功答复；正在单独重试此批，已成功批次保留。','manual');
+        return regenerateBatch(id);
+      }
+    }
     if(row.replacementReady&&row.replacement){
-      // U236: 单独继续该批次，不等待或影响其他成员批次。
-      const op=begin();try{const applied=await publishSummaryReplacement({...row.replacement,id:row.id,affected:row.replacement.affected},op);await refresh();return {status:applied?'saved':'staged',requests:0};}finally{op.finish();}
+      // Reuse the successful candidate with no model call. The original
+      // formal results remain active while any required member is missing.
+      const op=begin();try{const applied=await publishSummaryReplacement(row.replacement,op);await refresh();return {status:applied?'saved':'staged',requests:0};}finally{op.finish();}
     }
     return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id,resume:true,trigger:row.trigger??'manual'});
   }
@@ -1113,12 +1119,81 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(!ids.length){const message='没有未完成的总结批次；如需补建向量，请点击“补建全部未完成索引”，不会重新总结。';summaryFeedback('info',message,'manual');return {status:'idle',processed:0,failed:0,message,level:'info'};}
     return manageBatches(ids,'retry');
   }
+  async function splitSummaryBatch(id,{batchSize}={}){
+    assertCurrent();if(active||opening)throw new Error('请先停止总结');
+    const op=begin();
+    try{
+      const rows=await op.workspace.read('summary-batches',[]);op.check();
+      const row=rows.find(b=>b.id===id);
+      if(!row||!['failed','interrupted','queued'].includes(row.status)||row.replacementReady)throw new Error('只能拆分未完成的总结批次；已完成结果无需重做');
+      const length=row.endIndex-row.startIndex+1;
+      if(!Number.isSafeInteger(row.startIndex)||!Number.isSafeInteger(row.endIndex)||length<=1)throw new Error('此批次只有一楼或没有范围，不能继续按楼层拆分');
+      batchSize??=Math.ceil(length/2);
+      if(!Number.isSafeInteger(batchSize)||batchSize<1||batchSize>=length||batchSize>200)throw new Error('拆分后每批楼数应小于当前批次，且为1–200的整数');
+      const ranges=planSummaryRanges({startIndex:row.startIndex,endIndex:row.endIndex,batchSize,lastIndex:await core.historyTail()});op.check();
+      const children=ranges.map((range,index)=>({...row,...range,id:makeId('summary-batch'),number:Math.max(0,...rows.map(b=>b.number??0))+index+1,status:'queued',operationId:null,savedOperationId:null,previousOperation:null,attempts:[],freshStart:true,replacementReady:false,error:null,requests:undefined,sourceRevision:undefined,splitFrom:id,updatedAt:Date.now()}));
+      let replacement=row.replacement;
+      // A failed regeneration may still have a live former generation. Its
+      // smaller children form one atomic replacement of that old range.
+      const oldOperation=savedBatchOperation(row);
+      if(!replacement&&oldOperation){
+        const view=await core.readMemoryView();op.check();
+        const oldOperations=batchOperationIds(row),recordIds=[...new Set(Object.values(batchRecords(view.records.history,oldOperation)).flat().map(r=>r.id))];
+        replacement={id:makeId('summary-group'),memberIds:[id],oldIds:[id],oldOperations,affected:[row],recipeHash:summaryRecipeHash(),requested:{startIndex:row.startIndex,endIndex:row.endIndex},discardedTail:null,recordIds,editsHash:replacementEditsHash(recordIds,view.controls)};
+      }
+      if(replacement){
+        replacement={...replacement,memberIds:replacement.memberIds.flatMap(member=>member===id?children.map(c=>c.id):[member])};
+        for(const child of children){child.replacement=replacement;child.groupId=replacement.id;child.excludeOperations=[...new Set([...(row.excludeOperations??[]),...(replacement.oldOperations??[])])];}
+      }
+      const deletedOperations=Object.fromEntries(batchOperationIds(row).filter(operation=>operation!==oldOperation).map(operation=>[operation,'deleted']));
+      if(Object.keys(deletedOperations).length)await core.updateMemoryControls({operations:deletedOperations});op.check();
+      const next=rows.map(b=>b.id===id?{...b,status:'deleted',splitInto:children.map(c=>c.id),updatedAt:Date.now()}:replacement&&b.replacement?.id===replacement.id?{...b,replacement}:b);
+      await op.workspace.write('summary-batches',[...next,...children]);op.check();await refresh();
+      summaryFeedback('info',`已把 ${row.startIndex}–${row.endIndex} 楼拆为 ${children.length} 批；其它批次和已完成结果保留，选择后可单独重试。`,'manual');
+      return {status:'queued',ids:children.map(c=>c.id),plannedBatches:children.length,requests:0,diagnostics:{reason:'summary_batch_split',startIndex:row.startIndex,endIndex:row.endIndex,plannedBatches:children.length,modelRequested:false}};
+    }finally{op.finish();}
+  }
+  async function summaryPrefixPreview(id){
+    const rows=await workspace.read('summary-batches',[]),row=rows.find(b=>b.id===id);
+    if(!row?.replacement||row.savedOperationId||row.status==='saved')throw new Error('请选择尚未应用的覆盖候选；普通成功批次已经保存');
+    const replacement=row.replacement,members=replacement.memberIds.map(member=>rows.find(b=>b.id===member));
+    if(members.some(b=>!b))throw new Error('覆盖计划成员缺失，请先恢复或重新建立所选批次');
+    const ordered=[...members].sort((a,b)=>a.startIndex-b.startIndex),ready=[];
+    let next=ordered[0].startIndex;
+    for(const candidate of ordered){
+      if(candidate.startIndex!==next||!candidate.replacementReady||!candidate.operationId||candidate.status==='deleted')break;
+      ready.push(candidate);next=candidate.endIndex+1;
+    }
+    if(!ready.length)throw new Error('计划最前一批尚未成功，请先重试或拆小该批；没有撤下旧记忆');
+    const startIndex=ready[0].startIndex,endIndex=ready.at(-1).endIndex,memberIds=ready.map(b=>b.id),canceledIds=members.filter(b=>!memberIds.includes(b.id)).map(b=>b.id);
+    const oldThrough=Math.max(endIndex,...(replacement.affected??[]).map(b=>b.endIndex));
+    const plannedThrough=Math.max(endIndex,...members.map(b=>b.endIndex));
+    const discardedTail=oldThrough>endIndex?{startIndex:endIndex+1,endIndex:oldThrough}:null;
+    const unappliedRange=plannedThrough>endIndex?{startIndex:endIndex+1,endIndex:plannedThrough}:null;
+    const previewHash=sha256([replacement,ordered.map(b=>[b.id,b.startIndex,b.endIndex,b.status,b.operationId,b.replacementReady,b.sourceRevision]),memberIds,endIndex]);
+    return {groupId:replacement.id,startIndex,endIndex,discardedTail,unappliedRange,readyBatches:ready.length,pendingBatches:canceledIds.length,previewHash,memberIds,canceledIds,replacement};
+  }
+  async function previewApplySummaryPrefix(id){
+    assertCurrent();if(active||opening)throw new Error('请先停止总结');
+    const {memberIds,canceledIds,replacement,...preview}=await summaryPrefixPreview(id);return preview;
+  }
+  async function applySummaryPrefix(id,{previewHash}={}){
+    assertCurrent();if(active||opening)throw new Error('请先停止总结');
+    const op=begin();
+    try{
+      const preview=await summaryPrefixPreview(id);op.check();
+      if(!previewHash||previewHash!==preview.previewHash)throw new Error('已完成范围发生变化，请重新查看并确认应用范围');
+      const replacement={...preview.replacement,memberIds:preview.memberIds,canceledIds:preview.canceledIds,requested:{...preview.replacement.requested,endIndex:preview.endIndex},discardedTail:preview.discardedTail,explicitCutoff:true};
+      if(!await publishSummaryReplacement(replacement,op))throw new Error('已完成候选状态变化，没有应用覆盖');
+      await refresh({summaryCommit:true});
+      summaryFeedback('success',`已应用 ${preview.startIndex}–${preview.endIndex} 楼的 ${preview.readyBatches} 批，取消剩余 ${preview.pendingBatches} 批；旧结果保留可追溯归档，本聊天自动接续已暂停。`,'manual');
+      return {status:'saved',batches:preview.readyBatches,requests:0,endIndex:preview.endIndex,diagnostics:{reason:'summary_prefix_applied',startIndex:preview.startIndex,endIndex:preview.endIndex,savedBatches:preview.readyBatches,pendingBatches:preview.pendingBatches,archived:true,modelRequested:false}};
+    }finally{op.finish();}
+  }
   async function manageBatches(ids,action,options={}){
     assertCurrent();if(active)throw new Error('请先停止总结');
     let selected=[...new Set(ids)];const rows=await workspace.read('summary-batches',[]);
     if(action==='delete'||action==='restore'){
-      const groups=new Set(rows.filter(b=>selected.includes(b.id)&&b.replacement&&!b.savedOperationId).map(b=>b.replacement.id));
-      selected=[...new Set([...selected,...rows.filter(b=>groups.has(b.replacement?.id)).map(b=>b.id)])];
       // U237: 人设连续性需要时，显式 cascade=true 才级联——保持默认单批删除语义不变。
       // 任何被删的 saved 批次，后续所有 saved 批次一起删（按 startIndex 排序）。
       // 失败的批次保留，方便用户重试；进行中的新批次保留。
@@ -1145,24 +1220,30 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         catch(error){if(action!=='retry'||version!==cancelVersion||['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(error.code))throw error;failed++;}
       }
       await refresh();const pending=action==='retry'?state.batches.filter(b=>selected.includes(b.id)&&!['saved','deleted'].includes(b.status)).length:0;
-      const text=action==='retry'?`续跑已结束：已处理 ${processed} 批，${failed} 批失败，${pending} 批尚未应用；覆盖候选需整组完成后生效。`:`已重新生成 ${targets.length} 批`;
+      const text=action==='retry'?`续跑已结束：已处理 ${processed} 批，${failed} 批失败，${pending} 批尚未应用；覆盖候选可继续所选，或明确应用已完成前段。`:`已重新生成 ${targets.length} 批`;
       setMessage(text);state.feedback={id:++feedbackSequence,level:failed||pending?'warning':'success',text};notify();return {processed,failed};
     }
     if(!['delete','restore'].includes(action))throw new Error('未知批量操作');
     const operations={};
+    // Removing a queued member does not manufacture a completed group. It
+    // can be restored to the same pending slot until that plan is explicitly
+    // cut off; a split parent or an abandoned tail belongs to a closed plan.
+    const restorableCandidate=row=>Boolean(row.replacement&&!row.savedOperationId&&!row.replacedBy&&!row.splitInto?.length&&!(state.summaryHold?.id===row.replacement.id&&row.endIndex>state.summaryHold.endIndex));
     if(action==='restore'){
       const view=await core.readMemoryView();
-      for(const target of targets)if(rows.some(b=>!selected.includes(b.id)&&view.controls?.operations?.[b.operationId]==='active'&&b.startIndex<=target.endIndex&&b.endIndex>=target.startIndex))throw new Error('此范围已有生效的覆盖结果，请先撤下重叠批次再恢复；没有叠加旧记忆');
+      for(const target of targets)if(!restorableCandidate(target)&&rows.some(b=>!selected.includes(b.id)&&view.controls?.operations?.[b.operationId]==='active'&&b.startIndex<=target.endIndex&&b.endIndex>=target.startIndex))throw new Error('此范围已有生效的覆盖结果，请先撤下重叠批次再恢复；没有叠加旧记忆');
     }
     for(const row of targets){
-      const keep=savedBatchOperation(row);
-      if(action==='restore'&&!keep)throw new Error('所选批次尚无结果可恢复');
+      const staged=restorableCandidate(row);
+      const keep=savedBatchOperation(row)??(staged?row.operationId:null);
+      if(action==='restore'&&!keep&&!staged)throw new Error('所选批次尚无结果可恢复');
       for(const id of batchOperationIds(row))operations[id]='deleted';
-      if(action==='restore')operations[keep]='active';
+      if(action==='restore'&&keep)operations[keep]=staged?'pending':'active';
     }
     assertCurrent(token);await core.updateMemoryControls({operations});assertCurrent(token);
-    await workspace.update('summary-batches',list=>list.map(row=>selected.includes(row.id)?{...row,status:action==='delete'?'deleted':'saved',savedOperationId:savedBatchOperation(row),operationId:action==='restore'?savedBatchOperation(row):row.operationId}:row),[]);
+    await workspace.update('summary-batches',list=>list.map(row=>selected.includes(row.id)?{...row,status:action==='delete'?'deleted':restorableCandidate(row)?'queued':'saved',...(action==='restore'&&restorableCandidate(row)&&!row.replacementReady?{freshStart:true}:{}),savedOperationId:savedBatchOperation(row),operationId:action==='restore'?(savedBatchOperation(row)??row.operationId):row.operationId}:row),[]);
     await refresh();setMessage(action==='delete'?cascadedCount>0?`已撤下 ${directCount} 批（另有 ${cascadedCount} 批因人设连续性自动撤下）；已应用记忆可恢复，未应用候选不会进入正式记忆；聊天原文未改变`:`已撤下 ${targets.length} 批；已应用记忆可恢复，未应用候选不会进入正式记忆；聊天原文未改变`:`已恢复 ${targets.length} 批`);
+    await runtimeLog.record({task:'summary',phase:'commit',level:'success',details:{reason:action==='delete'?'summary_batches_deleted':'summary_batches_restored',startIndex:Math.min(...targets.map(b=>b.startIndex)),endIndex:Math.max(...targets.map(b=>b.endIndex)),beforeBatches:rows.filter(b=>b.status!=='deleted').length,afterBatches:state.batches.filter(b=>b.status!=='deleted').length,modelRequested:false}});
     // 撤下或恢复批次都会改变真实覆盖，起算楼层跟着回到正确位置（删除的楼层重新变成待总结）。
     try{await syncAutoStartFloor();}catch(error){void reportError(error,{task:'summary',stage:'auto_start_floor'});}
   }
@@ -1732,7 +1813,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function deleteConversation(){await loadApiSettings();if(assistantActive)throw new Error('请先停止助手');await globalWorkspace.remove(`assistant-${state.conversationId}`);state.history=[];state.conversations=await globalWorkspace.update('conversations',list=>list.filter(c=>c.id!==state.conversationId),[]);await newConversation();setMessage('助手对话已删除，已应用设置和记忆未改变');}
   async function hideRecord(id){assertCurrent();const ids=state.cards.find(c=>c.id===id)?.mergedIds??[id];recallBusy++;recallChanged();try{state.hidden=await workspace.update('hidden',list=>[...new Set([...list,...ids])],[]);await refresh();}finally{recallBusy--;}}
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
-  async function stop(){await dynamicPersona.pause();vectorStopped=true;clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
+  async function stop(){personaCommandVersion++;await dynamicPersona.pause();vectorStopped=true;clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;automaticPaused=true;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
   // Main-card commands use the same persisted manual worker, never hidden UI
   // drafts. Coalesce clicks and reserve scheduling while a plan is prepared.
@@ -1757,12 +1838,35 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     personaLaunch=work.finally(()=>{personaLaunch=null;dynamicPersona.wake();notify();});
     return personaLaunch;
   }
+  function retryDynamicPersonaManualBatch(options){
+    if(personaLaunch)return personaLaunch;
+    const token=epoch,command=personaCommandVersion;
+    const guard=()=>{assertCurrent(token);if(command!==personaCommandVersion||!enabled)throw Object.assign(new Error('人设单批重试已取消'),{code:'CANCELED'});};
+    const work=logged('persona',async()=>{
+      guard();await dynamicPersona.load();guard();
+      if(!core.settings.dynamicPersonaEnabled)await saveSettings({dynamicPersonaEnabled:true});guard();
+      return dynamicPersona.resumeManualBatch(options);
+    });
+    personaLaunch=work.finally(()=>{personaLaunch=null;dynamicPersona.wake();notify();});
+    return personaLaunch;
+  }
+  async function manageDynamicPersonaCandidate(action,options){
+    assertCurrent();if(personaLaunch)throw new Error('人设任务正在准备，请先暂停后管理批次');
+    const token=epoch,command=personaCommandVersion;
+    await dynamicPersona.load();assertCurrent(token);
+    if(command!==personaCommandVersion)throw Object.assign(new Error('人设批次操作已取消'),{code:'CANCELED'});
+    return dynamicPersona[action](options);
+  }
   // 补一批 / 检查进度 / 立刻处理：包到 logged('summary', ...) 里，
   // 这样按钮点击会立即产生一条「开始 / 完成 / 失败」的运行日志记录，
   // UI 反馈也由 run() 的 feedback 链路驱动，不会再「按了没反应」。
-  const application={previewSummary,saveCharacterKeepsake,editPersonProfile,catchUpAutomatic:()=>summarize({missingOnly:true}),inspectAutomaticProgress:()=>logged('summary',async run=>{await inspectAutomaticProgress();runtimeLog.record({run,task:'summary',phase:'complete',level:'success',details:{}});return {batches:0};}),setAutoStartFloor,setAutomatic,processAutomatic:()=>logged('summary',run=>autoSummary({force:true})),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
+  const application={previewSummary,splitSummaryBatch:(...args)=>logged('summary',()=>splitSummaryBatch(...args)),previewApplySummaryPrefix,applySummaryPrefix:(...args)=>logged('summary',()=>applySummaryPrefix(...args)),saveCharacterKeepsake,editPersonProfile,catchUpAutomatic:()=>summarize({missingOnly:true}),inspectAutomaticProgress:()=>logged('summary',async run=>{await inspectAutomaticProgress();runtimeLog.record({run,task:'summary',phase:'complete',level:'success',details:{}});return {batches:0};}),setAutoStartFloor,setAutomatic,processAutomatic:()=>logged('summary',run=>autoSummary({force:true})),deleteRecords,retryBatch,retryIncompleteBatches,core,retryMerges,keepMergeSeparate,chooseMergeTarget,saveModule:modules.save,editModuleRecord:modules.editRecord,archiveModule:modules.archive,proposeModule:modules.propose,inspectMvu:modules.inspect,syncModules:async()=>{assertCurrent();await refresh();return {status:state.mvuStatus};},rememberModule:modules.remember,exportModules:modules.exportDefinitions,importModules:modules.importDefinitions,get state(){return publicState();},loadApiSettings,open,refresh,saveSettings,saveApi,forgetKey,summarize,regenerateBatch,manageBatches,deleteBatch,editRecord,deleteRecord,restoreBatch,restoreRecord,removeDocument,applyProposal,undoSettings,newConversation,selectConversation,deleteConversation,hideRecord,restoreHidden,stop,disable,
     inspectDynamicPersona:()=>logged('persona',async run=>{await dynamicPersona.load();const result=await dynamicPersona.inspect();runtimeLog.record({run,task:'persona',phase:'complete',level:'success',details:{}});return result;}),
     queueDynamicPersona,
+    retryDynamicPersonaManualBatch,
+    splitDynamicPersonaManualBatch:options=>logged('persona',()=>manageDynamicPersonaCandidate('splitManualBatch',options)),
+    previewDynamicPersonaManualPrefix:options=>manageDynamicPersonaCandidate('previewApplyManualPrefix',options),
+    applyDynamicPersonaManualPrefix:options=>logged('persona',()=>manageDynamicPersonaCandidate('applyManualPrefix',options)),
     processDynamicPersona:async()=>logged('persona',async run=>{await dynamicPersona.load();return dynamicPersona.process({force:true,retry:true});}),pauseDynamicPersona:()=>{personaCommandVersion++;return logged('persona',()=>dynamicPersona.pause());},setDynamicPersonaStart:floor=>dynamicPersona.setStart(floor),editDynamicPersona:(id,patch)=>dynamicPersona.edit(id,patch),setPersonCasting:(name,patch)=>dynamicPersona.setCasting(name,patch),draftDynamicPersonaDirectives:(id,instruction)=>logged('persona',()=>dynamicPersona.draftDirectives(id,instruction)),bindDynamicPersona:(name,targetId)=>dynamicPersona.bind(name,targetId),mergeDynamicPersona:(sourceId,targetId)=>dynamicPersona.merge(sourceId,targetId),undoDynamicPersona:id=>dynamicPersona.undo(id),addDynamicPersona:(name,text)=>dynamicPersona.add(name,text),
     previewDynamicPersonaManual:async options=>{await dynamicPersona.load();return dynamicPersona.previewManual(options);},
     async previewNarrativeExtraction({text,floor,config=core.settings.narrativeExtraction}={}){
@@ -1774,7 +1878,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     },
     startDynamicPersonaManual:async options=>logged('persona',async run=>{if(!enabled)throw new Error('插件已暂停，请先启用插件，再开始手动人设补建');await dynamicPersona.load();await dynamicPersona.createManual(options);await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();}),
     continueDynamicPersonaManual:async()=>logged('persona',async run=>{if(!enabled)throw new Error('插件已暂停，请先启用插件，再继续手动人设补建');await dynamicPersona.load();if(['paused','running','failed'].includes(dynamicPersona.state.manualPlan?.status))await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();}),
-    pauseDynamicPersonaManual:()=>logged('persona',()=>dynamicPersona.pauseManual()),
+    pauseDynamicPersonaManual:()=>{personaCommandVersion++;return logged('persona',()=>dynamicPersona.pauseManual());},
     discardDynamicPersonaManual:options=>logged('persona',()=>dynamicPersona.discardManual(options)),
     inspectDynamicPersonaWorldbook:()=>logged('persona',()=>dynamicPersona.inspectWorldbook()),
     retryDynamicPersonaReview:()=>logged('persona',()=>dynamicPersona.retryReview()),

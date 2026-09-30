@@ -53,9 +53,10 @@ export function pageSummaryBatches(batches,{query='',status='active',page=1,page
   const size=[10,20,50].includes(Number(pageSize))?Number(pageSize):10;
   const term=String(query).trim(),range=/^#?(\d+)\s*[-–~至]\s*#?(\d+)$/.exec(term),floor=/^#(\d+)$/.exec(term),number=/^第?\s*(\d+)\s*批$/.exec(term);
   const selected=numberedSummaryBatches(batches).reverse().filter(b=>{
+    const pendingApplication=Boolean(b.replacementReady&&b.replacement&&!['saved','deleted'].includes(b.status));
     if(status==='active'&&b.status==='deleted')return false;
-    if(status==='failed'&&!['failed','interrupted'].includes(b.status))return false;
-    if(status==='pending'&&!['running','queued'].includes(b.status))return false;
+    if(status==='failed'&&(pendingApplication||!['failed','interrupted'].includes(b.status)))return false;
+    if(status==='pending'&&!pendingApplication&&!['running','queued'].includes(b.status))return false;
     if(['saved','deleted'].includes(status)&&b.status!==status)return false;
     if(!term)return true;
     if(number)return b.displayNumber===Number(number[1]);

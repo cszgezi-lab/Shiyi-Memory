@@ -885,6 +885,32 @@ export function createProductShellController({
     testConnection,
     setSessionCredential,
     readMemoryView,
+    async inspectSummaryResume(operationId,{focus}={}){
+      if(!repository||!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');
+      const session=state.session,token=currentToken(),check=()=>{if(!tokenValid(token,session))throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
+      const frozen=await repository.readPrivateTask(session.scope,operationId);check();
+      if(!frozen?.batch)return {frozen:false,revisionChanged:false,hasCachedResponse:false,hasCommittedChildren:false};
+      const checkpoint=await repository.getCheckpoint(operationId,session.scope);check();
+      const completed=new Set(checkpoint?.completedChildIndexes??[]),revision=await repository.getCommittedRevision(session.scope);check();
+      const revisionChanged=revision!==frozen.batch.expectedRevision+completed.size;
+      const plans=frozen.requestPlan?.splitPlan??checkpoint?.splitPlan??[{operationId}];
+      let hasCachedResponse=false;
+      for(const id of new Set([operationId,...plans.map(part=>part.operationId)])){
+        if(!id)continue;const cached=await repository.readPrivateTask(session.scope,id);check();
+        if(cached&&!cached.retryModel&&(cached.raw!==undefined||cached.stages||cached.verifiedDraft||cached.verificationReply||cached.enumRepair||cached.referenceRepair||cached.floorRepair))hasCachedResponse=true;
+      }
+      if(revisionChanged&&!hasCachedResponse&&!completed.size){
+        // Only the selected unfinished operation can restart. A changed source
+        // or rule still requires explicit regeneration; it must not be hidden
+        // by advancing the repository revision under an old draft.
+        const rules=freezeSummaryRules([state.settings.recordingRules,runtimeRules()].filter(Boolean).join('\n'),state.settings.summaryPresets,state.settings.narrativeExtraction);
+        if(stableStringify(frozen.batch.rules)!==stableStringify(rules)||focus!==undefined&&String(frozen.batch.focusSpec?.focus??'')!==text(focus))throw Object.assign(new Error('本批记录规则或侧重点已变化，请重新生成；没有复用过期任务'),{code:'SOURCE_INVALIDATED'});
+        const refs=[...(frozen.batch.coverage?.sourceRefs??[]),...(frozen.batch.coverage?.bridgeRefs??[])];
+        const verified=await verifyProductSources(session.handle.history,{frozen:[{sourceRefs:refs}]},check);check();
+        if(verified.invalidKeys.length||verified.unknownKeys.length)throw Object.assign(new Error('本批原文已变化或无法核实，请重新生成；没有复用过期任务'),{code:'SOURCE_INVALIDATED'});
+      }
+      return {frozen:true,revisionChanged,hasCachedResponse,hasCommittedChildren:completed.size>0};
+    },
     async updateMemoryControls(patch){if(!repository||!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');const token=currentToken(),session=state.session;const check=()=>{if(!tokenValid(token,session))throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};check();return repository.updateControls(session.scope,patch,{check});},
     remember,
     sourceValidity,

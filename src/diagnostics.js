@@ -2,9 +2,14 @@ import {PERSONA_ISSUES} from './persona-validation.js';
 // Shared, content-free diagnostics. Never serialize Error.message, API bodies,
 // headers, URLs, user filenames or arbitrary server error objects into exports.
 export const DIAGNOSTIC_REASONS = Object.freeze({
+  summary_batch_split:'已将所选未完成总结批次按完整楼层拆小，其它批次与已完成结果保留，未调用模型',
+  summary_prefix_applied:'已按确认终点应用连续完成的总结前段，剩余任务已取消，旧结果已归档，自动接续暂停',
+  summary_batches_deleted:'已按所选范围或已确认的级联范围撤下总结批次，原文保留',
+  summary_batches_restored:'已恢复所选总结批次；未完成候选仍需继续处理或应用',
   persona_source_changed:'原文校验发现变化，已归档并撤下受影响的人设批次，自动更新暂停',
   persona_plan_created:'已保存人设计划；正式档案与批次尚未替换',
   persona_plan_discarded:'已归档并放弃本次人设候选计划，正式档案保留',
+  persona_prefix_applied:'已按确认终点应用连续完成的人设前段，其余候选和旧状态已归档，自动更新暂停',
   persona_append_saved:'新增人设批次已保存，早期正式批次保留',
   persona_range_applied:'手动人设计划整组完成，已按范围应用；保留与撤下批次数见记录',
   persona_rebuild_applied:'人设重建整组完成，已按确认范围替换并保留归档',

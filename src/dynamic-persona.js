@@ -588,7 +588,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     diagnostic({task:'persona',phase:'plan',details:{reason:'persona_plan_created',startIndex:next.startIndex,endIndex:next.endIndex,beforeBatches:data.batches.length,afterBatches:data.batches.length,candidateBatches:manualPlan.items.length,plannedRequests:manualPlan.items.length,archived:Boolean(archiveId),modelRequested:false}});
     view={...view,status:'paused',message:`手动计划已保存：#${next.startIndex}–${next.endIndex}，共${next.items.length}批；${next.mode==='clean'?'旧档案已备份，全部完成后切换':'自动更新已暂停'}`};emit();return clone(next);
   }
-  async function resumeManual(){
+  async function resumeManual(options={}){
     check();if(job)return {message:'人设任务正在运行'};
     // A full source check may have been deferred on load. Finish that check
     // before the explicit continuation, so its withdrawal cannot pause a
@@ -597,14 +597,92 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     if(!personaManualUnfinished(data.manualPlan)){view={...view,message:'没有未完成的手动人设批次'};emit();return {message:view.message};}
     if(!settings().dynamicPersonaEnabled)throw new Error('动态人设已关闭，请先启用后继续手动计划');
     const bound=currentWorkspace;client();lastIndex=await historyTail();check(bound);
+    const expectedPlan=data.manualPlan.id,selected=options.batch;
+    if(options.planId&&options.planId!==expectedPlan)throw new Error('候选计划已变化，请重新选择');
+    if(selected){
+      const pending=personaManualPending(data.manualPlan);
+      if(!pending||pending.startIndex!==selected.startIndex||pending.endIndex!==selected.endIndex)throw new Error('只能重试首个未完成批次；后续人设依赖此前的档案');
+    }
     if(data.manualPlan.endIndex>lastIndex)throw new Error(`手动终点已超出当前聊天 #${lastIndex}，原档案保留；请放弃计划后重选范围`);
     if(data.manualPlan.mode==='clean')for(const b of data.manualPlan.prefixBatches){
       const source=await readRange({startIndex:b.startIndex,endIndex:b.endIndex});check(bound);
       if(sha256(source.messages)!==b.sourceHash)throw new Error(`保留范围 #${b.startIndex}–${b.endIndex} 原文已变化，请放弃计划并把重建起点提前至 #${b.startIndex}`);
     }
-    await transact(()=>save({...data,paused:true,manualPlan:{...data.manualPlan,status:'running',message:'',items:data.manualPlan.items.map(b=>b.status==='failed'?{...b,status:'pending',attempts:0,retryAt:0}:b)}},bound));paused=true;
+    await transact(()=>{check(bound);if(data.manualPlan?.id!==expectedPlan)throw new Error('候选计划已变化，请重新选择');if(selected){const pending=personaManualPending(data.manualPlan);if(!pending||pending.startIndex!==selected.startIndex||pending.endIndex!==selected.endIndex)throw new Error('所选批次已变化，请重新选择首个未完成批次');}return save({...data,paused:true,manualPlan:{...data.manualPlan,status:'running',message:'',stopAfter:selected?{startIndex:selected.startIndex,endIndex:selected.endIndex}:null,...(selected?{resumeAutomatic:false}:{}),items:data.manualPlan.items.map(b=>b.status==='failed'?{...b,status:'pending',attempts:0,retryAt:0}:b)}},bound);});paused=true;
     clearTimeout(timer);timer=null;historyAttempts=0;historyRetryAt=0;
     view={...view,status:'running',message:'手动人设已排队，后台补建完成前继续使用原档案'};emit();wake();return {message:view.message,level:'info'};
+  }
+  async function resumeManualBatch(options){return resumeManual({planId:options.planId,batch:options});}
+  function selectedManualPending(options){
+    check();if(job||data.manualPlan?.status==='running')throw new Error('请先暂停当前人设任务，待请求退出后再管理候选批次');
+    const manual=data.manualPlan;
+    if(!personaManualUnfinished(manual)||options.planId&&options.planId!==manual.id)throw new Error('候选计划已变化，请重新选择');
+    const pending=personaManualPending(manual);
+    if(!pending||pending.startIndex!==options.startIndex||pending.endIndex!==options.endIndex)throw new Error('只能管理首个未完成批次；后续人设依赖此前的档案');
+    return {manual,pending};
+  }
+  async function splitManualBatch(options){
+    const {manual,pending}=selectedManualPending(options),bound=currentWorkspace,size=options.batchSize;
+    if(!Number.isSafeInteger(size)||size<1||size>200||size>=pending.endIndex-pending.startIndex+1)throw new Error('拆分楼数需为1–200的整数，并小于当前批次楼数');
+    const replacement=personaManualPlan({startIndex:pending.startIndex,endIndex:pending.endIndex,batchSize:size,handoff:false},lastIndex).items.map(b=>({...b,...(pending.kind?{kind:pending.kind}:{})}));
+    const hash=sha256(manual);
+    await transact(()=>{
+      const current=selectedManualPending(options);if(sha256(current.manual)!==hash)throw new Error('候选计划刚有变化，请重新选择');
+      const i=current.manual.items.indexOf(current.pending),items=[...current.manual.items.slice(0,i),...replacement,...current.manual.items.slice(i+1)];
+      if(items.length>5000)throw new Error('拆分后超过5000批，请选择较大的每批楼数');
+      return save({...data,paused:true,manualPlan:{...current.manual,items,status:'paused',stopAfter:null,plannedRequests:items.length,message:`已将 ${pending.startIndex}–${pending.endIndex} 楼拆为 ${replacement.length} 批；已保存前缀与后续队列保留`}},bound);
+    });paused=true;view={...view,status:'paused',message:data.manualPlan.message};emit();return {message:view.message,items:clone(replacement)};
+  }
+  function previewApplyManualPrefix(options={}){
+    check();if(job||data.manualPlan?.status==='running')throw new Error('请先暂停人设任务，待当前请求退出后再应用已完成部分');
+    const manual=data.manualPlan;
+    if(!personaManualUnfinished(manual)||options.planId&&options.planId!==manual.id)throw new Error('没有对应的未完成人设计划，请重新选择');
+    let count=0;
+    for(const b of manual.items){if(b.status!=='saved')break;if(count&&b.startIndex!==manual.items[count-1].endIndex+1)throw new Error('已保存批次存在缺楼，不能应用为连续人设档案');count++;}
+    const saved=manual.items.slice(0,count),endIndex=saved.at(-1)?.endIndex;
+    if(!saved.length||endIndex<manual.startIndex)throw new Error('尚无所选范围内可应用的连续已完成批次');
+    if(manual.items.slice(count).some(b=>b.status==='saved'))throw new Error('失败中段后存在独立候选，不能用未来档案覆盖前缀');
+    const retained=data.batches.filter(b=>b.endIndex<(manual.replaceFrom??manual.startIndex)),oldThrough=Math.max(-1,...data.batches.map(b=>b.endIndex),...data.profiles.filter(p=>!p.deleted).map(p=>p.through??-1));
+    return {planId:manual.id,startIndex:saved[0].startIndex,endIndex,savedCount:count,totalCount:manual.items.length,pendingCount:manual.items.length-count,
+      unappliedRange:endIndex<manual.endIndex?{startIndex:endIndex+1,endIndex:manual.endIndex}:null,
+      discardedTail:oldThrough>endIndex?{startIndex:endIndex+1,endIndex:oldThrough}:null,
+      retainedBatches:retained.length,removedBatches:data.batches.length-retained.length,archiveId:manual.archiveId??null,
+      hash:sha256([scopeKey,manual,data.batches,personaRebuildLiveHash(data.profiles)])};
+  }
+  async function applyManualPrefix(options){
+    const preview=previewApplyManualPrefix(options),bound=currentWorkspace;
+    if(options.hash!==preview.hash)throw new Error('计划或档案已变化，请重新确认应用范围');
+    clearTimeout(timer);timer=null;refinement.interrupt();factualReview.interrupt();
+    await transact(async()=>{
+      check(bound);if(previewApplyManualPrefix(options).hash!==preview.hash)throw new Error('计划或档案刚有变化，请重新确认');
+      const manual=data.manualPlan,clean=manual.mode==='clean',items=manual.items.slice(0,preview.savedCount),retained=data.batches.filter(b=>b.endIndex<(manual.replaceFrom??manual.startIndex));
+      if(clean&&manual.liveHash!==personaRebuildLiveHash(data.profiles))throw Object.assign(new Error('重建期间人物档案已被编辑，原档案保留；请重新建立计划'),{code:'PERSONA_REBUILD_CONFLICT'});
+      lastIndex=await historyTail();check(bound);
+      if(preview.endIndex>lastIndex)throw Object.assign(new Error('已完成范围超出当前聊天，未应用候选'),{code:'SOURCE_INVALIDATED'});
+      for(const b of [...retained.filter(b=>b.status==='saved'),...items]){
+        const source=await readRange({startIndex:b.startIndex,endIndex:b.endIndex});check(bound);
+        if(sha256(source.messages)!==b.sourceHash)throw Object.assign(new Error('已完成前缀原文已变化，未应用候选；请重新加载核对'),{code:'SOURCE_INVALIDATED'});
+      }
+      if(previewApplyManualPrefix(options).hash!==preview.hash)throw new Error('核对期间档案或计划已变化，未应用候选');
+      if(!Array.isArray(manual.workingProfiles))throw new Error('已完成前缀的人设快照缺失，原档案保留');
+      if(manual.workingProfiles.some(p=>!p.deleted&&!isProtectedProfile(p)&&(!Number.isSafeInteger(p.through)||p.through>preview.endIndex)))throw new Error('候选档案含有未确认或更晚的楼层，不能应用到此终点；原档案保留');
+      const protectedProfiles=clean?[]:data.profiles.filter(isProtectedProfile);
+      const sameProfile=(p,pk)=>Boolean(p)&&(p.id===pk.id||foldName(p.name)===foldName(pk.name)||(p.aliases??[]).some(alias=>foldName(alias)===foldName(pk.name)));
+      const profiles=[...manual.workingProfiles.map(p=>{const kept=protectedProfiles.find(m=>sameProfile(p,m));return kept?.locked?clone(kept):kept?{...p,text:kept.text,composition:kept.composition,aliases:kept.aliases,aliasPolicy:kept.aliasPolicy,manual:kept.manual,locked:kept.locked,protected:true}:p;}),...protectedProfiles.filter(m=>!manual.workingProfiles.some(p=>sameProfile(p,m)))].map(p=>applyPersonaCasting(p,data.castingOverrides));
+      const archiveId=makeId('persona-batch-archive');
+      // This explicit cutoff ends the plan. Keep both its saved work and the old
+      // official state durable before dropping any dependent old/future tail.
+      await bound.write(`persona-manual-archive-${manual.id}`,clone(manual));check(bound);
+      await bound.write(archiveId,{kind:'persona-batch-removal',reason:'manual_prefix_applied',state:clone(data)});check(bound);
+      const tailEnd=Math.max(manual.endIndex,manual.discardedTail?.endIndex??-1);
+      const finished={...manual,items,endIndex:preview.endIndex,requestedEndIndex:preview.endIndex,status:'completed',workingProfiles:[],stopAfter:null,resumeAutomatic:false,handoff:true,
+        ...(tailEnd>preview.endIndex?{discardedTail:{startIndex:preview.endIndex+1,endIndex:tailEnd}}:{}),...(clean?{liveHash:personaRebuildLiveHash(profiles)}:{}),message:`已应用 ${preview.startIndex}–${preview.endIndex} 楼并结束本次计划；其余候选已归档，自动更新暂停`};
+      const batches=[...retained,...items];
+      await save({...data,profiles,batches,manualPlan:finished,paused:true,startFloor:preview.endIndex+1,historyCheck:null,
+        batchRemoval:{archiveId,reason:'manual_prefix_applied',startIndex:preview.startIndex,endIndex:Math.max(preview.endIndex,preview.discardedTail?.endIndex??-1),hash:sha256([batches,personaRebuildLiveHash(profiles)])},
+        ...(clean?{personaIdentities:manual.identityProfiles,refinement:{version:1,queue:[],last:{},status:'idle',message:'旧精修任务已随干净重建撤回',revision:(data.refinement?.revision??0)+1}}:{})},bound);paused=true;
+      diagnostic({task:'persona',phase:'commit',details:{reason:'persona_prefix_applied',startIndex:preview.startIndex,endIndex:preview.endIndex,beforeBatches:preview.retainedBatches+preview.removedBatches,afterBatches:batches.length,retainedBatches:retained.length,removedBatches:preview.removedBatches,candidateBatches:items.length,archived:true,modelRequested:false}});
+    });view={...view,status:'paused',message:data.manualPlan.message};emit();await mirrorAfterEdit();return {message:view.message,...preview};
   }
   async function pauseManual(){const bound=currentWorkspace;stop();check(bound);await transact(()=>save({...data,paused:true,...(personaManualUnfinished(data.manualPlan)?{manualPlan:{...data.manualPlan,status:'paused'}}:{})},bound));}
   async function discardManual(options={}){
@@ -783,7 +861,8 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
           const protectedProfiles=clean?[]:data.profiles.filter(isProtectedProfile);
           const sameProfile=(p,pk)=>Boolean(p)&&(p.id===pk.id||foldName(p.name)===foldName(pk.name)||(p.aliases??[]).some(alias=>foldName(alias)===foldName(pk.name)));
           const merged=[...profiles.map(p=>{const kept=protectedProfiles.find(m=>sameProfile(p,m));return kept?.locked?clone(kept):kept?{...p,text:kept.text,composition:kept.composition,aliases:kept.aliases,aliasPolicy:kept.aliasPolicy,manual:kept.manual,locked:kept.locked,protected:true}:p;}),...protectedProfiles.filter(m=>!profiles.some(p=>sameProfile(p,m)))].map(p=>applyPersonaCasting(p,data.castingOverrides));
-          const manualPlan={...data.manualPlan,items,status:completed?'completed':'running',workingProfiles:completed?[]:merged,...(clean&&completed?{liveHash:personaRebuildLiveHash(merged)}:{})};
+          const stopAfter=data.manualPlan.stopAfter,stopHere=stopAfter?.startIndex===batch.startIndex&&stopAfter.endIndex===batch.endIndex;
+          const manualPlan={...data.manualPlan,items,status:completed?'completed':stopHere?'paused':'running',workingProfiles:completed?[]:merged,...(stopHere?{stopAfter:null,message:`所选 ${batch.startIndex}–${batch.endIndex} 楼已保存，后续候选仍暂停`}:{}),...(clean&&completed?{liveHash:personaRebuildLiveHash(merged)}:{})};
           const continueAuto=completed&&manualPlan.resumeAutomatic===true&&!manualPlan.discardedTail;
           if(clean&&completed){
             // Verify the kept prefix and already saved candidate inputs once
@@ -812,7 +891,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       catch(error){guard();diagnostic({run,task:'persona',phase:'checkpoint_warning',level:'warning',details:{...errorDiagnostics(error),reason:'storage_write',storageArtifact:'response-cache'}});}
       historyAttempts=0;historyRetryAt=0;
       const pendingCount=(manualId&&data.manualPlan.status==='completed'?data.profiles:rows).filter(p=>!p.deleted&&(p.composition?.pendingEdits?.length||p.composition?.pendingRevision)).length;
-      view={...view,status:'saved',message:manualId?(data.manualPlan.status==='completed'?`手动人设 #${data.manualPlan.startIndex}–${data.manualPlan.endIndex} ${pendingCount?'批次完成，可用内容已保存':'已全部应用'}；${data.paused?'自动更新仍暂停':'自动更新已接续'}${data.manualPlan.handoff?`，接续起点 #${data.startFloor}`:''}`:`补建进度已保存 #${next.nextStart}–${next.nextEnd}，全部完成后应用；原档案仍可用`):`人设已更新 #${next.nextStart}–${next.nextEnd}，${rows.length} 个角色阶段${rejectedProfiles.length?`，另有 ${rejectedProfiles.length} 份姓名无法确认，已隔离不影响本批`:''}；主总结进度不变`};
+      view={...view,status:manualId&&data.manualPlan.status==='paused'?'paused':'saved',message:manualId?(data.manualPlan.status==='completed'?`手动人设 #${data.manualPlan.startIndex}–${data.manualPlan.endIndex} ${pendingCount?'批次完成，可用内容已保存':'已全部应用'}；${data.paused?'自动更新仍暂停':'自动更新已接续'}${data.manualPlan.handoff?`，接续起点 #${data.startFloor}`:''}`:data.manualPlan.status==='paused'?`所选 ${next.nextStart}–${next.nextEnd} 楼已保存，后续候选仍暂停；可继续或应用已完成部分`:`补建进度已保存 #${next.nextStart}–${next.nextEnd}，全部完成后应用；原档案仍可用`):`人设已更新 #${next.nextStart}–${next.nextEnd}，${rows.length} 个角色阶段${rejectedProfiles.length?`，另有 ${rejectedProfiles.length} 份姓名无法确认，已隔离不影响本批`:''}；主总结进度不变`};
       if(pendingCount)view.message+=`；${pendingCount} 份人物有未应用的待核对改动，详见人物来源与本次修改`;
       emit();
       if(manualId&&data.manualPlan.status!=='completed')return {message:view.message,level:'success',batches:1};
@@ -1027,5 +1106,5 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,coverage:{replacedEntries:finalized?.replacedEntries??0,replacedFragments:finalized?.replacedFragments??0,restoredFragments:finalized?.restoredFragments??0,owned:audit.filter(a=>a.status==='owned').length,shared:audit.filter(a=>a.status==='shared').length,unresolved:audit.filter(a=>['unresolved','unsupported'].includes(a.status)).length},profiles:selected.map(p=>({id:p.id,name:p.name,through:p.through,reviewStatus:p.composition?.changeCheck?.status,reviewedThrough:personaReviewedThrough(p),chars:p.text.length,mode:used.has(p.id)?'replacement':'supplement'})),text:selected.map(p=>`${p.name}：\n${p.text}`).join('\n\n')}};emit();
     return clone(view.lastInjection);
   }
-  return {load,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,setCasting,setPartHistorical,bind,merge,undo,add,profiles,inject,syncMirror,previewDeleteBatch,deletePersonaBatch,restorePersonaBatch,draftDirectives,previewReview,startReview,manageReview,applyReview,reviewMarkdown:()=>personaRefinementMarkdown(data.refinement),interruptReview:()=>Promise.all([refinement.interrupt(),factualReview.interrupt()]),interruptFactReview:()=>factualReview.interrupt(),retryReview:()=>refinement.retry(),processReview:()=>refinement.process(),processFactReview:()=>factualReview.process(),export:()=>clone(data),async dispose(){disposed=true;refinement.dispose();await factualReview.dispose();stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};
+  return {load,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,resumeManualBatch,splitManualBatch,previewApplyManualPrefix,applyManualPrefix,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,setCasting,setPartHistorical,bind,merge,undo,add,profiles,inject,syncMirror,previewDeleteBatch,deletePersonaBatch,restorePersonaBatch,draftDirectives,previewReview,startReview,manageReview,applyReview,reviewMarkdown:()=>personaRefinementMarkdown(data.refinement),interruptReview:()=>Promise.all([refinement.interrupt(),factualReview.interrupt()]),interruptFactReview:()=>factualReview.interrupt(),retryReview:()=>refinement.retry(),processReview:()=>refinement.process(),processFactReview:()=>factualReview.process(),export:()=>clone(data),async dispose(){disposed=true;refinement.dispose();await factualReview.dispose();stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};
 }

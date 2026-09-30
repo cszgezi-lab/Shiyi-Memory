@@ -120,7 +120,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
     </div>
     ${kind==='persona'?'<p class="sy-summary-settings sy-help" data-persona-task-status role="status" aria-live="polite"></p>':''}
     ${kind==='memory'?`<details class="sy-summary-settings" data-summary-memory-batches><summary>记忆批次</summary>${batchManagementHTML()}</details>`:''}
-    ${kind==='persona'?`<details class="sy-summary-settings" data-summary-persona-batches><summary>人设批次 <small data-persona-batch-count></small></summary><p class="sy-help">正式批次按累积依赖删除，未完成计划只能整组放弃。</p><div class="sy-actions"><button type="button" data-persona-resume-batches>继续未完成</button><button type="button" data-persona-pause-batches>暂停任务</button><button type="button" data-persona-discard-plan>放弃本次计划</button></div><div class="sy-actions"><button type="button" data-persona-batch-select-page>选中本页</button><button type="button" data-persona-batch-clear>清空选择</button><button type="button" data-persona-batch-details>详情</button><button type="button" data-persona-batch-delete-selected>删除所选</button></div><p class="sy-help" data-persona-batch-selection role="status"></p><div data-persona-batch-detail hidden></div><div data-persona-batch-rows></div><div class="sy-batch-pagination"><button type="button" data-persona-batch-prev>上一页</button><span data-persona-batch-page></span><button type="button" data-persona-batch-next>下一页</button></div></details>`:''}
+    ${kind==='persona'?`<details class="sy-summary-settings" data-summary-persona-batches><summary>人设批次 <small data-persona-batch-count></small></summary><p class="sy-help">人设按楼层累积。可单独重试当前未完成批，或应用已完成的连续前段。</p><div class="sy-actions"><button type="button" data-persona-resume-batches>继续全部未完成</button><button type="button" data-persona-pause-batches>暂停任务</button><button type="button" data-persona-apply-prefix>应用已完成部分</button><button type="button" data-persona-discard-plan>放弃本次计划</button></div><div class="sy-actions"><button type="button" data-persona-batch-select-page>选中本页</button><button type="button" data-persona-batch-clear>清空选择</button><button type="button" data-persona-batch-details>详情</button></div><div class="sy-actions"><button type="button" data-persona-batch-retry-selected>重试所选</button><button type="button" data-persona-batch-split-selected>拆小所选</button><button type="button" data-persona-batch-delete-selected>删除所选</button></div><p class="sy-help" data-persona-batch-selection role="status"></p><div data-persona-batch-detail hidden></div><div data-persona-batch-rows></div><div class="sy-batch-pagination"><button type="button" data-persona-batch-prev>上一页</button><span data-persona-batch-page></span><button type="button" data-persona-batch-next>下一页</button></div></details>`:''}
     <p class="sy-help" data-summary-legend></p>
   </section>`;}).join('');
 }
@@ -184,19 +184,25 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
         if(pie)pie.style.background=summaryPieGradient({covered:done,pending:total-done});
         node.querySelector('[data-summary-percent]').textContent=`${Math.round(done/Math.max(1,total)*100)}%`;
         node.querySelector('[data-summary-covered]').textContent=`本次重建 ${done}/${total} 批 · ${manual.startIndex}–${manual.endIndex} 楼`;
-        node.querySelector('[data-summary-next]').textContent=`${text.covered.replace('已总结','仍生效')}；候选全部成功后替换`;
+        node.querySelector('[data-summary-next]').textContent=`${text.covered.replace('已总结','仍生效')}；候选全部成功后替换，也可应用已完成部分`;
       }
-      const items=[...(unfinished?manual.items.map(b=>({...b,candidate:true})):[]),...(d.batches??[])].sort((a,b)=>b.startIndex-a.startIndex).map(b=>({...b,selectionKey:JSON.stringify([b.candidate?manual.id:'formal',b.startIndex,b.endIndex,b.versionId??'',b.sourceHash??'']),selectable:!unfinished&&!b.candidate}));
+      const items=[...(unfinished?manual.items.map(b=>({...b,candidate:true})):[]),...(d.batches??[])].sort((a,b)=>b.startIndex-a.startIndex).map(b=>({...b,selectionKey:JSON.stringify(b.candidate?[manual.id,b.startIndex,b.endIndex]:['formal',b.startIndex,b.endIndex,b.versionId??'',b.sourceHash??'']),selectable:true}));
       personaBatchItems=items;for(const key of personaBatchSelection)if(!items.some(b=>b.selectionKey===key&&b.selectable))personaBatchSelection.delete(key);
       const pages=Math.max(1,Math.ceil(items.length/10));personaBatchPage=Math.min(personaBatchPage,pages-1);
       node.querySelector('[data-persona-batch-count]').textContent=`${items.length} 批${d.busy?' · 处理中':unfinished?' · 有未完成计划':''}`;
       const detail=node.querySelector('[data-summary-persona-batches]');
-      if(detail.open)node.querySelector('[data-persona-batch-rows]').innerHTML=items.slice(personaBatchPage*10,personaBatchPage*10+10).map(b=>`<label class="sy-persona-batch-row"><input type="checkbox" ${b.selectable?`data-persona-batch-select="${esc(b.selectionKey)}" aria-label="选择 ${b.startIndex}–${b.endIndex} 楼的人设批次" ${personaBatchSelection.has(b.selectionKey)?'checked':''} ${d.busy?'disabled':''}`:`disabled aria-label="${b.candidate?'候选批次随本次计划管理':'正式批次等待候选计划完成或放弃'}"`}><span class="sy-persona-batch-content">${b.startIndex}–${b.endIndex} 楼${b.candidate?' · 候选':''}<small>${b.status==='saved'?(b.candidate?'已保存':'已应用'):b.status==='failed'?'未完成':b.status==='running'?'处理中':'待处理'}${b.candidate?' · 随本次计划管理':''}</small></span></label>`).join('')||'<p class="sy-help">尚无人设批次。</p>';
+      if(detail.open)node.querySelector('[data-persona-batch-rows]').innerHTML=items.slice(personaBatchPage*10,personaBatchPage*10+10).map(b=>`<label class="sy-persona-batch-row"><input type="checkbox" data-persona-batch-select="${esc(b.selectionKey)}" aria-label="选择 ${b.startIndex}–${b.endIndex} 楼的人设批次" ${personaBatchSelection.has(b.selectionKey)?'checked':''}><span class="sy-persona-batch-content">${b.startIndex}–${b.endIndex} 楼${b.candidate?' · 候选':''}<small>${b.status==='saved'?(b.candidate?'已保存，尚未应用':'已应用'):b.status==='failed'?'未完成':b.status==='running'?'处理中':'待处理'}</small></span></label>`).join('')||'<p class="sy-help">尚无人设批次。</p>';
       node.querySelector('[data-persona-batch-page]').textContent=`${personaBatchPage+1} / ${pages} 页`;
-      node.querySelector('[data-persona-batch-selection]').textContent=`已选 ${personaBatchSelection.size} 批（跨页保留）${unfinished?'；正式批次需先完成或撤下候选计划。':''}`;
-      node.querySelector('[data-persona-batch-select-page]').disabled=Boolean(d.busy)||!items.slice(personaBatchPage*10,personaBatchPage*10+10).some(b=>b.selectable);
+      const first=unfinished?manual.items.find(b=>b.status!=='saved'):null,selected=items.filter(b=>personaBatchSelection.has(b.selectionKey)),single=selected.length===1?selected[0]:null;
+      const retryable=single?.candidate&&first&&single.startIndex===first.startIndex&&single.endIndex===first.endIndex;
+      const prefix=[];if(unfinished)for(const b of manual.items){if(b.status!=='saved')break;prefix.push(b);}
+      node.querySelector('[data-persona-batch-selection]').textContent=`已选 ${personaBatchSelection.size} 批（跨页保留）${first?`；人设按顺序处理，当前未完成 ${first.startIndex}–${first.endIndex} 楼。`:''}${selected.some(b=>b.candidate)?'候选可重试或拆小；完成前段可在上方应用。':''}`;
+      node.querySelector('[data-persona-batch-select-page]').disabled=!items.slice(personaBatchPage*10,personaBatchPage*10+10).some(b=>b.selectable);
       node.querySelector('[data-persona-batch-clear]').disabled=!personaBatchSelection.size;
-      node.querySelector('[data-persona-batch-delete-selected]').disabled=Boolean(d.busy)||!personaBatchSelection.size;
+      node.querySelector('[data-persona-batch-delete-selected]').disabled=Boolean(d.busy)||!selected.length||unfinished||selected.some(b=>b.candidate);
+      node.querySelector('[data-persona-batch-retry-selected]').disabled=Boolean(d.busy)||!retryable;
+      node.querySelector('[data-persona-batch-split-selected]').disabled=Boolean(d.busy)||!retryable||!['pending','failed'].includes(single?.status)||single.endIndex<=single.startIndex;
+      node.querySelector('[data-persona-apply-prefix]').disabled=Boolean(d.busy)||!prefix.some(b=>b.endIndex>=(manual?.requestedStartIndex??manual?.startIndex));
       node.querySelector('[data-persona-batch-details]').disabled=personaBatchSelection.size!==1;
       node.querySelector('[data-persona-discard-plan]').disabled=!unfinished;
       if(personaBatchSelection.size!==1)node.querySelector('[data-persona-batch-detail]').hidden=true;
@@ -228,7 +234,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
        const blocked=s.enabled===false?'插件已暂停':s.foregroundBusy?'等待当前聊天回复／注入结束':null;
        const label=stopping?'正在停止':running?'正在处理':retrying?'等待自动重试':unfinished?(manual.status==='paused'?'已暂停':manual.status==='failed'?'未完成':'已排队'):current||d.status==='failed'?'未完成':d.status==='saved'?'已保存':d.paused?'自动已暂停':settings.dynamicPersonaEnabled?'自动等待':'自动未开启';
        const status=node.querySelector('[data-persona-task-status]');
-       const progress=unfinished?`已完成 ${manual.items.filter(b=>b.status==='saved').length}/${manual.items.length} 批；候选全部完成后应用。`:'';
+       const progress=unfinished?`已完成 ${manual.items.filter(b=>b.status==='saved').length}/${manual.items.length} 批；可应用连续已完成前段。`:'';
        const failureCode=current?.errorCode??d.failureDetails?.code;
        const reason=Number.isInteger(d.failureDetails?.status)?`接口返回 HTTP ${d.failureDetails.status}`:({TIMEOUT:'接口响应超时',PROVIDER_HTTP_ERROR:'接口请求失败',PERSONA_RESPONSE_INVALID:'人物回答未通过检查',MODEL_OUTPUT_TRUNCATED:'模型回答被截断',INPUT_BUDGET_EXCEEDED:'本批超过输入预算',HISTORY_UNAVAILABLE:'聊天原文暂未就绪'})[failureCode]??String(current?.message??d.message??'未完成').split(/[。；]/)[0].slice(0,100);
        const detail=retrying?`${reason}；将在 ${new Date(current.retryAt).toLocaleTimeString()} 自动重试（${Math.min(current.attempts??1,3)}/3）。`:current?.status==='failed'||d.status==='failed'?`${reason}，详情见日志；可直接继续。`:running||d.status==='saved'?d.message:'';
@@ -236,7 +242,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
        status.textContent=`${running?'':`${label}${range}。`}${blocked?`${blocked}${queued?'；恢复后自动接续':''}。`:''}${s.requestQueueNotice?.startsWith('动态人设：')&&running?`${s.requestQueueNotice}。`:''}${detail??''}${progress}`;
        node.querySelector('[data-summary-state]').textContent=label;
        nextButton.disabled=Boolean(d.busy)||(!unfinished&&!next);
-       nextButton.textContent=stopping?'等待当前请求退出…':running?'正在处理…':unfinished||current?(retrying?'立即重试':`继续未完成${range}`):next?`总结下一批 ${next.startIndex}–${next.endIndex} 楼`:'没有可总结的批次';
+       nextButton.textContent=stopping?'等待当前请求退出…':running?'正在处理…':unfinished?(retrying?'重试未完成计划':'继续全部未完成'):current?(retrying?'重试未完成计划':`继续未完成${range}`):next?`总结下一批 ${next.startIndex}–${next.endIndex} 楼`:'没有可总结的批次';
        pause.hidden=!d.busy&&!(unfinished&&manual.status==='running')&&!retrying;
        pause.disabled=stopping;pause.textContent='暂停任务';
        const resume=node.querySelector('[data-persona-resume-auto]');
@@ -364,7 +370,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
 const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'}连接测试`:name.startsWith('save-')?'保存设置':({'dynamic-persona':'动态人设操作','journal-write':'更新角色记录','custom-save-module':'保存区块','custom-save-module-value':'保存记录','custom-read-mvu':'读取 MVU','custom-import-modules':'导入区块',open:'启用自动任务',assistant:'配置助手',beginner:'规则配置',summarize:'总结','focus-summary':'总结',analyze:'分析资料',vectors:'建立向量索引',import:'导入文件',remember:'保存记事'})[name];
    const isSummary=['summarize','focus-summary'].includes(name),isModels=name.startsWith('models-'),before=lastFeedbackId;
    const oldLabel=control?.textContent;if(label){feedback(`${label}中…`,'running');if(control){control.disabled=true;control.textContent=`${label}中…`;}}
-   try{const result=await fn();painting.request();if(name.startsWith('test-')&&result?.message)feedback(`${API_INFO[name.slice(5)]?.title??'模型'}：${result.message}`,result.level??'info',true);else if(name==='vectors'&&result?.message)feedback(result.message,result.pending?'warning':'success',true);else if(result?.message&&result?.level&&!isSummary)feedback(result.message,result.level,true);else if(name==='dynamic-persona')feedback(result?.message??'操作已处理；人物生成状态与进度见动态人设页。','info');else if(name==='extraction')feedback('正文提取操作完成；预览和保存状态见当前页面。','success');else if(label&&!isSummary&&!isModels)feedback(`${label}完成`,'success',true);}
+   try{const result=await fn();painting.request();if(name.startsWith('test-')&&result?.message)feedback(`${API_INFO[name.slice(5)]?.title??'模型'}：${result.message}`,result.level??'info',true);else if(name==='vectors'&&result?.message)feedback(result.message,result.pending?'warning':'success',true);else if(result?.message&&result?.level&&!isSummary)feedback(result.message,result.level,true);else if(name==='dynamic-persona')feedback(result?.message??'操作已处理；状态与进度见本页动态人设卡。','info');else if(name==='extraction')feedback('正文提取操作完成；预览和保存状态见当前页面。','success');else if(label&&!isSummary&&!isModels)feedback(`${label}完成`,'success',true);}
    catch(e){void app.reportError?.(e,{stage:'ui'});const text=`${label??'操作'}未完成：${failureText(e)}`;if($('[data-status]'))$('[data-status]').textContent=text;if(!isSummary||before===lastFeedbackId)feedback(text,['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(e?.code)?'info':'error',!['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(e?.code));}
    finally{if(control&&label){control.disabled=false;control.textContent=oldLabel;}painting.request();floating?.setBusy(Boolean(readViewState(app).busy)||modelRequests.size>0);}
  }
@@ -446,17 +452,21 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  $('[data-persona-discard-plan]')?.addEventListener('click',e=>void run(async()=>{const scope=JSON.stringify(readViewState(app).core?.scope),plan=readViewState(app).dynamicPersona?.manualPlan;if(!plan||!['running','paused','failed'].includes(plan.status))throw new Error('没有待放弃的人设计划');if(!await host.confirm?.(`放弃 ${plan.startIndex}–${plan.endIndex} 楼的人设补建计划？候选会归档，原档案和主总结保留。`))return;if(readViewState(app).dynamicPersona?.busy)await app.pauseDynamicPersonaManual();for(let i=0;i<100&&readViewState(app).dynamicPersona?.busy;i++)await new Promise(resolve=>setTimeout(resolve,100));checkPersonaBatchScope(scope);if(readViewState(app).dynamicPersona?.manualPlan?.id!==plan.id)throw new Error('人设计划已变化，请重新查看');if(readViewState(app).dynamicPersona?.busy)throw new Error('当前请求尚未退出，已暂停；稍后可直接放弃计划');await app.discardDynamicPersonaManual({planId:plan.id});},{name:'dynamic-persona',button:e.currentTarget}));
  $('[data-persona-resume-auto]')?.addEventListener('click',e=>run(()=>app.setFeature('persona',true),{name:'dynamic-persona',button:e.currentTarget}));
  $('[data-summary-persona-batches]')?.addEventListener('toggle',()=>paintSummaryModules(readViewState(app)));
- const checkPersonaBatchScope=scope=>{if(JSON.stringify(readViewState(app).core?.scope)!==scope)throw new Error('聊天已切换，未删除任何批次');};
+ const checkPersonaBatchScope=scope=>{if(JSON.stringify(readViewState(app).core?.scope)!==scope)throw new Error('聊天已切换，请重新选择批次');};
+ const selectedPersonaCandidate=()=>{
+   const s=readViewState(app),scope=JSON.stringify(s.core?.scope),row=personaBatchItems.find(b=>personaBatchSelection.has(b.selectionKey)),plan=s.dynamicPersona?.manualPlan;
+   if(scope!==personaBatchScope)throw new Error('聊天已切换，请重新选择批次');
+   if(personaBatchSelection.size!==1||!row?.candidate||!plan||JSON.parse(row.selectionKey)[0]!==plan.id)throw new Error('请单选本次计划中当前未完成的一批');
+   const first=plan.items.find(b=>b.status!=='saved');
+   if(!first||row.startIndex!==first.startIndex||row.endIndex!==first.endIndex)throw new Error('人设按顺序累积，请先处理当前未完成的一批');
+   return {scope,row,plan,options:{planId:plan.id,startIndex:row.startIndex,endIndex:row.endIndex}};
+ };
  const deletePersonaSelection=async keys=>{
    const scope=JSON.stringify(readViewState(app).core?.scope),rows=keys.map(key=>personaBatchItems.find(b=>b.selectionKey===key&&b.selectable));
    if(scope!==personaBatchScope)throw new Error('聊天已切换，请重新选择批次');
    if(!rows.length||rows.some(b=>!b))throw new Error('批次已变化，请重新选择');
    if(rows.some(b=>b.candidate)){
-     if(rows.some(b=>!b.candidate))throw new Error('候选与正式批次不能混选');
-     const plan=readViewState(app).dynamicPersona.manualPlan;
-     if(!plan||rows.some(b=>JSON.parse(b.selectionKey)[0]!==plan.id))throw new Error('候选计划已变化，请重新选择');
-     if(!await host.confirm?.(`已选 ${rows.length} 批候选。人设逐批累积，将撤下整个 ${plan.startIndex}–${plan.endIndex} 楼候选计划（${plan.items.length} 批），不能只跳过中间一批。保留归档，正式档案不变。继续？`))return;
-     checkPersonaBatchScope(scope);await app.discardDynamicPersonaManual({planId:plan.id});
+     throw new Error('候选人设不能跳过中间一批。可重试或拆小当前未完成批，也可应用已完成前段。');
    }else{
      const selected={batches:rows.map(b=>({startIndex:b.startIndex,endIndex:b.endIndex,versionId:b.versionId,sourceHash:b.sourceHash}))},preview=await app.previewDeleteDynamicPersonaBatch(selected);checkPersonaBatchScope(scope);
      if(!await host.confirm?.(`已选 ${preview.selectedCount} 批，另有 ${preview.dependentCount} 批后续累积人设需一起撤下。实际删除 ${preview.startIndex}–${preview.endIndex} 楼共 ${preview.count} 批；保存归档并暂停自动补回，手工档案、主总结与原文保留。继续？`))return;
@@ -468,6 +478,27 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  $('[data-persona-batch-select-page]')?.addEventListener('click',()=>{for(const b of personaBatchItems.slice(personaBatchPage*10,personaBatchPage*10+10))if(b.selectable)personaBatchSelection.add(b.selectionKey);paintSummaryModules(readViewState(app));});
  $('[data-persona-batch-clear]')?.addEventListener('click',()=>{personaBatchSelection.clear();paintSummaryModules(readViewState(app));});
  $('[data-persona-batch-delete-selected]')?.addEventListener('click',e=>void run(()=>deletePersonaSelection([...personaBatchSelection]),{name:'dynamic-persona',button:e.currentTarget}));
+ $('[data-persona-batch-retry-selected]')?.addEventListener('click',e=>void run(async()=>{const {scope,options}=selectedPersonaCandidate();checkPersonaBatchScope(scope);await app.retryDynamicPersonaManualBatch(options);return {message:`已排队重试 ${options.startIndex}–${options.endIndex} 楼；本批结束后暂停。`,level:'info'};},{name:'dynamic-persona',button:e.currentTarget}));
+ $('[data-persona-batch-split-selected]')?.addEventListener('click',e=>void run(async()=>{
+   const {scope,row,plan,options}=selectedPersonaCandidate(),batchSize=Math.ceil((row.endIndex-row.startIndex+1)/2);
+   if(!['pending','failed'].includes(row.status)||row.endIndex<=row.startIndex)throw new Error('请单选可拆分的未完成批次');
+   if(!await host.confirm?.(`把 ${row.startIndex}–${row.endIndex} 楼拆为每 ${batchSize} 楼一批？仅调整待处理计划，不调用模型；已有成功候选保留。`))return;
+   checkPersonaBatchScope(scope);if(plan.status==='running')await app.pauseDynamicPersonaManual();checkPersonaBatchScope(scope);
+   if(readViewState(app).dynamicPersona?.manualPlan?.id!==plan.id)throw new Error('人设计划已变化，请重新查看');
+   const result=await app.splitDynamicPersonaManualBatch({...options,batchSize});personaBatchSelection.clear();return result;
+ },{name:'dynamic-persona',button:e.currentTarget}));
+ $('[data-persona-apply-prefix]')?.addEventListener('click',e=>void run(async()=>{
+   const s=readViewState(app),scope=JSON.stringify(s.core?.scope),plan=s.dynamicPersona?.manualPlan;
+   if(!plan||!['running','paused','failed'].includes(plan.status))throw new Error('没有可应用的人设计划');
+   if(plan.status==='running')await app.pauseDynamicPersonaManual();checkPersonaBatchScope(scope);
+   const preview=await app.previewDynamicPersonaManualPrefix({planId:plan.id});checkPersonaBatchScope(scope);
+   const tail=preview.discardedTail?`旧 ${preview.discardedTail.startIndex}–${preview.discardedTail.endIndex} 楼人设将撤下归档。`:'';
+   const rest=preview.unappliedRange?`剩余 ${preview.unappliedRange.startIndex}–${preview.unappliedRange.endIndex} 楼共 ${preview.pendingCount} 批取消并归档，可稍后手动补建。`:'';
+   if(!await host.confirm?.(`应用已完成的 ${preview.startIndex}–${preview.endIndex} 楼（${preview.savedCount} 批）？${tail}${rest}自动接续暂停；不调用模型，主总结与聊天原文保留。`))return;
+   checkPersonaBatchScope(scope);
+   if(readViewState(app).dynamicPersona?.manualPlan?.id!==plan.id)throw new Error('人设计划已变化，请重新查看');
+   const result=await app.applyDynamicPersonaManualPrefix(preview);personaBatchSelection.clear();return result;
+ },{name:'dynamic-persona',button:e.currentTarget}));
  $('[data-persona-batch-details]')?.addEventListener('click',()=>{const key=[...personaBatchSelection][0],row=personaBatchItems.find(item=>item.selectionKey===key),detail=$('[data-persona-batch-detail]');if(!row||!detail)return;detail.textContent=`${row.startIndex}–${row.endIndex} 楼 · ${row.candidate?'本次计划候选':'正式人物批次'} · ${row.status==='saved'?'已保存':row.status==='failed'?'未完成':row.status==='running'?'处理中':'待处理'}${row.message?` · ${row.message}`:''}`;detail.hidden=false;detail.scrollIntoView?.({block:'nearest'});});
  $('[data-persona-recovery-restore]')?.addEventListener('click',e=>void run(async()=>{const scope=JSON.stringify(readViewState(app).core?.scope);if(await host.confirm?.('恢复上次撤下的人物批次？恢复前会核对原文、归档和当前档案状态。')){checkPersonaBatchScope(scope);await app.restoreDynamicPersonaBatch();}},{name:'dynamic-persona',button:e.currentTarget}));
  for(const [key,delta] of [['prev',-1],['next',1]])$(`[data-persona-batch-${key}]`)?.addEventListener('click',()=>{personaBatchPage=Math.max(0,personaBatchPage+delta);paintSummaryModules(readViewState(app));});
