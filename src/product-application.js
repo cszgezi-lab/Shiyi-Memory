@@ -74,8 +74,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let hostAdapter = adapter;
   // Session pause is separate from the persisted feature opt-ins. A fresh
   // session must honor injectionEnabled after passive chat loading, without
-  // requiring an extra panel "open" action. New installs still opt out of
-  // injection and automatic summary; disable() keeps this session paused.
+  // requiring an extra panel "open" action. Unconfigured APIs do not dispatch
+  // automatic work; disable() keeps this session paused.
   let workspace = null, boundScope = null, boundRefKey = null, epoch = 0, active = null, bindings = [], enabled = true;
   let cancelVersion = 0, knowledgeCache = [], opening = false, feedbackSequence = 0;
   let recallRevision = 0;
@@ -164,7 +164,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   const modules=createModuleController({host,core,state,load:loadApiSettings,getGlobal:()=>globalWorkspace,getChat:()=>workspace,check:assertCurrent,notify,refresh,changed:()=>recallChanged({vectors:true})});
   const personaWorldbook=createPersonaWorldbook({host,check:assertCurrent,context:()=>({scope:boundScope,epoch}),stageMode:()=>core.settings.dynamicPersonaMvuMode});
-  const dynamicPersona=createDynamicPersona({settings:()=>core.settings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:()=>core.historyTail(),worldbook:personaWorldbook,client:()=>client('dynamicPersona'),reviewClient:()=>client('personaReview'),dictionary:()=>activeDictionary(),records:()=>state.records,log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>!personaLaunch&&enabled&&!opening&&!state.stale&&!foregroundBusy()&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
+  const dynamicPersona=createDynamicPersona({settings:resolvedPersonaSettings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:()=>core.historyTail(),worldbook:personaWorldbook,client:()=>client('dynamicPersona'),reviewClient:()=>client('personaReview'),dictionary:()=>activeDictionary(),records:()=>state.records,log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>!personaLaunch&&enabled&&!opening&&!state.stale&&!foregroundBusy()&&apiConnectionReady('dynamicPersona')&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
   const resumeAutomaticTasks=()=>{if(host.document?.visibilityState==='hidden')return;queueAutomaticSummary();dynamicPersona.wake();};
   host.document?.addEventListener?.('visibilitychange',resumeAutomaticTasks);host.addEventListener?.('online',resumeAutomaticTasks);
   function activeDictionary(){
@@ -358,9 +358,23 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const result=JSON.stringify(values);return full||result.length<=4000?result:'所选外部状态过长，请缩小字段路径';
   }
   function client(kind = 'summary', patch = {}) {
-    const profile = productApiProfile(core.settings, kind, effectiveKeys(patch), patch);
+    const profile = apiProfile(kind,patch);
     if (!profile.endpoint || !profile.model) throw new Error('请先在 API 中填写地址和模型');
     return new ProviderClient(profile, { fetchImpl, recordRequests: false,modelRole:kind });
+  }
+  function apiProfile(kind,patch={}) {
+    return productApiProfile(core.settings,kind,{...effectiveKeys(patch),dynamicPersonaCredentialPresent:Boolean(keys.dynamicPersona)},patch);
+  }
+  function apiConnectionReady(kind) {
+    const profile=apiProfile(kind);
+    return Boolean(String(profile.endpoint??'').trim()&&String(profile.model??'').trim());
+  }
+  function resolvedPersonaSettings() {
+    const settings=core.settings,profile=apiProfile('dynamicPersona');
+    // The worker's wire model and recovery identity must match the selected
+    // connection. Persisted independent settings and credentials stay intact.
+    return {...settings,dynamicPersonaEndpoint:profile.endpoint,dynamicPersonaModel:profile.model,
+      dynamicPersonaEndpointMode:profile.endpointMode,dynamicPersonaAuthMode:profile.authMode};
   }
   async function clearPrompt() { try { await hostAdapter?.setExtensionPrompt?.(PROMPT_KEY, '', 1, 1, false, 0); } catch { /* capability reported at enable */ } }
   async function stopListeners() { for (const off of bindings.splice(0)) { try { await off(); } catch { /* tracked by host */ } } }
@@ -1397,7 +1411,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     autoPending=true;wakeAutomaticSummary();
   }
   function wakeAutomaticSummary(){
-    if(!autoPending||autoTimer!==null||autoTask||active||opening||disposed||state.stale||automaticPaused||state.summaryHold||foregroundBusy()||!enabled||!core.settings.autoSummaryEnabled||host.document?.visibilityState==='hidden'||!workspace?.isCurrent())return;
+    if(!autoPending||autoTimer!==null||autoTask||active||opening||disposed||state.stale||automaticPaused||state.summaryHold||foregroundBusy()||!enabled||!core.settings.autoSummaryEnabled||!apiConnectionReady('summary')||host.document?.visibilityState==='hidden'||!workspace?.isCurrent())return;
     const token=epoch,version=cancelVersion;
     autoTimer=setTimeout(()=>{
       autoTimer=null;
@@ -1410,7 +1424,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     },Math.max(0,autoRetryAt-Date.now()));
   }
   async function autoSummary({force=false}={}) {
-    if (active || state.stale || foregroundBusy() || (!force&&(automaticPaused||state.summaryHold||!core.settings.autoSummaryEnabled)) || !workspace?.isCurrent()) return;
+    if (active || state.stale || foregroundBusy() || (!force&&(automaticPaused||state.summaryHold||!core.settings.autoSummaryEnabled||!apiConnectionReady('summary'))) || !workspace?.isCurrent()) return;
     if(force&&state.summaryHold){await core.updateMemoryControls({automation:{summaryHold:null}});state.summaryHold=null;}
     const feedbackAtStart = feedbackSequence,op=begin();autoRunning=true;
     try {
@@ -1586,7 +1600,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         return result;
       }
     }
-    if (core.settings.rerankEnabled) {
+    if (core.settings.rerankEnabled&&apiConnectionReady('rerank')) {
       let c, failure;
       try { c = client('rerank'); } catch (error) { failure = error; }
       options.reranker = async ({query,candidates,signal}) => {

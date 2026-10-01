@@ -3,7 +3,7 @@
   "display_name": "拾忆记忆",
   "author": "Shiyi Memory",
   "description": "TT 原生记忆整理、知情与时间参考、自然语言配置助手。",
-  "version": "0.21.86",
+  "version": "0.21.87",
   "homePage": "https://github.com/cszgezi-lab/Shiyi-Memory",
   "auto_update": true,
   "loading_order": 100,
@@ -13,12 +13,14 @@
   "css": "ui/product-view.css",
   "entry": "index.js",
   "style": "ui/product-view.css",
-  "hooks": { "activate": "init" },
+  "hooks": {
+    "activate": "init"
+  },
   "permissions": [],
   "dataPolicy": {
     "chatCreation": false,
-    "automaticInjection": "opt-in",
+    "automaticInjection": "enabled-by-default-configurable",
     "credentials": "device-local-separate-store",
-    "network": "explicit-provider-action-only"
+    "network": "configured-provider-actions-and-automatic-summary"
   }
 }

@@ -7,7 +7,10 @@ export function productApiProfile(settings, kind, keys = {}, patch = {}) {
   if (!API_KINDS.includes(kind)) throw new Error('未知模型用途');
   const s = { ...settings, ...validateProductPatch(patch) };
   if(kind==='knowledge'&&s.knowledgeFollowAssistant)return productApiProfile(s,'assistant',keys);
-  const effectiveKind = ['assistant','supplement'].includes(kind) && s[`${kind}FollowSummary`] ? 'summary' : kind;
+  // A fresh installation can share the main connection. Any independent
+  // persona field or key keeps that profile separate, including partial ones.
+  const personaFollowsSummary = kind==='dynamicPersona'&&!s.dynamicPersonaEndpoint&&!s.dynamicPersonaModel&&!keys.dynamicPersona&&!keys.dynamicPersonaCredentialPresent;
+  const effectiveKind = personaFollowsSummary || ['assistant','supplement'].includes(kind) && s[`${kind}FollowSummary`] ? 'summary' : kind;
   const prefix = effectiveKind === 'summary' ? 'provider' : effectiveKind;
   return { endpoint: s[`${prefix}Endpoint`], model: kind==='supplement'&&s.supplementFollowSummary?(s.supplementModel||s.providerModel):s[`${prefix}Model`],
     endpointMode: s[`${prefix}EndpointMode`], authMode: s[`${prefix}AuthMode`],

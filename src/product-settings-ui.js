@@ -117,11 +117,11 @@ export const API_INFO = Object.freeze({
   personaReview:{prefix:'personaReview',title:'人设辅助精修（可选）',help:'每批最多选择一个重要且需要整理的人物，独立配置快速模型；默认不启用，不改变动态人设主模型。',resource:'/chat/completions'},
   knowledge: {prefix:'knowledge',title:'知识库分析模型',help:'导入世界书或资料后提取人物、别称与检索标签。原文由本机解析并完整保存；向量索引使用单独的向量 API。',resource:'/chat/completions'},
   summary: { prefix:'provider', title:'总结模型', help:'整理你选择的聊天楼层，提取事件、人物、关系与知情者。不会替代主聊天模型。', resource:'/chat/completions' },
-  dynamicPersona: {prefix:'dynamicPersona',title:'动态人设模型',help:'独立后台任务，有自己的开关和楼层周期，不沿用总结 API。可选择你服务商提供的 Flash 模型。',resource:'/chat/completions'},
+  dynamicPersona: {prefix:'dynamicPersona',title:'动态人设模型',help:'有自己的开关和楼层周期。独立地址、模型和 Key 都留空时沿用总结连接；也可单独配置。',resource:'/chat/completions'},
   supplement: { prefix:'supplement', title:'辅助整理模型', help:'分工总结的第二阶段：人物属性、知情、关系与演绎；同时负责合并核对、缺项校对和引用纠错。可选择服务商提供的 Flash 等快速模型。', resource:'/chat/completions' },
   assistant: { prefix:'assistant', title:'配置助手', help:'理解你的要求和配置文件，生成可确认、可应用的设置方案。', resource:'/chat/completions' },
-  embedding: { prefix:'embedding', title:'向量模型', help:'按意思寻找相关记忆。已预填硅基流动推荐配置，可更换服务商。', resource:'/embeddings' },
-  rerank: { prefix:'rerank', title:'重排模型', help:'从候选记忆里挑出更相关的内容，让注入更精简。', resource:'/rerank' },
+  embedding: { prefix:'embedding', title:'向量模型', help:'按意思寻找相关记忆。可点击补齐推荐值，再填写对应服务商的 Key；也可使用其他服务商。', resource:'/embeddings' },
+  rerank: { prefix:'rerank', title:'重排模型', help:'配置后从候选记忆里挑出更相关的内容；未配置时使用本地检索。', resource:'/rerank' },
 });
 export function apiSettingsHTML() {
   const order=['summary','dynamicPersona','assistant','knowledge','embedding','rerank','personaReview','supplement'];
@@ -152,8 +152,9 @@ export function missingRecommendations(settings, kind) {
   const endpointKey = `${kind}Endpoint`, modelKey = `${kind}Model`;
   const endpoint = String(settings[endpointKey] ?? '').trim();
   const model = String(settings[modelKey] ?? '').trim();
-  const recommendedEndpoint = registry[endpointKey].defaultValue;
-  if (!endpoint && !model) return { [endpointKey]: recommendedEndpoint, [modelKey]: registry[modelKey].defaultValue };
-  if (endpoint === recommendedEndpoint && !model) return { [modelKey]: registry[modelKey].defaultValue };
+  const recommendedEndpoint = 'https://api.siliconflow.cn/v1';
+  const recommendedModel=kind==='embedding'?'BAAI/bge-m3':'BAAI/bge-reranker-v2-m3';
+  if (!endpoint && !model) return { [endpointKey]: recommendedEndpoint, [modelKey]: recommendedModel };
+  if (endpoint === recommendedEndpoint && !model) return { [modelKey]: recommendedModel };
   return {};
 }
