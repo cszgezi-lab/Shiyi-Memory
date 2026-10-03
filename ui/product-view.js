@@ -3,7 +3,7 @@ import {dynamicPersonaHTML,mountDynamicPersona} from './product-dynamic-persona.
 import { characterJournalHTML,mountCharacterJournal } from './product-character-journal.js';
 import { frameScheduler, readViewState, reconcileMemoryList } from '../src/product-view-scheduling.js';
 import { memoryListHTML,memoryPage } from './product-management.js';
-import { autoSummaryText,summaryCoverage,autoSummaryPlan,summaryProgress } from '../src/product-auto-summary.js';
+import { autoSummaryText,summaryCoverage,autoSummaryPlan,summaryProgress,hasNewerSavedCoverage } from '../src/product-auto-summary.js';
 import { mountPersonEditor } from './product-profile-editor.js';
 import { knowledgeImportHTML,mountKnowledgeView } from './product-knowledge-view.js';
 import { PRODUCT_SETTING_REGISTRY, PRODUCT_API_SETTING_KEYS } from '../src/product-settings.js';
@@ -119,7 +119,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
       ${kind==='persona'?'<button type="button" data-persona-resume-auto hidden>继续自动</button>':''}
     </div>
     ${kind==='persona'?'<p class="sy-summary-settings sy-help" data-persona-task-status role="status" aria-live="polite"></p>':''}
-    ${kind==='memory'?`<details class="sy-summary-settings" data-summary-memory-batches><summary>记忆批次</summary>${batchManagementHTML()}</details>`:''}
+    ${kind==='memory'?`<details class="sy-summary-settings" data-summary-memory-batches><summary>总结批次 <small data-summary-batch-count></small></summary>${batchManagementHTML()}</details>`:''}
     ${kind==='persona'?`<details class="sy-summary-settings" data-summary-persona-batches><summary>人设批次 <small data-persona-batch-count></small></summary><p class="sy-help">人设按楼层累积。可单独重试当前未完成批，或应用已完成的连续前段。</p><div class="sy-actions"><button type="button" data-persona-resume-batches>继续全部未完成</button><button type="button" data-persona-pause-batches>暂停任务</button><button type="button" data-persona-apply-prefix>应用已完成部分</button><button type="button" data-persona-discard-plan>放弃本次计划</button></div><div class="sy-actions"><button type="button" data-persona-batch-select-page>选中本页</button><button type="button" data-persona-batch-clear>清空选择</button><button type="button" data-persona-batch-details>详情</button></div><div class="sy-actions"><button type="button" data-persona-batch-retry-selected>重试所选</button><button type="button" data-persona-batch-split-selected>拆小所选</button><button type="button" data-persona-batch-delete-selected>删除所选</button></div><p class="sy-help" data-persona-batch-selection role="status"></p><div data-persona-batch-detail hidden></div><div data-persona-batch-rows></div><div class="sy-batch-pagination"><button type="button" data-persona-batch-prev>上一页</button><span data-persona-batch-page></span><button type="button" data-persona-batch-next>下一页</button></div></details>`:''}
     <p class="sy-help" data-summary-legend></p>
   </section>`;}).join('');
@@ -217,10 +217,13 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
      if(coverageLine){coverageLine.hidden=true;coverageLine.textContent='';}
      const nextButton=node.querySelector?.('[data-summary-next-batch]');
      if(nextButton){
-       nextButton.disabled=!next;
+       const pending=row.kind==='memory'?(s.batches??[]).filter(batch=>['queued','running','failed','interrupted'].includes(batch.status)&&!hasNewerSavedCoverage(batch,s.batches??[])):[];
+       nextButton.disabled=row.kind==='memory'?Boolean(s.busy)||!next:!next;
        nextButton.textContent=next?`总结下一批 ${next.startIndex}–${next.endIndex} 楼`:'没有可总结的批次';
        nextButton.dataset.summaryStart=next?String(next.startIndex):'';
        nextButton.dataset.summaryEnd=next?String(next.endIndex):'';
+       const count=node.querySelector?.('[data-summary-batch-count]');
+       if(count)count.textContent=`${(s.batches??[]).filter(batch=>batch.status!=='deleted').length} 批${pending.length?` · ${pending.length} 批未完成`:''}`;
      }
      if(row.kind==='memory'&&s.summaryHold){node.querySelector('[data-summary-state]').textContent='自动接续已暂停';node.querySelector('[data-summary-next]').textContent='已按所选终点撤下后续记录；点击“总结下一批”处理一批，或在自动总结中启用接续。';}
      const pause=node.querySelector?.('[data-summary-pause]');
@@ -294,7 +297,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
      const next=summaryLine+'\n'+personaLine;
      if(updateProgress.textContent!==next)updateProgress.textContent=next;
    }
-   if(s.feedback&&s.feedback.id!==lastFeedbackId){lastFeedbackId=s.feedback.id;feedback(s.feedback.text,s.feedback.level,['success','error'].includes(s.feedback.level));}
+   if(s.feedback&&s.feedback.id!==lastFeedbackId){lastFeedbackId=s.feedback.id;feedback(s.feedback.text,s.feedback.level,['success','error'].includes(s.feedback.level));if(currentPage==='recording'&&s.feedback.kind==='summary'&&['error','warning'].includes(s.feedback.level)&&(s.batches??[]).some(batch=>['queued','running','failed','interrupted'].includes(batch.status))){const batches=$('[data-summary-memory-batches]');if(batches)batches.open=true;}}
    if(panel.dataset.queueNotice!==(s.requestQueueNotice??'')){
      const previous=panel.dataset.queueNotice;panel.dataset.queueNotice=s.requestQueueNotice??'';
      if(s.requestQueueNotice)feedback(s.requestQueueNotice,'info');

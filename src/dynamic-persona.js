@@ -507,14 +507,14 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     if(Number.isFinite(invalidFrom))await rollbackFrom(invalidFrom,bound);
     if(personaManualUnfinished(data.manualPlan)||data.manualPlan?.status==='completed'&&Number.isFinite(invalidFrom)){
       const manual=data.manualPlan;
-      for(let i=0;i<manual.items.length;i++){
-        const b=manual.items[i];if(b.status!=='saved')break;
-        const range=b.endIndex<=lastIndex?await readRange({startIndex:b.startIndex,endIndex:b.endIndex}):null;check(bound);
-        if(!range||b.sourceHash!==sha256(range.messages)){
+      const pendingAt=manual.items.findIndex(b=>b.status!=='saved');
+      const savedPrefix=manual.items.slice(0,pendingAt<0?manual.items.length:pendingAt);
+      const changed=await firstChangedBatch(savedPrefix,bound);check(bound);
+      if(Number.isFinite(changed)){
+          const i=manual.items.findIndex(b=>b.startIndex===changed),b=manual.items[i];
           const version=await bound.read(b.versionId,null);check(bound);
           if(!version?.profiles)throw new Error('手动人设恢复点缺失，旧档案保留；请放弃后重新建立计划');
-          await save({...data,manualPlan:{...manual,status:'paused',message:`#${b.startIndex} 起原文已变，请继续补建重新读取`,workingProfiles:version.profiles,items:manual.items.map((row,n)=>n<i?row:{startIndex:row.startIndex,endIndex:row.endIndex,status:'pending',...(row.kind?{kind:row.kind}:{})})}},bound);break;
-        }
+          await save({...data,manualPlan:{...manual,status:'paused',message:`#${b.startIndex} 起原文已变，请继续补建重新读取`,workingProfiles:version.profiles,items:manual.items.map((row,n)=>n<i?row:{startIndex:row.startIndex,endIndex:row.endIndex,status:'pending',...(row.kind?{kind:row.kind}:{})})}},bound);
       }
     }
     if(rebuildUnedited&&Number.isFinite(invalidFrom)&&data.manualPlan?.mode==='clean')await save({...data,manualPlan:{...data.manualPlan,liveHash:personaRebuildLiveHash(data.profiles)}},bound);

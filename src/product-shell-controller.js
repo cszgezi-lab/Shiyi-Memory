@@ -19,6 +19,7 @@ import {
   productStoreFromSession,
   readProductHostRange,
   readProductHistoryTail,
+  normalizeHostMessage,
   safeProductError,
 } from './product-host-adapters.js';
 import {
@@ -805,10 +806,10 @@ export function createProductShellController({
     };
   }
 
-  async function sourceValidity(records) {
+  async function sourceValidity(records,options) {
     if (!state.session) throw new Error('聊天未打开');
     const session = state.session, token = currentToken();
-    return verifyProductSources(session.handle.history, records, () => { if (!tokenValid(token, session)) throw new Error('聊天已变化'); });
+    return verifyProductSources(session.handle.history, records, () => { if (!tokenValid(token, session)) throw new Error('聊天已变化'); },options);
   }
 
   async function dispose() {
@@ -850,11 +851,12 @@ export function createProductShellController({
       return {...range,messages:cleanMessages(range.messages)};
     },
     get state() { return cloneState(state); },
+    get sourceEndIndex() { return Math.max(state.range?.endIndex??-1,summarySourceGuard?.range?.endIndex??-1); },
     get settings() { return clone(state.settings); },
     get legacyApiSettings() { return clone(legacyApiSettings); },
     get legacySettings() { return clone(legacySettings); },
     useGlobalSettings(patch) { globalApiSettings=validateProductPatch(patch);Object.assign(state.settings,globalApiSettings);transport=null; },
-    async historyTail(){
+    async historyTail({includeMessage=false}={}){
       if(!state.session)throw new Error('请先打开聊天');
       const session=state.session,token=bindingGeneration;
       const check=async()=>{const ref=await adapterInstance.currentRef();if(!bindingValid(token,session)||stableStringify(ref)!==session.refKey)throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
@@ -867,7 +869,7 @@ export function createProductShellController({
       if(!Array.isArray(page?.messages)||!Number.isInteger(page.startIndex)||page.startIndex<0||page.messages.length!==1)throw Object.assign(new Error('当前聊天楼层信息不可用'),{code:'HISTORY_UNAVAILABLE'});
       const end=page.startIndex+page.messages.length-1;
       if(page.totalCount!==undefined&&page.totalCount!==end+1)throw Object.assign(new Error('当前聊天末页不完整'),{code:'HOST_CONTRACT_INVALID'});
-      return end;
+      return includeMessage?{index:end,totalCount:end+1,message:normalizeHostMessage(page.messages[0],end)}:end;
     },
     useGlobalApiSettings(patch) {
       const {api,chat}=splitProductSettings(validateProductPatch(patch));
@@ -889,9 +891,13 @@ export function createProductShellController({
       if(!repository||!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');
       const session=state.session,token=currentToken(),check=()=>{if(!tokenValid(token,session))throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};
       const frozen=await repository.readPrivateTask(session.scope,operationId);check();
-      if(!frozen?.batch)return {frozen:false,revisionChanged:false,hasCachedResponse:false,hasCommittedChildren:false};
       const checkpoint=await repository.getCheckpoint(operationId,session.scope);check();
       const completed=new Set(checkpoint?.completedChildIndexes??[]),revision=await repository.getCommittedRevision(session.scope);check();
+      if(!frozen?.batch){
+        let hasCachedResponse=false;
+        for(const part of checkpoint?.splitPlan??[]){const cached=await repository.readPrivateTask(session.scope,part.operationId);check();if(cached&&!cached.retryModel&&(cached.raw!==undefined||cached.stages||cached.verifiedDraft||cached.verificationReply||cached.enumRepair||cached.referenceRepair||cached.floorRepair))hasCachedResponse=true;}
+        return {frozen:false,revisionChanged:false,hasCachedResponse,hasCommittedChildren:completed.size>0};
+      }
       const revisionChanged=revision!==frozen.batch.expectedRevision+completed.size;
       const plans=frozen.requestPlan?.splitPlan??checkpoint?.splitPlan??[{operationId}];
       let hasCachedResponse=false;

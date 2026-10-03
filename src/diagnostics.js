@@ -34,6 +34,7 @@ export const DIAGNOSTIC_REASONS = Object.freeze({
   export_picker_copy_failed:'已选择位置，但 TT 未确认文件写入完成；目标可能为空或不完整文件，可复制文本',
   history_decode_failed:'宿主聊天历史不是完整JSON，尚未交给模型处理',
   history_tail_failed:'读取当前聊天末页失败，尚不能判断原文是否变化',
+  history_save_pending:'TT 本次回复尚未保存，等待后有限重读；已有结果保留',
   history_before_failed:'读取较早聊天分页失败，未跳过缺失楼层',
   history_retry_wait:'等待聊天原文就绪后重读；这不是模型调用成功',
   persona_waiting:'楼层尚未满足自动人设周期，未调用模型',
