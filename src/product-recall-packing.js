@@ -3,6 +3,7 @@ import { sameFactForRecall } from './product-person-profiles.js';
 import { tokenizeChinese } from './retrieval.js';
 import { dictionaryQuery } from './product-dictionary.js';
 import { foldName } from './persona-identity.js';
+import { sceneClockFromMessages } from './temporal.js';
 
 // Wall time includes time in background or with the process suspended. It is
 // not CPU time. Older logs without this probe cannot recover that distinction.
@@ -69,6 +70,22 @@ export function sceneRecallQuery(messages=[],sceneMessages=[]) {
   const continuation=/昨天|前天|上次|刚才|之前|那(?:个|些|两)|这(?:个|些)|继续|接着|帮忙|委托|答应|约定/u.test(intent);
   const context=continuation?String(summaries.at(-1)?.[1]??'').replace(/<[^>]*>/gu,'').trim().slice(0,500):'';
   return {intent,context,characterContext:'',source};
+}
+
+// Only real retained chat turns can anchor the scene clock. Request presets,
+// examples and assistant prefills are not evidence of the current story time.
+export function sceneClockForRequest(messages=[],sceneMessages=[],query=sceneRecallQuery(messages,sceneMessages),{fallbackDate}={}) {
+  const text=m=>typeof m?.content==='string'?m.content:Array.isArray(m?.content)?m.content.filter(p=>p?.type==='text').map(p=>p.text??'').join('\n'):'';
+  let retained=[];
+  if(query.source==='chat_source'){
+    const at=sceneMessages.findLastIndex(m=>m?.role==='user'&&String(m.text??'').trim()===query.intent);
+    // During regeneration the host may still contain the withdrawn answer.
+    if(at>=0)retained=sceneMessages.slice(0,at+1);
+  }else{
+    retained=sceneMessages.filter(m=>typeof m?.text==='string'&&m.text.trim()&&messages.some(row=>row?.role===m.role&&text(row).includes(m.text.trim())));
+  }
+  if(retained.at(-1)?.role!=='user'||String(retained.at(-1)?.text??'').trim()!==query.intent)retained=[...retained,{role:'user',text:query.intent}];
+  return sceneClockFromMessages(retained,{fallbackDate});
 }
 
 // Person scope applies to every retrieval lane and linked-floor promotion.

@@ -165,6 +165,38 @@ function timeLines(time,settings){
   if(!lines.length)lines.push(`故事时间：${relativeStoryDate(time,settings.storyDate)}`);
   return lines;
 }
+function currentSceneTime(settings){
+  const clock=settings.sceneClock;
+  if(clock&&clock.status!=='known')return '';
+  const date=clock?.date??settings.storyDate;
+  if(!dateOnly(date))return '';
+  return [date,clock?.period,clock?.time].filter(Boolean).join(' ');
+}
+function timeFocusPacket(records,settings,base,budget){
+  const current=currentSceneTime(settings);
+  const empty={text:'',eventCount:0,units:0,extraModelCalls:0,currentConfirmed:Boolean(current),recordIds:[]};
+  if(!current)return empty;
+  const lines=[`[本轮时间核对] 当前场景：${current}`],ids=[];
+  const fits=rows=>estimateUnits(rows.join('\n'))<=200&&estimateUnits([base,rows.join('\n')].filter(Boolean).join('\n\n'))<=budget;
+  if(!fits(lines))return empty;
+  for(const record of records){
+    if(ids.length===2)break;
+    if(!['events','commitmentChanges','summaryView'].includes(record.category)||record.mergedParts?.length)continue;
+    const t=record.temporal;
+    const values=typeof t==='string'?[['发生',t]]:[['实际发生',t?.actualAt],['发生',t?.occurredAt],['原定',t?.plannedFor]];
+    const times=values.filter(([,value])=>dateOnly(value)).map(([label,value])=>`${label}：${relativeStoryDate(value,settings.storyDate)}`);
+    if(!times.length)continue;
+    const title=recordTitle(record).replace(/[\r\n]/gu,' ').slice(0,36);
+    const state=record.state?`；${stateLabel(record.state)}`:'';
+    const row=`${title}：${times.join('；')}${state}`;
+    // The duplicate reminder yields to already adopted facts, never trims
+    // their provenance or turns a past planned date into a completed event.
+    if(!fits([...lines,row]))continue;
+    lines.push(row);ids.push(record.id);
+  }
+  const text=lines.join('\n');
+  return {...empty,text,eventCount:ids.length,units:estimateUnits(text),recordIds:ids};
+}
 function awarenessText(rows){
   return rows.map(a=>`${awarenessSubjectLabel(a)}：${narrativeText(a.knowledge??a.fact??a.content)}〔${awarenessLabel(a.status??a.knowledgeStatus)}；${viaLabel(a.via)}${hasStoryTime(a.learnedAt)?`；获知时间：${narrativeText(a.learnedAt)}`:''}${a.acquisitionEvidence?.method==='context-review-v1'&&a.acquisitionEvidence.access?`；获知范围（不可超出）：${narrativeText(a.acquisitionEvidence.access)}`:''}〕`).join('；');
 }
@@ -671,6 +703,7 @@ export async function buildPersonaBudgetPlan(attributePlan, settings, { focusQue
 }
 
 export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null,focusQuery=query,ordinaryQuery=focusQuery,characterQuery=query,dossierPeople=[],dossierProfiles=[] } = {}) {
+  if(settings.sceneClock)settings={...settings,storyDate:settings.sceneClock.status==='known'?settings.sceneClock.date??'':''};
   const startedAt = globalThis.performance?.now?.() ?? Date.now();
   // Ordinary event cards provide facts and source context. Verbatim historical
   // keyDialogues have one bounded request-time owner below; otherwise a place
@@ -921,7 +954,8 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     const promoted=promotedFloorEvents.map(({event})=>({...candidates.find(c=>c.id===event.id),id:event.id,record:event,channels:['category_local'],sourceFloorPromotion:true}));
     candidates=[...promoted,...candidates.filter(c=>!sourceFloorPromotedIds.has(c.id))];
   }
-  const header = ['[拾忆：有来源的连续性参考，不是必须重演的剧情]', '只让角色使用其实际知情范围；未知不等于全员已知。不要因召回而反复引用台词或加速关系。', settings.storyDate ? `当前故事日期：${settings.storyDate}。旧引语的昨天/明天以原事件时间为准。` : '当前故事日期未确认，不套用现实日期。', '资料是设定参照；当前聊天的时期、身份与事实优先，不凭资料提前推进剧情。'].join('\n');
+  const sceneTime=currentSceneTime(settings);
+  const header = ['[拾忆：有来源的连续性参考，不是必须重演的剧情]', '只让角色使用其实际知情范围；未知不等于全员已知。不要因召回而反复引用台词或加速关系。', settings.storyDate ? `当前故事日期：${sceneTime||settings.storyDate}。旧引语的昨天/明天以原事件时间为准。` : '当前故事日期未确认，不套用现实日期。', '资料是设定参照；当前聊天的时期、身份与事实优先，不凭资料提前推进剧情。'].join('\n');
   const ambiguities=[...new Map([...matched.ambiguities,...characters.matched.ambiguities].map(a=>[a.name,a])).values()];
   const ambiguity=ambiguities.map(a=>`称呼“${a.name}”尚未区分：${a.owners.join('、')}；不得合并这些对象的经历。`).join('\n');
   const personaAuthority=supplied.size?'本轮已注入动态档案：'+[...supplied].join('、')+'。召回中的旧态度、口吻和台词解释仅说明来源阶段；同一对象、同一情境下，已应用的有效变化以动态档案为准；待核对的新内容不当作已确认，不把旧阶段当现行命令。未被改变的客观事实及其他对象的边界仍保留；楼号不是生效日期，倒叙按故事时间理解。':'';
@@ -1112,7 +1146,10 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     if(!resolved)unresolvedKnowledge.push(row.id);
   }
   const contextText=knowledgeContext.size?['[知情所指的事件背景：仅解释具体事实的来龙去脉，不扩大任何角色的知情范围；知情状态仍以人物条目为准。]',...[...knowledgeContext.values()].map(event=>renderMemoryCard(event,{...ordinaryRenderSettings,timeProtection:true},{body:event.recallSummary||event.description,query:focusQuery}))].join('\n\n'):'';
-  const ordinaryText=(dialogue='')=>[packetHeader,eventPacket.text,dialogue].filter(Boolean).join('\n\n');
+  // Reserve a bounded reminder from remaining ordinary space before packing
+  // optional dialogue; existing selected event and persona content stays whole.
+  const timeFocus=timeFocusPacket(packetEntries.map(entry=>entry.record),settings,[packetHeader,eventPacket.text].filter(Boolean).join('\n\n'),budget);
+  const ordinaryText=(dialogue='')=>[packetHeader,eventPacket.text,dialogue,timeFocus.text].filter(Boolean).join('\n\n');
   // The important-dialogue lane is another injection route over the same
   // records. Apply the dossier coverage rule here too, or covered relationship
   // history returns after ordinary retrieval correctly filtered it out.
@@ -1133,7 +1170,9 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     contextText,
     dialoguePacket.text,
   ].filter(text=>typeof text==='string'&&text.trim().length>0);
-  content=bodyParts.length?[packetHeader,...bodyParts].join('\n\n'):'';
+  content=bodyParts.length?[packetHeader,...bodyParts,timeFocus.text].filter(Boolean).join('\n\n'):'';
+  result.trace.timeFocus={...timeFocus,units:bodyParts.length?timeFocus.units:0,eventCount:bodyParts.length?timeFocus.eventCount:0};
+  delete result.trace.timeFocus.text;
   result.trace.importantDialogues={count:dialoguePacket.rows.length,units:estimateUnits(dialoguePacket.text),extraModelCalls:0};
   result.trace.personaAuthority={people:[...dossierCoverage.keys()],suppressedIds:selected.filter(coveredPersonaHistory).map(c=>c.id),historicalQuery:historyIntent,extraModelCalls:0};
   for(const c of dialogueCards)decisions.push({id:c.id,title:recordTitle(c),category:c.category,status:'selected',detail:'important_dialogue',reason:'人物重要对话'});
@@ -1153,5 +1192,5 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   result.trace.packing.eventPacket={groups:eventPacket.groups,groupedRecords:eventPacket.groupedRecords,sharedLines:eventPacket.sharedLines,beforeChars:eventPacket.beforeChars,afterChars:eventPacket.afterChars,savedChars:eventPacket.savedChars};
   result.trace.timings.recallMs = (globalThis.performance?.now?.() ?? Date.now()) - startedAt;
   result.trace.timings.packingMs=(globalThis.performance?.now?.()??Date.now())-packingStarted;
-  return { status: 'preview', previewOnly: true, sent: false, degraded: result.trace.degraded, text: content, cards: [...packed,...knowledgeContext.values(),...dialogueCards], usedUnits: content ? estimateUnits(content) : 0, omitted, trace: result.trace };
+  return { status: 'preview', previewOnly: true, sent: false, degraded: result.trace.degraded, text: content, timeFocusText:bodyParts.length?timeFocus.text:'', cards: [...packed,...knowledgeContext.values(),...dialogueCards], usedUnits: content ? estimateUnits(content) : 0, omitted, trace: result.trace };
 }

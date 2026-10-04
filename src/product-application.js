@@ -36,7 +36,7 @@ import { createCredentialStore, credentialOrigin } from './product-credentials.j
 import { createRuntimeLog, safeLogDetails } from './product-runtime-log.js';
 import { buildDictionary, normalizeTerms, KNOWLEDGE_ANALYSIS_PROMPT, parseKnowledgeAnalysis, updateDictionaryOverride, normalizeTags } from './product-dictionary.js';
 import { fullSearchText } from './product-narrative.js';
-import { sceneRecallQuery, auxiliaryInjectionReason, injectionTiming } from './product-recall-packing.js';
+import { sceneRecallQuery, sceneClockForRequest, auxiliaryInjectionReason, injectionTiming } from './product-recall-packing.js';
 import { sceneClockFromMessages } from './temporal.js';
 import { QUALITY_STORE_KEY,QUALITY_PROMPT,memoryQualityIssues,qualityGroups,qualityStatus,qualityEntryCurrent,qualityReviewedIds,qualityFingerprint,validateQualityReview,validateQualityReviewPartial,projectQualityRecords,finishQualityAttempt } from './product-memory-quality.js';
 import {planQuality,qualityTargets,qualityRows,mergeQualityEntry} from './product-quality-plan.js';
@@ -180,7 +180,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   const modules=createModuleController({host,core,state,load:loadApiSettings,getGlobal:()=>globalWorkspace,getChat:()=>workspace,check:assertCurrent,notify,refresh,changed:()=>recallChanged({vectors:true})});
   const personaWorldbook=createPersonaWorldbook({host,check:assertCurrent,context:()=>({scope:boundScope,epoch}),stageMode:()=>core.settings.dynamicPersonaMvuMode});
-  const dynamicPersona=createDynamicPersona({settings:resolvedPersonaSettings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:settledHistoryTail,worldbook:personaWorldbook,client:()=>client('dynamicPersona'),reviewClient:()=>client('personaReview'),dictionary:()=>activeDictionary(),records:()=>state.records,log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>!retrospectiveOperation&&!personaLaunch&&enabled&&!opening&&!followPending&&!following&&!state.stale&&!foregroundBusy()&&apiConnectionReady('dynamicPersona')&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
+  const dynamicPersona=createDynamicPersona({settings:resolvedPersonaSettings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:settledHistoryTail,historyState:localPersonaHistoryState,worldbook:personaWorldbook,client:()=>client('dynamicPersona'),reviewClient:()=>client('personaReview'),dictionary:()=>activeDictionary(),records:()=>state.records,log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>!retrospectiveOperation&&!personaLaunch&&enabled&&!opening&&!followPending&&!following&&!state.stale&&!foregroundBusy()&&apiConnectionReady('dynamicPersona')&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
   const resumeAutomaticTasks=()=>{if(host.document?.visibilityState==='hidden')return;queueAutomaticSummary();dynamicPersona.wake();};
   host.document?.addEventListener?.('visibilitychange',resumeAutomaticTasks);host.addEventListener?.('online',resumeAutomaticTasks);
   function activeDictionary(){
@@ -505,6 +505,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(tail.totalCount!==chat.length||!raw||tail.message.text!==String(raw.text??raw.mes??raw.content??'')||tail.message.version!==(raw.version??raw.swipeId??raw.swipe_id??0))throw Object.assign(new Error('TT 尚未保存本次回复，稍后重读；已有结果保留'),{code:'HISTORY_UNAVAILABLE',details:{stage:'prepare',reason:'history_save_pending'}});
     return tail.index;
   }
+  function localPersonaHistoryState(){
+    // Eligibility only: actual dispatch still verifies the persisted tail.
+    const context=mvuContext(host);
+    if(!sourceContextComplete||state.stale||!workspace?.isCurrent()||context?.getCurrentChatId?.()!==moduleSourceChatId||!Array.isArray(context.chat))return null;
+    return {lastIndex:context.chat.length-1};
+  }
   function moduleMetadataOnly(){
     if(!state.modules.some(m=>m.mode==='mvu'&&m.enabled&&!m.archived)||!moduleSourceBaseline?.length||state.stale)return false;
     const chat=mvuContext(host)?.chat;
@@ -600,7 +606,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         if(!injectedPayloads.has(payload))try{personaInjection=await dynamicPersona.inject(payload,{enabled,sceneQuery});}catch(error){void reportError(error,{task:'persona',stage:'prepare'});}
         preparation.mark('personaMs');
         if(requestEpoch!==epoch){await personaWorldbook.finalize(payload,[]);return;}
-        await inject(payload,{dossierPeople:personaInjection?.people??[],dossierProfiles:personaInjection?.profiles??[],personaInjection,preparation,recallQuery});
+        await inject(payload,{dossierPeople:personaInjection?.people??[],dossierProfiles:personaInjection?.profiles??[],personaInjection,preparation,recallQuery,sceneMessages:sourceMessages});
         }finally{preparation.finish();injecting--;providerScheduler.setForeground?.(foregroundBusy());if(!foregroundBusy()){wakeChatFollower();queueAutomaticSummary();dynamicPersona.wake();}}
       }));
       try{bindings.push(hostAdapter.subscribe('WORLDINFO_ENTRIES_LOADED',payload=>enabled?personaWorldbook.applyLoaded(payload,dynamicPersona.profiles()).catch(error=>{void reportError(error,{task:'persona',stage:'prepare'});}):undefined));}catch{/* Optional capability must not disable automatic summary. */}
@@ -1620,9 +1626,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const settings=snapshot?.settings??core.settings;
     const cards = snapshot?.cards??[...state.cards, ...await knowledgeCards(query)];
     const lookup=context?`${query}\n最近剧情参照：${context}\n当前询问：${query}`:query;
-    if(!clock)try{clock=sceneClockFromMessages(await core.sceneMessages?.()??[]);}catch(error){op.check();void reportError(error,{task:'recall',stage:'prepare'});clock={date:null,status:'unavailable',source:'scene'};}
+    if(!clock)try{clock=sceneClockFromMessages(await core.sceneMessages?.()??[],{fallbackDate:settings.storyDate});}catch(error){op.check();void reportError(error,{task:'recall',stage:'prepare'});clock={date:null,status:'unavailable',source:'scene'};}
     op.check();
-    const result = await recallMemory(cards, lookup, {...settings,storyDate:clock.date??''}, { ...(online ? await retrievalAdapters(selectRecallCards(cards, settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:snapshot?.dictionary??activeDictionary(),focusQuery:query,ordinaryQuery:context?[query,context].join('\n'):query,characterQuery:[query,characterContext].filter(Boolean).join('\n'),dossierPeople,dossierProfiles });
+    const result = await recallMemory(cards, lookup, {...settings,storyDate:clock.date??'',sceneClock:clock}, { ...(online ? await retrievalAdapters(selectRecallCards(cards, settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:snapshot?.dictionary??activeDictionary(),focusQuery:query,ordinaryQuery:context?[query,context].join('\n'):query,characterQuery:[query,characterContext].filter(Boolean).join('\n'),dossierPeople,dossierProfiles });
     result.sceneClock=clock;
     result.trace.timings.backgroundWaitMs=backgroundWaitMs;
     if(backgroundFallback){result.degraded=true;result.trace.vector={status:'skipped',reason:'background_pending'};}
@@ -1630,7 +1636,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(publish){state.preview = result; notify();}return result;
     } finally { signal?.removeEventListener('abort',abort);recallReaders--;op.finish(); }
   }
-  async function inject(payload,{dossierPeople=[],dossierProfiles=[],personaInjection,preparation=injectionTiming(host.document),recallQuery:sourceQuery}={}) {
+  async function inject(payload,{dossierPeople=[],dossierProfiles=[],personaInjection,preparation=injectionTiming(host.document),recallQuery:sourceQuery,sceneMessages:sourceSceneMessages}={}) {
     if (!payload || !Array.isArray(payload.messages) || injectedPayloads.has(payload)) return;
     const log=injectionLog,started=Date.now(),initialToken=epoch;
     let querySource='unknown';
@@ -1646,8 +1652,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(!committedRecall&&!recallBusy)committedRecall=captureRecallSnapshot();
     const snapshot=committedRecall?{...committedRecall,dictionary:activeDictionary()}:null;
     const messages = payload.messages;
-    let sceneMessages=[];
-    if(!sourceQuery)try{sceneMessages=await core.sceneMessages?.()??[];}catch{/* The assembled request remains the fallback. */}
+    let sceneMessages=sourceSceneMessages??[];
+    if(!sourceQuery&&!sourceSceneMessages)try{sceneMessages=await core.sceneMessages?.()??[];}catch{/* Only the current user turn and manual fallback remain safe. */}
     const recallQuery=sourceQuery??sceneRecallQuery(messages,sceneMessages);
     const {intent:query,context,characterContext}=recallQuery;querySource=recallQuery.source;
     if(!sourceQuery)preparation.mark('sourceMs');
@@ -1656,7 +1662,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       // Retrieval already bounds both optional network stages and retains its
       // local candidates on failure. An outer timeout used to throw that work
       // away, repeat projection/indexing and overwrite the online trace.
-      const result = await preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context,characterContext,snapshot,clock:sceneClockFromMessages(messages),dossierPeople,dossierProfiles,publish:false });
+      const result = await preview(query, { online: core.settings.vectorEnabled || core.settings.rerankEnabled,context,characterContext,snapshot,clock:sceneClockForRequest(messages,sceneMessages,recallQuery,{fallbackDate:(snapshot?.settings??core.settings).storyDate}),dossierPeople,dossierProfiles,publish:false });
       preparation.mark('recallMs');
       assertCurrent(token); if (revision !== recallSafetyRevision || !enabled || !core.settings.injectionEnabled){audit('changed');return;}
       const role = ['system','user'].includes(core.settings.injectionRole) ? core.settings.injectionRole : 'system';
@@ -1665,7 +1671,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       // Explicitly configured authoritative values are part of character
       // context, not something to silently omit when an event budget is small.
       const externalText=external!=='未配置'&&external!=='{}'?`外部权威状态（只读，不改写 MVU；变量不自动赋予角色知情权）：${external}`:'';
-      if(externalText)content+=`${content?'\n':''}${externalText}`;
+      if(externalText){
+        const footer=result.timeFocusText;
+        if(footer&&content.endsWith(footer))content=[content.slice(0,-footer.length).trimEnd(),externalText,footer].filter(Boolean).join('\n\n');
+        else content+=`${content?'\n':''}${externalText}`;
+      }
       result.trace.budget={...result.trace.budget,externalUnits:estimateUnits(externalText)};
       if(!content){audit('empty',{query,result});return;}
       const item = { role, content };

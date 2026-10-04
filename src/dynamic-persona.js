@@ -384,9 +384,9 @@ export function parsePersonaResponse(response,{messages,spans,previous,identity,
   Object.defineProperties(parsed,{failures:{value:failures},body:{value:body}});
   return parsed;
 }
-export function createDynamicPersona({settings,getWorkspace,readRange,historyTail,worldbook,client,reviewClient,dictionary=()=>({entries:[]}),records=()=>({}),notify=()=>{},log=async(_fn,fn)=>fn(),diagnostic=()=>{},canRun=()=>true,now=Date.now}){
+export function createDynamicPersona({settings,getWorkspace,readRange,historyTail,historyState,worldbook,client,reviewClient,dictionary=()=>({entries:[]}),records=()=>({}),notify=()=>{},log=async(_fn,fn)=>fn(),diagnostic=()=>{},canRun=()=>true,now=Date.now}){
   let data=initial(),scopeKey='',currentWorkspace=null,job=null,timer=null,disposed=false,paused=false,ready=false,serial=Promise.resolve(),view={status:'unbound',message:'动态人设尚未启用'},lastIndex=null;
-  let historyAttempts=0,historyRetryAt=0,wakePending=false;
+  let historyAttempts=0,historyRetryAt=0,historyRetryIndex=null,wakePending=false;
   const refinement=createPersonaRefinement({settings,getScope:()=>currentWorkspace,getProfiles:()=>data.profiles,getState:()=>data.refinement,readRange,client:()=>{if(!reviewClient)throw new Error('请在 API 设置中配置人设辅助精修');return reviewClient();},now,manualOnly:true,
     canRun:()=>ready&&!job&&!personaManualUnfinished(data.manualPlan)&&canRun(),notify:status=>{if(Object.hasOwn(status,'error'))view={...view,reviewError:status.error};emit();},
     saveState:(next,bound)=>transact(async()=>{check(bound);if((next.revision??0)!==(data.refinement?.revision??0))throw Object.assign(new Error('精修队列已有新版本'),{code:'SOURCE_INVALIDATED'});await save({...data,refinement:{...next,revision:(next.revision??0)+1}},bound);}),
@@ -445,8 +445,11 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     diagnostic({task:'persona',phase:'stage_resume',level:'info',details:{reason:'persona_recovery_upgraded',modelRequested:false}});
   }
   const historyFailure=value=>value?.code==='HISTORY_UNAVAILABLE'||value?.errorCode==='HISTORY_UNAVAILABLE'||/\(HISTORY_UNAVAILABLE\)|（HISTORY_UNAVAILABLE）/.test(value?.message??'');
+  // This optional hint reads only the host's current in-memory message count.
+  // It may suppress idle work, but never validates a source or permits a send.
+  const localHistoryIndex=()=>{try{const index=historyState?.()?.lastIndex;return Number.isSafeInteger(index)&&index>=-1?index:null;}catch{return null;}};
   function deferHistory(){
-    historyAttempts++;historyRetryAt=now()+([1500,5000,15000][historyAttempts-1]??30000);
+    historyAttempts++;historyRetryAt=now()+([1500,5000,15000][historyAttempts-1]??30000);historyRetryIndex=localHistoryIndex();
     view={...view,status:'waiting',message:historyAttempts<=3?'聊天原文暂未就绪，稍后自动重读；已有档案保留':'原文仍无法读取，等待下一次回复完成或回到前台再试；已有档案保留'};
     if(historyAttempts<=3&&!timer&&!paused&&canRun()){
       timer=setTimeout(()=>{timer=null;wake();},Math.max(100,historyRetryAt-now()));timer.unref?.();
@@ -458,11 +461,33 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
   const publicData=()=>{const {workingProfiles,...manual}=data.manualPlan??{};return {...data,profiles:data.profiles.map(p=>projectCurrentPersona(withDirectives(p),personaTimelineFrame(records()))),manualPlan:data.manualPlan?{...manual,stagedProfileCount:workingProfiles?.length??0}:null};};
   const emit=()=>notify({...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()});
   const plan=()=>autoSummaryPlan(data.batches,{startFloor:data.startFloor,batchSize:settings().dynamicPersonaEvery,keepRecent:settings().dynamicPersonaKeepRecent,lastIndex});
+  function localAutomaticWait({resume=false}={}){
+    const index=localHistoryIndex();if(index===null)return null;
+    if(historyAttempts&&(resume||historyRetryIndex!==null&&historyRetryIndex!==index)){historyAttempts=0;historyRetryAt=0;historyRetryIndex=null;}
+    if(!ready&&!(historyAttempts>3&&historyRetryIndex===index))return null;
+    // Keep the existing bounded history retries and upgraded response recovery.
+    if(historyAttempts>0&&historyAttempts<=3)return null;
+    const recoverable=data.batches.filter(b=>b.status==='failed'&&['MODEL_OUTPUT_TRUNCATED','PERSONA_RESPONSE_INVALID','SUMMARY_RESPONSE_ERROR'].includes(b.errorCode));
+    if(recoverable.length){const policy=recoveryPolicy();if(recoverable.some(b=>b.recoveryPolicy!==policy))return null;}
+    const next=autoSummaryPlan(data.batches,{startFloor:data.startFloor,batchSize:settings().dynamicPersonaEvery,keepRecent:settings().dynamicPersonaKeepRecent,lastIndex:index});
+    const prior=data.batches.find(b=>b.startIndex===next.nextStart&&b.endIndex===next.nextEnd);
+    let status='waiting',message,reason='persona_waiting',phase='waiting',level='info';
+    if(!next.ready)message=`等待 #${next.nextStart}–${next.nextEnd} 满足人设更新条件`;
+    else if(historyAttempts>3&&historyRetryIndex===index){message='原文仍无法读取，等待下一次回复完成或手动继续；已有档案保留';reason='history_retry_exhausted';}
+    else if(prior?.status==='failed'&&(!prior.retryAt&&!historyFailure(prior)||prior.retryAt>now())){
+      message=prior.message;reason='persona_previous_failure';level='warning';
+      if(prior.retryAt){if(!timer){timer=setTimeout(()=>{timer=null;wake();},Math.max(100,prior.retryAt-now()));timer.unref?.();}}
+      else{status='failed';phase='skipped';}
+    }else return null;
+    const changed=lastIndex!==index||view.status!==status||view.message!==message;
+    lastIndex=index;view={...view,status,message};if(changed)emit();
+    return {message,phase,level,diagnostics:{reason,startIndex:next.nextStart,endIndex:next.nextEnd,lastIndex:index,keepRecent:settings().dynamicPersonaKeepRecent,modelRequested:false,...(prior?.retryAt?{retryDelayMs:Math.max(0,prior.retryAt-now())}:{})}};
+  }
   function check(bound=currentWorkspace){if(disposed||bound!==currentWorkspace||!bound?.isCurrent())throw canceled();}
   async function save(next,bound=currentWorkspace){check(bound);await bound.write('dynamic-persona',next);check(bound);data=next;emit();}
   function transact(fn){const work=serial.catch(()=>{}).then(fn);serial=work;return work;}
   function stop({preserveManual=false}={}){paused=true;refinement.interrupt();factualReview.interrupt({preservePending:preserveManual});wakePending=false;clearTimeout(timer);timer=null;job?.abort();if(!preserveManual&&data.manualPlan?.status==='running')data={...data,manualPlan:{...data.manualPlan,status:'paused'}};view={...view,status:'paused',message:'人设任务已暂停，主总结不受影响'};emit();}
-  function clear(){stop({preserveManual:true});ready=false;currentWorkspace=null;data=initial();scopeKey='';lastIndex=null;historyAttempts=0;historyRetryAt=0;view={status:'unbound',message:'打开聊天后读取对应人物档案'};emit();}
+  function clear(){stop({preserveManual:true});ready=false;currentWorkspace=null;data=initial();scopeKey='';lastIndex=null;historyAttempts=0;historyRetryAt=0;historyRetryIndex=null;view={status:'unbound',message:'打开聊天后读取对应人物档案'};emit();}
   // Read up to 200 floors at once and hash each saved batch from that slice.
   // One read per batch pages back from the end of a long chat every time.
   async function firstChangedBatch(batches,bound){
@@ -518,7 +543,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
   async function load(){
     const bound=getWorkspace();if(!bound)return clear();
     if(bound===currentWorkspace&&ready)return;
-    if(bound!==currentWorkspace){historyAttempts=0;historyRetryAt=0;}
+    if(bound!==currentWorkspace){historyAttempts=0;historyRetryAt=0;historyRetryIndex=null;}
     stop({preserveManual:true});ready=false;currentWorkspace=bound;scopeKey=stableStringify(bound.scope);const saved=await bound.read('dynamic-persona',null);check(bound);
     if(saved&&saved.version!==1)throw new Error('人物档案版本无法读取，未覆盖');
     data=saved??initial();
@@ -552,7 +577,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     }
     if(rebuildUnedited&&Number.isFinite(invalidFrom)&&data.manualPlan?.mode==='clean')await save({...data,manualPlan:{...data.manualPlan,liveHash:personaRebuildLiveHash(data.profiles)}},bound);
     await restoreResponseFailures(bound);
-    paused=Boolean(data.paused);ready=true;historyAttempts=0;historyRetryAt=0;view={status:paused?'paused':'ready',message:Number.isFinite(invalidFrom)?`${invalidFrom} 楼起原文校验发现变化，受影响的人设批次已撤下并保留归档；自动更新已暂停，请核对后继续`:paused?'此聊天的人设更新已暂停，已保存人设仍可注入':'已加载当前聊天的动态人设'};emit();
+    paused=Boolean(data.paused);ready=true;historyAttempts=0;historyRetryAt=0;historyRetryIndex=null;view={status:paused?'paused':'ready',message:Number.isFinite(invalidFrom)?`${invalidFrom} 楼起原文校验发现变化，受影响的人设批次已撤下并保留归档；自动更新已暂停，请核对后继续`:paused?'此聊天的人设更新已暂停，已保存人设仍可注入':'已加载当前聊天的动态人设'};emit();
     if(!Number.isFinite(invalidFrom)&&savedBatches.length>quick.length)scheduleVerify(bound);
     wake();
     // Reading the bound world books and reporting which entries belong to which
@@ -642,7 +667,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       if(sha256(source.messages)!==b.sourceHash)throw new Error(`保留范围 #${b.startIndex}–${b.endIndex} 原文已变化，请放弃计划并把重建起点提前至 #${b.startIndex}`);
     }
     await transact(()=>{check(bound);if(data.manualPlan?.id!==expectedPlan)throw new Error('候选计划已变化，请重新选择');if(selected){const pending=personaManualPending(data.manualPlan);if(!pending||pending.startIndex!==selected.startIndex||pending.endIndex!==selected.endIndex)throw new Error('所选批次已变化，请重新选择首个未完成批次');}return save({...data,paused:true,manualPlan:{...data.manualPlan,status:'running',message:'',stopAfter:selected?{startIndex:selected.startIndex,endIndex:selected.endIndex}:null,...(selected?{resumeAutomatic:false}:{}),items:data.manualPlan.items.map(b=>b.status==='failed'?{...b,status:'pending',attempts:0,retryAt:0}:b)}},bound);});paused=true;
-    clearTimeout(timer);timer=null;historyAttempts=0;historyRetryAt=0;
+    clearTimeout(timer);timer=null;historyAttempts=0;historyRetryAt=0;historyRetryIndex=null;
     view={...view,status:'running',message:'手动人设已排队，后台补建完成前继续使用原档案'};emit();wake();return {message:view.message,level:'info'};
   }
   async function resumeManualBatch(options){return resumeManual({planId:options.planId,batch:options});}
@@ -732,18 +757,20 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     const changedManualFailure=data.manualPlan?.status==='failed'&&data.manualPlan.items.some(b=>b.status==='failed'&&['MODEL_OUTPUT_TRUNCATED','PERSONA_RESPONSE_INVALID','SUMMARY_RESPONSE_ERROR'].includes(b.errorCode)&&b.recoveryPolicy!==recoveryPolicy());
     if(disposed||!ready&&view.status!=='waiting'||paused&&!manualRunning&&!changedManualFailure||!settings().dynamicPersonaEnabled||!currentWorkspace?.isCurrent()||!canRun())return;
     if(job){wakePending=true;return;}
+    if(!manualRunning&&!changedManualFailure&&localAutomaticWait({resume}))return;
     if(timer)return;
     timer=setTimeout(()=>{timer=null;if(ready){const bound=currentWorkspace;void transact(()=>restoreResponseFailures(bound)).then(()=>{check(bound);return process();}).catch(()=>{});}else void log('persona',()=>load()).catch(()=>{});},Math.max(100,historyRetryAt-now()));timer.unref?.();
   }
   async function process({force=false,retry=false}={}){
     if(verifying)await verifying;
     if(job)return {message:'人设任务正在运行，无需重复启动',level:'info'};
-    if(retry){clearTimeout(timer);timer=null;historyAttempts=0;historyRetryAt=0;}
+    if(retry){clearTimeout(timer);timer=null;historyAttempts=0;historyRetryAt=0;historyRetryIndex=null;}
     const manualId=data.manualPlan?.status==='running'?data.manualPlan.id:null;
     if(!force&&(paused&&!manualId||!settings().dynamicPersonaEnabled||!canRun()))return;
     if(!manualId&&personaManualUnfinished(data.manualPlan))return {message:'请在手动补建中继续或放弃未完成计划',level:'info'};
     check();
     if(!ready&&retry){await load();check();if(job)return {message:'人设任务正在运行，无需重复启动',level:'info'};}
+    if(!force&&!retry&&!manualId){const waiting=localAutomaticWait();if(waiting)return waiting;}
     refinement.interrupt();
     if(!ready)throw new Error('人物来源尚未验证，请重新加载当前聊天');const bound=currentWorkspace,controller=new AbortController();job=controller;
     view={...view,status:'running',message:'正在检查人设任务与聊天楼层…'};emit();
@@ -953,7 +980,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       // recovery checkpoint must remain intact for disk failure/restart.
       try{guard();await bound.write(cacheKey,{fingerprint,committed:true});guard();}
       catch(error){guard();diagnostic({run,task:'persona',phase:'checkpoint_warning',level:'warning',details:{...errorDiagnostics(error),reason:'storage_write',storageArtifact:'response-cache'}});}
-      historyAttempts=0;historyRetryAt=0;
+      historyAttempts=0;historyRetryAt=0;historyRetryIndex=null;
       const pendingCount=(manualId&&data.manualPlan.status==='completed'?data.profiles:rows).filter(p=>!p.deleted&&(p.composition?.pendingEdits?.length||p.composition?.pendingRevision)).length;
       view={...view,status:manualId&&data.manualPlan.status==='paused'?'paused':'saved',message:manualId?(data.manualPlan.status==='completed'?`手动人设 #${data.manualPlan.startIndex}–${data.manualPlan.endIndex} ${pendingCount?'批次完成，可用内容已保存':'已全部应用'}；${data.paused?'自动更新仍暂停':'自动更新已接续'}${data.manualPlan.handoff?`，接续起点 #${data.startFloor}`:''}`:data.manualPlan.status==='paused'?`所选 ${next.nextStart}–${next.nextEnd} 楼已保存，后续候选仍暂停；可继续或应用已完成部分`:`补建进度已保存 #${next.nextStart}–${next.nextEnd}，全部完成后应用；原档案仍可用`):`人设已更新 #${next.nextStart}–${next.nextEnd}，${rows.length} 个角色阶段${rejectedProfiles.length?`，另有 ${rejectedProfiles.length} 份姓名无法确认，已隔离不影响本批`:''}；主总结进度不变`};
       if(pendingCount)view.message+=`；${pendingCount} 份人物有未应用的待核对改动，详见人物来源与本次修改`;
@@ -1061,7 +1088,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     });await mirrorAfterEdit();
   }
   async function pause(){const bound=currentWorkspace;stop({preserveManual:disposed});if(!disposed&&bound?.isCurrent())await transact(()=>save({...data,paused:true,...(data.manualPlan?.status==='running'?{manualPlan:{...data.manualPlan,status:'paused'}}:{}),...(data.refinement?.manualPlan?.status==='running'?{refinement:{...data.refinement,manualPlan:{...data.refinement.manualPlan,status:'paused'},status:'paused',message:'人设任务已暂停；手动精修需明确继续',revision:(data.refinement.revision??0)+1}}:{})},bound));}
-  async function resume(){check();if(personaManualUnfinished(data.manualPlan)){await transact(()=>save({...data,manualPlan:{...data.manualPlan,resumeAutomatic:true}}));return resumeManual();}await transact(()=>save({...data,paused:false,batches:data.batches.map(b=>b.status==='failed'?{...b,attempts:0,retryAt:now()}:b)}));paused=false;clearTimeout(timer);timer=null;historyAttempts=0;historyRetryAt=0;if(!ready){await load();check();}view={...view,status:'ready',message:'已启用当前聊天的人设后台更新'};emit();wake();}
+  async function resume(){check();if(personaManualUnfinished(data.manualPlan)){await transact(()=>save({...data,manualPlan:{...data.manualPlan,resumeAutomatic:true}}));return resumeManual();}await transact(()=>save({...data,paused:false,batches:data.batches.map(b=>b.status==='failed'?{...b,attempts:0,retryAt:now()}:b)}));paused=false;clearTimeout(timer);timer=null;historyAttempts=0;historyRetryAt=0;historyRetryIndex=null;if(!ready){await load();check();}view={...view,status:'ready',message:'已启用当前聊天的人设后台更新'};emit();wake();}
   async function setStart(floor){check();if(!Number.isSafeInteger(floor)||floor<0)throw new Error('起算楼层必须是非负整数');if(floor===data.startFloor)return;if(job)throw new Error('请先暂停人设任务再更改起算楼层');await transact(()=>save({...data,startFloor:floor}));diagnostic({task:'persona',phase:'auto_start_floor',details:{reason:'persona_start_changed',startIndex:floor,beforeBatches:data.batches.length,afterBatches:data.batches.length,removedBatches:0,modelRequested:false}});lastIndex=await historyTail();emit();wake();}
   async function syncMirror(cardName,bound=currentWorkspace){return transact(async()=>{
     check(bound);try{const name=cardName??(await worldbook.read()).cardName;check(bound);const active=data.profiles.filter(p=>!p.deleted);const mirror=await worldbook.mirror(bound.scope,currentPersonaProfiles(active,settings().dynamicPersonaMvuMode).map(p=>projectCurrentPersona(p,personaTimelineFrame(records()))),name);check(bound);await save({...data,mirror},bound);return mirror;}

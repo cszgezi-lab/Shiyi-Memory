@@ -52,31 +52,93 @@ export function storyDateOf(value){
   return start===end?start:null;
 }
 
-/** Only the live scene text supplies "now", never the maximum recalled date.
- * Multiple dates (flashbacks/plans/quotes) stay ambiguous without an explicit
- * scene marker. Callers keep this derived value inside their chat workspace. */
-export function sceneClock(text=''){
-  const clean=String(text).replace(/<(think|thinking)\b[^>]*>[\s\S]*?<\/\1>/gi,'');
-  const pattern=/\d{4}(?:年|[-/])\d{1,2}(?:月|[-/])\d{1,2}(?:日|号)?(?:[ T]+\d{1,2}[:：]\d{2}(?:\s*[-–—~～至到]\s*\d{1,2}[:：]\d{2})?)?/g;
-  const anchors=[];
-  for(const line of clean.split(/\n/))if(/(?:当前(?:剧情|故事|场景)?(?:时间|日期)|故事(?:时间|日期)|场景(?:时间|日期)|<time\b|\[时间\]|🕒|🕐|🕰)/i.test(line)&&!/(?:回忆|约定|计划|预计)/.test(line))anchors.push(...(line.match(pattern)??[]));
-  const values=anchors.length?anchors:clean.match(pattern)??[];
-  const dates=[...new Set(values.map(storyDateOf).filter(Boolean))];
-  if(dates.length!==1||!anchors.length&&/(?:回忆|倒叙|去年|约定|计划|明天|昨日|昨天)/.test(clean))return {date:null,status:dates.length?'ambiguous':'unknown',source:'scene'};
-  return {date:dates[0],raw:values.at(-1),status:'known',source:'scene'};
+const sceneMarker=/(?:当前(?:剧情|故事|场景)?(?:时间|日期|时段)|(?:故事|场景)(?:时间|日期|时段)|<time\b|\[时间\]|🕒|🕐|🕰)/i;
+const periods='凌晨|清晨|早晨|早上|上午|中午|午后|下午|傍晚|黄昏|晚上|夜晚|深夜';
+const sceneDatePattern=new RegExp(`\\d{4}(?:年|[-/])\\d{1,2}(?:月|[-/])\\d{1,2}(?:日|号)?(?:[ T\\s]*(?:${periods})?[ T\\s]*\\d{1,2}[:：]\\d{2}(?::\\d{2})?(?:\\s*[-–—~～至到]\\s*\\d{1,2}[:：]\\d{2}(?::\\d{2})?)?|[ \\t]*(?:${periods}))?`,'g');
+const clockPattern=/\d{1,2}[:：]\d{2}(?::\d{2})?(?:\s*[-–—~～至到]\s*\d{1,2}[:：]\d{2}(?::\d{2})?)?/;
+const inquiry=/(?:还记得|記不記得|记不记得|是否记得|你记得|您记得|(?:回忆|回顾|記得|记得)[^。\n]*[吗嗎？?]|(?:过去|之前|当时|那天|那次|旧事)[^。\n]*(?:[吗嗎？?]|那件事)|(?:到现在|至今|距今|距离|距離|自从|自從)[^。\n]*(?:多久|多长|多長|多少(?:天|日|周|週|月|年)|几(?:天|日|周|月|年)))/;
+const plans=/(?:预计|預計|计划|計劃|打算|约定|約定|预定|預定|预期|将于|將於)/;
+const nonCurrent=/(?:预计|預計|计划|計劃|打算|约定|約定|预定|預定|预期|将于|將於|曾经|曾經|当时|當時|过去|過去|从前|去年|昨天|昨日|明天|后天|那天|那时|那時|那件事|那次|旧事|舊事|往事|当年|當年|发生过|發生過)/;
+const flashback=/(?:进入|進入|转入|轉入|切入|开始|開始|进行|進行)[^。\n]{0,8}(?:回忆|回憶|倒叙|倒敘|闪回|閃回)|(?:^|[。\n；;])\s*(?:回忆|回憶|倒叙|倒敘|闪回|閃回)|(?:时间|時間)(?:倒转|倒轉|倒流)/;
+const jump=/(?:第二天|次日|翌日|(?:[一二三四五六七八九十百两兩\d]+|数|數|几|幾)(?:个|個)?(?:天|日|周|週|星期|月|年)(?:之)?后|(?:一年|一月|一天)前|时间[跳倒]转|時間[跳倒]轉|(?:过了|過了|跨过|跨過|越过|越過|已过|已過|到了)\s*(?:午夜|零点|零點)|(?:午夜|零点|零點)(?:过后|過後|之后|之後)|(?:^|[,，]\s*)(?:明天|后天)(?:[，,。]|继续|繼續|来到|來到))/;
+const emptyClock=status=>({date:null,status,source:'scene'});
+
+function clockDetails(raw,date){
+  const period=raw.match(new RegExp(periods))?.[0],time=raw.match(clockPattern)?.[0]?.replace(/：/g,':').replace(/\s*/g,'').replace(/\b(\d{1,2}):/g,(_,hour)=>`${hour.padStart(2,'0')}:`);
+  if(time&&!storyTimeRange(`${date} ${time}`))return null;
+  return {raw,...(time?{time}:{}),...(period?{period}:{}),precision:time?( /[-–—~～至到]/.test(time)?'range':time.split(':').length===3?'second':'minute'):period?'period':'day'};
 }
 
-export function sceneClockFromMessages(messages=[]){
+function sceneClockDetails(text=''){
+  // A date spoken about an event is not the scene's clock. Quoted text and
+  // reasoning are excluded before detecting either anchors or time jumps.
+  const clean=String(text).replace(/<(think|thinking)\b[^>]*>[\s\S]*?<\/\1>/gi,'').replace(/```[\s\S]*?```/g,'').replace(/^\s*>.*$/gm,'').replace(/“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|"[^"\n]*"|'[^'\n]*'/g,'');
+  const units=[...clean.matchAll(/[^。！？!?\n；;]+[。！？!?]?/g)];
+  const values=[],invalidations=[];let partial=null,invalidDate=false;
+  for(const unit of units){
+    const body=unit[0],isInquiry=inquiry.test(body),past=!isInquiry?body.match(flashback):null,isPastScene=Boolean(past);
+    const shifts=isInquiry?[]:[...body.matchAll(new RegExp(jump.source,'g'))].filter(match=>{
+      const prefix=body.slice(0,match.index),head=prefix.slice(Math.max(prefix.lastIndexOf(','),prefix.lastIndexOf('，'))+1);
+      return !plans.test(head)&&!/(?:提到|说起|說起|谈到|談到|听说|聽說|记得|記得|想到|想起|考虑|考慮|等待|等到)/.test(head);
+    });
+    const shift=shifts.at(-1);
+    if(isPastScene||shift)invalidations.push(unit.index+Math.max(past?.index??-1,shift?.index??-1));
+    if(isInquiry)continue;
+    const matches=[...body.matchAll(sceneDatePattern)];
+    let priorEnd=0;
+    for(let i=0;i<matches.length;i++){
+      const match=matches[i],head=body.slice(priorEnd,match.index),tail=body.slice(match.index+match[0].length,matches[i+1]?.index??body.length);
+      priorEnd=match.index+match[0].length;
+      // A marker applies only to its own date, not a later plan on that line.
+      const explicit=sceneMarker.test(head)&&!nonCurrent.test(head);
+      if(!explicit&&(nonCurrent.test(head)||nonCurrent.test(tail)||isPastScene))continue;
+      const date=storyDateOf(match[0].match(/^\d{4}(?:年|[-/])\d{1,2}(?:月|[-/])\d{1,2}(?:日|号)?/)?.[0]);
+      const details=date&&clockDetails(match[0],date);
+      if(!details){if(explicit)invalidDate=true;continue;}
+      values.push({date,...details,explicit,index:unit.index+match.index});
+    }
+    if(!matches.length&&sceneMarker.test(body)&&!nonCurrent.test(body)&&!isPastScene&&!shift){
+      const raw=body.slice(body.search(sceneMarker));
+      const detail=clockDetails(raw,'2000-01-01');
+      if(detail&&(detail.time||detail.period))partial=detail;
+      else if(/\d/.test(raw))invalidDate=true;
+    }
+  }
+  const boundary=invalidations.length?Math.max(...invalidations):-1;
+  const later=values.filter(value=>value.index>boundary),anchors=later.filter(value=>value.explicit);
+  const selected=anchors.length?anchors:later,dates=[...new Set(selected.map(value=>value.date))];
+  if(dates.length===1){const {explicit,index,...value}=selected.at(-1);return {clock:{...value,status:'known',source:'scene'},partial};}
+  if(dates.length>1||invalidDate||boundary>=0)return {clock:emptyClock('ambiguous'),partial:null};
+  return {clock:emptyClock('unknown'),partial};
+}
+
+/** Only authentic live-scene text supplies "now", never recalled maximums.
+ * Historical questions/plans are skipped; an undated jump blocks older dates. */
+export function sceneClock(text=''){return sceneClockDetails(text).clock;}
+
+export function sceneClockFromMessages(messages=[],{fallbackDate}={}){
+  let partial=null;
+  const applyPartial=clock=>{
+    if(!partial)return clock;
+    // A clock going backwards does not prove that midnight has passed.
+    if(partial.time&&clock.time&&/^\d{1,2}:\d{2}$/.test(partial.time)&&/^\d{1,2}:\d{2}$/.test(clock.time)){
+      const minute=value=>value.split(':').reduce((h,m)=>h*60+Number(m),0);
+      if(minute(partial.time)<minute(clock.time))return emptyClock('ambiguous');
+    }
+    const {time,period,...base}=clock;
+    return {...base,...partial,raw:`${clock.date} ${[partial.period,partial.time].filter(Boolean).join(' ')}`};
+  };
   for(const message of [...messages].reverse()){
     if(message.role==='system')continue;
     const body=message.text??message.content??'';
     if(typeof body!=='string')continue;
-    const clock=sceneClock(body);
-    if(clock.status!=='unknown')return clock;
-    // An explicit jump without a date invalidates an earlier scene anchor.
-    if(/(?:第二天|次日|翌日|数日后|几天后|一年后|一年[前后]|时间[跳倒]转)/.test(body))return {date:null,status:'ambiguous',source:'scene'};
+    const details=sceneClockDetails(body);
+    if(details.clock.status==='ambiguous')return details.clock;
+    if(details.clock.status==='known')return applyPartial(details.clock);
+    partial??=details.partial;
   }
-  return {date:null,status:'unknown',source:'scene'};
+  const date=typeof fallbackDate==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(fallbackDate)?storyDateOf(fallbackDate):null;
+  return date?applyPartial({date,raw:fallbackDate,status:'known',source:'manual',precision:'day'}):emptyClock('unknown');
 }
 
 export function compareStoryTimes(a,b) {
