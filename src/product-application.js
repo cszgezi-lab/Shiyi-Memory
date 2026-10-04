@@ -72,6 +72,16 @@ const ASSISTANT_TOOLS = [
 export function createProductApplication({ host = globalThis, adapter = null, controller = null, fetchImpl = globalThis.fetch, onChange = () => {}, onInvalidate = null, requestScheduler = null } = {}) {
   fetchImpl = createProductFetch(host, fetchImpl);
   let hostAdapter = adapter;
+  let personaPromptModule = null;
+  async function personaPromptManager() {
+    const exposed=host.promptManager??mvuContext(host)?.promptManager;
+    if(exposed)return exposed;
+    if(typeof host.document?.createElement!=='function')return null;
+    // Read the already-loaded host singleton. Optional capability: an older
+    // host keeps its original card fields when no provenance hook is available.
+    personaPromptModule??=import('/scripts/openai.js').catch(()=>null);
+    return (await personaPromptModule)?.promptManager??null;
+  }
   // Session pause is separate from the persisted feature opt-ins. A fresh
   // session must honor injectionEnabled after passive chat loading, without
   // requiring an extra panel "open" action. Unconfigured APIs do not dispatch
@@ -553,6 +563,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try {
       // Generation end must stay subscribed while chat listeners are rebound.
       // Otherwise a reply finishing during open() leaves foreground latched forever.
+      const cardPromptManager=await personaPromptManager();checkOpen();
+      if(cardPromptManager)bindings.push(personaWorldbook.attachPromptManager(cardPromptManager));
+      try{bindings.push(hostAdapter.subscribe('CHAT_COMPLETION_PROMPT_READY',payload=>{
+        personaWorldbook.applyCardPrompt(payload,enabled&&core.settings.dynamicPersonaEnabled&&!auxiliaryInjectionReason({messages:payload?.chat})?dynamicPersona.profiles():[]);
+      }));}catch{/* Original card remains when the host has no structured prompt event. */}
       bindings.push(hostAdapter.subscribe('CHAT_COMPLETION_SETTINGS_READY', async payload => {
         if(auxiliaryInjectionReason(payload)){
           if(injectedPayloads.has(payload))return;

@@ -188,7 +188,7 @@ export function personaDossierText(profile){
   return blocks.filter(Boolean).join('\n\n');
 }
 const personaSourceMessages=(messages,readingConfig,readings=[])=>messages.map(m=>{if(readingConfig||/<\/?sy_(?:context|private)\b/i.test(m.text??'')){const r=narrativeReading(m,readingConfig);readings.push(r);return {...m,text:r.chunks.map(p=>p.text).join('\n')};}return {...m,text:qualitySourceSegments(m).map(s=>s.text).join('')};});
-export function personaRequest({messages,world,previous,prompt,dictionary,aliases='',stageMode='narrative',records={},readingConfig='',identityProfiles=[],castingOverrides={},materialsThrough=Infinity,inputLimit=12000,arcReferenceVariant='arc-reference'}){
+export function personaRequest({messages,world,previous,prompt,dictionary,aliases='',stageMode='narrative',records={},readingConfig='',identityProfiles=[],castingOverrides={},materialsThrough=Infinity,inputLimit=12000,arcReferenceVariant='arc-reference',requestViewVersion=2}){
   const readings=[];
   const source=personaSourceMessages(messages,readingConfig,readings);
   const text=source.map(m=>m.text).join('\n');
@@ -217,11 +217,9 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
   // emit via personaDossierText — never personaDossierText itself, which
   // re-emits composition.parts and is the documented cause of the
   // 122–257KB request bodies before this change (U210).
-  // The full composition.notes and profile.text live on disk; for the
-  // request body we cap each persona's previous.text to NOTE_TEXT_MAX
-  // bytes so a single verbose dossier cannot dominate the per-batch
-  // budget. Chinese characters take 3 UTF-8 bytes each, so this is also
-  // a character ceiling in practice (~470 CJK chars).
+  // Legacy view 1 is retained only for exact reuse of an already saved model
+  // response. New requests keep all N paragraphs and use the total input
+  // budget; optional memory aids yield before an editable paragraph does.
   const NOTE_TEXT_MAX=1400;
   // NOTE_TEXT_MAX counts UTF-8 bytes; we cannot rely on Node's Buffer in the
   // browser/sandboxed extension host, so compute the byte length directly.
@@ -247,6 +245,11 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
   };
   const noteText=p=>{
     const parts=personaNoteParts(p);
+    // N refs and exact-before are built from these same atomic paragraphs.
+    // Truncating their tail while retaining N1..Nn makes the visible first
+    // paragraph refer to a different saved paragraph and prevents safe edits.
+    // The worker's total input guard handles a genuinely oversized dossier.
+    if(requestViewVersion>=2)return parts.map(q=>q.text).join('\n\n');
     if(parts.length)return truncateNote(parts.map(q=>q.text).join('\n\n'));
     const legacy=String(p?.text??'').trim();
     return legacy?truncateNote(legacy):legacy;
@@ -267,12 +270,34 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
   const evidenceFloors=identity.people.filter(p=>namedFloors.has(p.key)).map(p=>({name:p.name,floors:namedFloors.get(p.key)}));
   const request={messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n${PERSONA_CASTING_RULE}\n${PERSONA_CHANGE_CHECK_RULE}\n姓名用original/previous的正式姓名；简称、昵称、简繁写法不创建另一角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}\n${PERSONA_DEVELOPMENT_RULE}\n${PERSONA_IMPACT_RULE}\noriginal.parts已完整提供底稿；previous.text只提供未重复的当前补充。底稿与补充合读，不因不重复发送就认为属性丢失。narrativeFrame是原文明确的全局时点；新的明确切换优先，不把原卡默认年龄/学段写成当前状态。\n${PERSONA_OUTPUT_CHECK_RULE}\nevidenceFloors仅是明确姓名的来源楼号索引，不是结论保证；仍从source逐字引用核对语义，不需回显。`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),narrativeFrame:frame,characterCandidates:personaCharacterCandidates(source,identity),attention:attentionProfiles.map(p=>({name:p.name,weight:personaAttentionWeight(p.casting),casting:p.casting})),original:originals,materials:weightedPersonaMaterials(personaMaterials(records,identity,mentioned,Math.min(endFloor,materialsThrough)),attentionProfiles),previous:prior,reviewFocus:personaReviewFocus(source,identity),evidenceFloors})}],source,spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
   request.messages[0].content+='\n'+SPEECH_ACT_CHECK;
-  const decorated=applyPersonaArcReferences(request.messages,{variant:arcReferenceVariant,inputLimit});
+  // New metadata must be included in the same input budget as optional arc
+  // references. Legacy saved requests retain their original byte ordering.
+  let decorated=requestViewVersion>=2?{messages:clone(request.messages)}:applyPersonaArcReferences(request.messages,{variant:arcReferenceVariant,inputLimit});
   // Preserve every source/context value, but end with the current evidence
   // instead of the older dossier. References remain bounded by the same budget.
   const {source:currentSource,...context}=JSON.parse(decorated.messages[1].content);
+  if(requestViewVersion>=2){
+    // Repeated entry titles add substantial wire overhead to long baselines.
+    // Only metadata is interned: every B ref, full text and protected quote
+    // attribute remains present. No source selection or storage rewrite.
+    for(const original of context.original){
+      if(!original.parts.length||original.parts.some(p=>typeof p.title!=='string'))continue;
+      const sourceTitles=[];
+      const parts=original.parts.map(({title,...part})=>{
+        let at=sourceTitles.indexOf(title);
+        if(at<0){at=sourceTitles.length;sourceTitles.push(title);}
+        return {...part,t:at+1};
+      });
+      const compact={...original,sourceTitles,parts};
+      if(JSON.stringify(compact).length<JSON.stringify(original).length)Object.assign(original,compact);
+    }
+    if(context.original.some(p=>p.sourceTitles))decorated.messages[0].content+='\nt是同人物sourceTitles的1起算标题索引；B/N和完整text不变。';
+  }
   decorated.messages[1].content=JSON.stringify({...context,source:currentSource});
-  return {...request,messages:decorated.messages,arcReferences:decorated.meta};
+  if(requestViewVersion>=2)decorated=applyPersonaArcReferences(decorated.messages,{variant:arcReferenceVariant,inputLimit});
+  const count=value=>JSON.stringify(value??null).length;
+  const inputSize={personaSystemChars:decorated.messages[0].content.length,personaSourceChars:count(currentSource),personaBaselineChars:count(context.original),personaNotesChars:context.previous.reduce((n,p)=>n+String(p.text??'').length,0),personaDevelopmentChars:context.previous.reduce((n,p)=>n+count(p.development),0),personaMaterialsChars:count(context.materials),personaRequestChars:count(decorated.messages),personaSourceParts:context.original.reduce((n,p)=>n+p.parts.length,0),personaNoteParts:context.previous.reduce((n,p)=>n+p.noteParts.length,0),personaPeople:context.previous.length,personaRequestView:requestViewVersion};
+  return {...request,messages:decorated.messages,arcReferences:decorated.meta,inputSize,requestViewVersion};
 }
 export function parsePersonaResponse(response,{messages,spans,previous,identity,dictionary,aliases='',stageMode='narrative',preserveSources=false,developmentMessages,diagnostic=()=>{},collectFailures=false}){
   const reason=response?.choices?.[0]?.finish_reason;
@@ -783,7 +808,9 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const liveSuppressed=data.profiles.filter(p=>p.deleted&&p.mergedInto);
       const previous=clone(manualId?(clean?data.manualPlan.workingProfiles:[...data.manualPlan.workingProfiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)),...data.profiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)&&isProtectedProfile(p))]):data.profiles);
       const replayContext={inputLimit:config.dynamicPersonaInputUnits,castingOverrides:data.castingOverrides,identityProfiles:clean?data.manualPlan.identityProfiles:personaRebuildIdentities(data.profiles,data.personaIdentities),...(clean?{materialsThrough:data.manualPlan.replaceFrom-1}:{})};
-      const buildPersonaRequest=(economy,messages=range.messages,priorDossier=previous)=>personaRequest({messages,world,previous:priorDossier,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction,...replayContext,...(economy?{arcReferenceVariant:'off',materialsThrough:-1}:{})});
+      let requestViewVersion=2;
+      const legacyWorld={...world,entries:world.entries?.filter(s=>s.sourceKind!=='character_card'),spans:world.spans?.filter(s=>s.sourceKind!=='character_card')};
+      const buildPersonaRequest=(economy,messages=range.messages,priorDossier=previous)=>personaRequest({messages,world:requestViewVersion===1?legacyWorld:world,previous:priorDossier,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction,...replayContext,...(economy?{arcReferenceVariant:'off',materialsThrough:-1}:{}),requestViewVersion});
       let request=buildPersonaRequest(false),inputUnits=estimateUnits(JSON.stringify(request.messages));
       // The input limit guards model attention, not a hard wall. Before failing
       // a paid batch, drop the optional attention aids (memory material rows
@@ -791,15 +818,26 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       // floor range are never truncated; only a still-oversized request fails.
       let economy=false;
       if(inputUnits>config.dynamicPersonaInputUnits){economy=true;request=buildPersonaRequest(true);inputUnits=estimateUnits(JSON.stringify(request.messages));}
+      const requestFingerprint=q=>sha256({recovery:PERSONA_RECOVERY_VERSION,sourceHash,request:q.messages,model:config.dynamicPersonaModel,endpoint:config.dynamicPersonaEndpoint,output:config.dynamicPersonaOutputTokens,previous});
+      const cacheKey=manualId?`persona-result-${manualId}-${key}`:`persona-result-${key}`;
+      personaStep='cached_response';const cached=await bound.read(cacheKey,null);guard();
+      let fingerprint=requestFingerprint(request);
+      // Format-only upgrades must not discard a paid, saved result. Rebuild
+      // the exact old view solely to prove its fingerprint, never relax the
+      // source/previous/model guards or translate a cached model response.
+      if(cached?.fingerprint&&cached.fingerprint!==fingerprint&&(cached.response||cached.recovery?.version===PERSONA_RECOVERY_VERSION&&cached.recovery.failed!==true)){
+        requestViewVersion=1;let legacyEconomy=false,legacy=buildPersonaRequest(false),legacyUnits=estimateUnits(JSON.stringify(legacy.messages));
+        if(legacyUnits>config.dynamicPersonaInputUnits){legacyEconomy=true;legacy=buildPersonaRequest(true);legacyUnits=estimateUnits(JSON.stringify(legacy.messages));}
+        if(cached.fingerprint===requestFingerprint(legacy)){
+          request=legacy;inputUnits=legacyUnits;economy=legacyEconomy;fingerprint=cached.fingerprint;
+        }else requestViewVersion=2;
+      }
       if(request.readingReport)diagnostic({run,task:'persona',phase:'reading',level:request.readingReport.readingFallbacks?'warning':'info',details:request.readingReport});
       view={...view,worldbook:{status:world.status??'ready',cardName:world.cardName,books:[...new Set(world.entries?.map(e=>e.book)??[])],entries:world.entries?.length??0,safeFragments:world.spans?.length??0,audit:request.audit,guide:personaSourceGuide({...world,audit:request.audit})}};emit();
       if(inputUnits>config.dynamicPersonaInputUnits)throw Object.assign(new Error(`人设输入约 ${inputUnits} 单位，超过设置的 ${config.dynamicPersonaInputUnits}；未截断正文或改变楼数`),{code:'INPUT_BUDGET_EXCEEDED',details:{stage:'prepare',reason:'input_budget_exceeded',inputUnits,inputLimit:config.dynamicPersonaInputUnits}});
       if(economy)diagnostic({run,task:'persona',phase:'plan',level:'warning',details:{reason:'persona_input_soft_cap',inputUnits,inputLimit:config.dynamicPersonaInputUnits,droppedAids:['materials','arcReferences'],modelRole:'dynamicPersona'}});
-      diagnostic({run,task:'persona',phase:'plan',details:{startIndex:next.nextStart,endIndex:next.nextEnd,sourceCount:range.messages.length,inputUnits,inputLimit:config.dynamicPersonaInputUnits,maxTokens:config.dynamicPersonaOutputTokens,plannedRequests:1,modelRole:'dynamicPersona'}});
+      diagnostic({run,task:'persona',phase:'plan',details:{startIndex:next.nextStart,endIndex:next.nextEnd,sourceCount:range.messages.length,inputUnits,inputLimit:config.dynamicPersonaInputUnits,maxTokens:config.dynamicPersonaOutputTokens,plannedRequests:1,modelRole:'dynamicPersona',...request.inputSize}});
       showStep('正在生成／检查人物档案（独立 API）');
-      const fingerprint=sha256({recovery:PERSONA_RECOVERY_VERSION,sourceHash,request:request.messages,model:config.dynamicPersonaModel,endpoint:config.dynamicPersonaEndpoint,output:config.dynamicPersonaOutputTokens,previous});
-      const cacheKey=manualId?`persona-result-${manualId}-${key}`:`persona-result-${key}`;
-      personaStep='cached_response';const cached=await bound.read(cacheKey,null);guard();
       const recoveryGuard=()=>{guard();if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k])))throw canceled();};
       const rows=await recoverPersonaBatch({messages:range.messages,previous,fingerprint,cached,inputLimit:config.dynamicPersonaInputUnits,guard:recoveryGuard,
         makeRequest:(messages,previous)=>buildPersonaRequest(economy,messages,previous),
@@ -1094,16 +1132,16 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     const identities=personaIdentity({previous:available,dictionary:dictionary(),aliases:settings().aliases,source:query});
     const selectedPeople=new Set(identities.mentions(query).map(p=>p.key));
     const relevant=available.filter(p=>selectedPeople.has(foldName(p.name)));
-    const finalized=await worldbook.finalize?.(payload,relevant),used=new Set(finalized?.injected??[]);
+    const finalized=await worldbook.finalize?.(payload,relevant),rejected=new Set(finalized?.rejectedSources??[]),used=new Set((finalized?.injected??[]).filter(id=>!rejected.has(id)));
     if(bound!==currentWorkspace||!bound?.isCurrent())return;
-    const extras=available.filter(p=>!used.has(p.id)&&selectedPeople.has(foldName(p.name))&&(settings().dynamicPersonaMvuMode!=='strict'||!p.bindings?.length));
+    const extras=available.filter(p=>!rejected.has(p.id)&&!used.has(p.id)&&selectedPeople.has(foldName(p.name))&&(settings().dynamicPersonaMvuMode!=='strict'||!p.bindings?.length));
     if(extras.length)payload.messages.splice(Math.max(0,payload.messages.length-1),0,{role:'system',content:'【当前路线动态人设补充】根据已发生剧情持续更新的完整人物档案；最新正文与每份档案顶部的“当前剧情变化”优先，不因后文保留了较早关系历程、旧口吻或底色就把人物演回旧阶段；'+(settings().dynamicPersonaMvuMode==='strict'?'遵守当前 MVU 阶段边界':'MVU 数值只作参考，不因数值未变否定剧情发展')+'；不赋予其他角色额外知情。\n'+extras.map(p=>`${p.name}（依据至 #${p.through}）：\n${p.text}`).join('\n\n')});
     const selected=available.filter(p=>used.has(p.id)||extras.includes(p));
     const rules=selected.flatMap(p=>(p.userDirectives??[]).filter(line=>String(line??'').trim()).map(line=>`${p.name}：${String(line).trim()}`));
     if(rules.length)payload.messages.splice(Math.max(0,payload.messages.length-1),0,{role:'system',content:'【强调】只有这几句。和原书、旧态度或后文概括冲突时，只照这里做。\n'+rules.join('\n')});
     if(worldbook.renderText)for(const m of payload.messages)if(m.role==='system'&&typeof m.content==='string'&&m.content.startsWith('【当前路线动态人设补充】'))m.content=worldbook.renderText(m.content);
     const audit=view.worldbook?.audit??[];
-    view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,coverage:{replacedEntries:finalized?.replacedEntries??0,replacedFragments:finalized?.replacedFragments??0,restoredFragments:finalized?.restoredFragments??0,owned:audit.filter(a=>a.status==='owned').length,shared:audit.filter(a=>a.status==='shared').length,unresolved:audit.filter(a=>['unresolved','unsupported'].includes(a.status)).length},profiles:selected.map(p=>({id:p.id,name:p.name,through:p.through,reviewStatus:p.composition?.changeCheck?.status,reviewedThrough:personaReviewedThrough(p),chars:p.text.length,mode:used.has(p.id)?'replacement':'supplement'})),text:selected.map(p=>`${p.name}：\n${p.text}`).join('\n\n')}};emit();
+    view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,coverage:{replacedEntries:finalized?.replacedEntries??0,replacedFragments:finalized?.replacedFragments??0,restoredFragments:finalized?.restoredFragments??0,replacedCardFields:finalized?.replacedCardFields??0,rejectedProfiles:rejected.size,owned:audit.filter(a=>a.status==='owned').length,shared:audit.filter(a=>a.status==='shared').length,unresolved:audit.filter(a=>['unresolved','unsupported'].includes(a.status)).length},profiles:selected.map(p=>({id:p.id,name:p.name,through:p.through,reviewStatus:p.composition?.changeCheck?.status,reviewedThrough:personaReviewedThrough(p),chars:p.text.length,mode:used.has(p.id)?'replacement':'supplement'})),text:selected.map(p=>`${p.name}：\n${p.text}`).join('\n\n')}};emit();
     return clone(view.lastInjection);
   }
   return {load,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,resumeManualBatch,splitManualBatch,previewApplyManualPrefix,applyManualPrefix,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,setCasting,setPartHistorical,bind,merge,undo,add,profiles,inject,syncMirror,previewDeleteBatch,deletePersonaBatch,restorePersonaBatch,draftDirectives,previewReview,startReview,manageReview,applyReview,reviewMarkdown:()=>personaRefinementMarkdown(data.refinement),interruptReview:()=>Promise.all([refinement.interrupt(),factualReview.interrupt()]),interruptFactReview:()=>factualReview.interrupt(),retryReview:()=>refinement.retry(),processReview:()=>refinement.process(),processFactReview:()=>factualReview.process(),export:()=>clone(data),async dispose(){disposed=true;refinement.dispose();await factualReview.dispose();stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};

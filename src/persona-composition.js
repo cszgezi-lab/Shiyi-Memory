@@ -113,7 +113,7 @@ export function personaParts(spans,previous,{includeNotes=true}={}){
     const chunks=s.text.match(/[^\n。！？]+(?:[。！？]+[”’」』]?|\n|$)|\n/gu)??[s.text];
     const pieces=chunks.join('')===s.text?chunks:[s.text];
     return pieces.map((original,i)=>{const key=sha256([s.book,s.uid,s.id,i,original]).slice(0,24),prior=old.get(key);
-      return {...prior,key,ref:`B${++sequence}`,book:s.book,uid:s.uid,title:s.originalName??s.name,spanId:s.id,original,text:prior?.text??original,sourceFloors:prior?.sourceFloors??[]};
+      return {...prior,key,ref:`B${++sequence}`,book:s.book,uid:s.uid,...(s.sourceKind?{sourceKind:s.sourceKind,cardId:s.cardId,field:s.field}:{}),title:s.originalName??s.name,spanId:s.id,original,text:prior?.text??original,sourceFloors:prior?.sourceFloors??[]};
     });
   });
   // Late source discovery must not discard a chat-authored baseline.
