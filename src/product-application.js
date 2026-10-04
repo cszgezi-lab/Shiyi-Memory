@@ -41,6 +41,8 @@ import { sceneClockFromMessages } from './temporal.js';
 import { QUALITY_STORE_KEY,QUALITY_PROMPT,memoryQualityIssues,qualityGroups,qualityStatus,qualityEntryCurrent,qualityReviewedIds,qualityFingerprint,validateQualityReview,validateQualityReviewPartial,projectQualityRecords,finishQualityAttempt } from './product-memory-quality.js';
 import {planQuality,qualityTargets,qualityRows,mergeQualityEntry} from './product-quality-plan.js';
 import {manualQualityFields} from './product-memory-quality.js';
+import {RETROSPECTIVE_STORE_KEY,projectRetrospectiveRecords} from './product-memory-retrospective.js';
+import {runMemoryRetrospective,undoMemoryRetrospective,retrospectiveEntries,retrospectiveState} from './product-memory-retrospective-controller.js';
 import {validateKnowledgeReview} from './product-knowledge-review.js';
 import { createInjectionLog } from './product-injection-log.js';
 import { ASSISTANT_SKILLS, assistantSkillCatalog, readAssistantSkill, assistantSettings,assistantBootstrap } from './product-assistant-skills.js';
@@ -99,6 +101,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let injectionLog=null,vectorExcluded=[],mergeDecisions={},qualitySaved={},preparedQuality=null;
   let tracking=false,trackingStart=null,disposed=false,followPending=false,followTimer=null,following=null,followVersion=0,followNotBefore=0,followReadAttempts=0;
   let qualityJob=null,automaticQualityQueue=[],qualityOperation=null;
+  let retrospectiveSaved=null,retrospectiveOperation=null;
   const chatListeners=[],generationListeners=[],followWaiters=[];
   const recallCache = new RecallIndexCache(), vectorCache = new ProductVectorCache(),knowledgeVectorCache=new ProductVectorCache();
   let knowledgeJob=false,automaticPaused=false,autoInvalidSources=new Set();
@@ -118,6 +121,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   const credentials=createCredentialStore({getStore:globalStore});
   let autoRunning=false,personaLaunch=null,personaCommandVersion=0;
   const state = { credentialSaved:{},credentialErrors:{}, modules:[],moduleSnapshots:[],moduleCurrent:[],mvuPaths:[],mvuStatus:'no_chat', status: 'unbound', message: '开始总结时自动读取 TT 当前聊天', cards: [], documents: [], history: [], batches: [], records: {}, conversations: [], conversationId: 'main', proposal: null, lastApplied: null, draft: '', preview: null, actual: null, progress: '', savedThrough: -1, hidden: [], stale: false };
+  state.memoryRetrospective=retrospectiveState(null);
   const notify = () => { try { if(onInvalidate)onInvalidate();else onChange(publicState()); } catch { /* paint failure must not affect persistence */ } };
   const runtimeLog=createRuntimeLog({getStore:globalStore,onChange:notify});
   const providerScheduler=requestScheduler??createProviderScheduler({requestsPerMinute:()=>core.settings.chatRequestsPerMinute});
@@ -131,7 +135,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   function markForeground(value){
     foreground=value;state.foregroundBusy=value;providerScheduler.setForeground?.(foregroundBusy());notify();
-    if(value){clearTimeout(autoTimer);autoTimer=null;clearTimeout(followTimer);followTimer=null;vectorJob?.cancel();dynamicPersona.interruptReview();
+    if(value){clearTimeout(autoTimer);autoTimer=null;clearTimeout(followTimer);followTimer=null;vectorJob?.cancel();dynamicPersona.interruptReview();retrospectiveOperation?.abort();
       if(following&&opening){followVersion++;followPending=true;active?.abort();}
     }
     else {wakeChatFollower();queueAutomaticSummary();dynamicPersona.wake();wakeVectors();}
@@ -176,7 +180,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   const modules=createModuleController({host,core,state,load:loadApiSettings,getGlobal:()=>globalWorkspace,getChat:()=>workspace,check:assertCurrent,notify,refresh,changed:()=>recallChanged({vectors:true})});
   const personaWorldbook=createPersonaWorldbook({host,check:assertCurrent,context:()=>({scope:boundScope,epoch}),stageMode:()=>core.settings.dynamicPersonaMvuMode});
-  const dynamicPersona=createDynamicPersona({settings:resolvedPersonaSettings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:settledHistoryTail,worldbook:personaWorldbook,client:()=>client('dynamicPersona'),reviewClient:()=>client('personaReview'),dictionary:()=>activeDictionary(),records:()=>state.records,log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>!personaLaunch&&enabled&&!opening&&!followPending&&!following&&!state.stale&&!foregroundBusy()&&apiConnectionReady('dynamicPersona')&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
+  const dynamicPersona=createDynamicPersona({settings:resolvedPersonaSettings,getWorkspace:()=>workspace,readRange:options=>core.readIndependentRange(options),historyTail:settledHistoryTail,worldbook:personaWorldbook,client:()=>client('dynamicPersona'),reviewClient:()=>client('personaReview'),dictionary:()=>activeDictionary(),records:()=>state.records,log:logged,diagnostic:event=>runtimeLog.record(event),canRun:()=>!retrospectiveOperation&&!personaLaunch&&enabled&&!opening&&!followPending&&!following&&!state.stale&&!foregroundBusy()&&apiConnectionReady('dynamicPersona')&&host.document?.visibilityState!=='hidden',notify:value=>{state.dynamicPersona=value;notify();}});
   const resumeAutomaticTasks=()=>{if(host.document?.visibilityState==='hidden')return;queueAutomaticSummary();dynamicPersona.wake();};
   host.document?.addEventListener?.('visibilitychange',resumeAutomaticTasks);host.addEventListener?.('online',resumeAutomaticTasks);
   function activeDictionary(){
@@ -392,6 +396,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function stopListeners() { for (const off of bindings.splice(0)) { try { await off(); } catch { /* tracked by host */ } } }
   function emptyChatView(status='loading'){
     sourcePrefixVerified=false;
+    retrospectiveOperation?.abort();retrospectiveSaved=null;state.memoryRetrospective=retrospectiveState(null);
     dynamicPersona.clear();
     state.summaryHold=null;
     workspace=null;boundScope=null;boundRefKey=null;moduleSourceBaseline=null;modules.clear();
@@ -665,6 +670,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     qualitySaved=await bound.read(QUALITY_STORE_KEY,{});assertCurrent(token);
     state.records=projectQualityRecords(filtered,qualitySaved,view.controls);
     state.quality=qualityStatus(filtered,qualitySaved,view.controls,state.records);
+    retrospectiveSaved=await bound.read(RETROSPECTIVE_STORE_KEY,null);assertCurrent(token);
+    if(!retrospectiveOperation)state.memoryRetrospective=retrospectiveState(retrospectiveSaved,{records:state.records,controls:view.controls,dictionary:activeDictionary()});
+    state.records=projectRetrospectiveRecords(state.records,retrospectiveEntries(retrospectiveSaved),view.controls,{dictionary:activeDictionary()});
     const qualityDeleted=Object.values(qualitySaved).filter(e=>qualityEntryCurrent(e,filtered)).flatMap(e=>(e.additions??[]).map(a=>a.record)).filter(r=>view.controls?.deletedRecords?.[r.id]);
     state.deletedRecords.push(...qualityDeleted);
     mergeDecisions=await bound.read(MERGE_STORE_KEY,{});assertCurrent(token);
@@ -787,6 +795,41 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       }),[]).catch(()=>{});assertCurrent(token);
       state.savedThrough=Math.max(state.savedThrough,...recovered.filter(b=>b.status==='saved').map(b=>b.endIndex).filter(Number.isInteger));
     }
+  }
+  function publishRetrospectiveView(){
+    const base=projectQualityRecords(state.rawRecords,qualitySaved,state.memoryControls);
+    const dictionary=activeDictionary();
+    state.records=projectRetrospectiveRecords(base,retrospectiveEntries(retrospectiveSaved),state.memoryControls,{dictionary});
+    state.memoryRetrospective=retrospectiveState(retrospectiveSaved,{records:base,controls:state.memoryControls,dictionary});
+    state.cards=projectMergedCards(modules.cards(memoryCards(state.records,{hidden:state.hidden,includeAwareness:true})),state.records,mergeDecisions).filter(c=>!state.hidden.includes(c.id));
+    recallChanged({vectors:true});committedRecall=captureRecallSnapshot();notify();
+  }
+  async function reviewMemoryConsistency(){
+    await prepareSummaryChat();
+    if(personaLaunch||state.dynamicPersona?.busy||foregroundBusy())throw new Error('请等当前人物任务或聊天回复完成后再复盘');
+    const op=begin();retrospectiveOperation=op;
+    try{return await logged('memory-retrospective',async()=>{
+      const snapshot=async()=>{
+        const view=await core.readMemoryView();op.check();
+        const saved=await op.workspace.read(QUALITY_STORE_KEY,{});op.check();
+        const accepted=new Set(MEMORY_CATEGORIES.flatMap(k=>(state.rawRecords[k]??[]).map(r=>r.id)));
+        const records=Object.fromEntries(MEMORY_CATEGORIES.map(k=>[k,(view.records?.[k]??[]).filter(r=>accepted.has(r.id))]));
+        const base=projectQualityRecords(records,saved,view.controls),profiles=dynamicPersona.profiles();
+        return {records:base,profiles,controls:view.controls??{},revision:qualityFingerprint(view.records),dictionary:buildDictionary(memoryCards(base),{aliases:core.settings.aliases,automatic:core.settings.dictionaryEnabled,profiles})};
+      };
+      retrospectiveSaved=await runMemoryRetrospective({workspace:op.workspace,snapshot,client:client('summary'),settings:core.settings,readSources:rows=>core.readQualitySources(rows),check:op.check,signal:op.signal,onChange:value=>{if(op.token===epoch){state.memoryRetrospective=value;notify();}},parseResponse:r=>jsonContent(completion(r).content)});
+      op.check();publishRetrospectiveView();return {diagnostics:{expected:state.memoryRetrospective.total,received:state.memoryRetrospective.scanned,accepted:state.memoryRetrospective.repaired,pendingItems:state.memoryRetrospective.unresolved}};
+    });}finally{
+      try{if(op.token===epoch&&op.workspace.isCurrent()){
+        const saved=await op.workspace.read(RETROSPECTIVE_STORE_KEY,null);
+        if(op.token===epoch){retrospectiveSaved=saved;state.memoryRetrospective=retrospectiveState(saved);publishRetrospectiveView();}
+      }}finally{if(retrospectiveOperation===op)retrospectiveOperation=null;op.finish();dynamicPersona.wake();}
+    }
+  }
+  async function undoMemoryConsistency(){
+    await prepareSummaryChat();const op=begin();
+    try{retrospectiveSaved=await undoMemoryRetrospective({workspace:op.workspace,check:op.check});op.check();state.memoryRetrospective=retrospectiveState(retrospectiveSaved);publishRetrospectiveView();}
+    finally{op.finish();}
   }
   async function prepareSummaryChat(){
     if(following)await following;
@@ -1914,7 +1957,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function disable(){enabled=false;automaticPaused=true;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
   // Main-card commands use the same persisted manual worker, never hidden UI
   // drafts. Coalesce clicks and reserve scheduling while a plan is prepared.
+  function assertNoRetrospective(){if(retrospectiveOperation)throw new Error('请先停止复盘，再处理人物批次');}
+  function reservePersonaCommand(task){
+    assertNoRetrospective();if(personaLaunch)throw new Error('人设任务正在准备，请稍后再试');
+    personaLaunch=Promise.resolve().then(task).finally(()=>{personaLaunch=null;dynamicPersona.wake();notify();});return personaLaunch;
+  }
   function queueDynamicPersona({catchUp=false}={}){
+    assertNoRetrospective();
     if(personaLaunch)return personaLaunch;
     const token=epoch,command=personaCommandVersion;
     const guard=()=>{assertCurrent(token);if(command!==personaCommandVersion||!enabled)throw Object.assign(new Error('人设启动已取消'),{code:'CANCELED'});};
@@ -1936,6 +1985,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     return personaLaunch;
   }
   function retryDynamicPersonaManualBatch(options){
+    assertNoRetrospective();
     if(personaLaunch)return personaLaunch;
     const token=epoch,command=personaCommandVersion;
     const guard=()=>{assertCurrent(token);if(command!==personaCommandVersion||!enabled)throw Object.assign(new Error('人设单批重试已取消'),{code:'CANCELED'});};
@@ -1948,6 +1998,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     return personaLaunch;
   }
   async function manageDynamicPersonaCandidate(action,options){
+    assertNoRetrospective();
     assertCurrent();if(personaLaunch)throw new Error('人设任务正在准备，请先暂停后管理批次');
     const token=epoch,command=personaCommandVersion;
     await dynamicPersona.load();assertCurrent(token);
@@ -1964,7 +2015,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     splitDynamicPersonaManualBatch:options=>logged('persona',()=>manageDynamicPersonaCandidate('splitManualBatch',options)),
     previewDynamicPersonaManualPrefix:options=>manageDynamicPersonaCandidate('previewApplyManualPrefix',options),
     applyDynamicPersonaManualPrefix:options=>logged('persona',()=>manageDynamicPersonaCandidate('applyManualPrefix',options)),
-    processDynamicPersona:async()=>logged('persona',async run=>{await dynamicPersona.load();return dynamicPersona.process({force:true,retry:true});}),pauseDynamicPersona:()=>{personaCommandVersion++;return logged('persona',()=>dynamicPersona.pause());},setDynamicPersonaStart:floor=>dynamicPersona.setStart(floor),editDynamicPersona:(id,patch)=>dynamicPersona.edit(id,patch),setPersonCasting:(name,patch)=>dynamicPersona.setCasting(name,patch),draftDynamicPersonaDirectives:(id,instruction)=>logged('persona',()=>dynamicPersona.draftDirectives(id,instruction)),bindDynamicPersona:(name,targetId)=>dynamicPersona.bind(name,targetId),mergeDynamicPersona:(sourceId,targetId)=>dynamicPersona.merge(sourceId,targetId),undoDynamicPersona:id=>dynamicPersona.undo(id),addDynamicPersona:(name,text)=>dynamicPersona.add(name,text),
+    processDynamicPersona:async()=>reservePersonaCommand(()=>logged('persona',async run=>{assertNoRetrospective();await dynamicPersona.load();assertNoRetrospective();return dynamicPersona.process({force:true,retry:true});})),pauseDynamicPersona:()=>{personaCommandVersion++;return logged('persona',()=>dynamicPersona.pause());},setDynamicPersonaStart:floor=>dynamicPersona.setStart(floor),editDynamicPersona:(id,patch)=>dynamicPersona.edit(id,patch),setPersonCasting:(name,patch)=>dynamicPersona.setCasting(name,patch),draftDynamicPersonaDirectives:(id,instruction)=>logged('persona',()=>dynamicPersona.draftDirectives(id,instruction)),bindDynamicPersona:(name,targetId)=>dynamicPersona.bind(name,targetId),mergeDynamicPersona:(sourceId,targetId)=>dynamicPersona.merge(sourceId,targetId),undoDynamicPersona:id=>dynamicPersona.undo(id),addDynamicPersona:(name,text)=>dynamicPersona.add(name,text),
     previewDynamicPersonaManual:async options=>{await dynamicPersona.load();return dynamicPersona.previewManual(options);},
     async previewNarrativeExtraction({text,floor,config=core.settings.narrativeExtraction}={}){
       if(typeof text==='string')return narrativePreview({id:'local-preview',text},config);
@@ -1973,8 +2024,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const source=range.messages.find(m=>m.index===floor);if(!source)throw Error('没有读到这一楼的原文');
       return {...narrativePreview(source,config),floor};
     },
-    startDynamicPersonaManual:async options=>logged('persona',async run=>{if(!enabled)throw new Error('插件已暂停，请先启用插件，再开始手动人设补建');await dynamicPersona.load();await dynamicPersona.createManual(options);await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();}),
-    continueDynamicPersonaManual:async()=>logged('persona',async run=>{if(!enabled)throw new Error('插件已暂停，请先启用插件，再继续手动人设补建');await dynamicPersona.load();if(['paused','running','failed'].includes(dynamicPersona.state.manualPlan?.status))await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();}),
+    startDynamicPersonaManual:async options=>reservePersonaCommand(()=>logged('persona',async run=>{assertNoRetrospective();if(!enabled)throw new Error('插件已暂停，请先启用插件，再开始手动人设补建');await dynamicPersona.load();await dynamicPersona.createManual(options);await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();})), 
+    continueDynamicPersonaManual:async()=>reservePersonaCommand(()=>logged('persona',async run=>{assertNoRetrospective();if(!enabled)throw new Error('插件已暂停，请先启用插件，再继续手动人设补建');await dynamicPersona.load();if(['paused','running','failed'].includes(dynamicPersona.state.manualPlan?.status))await saveSettings({dynamicPersonaEnabled:true});return dynamicPersona.resumeManual();})), 
     pauseDynamicPersonaManual:()=>{personaCommandVersion++;return logged('persona',()=>dynamicPersona.pauseManual());},
     discardDynamicPersonaManual:options=>logged('persona',()=>dynamicPersona.discardManual(options)),
     inspectDynamicPersonaWorldbook:()=>logged('persona',()=>dynamicPersona.inspectWorldbook()),
@@ -1999,6 +2050,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       return {message:`${kind==='memory'?'记忆功能':'动态人设'}已${value?'启用':'关闭'}；已有记录保留`,level:'success'};
     },
     startChatTracking,followCurrentChat,reviewMemory,previewQuality,inspectQualityRecord,saveQualityRecord,undoQuality,readViewState,
+    reviewMemoryConsistency,stopMemoryConsistency:()=>retrospectiveOperation?.abort(),undoMemoryConsistency,
     reportError,loadRuntimeLog:()=>runtimeLog.load(),exportRuntimeLog:async options=>{const snapshot=await runtimeLog.export(options);return {...snapshot,pendingDiagnostics:diagnosticJobs.size};},clearRuntimeLog:async()=>{await flushDiagnostics();return runtimeLog.clear();},
     async exportInjectionLog(options){assertCurrent();return injectionLog.export(options);},
     async clearInjectionLog(){assertCurrent();await injectionLog.clear();},
@@ -2028,7 +2080,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     async dispose(){disposed=true;host.document?.removeEventListener?.('visibilitychange',resumeAutomaticTasks);host.removeEventListener?.('online',resumeAutomaticTasks);await dynamicPersona.dispose();host.document?.removeEventListener?.('visibilitychange',resumeVectorMaintenance);host.removeEventListener?.('online',resumeVectorMaintenance);host.removeEventListener?.('offline',resumeVectorMaintenance);tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of [...chatListeners.splice(0),...generationListeners.splice(0)]){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();stopRequestScheduler();stopTransportDiagnostics();stopErrorBoundary();for(const resolve of followWaiters.splice(0))resolve(publicState());await flushDiagnostics();},
   };
   const exportRawBackup=application.exportBackup;
-  application.exportBackup=async()=>{const token=epoch,backup=await exportRawBackup();assertCurrent(token);return {...backup,dynamicPersona:dynamicPersona.export(),qualityReview:clone(qualitySaved),effectiveRecords:clone(state.records)};};
+  application.exportBackup=async()=>{const token=epoch,backup=await exportRawBackup();assertCurrent(token);return {...backup,dynamicPersona:dynamicPersona.export(),qualityReview:clone(qualitySaved),memoryRetrospective:clone(retrospectiveSaved),effectiveRecords:clone(state.records)};};
   // One failure boundary for all public actions, including manual edits, DIY,
   // import/export and settings; keep their sync/async return contracts intact.
   for(const [name,descriptor]of Object.entries(Object.getOwnPropertyDescriptors(application))){

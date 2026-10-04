@@ -1,6 +1,6 @@
 import { clone, isPlainObject, sha256 } from './utils.js';
 import { ValidationError } from './errors.js';
-import { JOURNAL_RULE } from './character-journal.js';
+import { JOURNAL_RULE, SUMMARY_FACTUAL_RULE } from './character-journal.js';
 import {SUMMARY_KNOWLEDGE_EVIDENCE_RULE,normalizeNarrativePartRef} from './summary-knowledge-evidence.js';
 
 export const COMPACT_SUMMARY_FORMAT = 'shiyi-floor-changes-v1';
@@ -13,6 +13,7 @@ const categories = { knowledge: 'awarenessChanges', facts: 'entityFactChanges', 
 export function moduleSummaryContract(legacy) {
   return {
     format:MODULE_SUMMARY_FORMAT,
+    analysisBoundaryRules:SUMMARY_FACTUAL_RULE,
     sceneTimeRules:legacy.sceneTimeRule,
     dialogueSourceRules:'keyDialogues 中每句可附 sourceRefs:[{sourceId,fragmentId?}]，定位实际说出这句话的原文楼层；跨楼关系的来源不能代替台词自己的来源。不把重复出现的原话认作仅在最后一楼说过。',
     knowledgeEvidenceTransport:SUMMARY_KNOWLEDGE_EVIDENCE_RULE,
@@ -24,11 +25,11 @@ export function moduleSummaryContract(legacy) {
       events:['id','sourceRefs(必填，逐字引用输入来源)','perspective(必填，无法判断用unknown)','title','description','recallSummary(optional)','participants','location','temporal','state','epistemicStatus','importance(optional,1-10)','mergeInto(optional)','keyDialogues(optional,有关键原话时提取)','viewpoints(optional,有观念证据时提取)','entities(optional)','tags(optional)'],
       summaryView:['sourceId','fragmentId(only when present in source)','text','participants','location','temporal','eventRefs(optional)'],
       awarenessChanges:['sourceId or sourceRefs','person(单个人名，不拼接多个人；同一命题多人知情分别记录)','knowledge','status','via','learnedAt','acquisitionEvidence:{holder:[{sourceId,part}],content:[{sourceId,part}],access:"该人物实际获知范围与限制"}(原文无段号的旧接口可用quote逐字原文)','eventRef or recordRef(optional)'],
-      entityFactChanges:['sourceId or sourceRefs','entity','field(普通属性用中文名称，不加custom:前缀；已授权扩展字段例外)','from(optional previous value)','to(含原文的适用范围与限制，不只取有利结论)','validFrom(optional)','validUntil(optional)','epistemicStatus','id(only if referenced by knowledge)'],
+      entityFactChanges:['sourceId or sourceRefs','entity','field(中文属性名；无custom:前缀，已授权扩展除外)','from(optional previous value)','to(本人明示值及限制；未述职业不填，同事≠同职)','validFrom(optional)','validUntil(optional)','epistemicStatus','id(only if referenced by knowledge)'],
       relationshipChanges:['sourceId or sourceRefs','from(关系主体的人名，不是变化前状态)','to(关系对象的人名，不是变化后状态)','description(这两人之间怎样变化，保留旧边界与本次确认)','evidenceKind','epistemicStatus','supersedes(optional)','correctionOf(optional)','id(optional,供本批后项接续)','context(optional)','scope(optional)','keyDialogues(optional,有关键原话时提取)','viewpoints(optional,有观念证据时提取)'],
       personaChanges:['sourceId or sourceRefs','subject','aspect','description','object(required: specific target)','context','scope','expiresAt(null if unknown)','epistemicStatus','keyDialogues(optional)','viewpoints(optional)','innerLife(optional)'],
       commitmentChanges:['sourceId or sourceRefs','participants','content','state','temporal(optional: plannedFor/actualAt)','epistemicStatus','completionOf(optional)','supersedes(optional)','correctionOf(optional)','id(optional,供本批后项接续)','context(optional)','conditions(optional)'],
-      performanceHints:['sourceId or sourceRefs','subject','description','context','keyDialogues(optional)','viewpoints(optional)','innerLife(optional)'],
+      performanceHints:['sourceId or sourceRefs','subject','description(明示常态习惯；不填单次动作)','context','keyDialogues(optional)','viewpoints(optional)','innerLife(optional)'],
       conflicts:['sourceId or sourceRefs','description'],
     },
     sourceRules:'sourceId逐字复制sourceMessages.id；有fragmentId时一起填写。跨楼用sourceRefs:[{sourceId,fragmentId?}]。事件必须有id与sourceRefs，其余id由程序生成（被recordRef引用的属性可自行给局部id）。relevantRecords是已存背景，不是本批原文；禁止把其中的历史sourceRefs抄进新条目，除非该来源同时出现在本次sourceMessages或bridgeMessages。旧约定本批有新进展，只引用本批证实进展的原文，不重写旧批来源。不要输出宿主的coverage、scope、版本、hash或floorIndex；personaChanges.scope是剧情适用范围，仍须填写。summaryView每个输入来源恰好一条，缺楼会失败，bridgeMessages不计新楼。所有九个区块均为顶层数组，无内容用[]，不输出changes或嵌套knowledge数组。',
@@ -45,12 +46,12 @@ export function moduleSummaryContract(legacy) {
     planStateRules:'state表示约定内容是否兑现，不是记录/协商动作是否完成：确认预约=accepted，真正赴约结束=completed。改期时旧时间的约定为canceled并引用原约定及取消楼，新的时间另记accepted；等待答复不算accepted。正文同时含取消旧计划与确认新计划时拆成两条，不能将整个“改期”写成completed。约定的履行、旧物的归还可归并到同一条最新状态，但必须携带最初约定与实际完成的来源。',
     temporalShape:'temporal为对象，例如{occurredAt:"原文明确日期与时刻"}；计划时间用plannedFor，真正发生用actualAt。跨日事件在occurredAt写真实起止日期，逐楼日期只沿当前叙事时间推进，不把“昨日发生的内容”当作本楼叙事日期。原文相邻楼已有年月时补足本楼省略年月；无法确定则null，不凭现实日期补全。',
     archiveRules:'各模块不是只记主角或数值改变：人物第一次出现的职业、身份、明确别称也属于新增档案。按主体逐一归档原文明示的信息，再记录每个属性的变化；别人的事件或知情记录里提到某人，不代替此人的档案。对知识命题逐一保留谁明确不知道、何时才知道，次要往事也一样。回忆里的先后两件事分别保留时间；相对时间尚不能准确换算时沿用“次日”等原文表述，不把原因发生日移给后果。',
-    dialogueShape:{keyDialogues:[{speaker:'原文说话人',to:'对谁说',text:'逐字复制有关系边界或观念意义的原话；GAL格式取〔中文〕内原句',context:'原文语境',meaning:'体现的边界或态度'}],viewpoints:[{holder:'观念持有人',target:'针对谁或什么',content:'具体观念',context:'适用语境',basis:'原文明示或角色自述'}],innerLife:{stage:'自由命名的阶段',text:'明确内心独白或第三人称阶段观察，不凭空改写为第一人称',cause:'变化原因',basis:'observed|character_claim|inferred',status:'current|historical'}},
+    dialogueShape:{keyDialogues:[{speaker:'原文说话人',to:'对谁说',text:'逐字复制有关系边界或观念意义的原话；GAL格式取〔中文〕内原句',context:'原文语境',meaning:'原文明示的边界或态度，不推演隐藏动机'}],viewpoints:[{holder:'观念持有人',target:'针对谁或什么',content:'原文明示的具体观念',context:'适用语境',basis:'原文明示或角色自述'}],innerLife:{stage:'原文支持的简短主题',text:'仅原文明示的内心独白、自述或内心变化；无则省略innerLife',cause:'仅原文明示原因；未知留空',basis:'observed|character_claim',status:'current|historical'}},
     evidenceBoundaryRules:'知情必须有明确获知者的行为依据。甲看白板不等于在场的乙也看了；旁白或规划知道不等于角色知道。听母亲说点心是亲手做的，via=told（母亲转告），不能因看见点心就写witnessed；只目睹事后结果不能扩成目睹全过程。没有获知证据时不生成known，不把未知写成明确不知情。',
     promiseBoundaryRules:'先判定有没有真实的约定内容，再填状态。单方调侃、电影台词、预测明天偶遇不是提出约定；后来碰巧应验也不是履约。此类保留在事件/keyDialogues，不能为填表造承诺。确有约定但状态无法确定时用unknown，交给内容校对；不默认accepted/completed。',
-    journalCoverageRules:'逐一检查personaChanges：有明确态度/内心阶段变化就填写innerLife；只抄进description不算已归档心迹。performanceHints只有内心证据才附心迹，不把普通动作习惯编成独白。既有明确内心独白可逐字保留，阶段观察需第三人称并保留对象与语境。关键原话连同对方真正回应一起提取，拒绝/羞恼不能被单方告白覆盖。',
-    profileRules:'entityFactChanges记录人物身份、限制、爱好、能力与任意DIY动态属性，field不限类别，to可为字符串、数字、布尔、null、数组、对象。同一人物同一含义沿用同一field，不为重复确认另造字段。原文明确且长期有用的小偏好与新能力也要归档，不能因不影响本次大事件而省略；摘要或演绎模块里提过不等于已归入人物属性。动态值保留有依据的变化与各自来源；目标值不是当前值。能力/限制的适用范围和解除条件也是属性的一部分，不能只记有利结论。钥匙位置等物品状态可以归档，但不要把每次事件过程都再变成属性。知情变化放awarenessChanges，不另造“知情者/知情状态”属性。',
-    interpretationRules:'关系写清谁对谁、互动和边界；人设变化需给具体object、context、scope，不能将一时反应全局化。原文明说对特定对象的态度由前到后发生变化时，单独归入personaChanges，不因事件/关系已提过就漏记；无明确目标可保留在事件/关系中，不制造永久人设。performanceHints只记有来源、可用于以后描写的动作习惯、表达方式与应对边界，不再抄一遍演出流程或逐个重复人物事实；确无这类证据才用[]。conflicts保留真正分歧及否认/核实结论，解决时引用发生分歧与核实结果的楼，不把所有提醒都做疑点。'+JOURNAL_RULE,
+    journalCoverageRules:'innerLife是可选的原文明示内心记录，无明确内心描写时省略；personaChanges已有的客观态度变化不必再推演一份心理阶段。performanceHints不把普通动作习惯编成独白。明确内心独白可逐字保留，并保留主体、对象与语境。关键原话连同对方真正回应一起提取，拒绝/羞恼不能被单方告白覆盖。',
+    profileRules:'entityFactChanges只提取原文明确属于该人物的属性，不替每个人凑齐职业/爱好/性格。逐人核对：原文只说同事就保留同事关系，不能复制另一人的职业；一次选择不证明偏好，一次动作不证明习惯。有据的小偏好/新能力仍归档；场景衣着与物品位置注明当时状态。field不限类别，沿用同义旧字段；to可为字符串、数字、布尔、null、数组或对象。保留适用范围、期限和解除条件；目标值不是当前值。原文明说的每次变值保留各自来源，不重复复述未变属性或把事件过程再做属性。知情只放awarenessChanges。',
+    interpretationRules:'关系写清谁对谁、互动和边界；人设变化给object/context/scope，不将一时反应全局化。原文明说对特定对象的前后态度变化才归personaChanges，无明确目标留在事件/关系中，不制造永久人设。performanceHints须有原文明示的常态习惯或表达方式，否则[]；单次动作、当次选择或临时反应只记当次事件，不写成未来演绎指南，也不为了此模块非空另造习惯。conflicts保留真实分歧及否认/核实结果，引用各自实际楼号，不把所有提醒都做疑点。'+JOURNAL_RULE,
     detailRules:'事件和其他记录可加entities:[{name,kind,aliases,indexWords}]与tags:[中文主题]。原文明确的别称应在首次或变化时提供，不每楼复写同一字典；不要把字相似的两个人合成别名。事件用少量具体主题tags支持检索，不能全都只有“事件/人物”一类空泛标签。原文有确立关系边界、价值观或重要约定的关键原话时，在对应事件/关系记录提取keyDialogues:[{speaker,to,text,context,meaning,status}]；status为active（仍重要）或historical（已变更的过去表达）。恋爱对话分别保留说话人和对方实际回应，单方告白不能写成双方确认。明确表达的观念用viewpoints:[{holder,target,content,context,basis}]，只需在最相关条目记录，不逐楼复制。台词必须逐字来自来源中的引号内原话，或单独一行明确“角色名说：原话”的直接发言；跨行引语仍完整保留，转述仅写正文。没有原话/观念证据则省略，不为填满模块编造。',
     consolidationRules:legacy.consolidationRules,
     enums:{...legacy.enums,commitmentState:[...legacy.enums.eventState,'unknown']},
@@ -59,6 +60,7 @@ export function moduleSummaryContract(legacy) {
 
 export const moduleSummaryInstructions=[
   '你是中文剧情记忆整理员。一批只做一次完整提取，按extractionContext.outputContract返回单个合法JSON，无思考过程、无Markdown代码围栏。',
+  SUMMARY_FACTUAL_RULE,
   '这是资料归档，不是只挑大事的梗概。轻量由后续检索决定，提取阶段不要删掉配角信息、小偏好、明确不知情或条件。对每个有明确资料的主体检查新属性与变化；小模块先完成，长篇楼层摘要最后输出。',
   '输出顺序：entityFactChanges、personaChanges、performanceHints、events、awarenessChanges、relationshipChanges、commitmentChanges、conflicts、summaryView。这样长篇摘要不会挤掉人物和知情信息；内容不变的复述只合并佐证来源。',
   '先读完全部原文，在内部核对九模块的证据再输出；不是写一份大概的梗概。不要让长事件挤掉其他有依据的信息，也不要为了每个数组非空而造记录。',

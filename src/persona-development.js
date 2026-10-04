@@ -1,5 +1,6 @@
 import {clone,sha256} from './utils.js';
 import {foldName} from './persona-identity.js';
+import {nameMentionAt} from './name-fold.js';
 import {storyTimeRange} from './temporal.js';
 export const PERSONA_IMPACT_RULE=`动态人设不是第二份事件记忆。客观事件、完整时间线和发生经过由记忆模块保存；写这个人怎样待人、什么性子，不罗列发生了什么，事件只作态度与性格的证据一句带过；这里只写现在仍有效的态度、边界和表达：对谁、在何种场合、现在怎样。当前描述与development按对象写现在状态，重大变化放最前；同一对象、同一情境只保留当前状态，不逐批追加日记。被后续状态代替的旧说法退出当前描述，不改写成留在当前层的否定句。客观事实留在底稿。缘由按对象分量点到即止：重要对象一两句，其余更短；不重复事件经过。
 必须核对本批是否改变了之后的选择、边界、目标、自我认知或对特定对象的表达。变化不限一种方向。不因原有一般性格抹掉有依据的对象变化，也不把一次反应写成永久人格替换。沿用development的主题与对象更新当前after，before/origin只是历史，不是当前指令。保留其他仍有效的对象关系。
@@ -56,7 +57,67 @@ function hasSceneStoryTime(value,floor,messages){
   const interval=ordered.slice(header).map(m=>m.text).join('\n');
   return !/(?:回忆|回想|倒叙|往事|梦境|假如|假设|返回|回到|次日|翌日|第二天|[一二三四五六七八九十\d]+(?:天|周|月|年)后|flashback|next day)/iu.test(interval);
 }
-export function mergePersonaDevelopment(updates,{previous=[],messages,identity,name}){
+// A receipt proves exact source boundaries, not the meaning of a proposed
+// change. The new contract admits only two complete adjacent narration units;
+// speech, partial quotes and inferred addressees retain the old rejection.
+function exactUnindexedTarget(text,target,identity){
+  if(typeof target!=='string')return false;
+  const label=target.trim(),key=foldName(label);
+  if(!/^[\p{L}][\p{L}\p{M}·・ -]{1,31}$/u.test(label)||generic.test(label)||unsafe.test(label))return false;
+  // A missing dossier does not make an explicitly named relationship target
+  // unknown. It also must not reopen an ambiguous or user-disabled alias.
+  if(identity.people.some(p=>[p.name,...p.aliases,...(p.profiles??[]).flatMap(row=>row.aliases??[])].some(value=>foldName(value)===key)))return false;
+  let at=text.indexOf(label);
+  while(at>=0){
+    if(nameMentionAt(text,label,at)&&!/^(?:的)?(?:母亲|父亲|妈妈|爸爸|姐姐|妹妹|哥哥|弟弟|家族)/u.test(text.slice(at+label.length)))return true;
+    at=text.indexOf(label,at+label.length);
+  }
+  return false;
+}
+function safeNarrativePart(quote,{identity,name,target}){
+  if(typeof quote!=='string'||!quote.trim()||unsafe.test(quote)||/[\uFFFC“”「」『』"‘’]/u.test(quote))return false;
+  const text=quote.trim(),actor=identity?.resolve(name),object=identity?.resolve(target);
+  if(!actor||actor.key===object?.key||!object&&!exactUnindexedTarget(text,target,identity)||!/[。！？!?]$/u.test(text)||/[。！？!?][\s\S]*\S/u.test(text.slice(0,-1)))return false;
+  const labels=[actor.name,...actor.aliases].sort((a,b)=>b.length-a.length);
+  const label=labels.find(label=>foldName(text).startsWith(foldName(label)));
+  if(!label||/^(?:的|与|和|跟|及|、)/u.test(text.slice(label.length)))return false;
+  if(/回忆|回想|倒叙|往事|梦境|假如|假设|如果|要是|听说|听见|听到|据说|转述|复述|声称|否认|心想|暗想|内心|没有说|未曾|并未|次日|翌日|第二天|昨天|明天|\d{4}年\d{1,2}月|\d{4}-\d{2}-\d{2}|flashback|next day/iu.test(text))return false;
+  const people=identity.mentions(text);
+  return people.some(p=>p.key===actor.key)&&(!object||people.some(p=>p.key===object.key))&&people.every(p=>p.key===actor.key||p.key===object?.key);
+}
+const joinedEvidence=(evidence,parts)=>[parts.map(p=>p.quote).join(''),parts.map(p=>p.quote).join('\n')].includes(evidence);
+
+/** Revalidate every receipt against this actual batch. Callers handling arcs
+ * with a receipt must provide identity/name; model-authored metadata is never
+ * a substitute for exact sources and explicit actor/target attribution. */
+export function personaDevelopmentEvidenceParts(arc,messages,{identity,name}={}){
+  if(typeof arc?.evidence!=='string'||!arc.evidence.trim())return [];
+  if(arc.evidenceReceipt===undefined){
+    return messages.some(m=>m.index===arc.floor&&typeof m.text==='string'&&m.text.includes(arc.evidence))?[{floor:arc.floor,quote:arc.evidence}]:[];
+  }
+  const receipt=arc.evidenceReceipt,parts=receipt?.parts;
+  if(receipt?.version!==1||!Array.isArray(parts)||parts.length!==2||!parts.every(p=>Number.isSafeInteger(p?.floor)&&typeof p.quote==='string')||parts[0].quote===parts[1].quote||parts[1].floor!==parts[0].floor+1||arc.floor!==parts[1].floor||!parts.some(p=>p.floor===receipt.declaredFloor)||!joinedEvidence(arc.evidence,parts))return [];
+  if(parts.some(p=>messages.filter(m=>m.index===p.floor).length!==1||!messages.some(m=>m.index===p.floor&&m.text===p.quote)||!safeNarrativePart(p.quote,{identity,name,target:arc.target})))return [];
+  return parts.map(p=>({floor:p.floor,quote:p.quote}));
+}
+
+function joinedNarrativeReceipt(row,{messages,identity,name,changeCheck}){
+  if(changeCheck?.status!=='changed'||!Array.isArray(changeCheck.evidence))return null;
+  const matches=[];
+  for(const first of messages){
+    const next=messages.filter(m=>m.index===first.index+1);
+    if(next.length!==1||messages.filter(m=>m.index===first.index).length!==1)continue;
+    const parts=[first,next[0]].map(m=>({floor:m.index,quote:m.text}));
+    const receipt={version:1,declaredFloor:row.floor,parts};
+    const arc={...row,floor:parts[1].floor,evidenceReceipt:receipt};
+    if(!personaDevelopmentEvidenceParts(arc,messages,{identity,name}).length)continue;
+    if(parts.some(p=>changeCheck.evidence.filter(e=>e?.floor===p.floor&&e.quote===p.quote).length!==1))continue;
+    matches.push(receipt);
+  }
+  return matches.length===1?matches[0]:null;
+}
+
+export function mergePersonaDevelopment(updates,{previous=[],messages,identity,name,updateContractVersion=1,changeCheck}){
   const items=new Map(previous.map(item=>[item.key,clone(item)]));let rejected=0;
   if(updates!==undefined&&!Array.isArray(updates))return {items:[...items.values()],rejected:1};
   const canonical=value=>{
@@ -71,7 +132,12 @@ export function mergePersonaDevelopment(updates,{previous=[],messages,identity,n
     const row=candidate&&typeof candidate==='object'?{...candidate,before:candidate.before===undefined?'':candidate.before,cause:candidate.cause===undefined?'':candidate.cause}:candidate;
     const m=messages.find(m=>m.index===row?.floor);
     const fields=['topic','target','before','after','cause','evidence'];
-    if(!m||fields.some(k=>typeof row[k]!=='string'||unsafe.test(row[k]))||!row.topic.trim()||!row.after.trim()||!row.evidence.trim()||!m.text.includes(row.evidence)||!identity.mentions(row.evidence).some(p=>p.key===foldName(name))){rejected++;continue;}
+    if(!m||fields.some(k=>typeof row[k]!=='string'||unsafe.test(row[k]))||!row.topic.trim()||!row.after.trim()||!row.evidence.trim()){rejected++;continue;}
+    // Ignore any metadata supplied by a model. Only this exact source check
+    // can produce a durable multi-floor receipt under the new contract.
+    const receipt=!m.text.includes(row.evidence)&&updateContractVersion>=2?joinedNarrativeReceipt(row,{messages,identity,name,changeCheck}):null;
+    if(!m.text.includes(row.evidence)&&!receipt||!identity.mentions(row.evidence).some(p=>p.key===foldName(name))){rejected++;continue;}
+    if(receipt)row.floor=receipt.parts.at(-1).floor;
     if(row.phase!==undefined&&!['current','historical'].includes(row.phase)||row.scope!==undefined&&(typeof row.scope!=='string'||unsafe.test(row.scope))||row.storyTime!==undefined&&!hasSceneStoryTime(row.storyTime,row.floor,messages)){rejected++;continue;}
     if(row.phase==='historical')continue;
     const topic=row.topic.trim(),target=canonical(row.target),scope=(row.scope??'').trim();
@@ -85,7 +151,7 @@ export function mergePersonaDevelopment(updates,{previous=[],messages,identity,n
     // undated change. Keep its provenance privately for flashback protection;
     // do not attach it to the current floor or send it as current storyTime.
     const timeAnchor=row.storyTime?{storyTime:row.storyTime,floor:row.floor}:old?.timeAnchor??(old?.storyTime?{storyTime:old.storyTime,floor:old.floor}:undefined);
-    const item={key,topic,target,before:row.before.trim(),after:row.after.trim(),cause:row.cause.trim(),floor:row.floor,evidence:row.evidence,origin:old?.origin??row.before.trim(),...(scope?{scope}:{}),...(row.storyTime?{storyTime:row.storyTime}:{}),...(timeAnchor?{timeAnchor}: {})};
+    const item={key,topic,target,before:row.before.trim(),after:row.after.trim(),cause:row.cause.trim(),floor:row.floor,evidence:row.evidence,...(receipt?{evidenceReceipt:clone(receipt)}:{}),origin:old?.origin??row.before.trim(),...(scope?{scope}:{}),...(row.storyTime?{storyTime:row.storyTime}:{}),...(timeAnchor?{timeAnchor}: {})};
     if(old&&old.after===item.after&&old.cause===item.cause)continue;
     proposals.push(item);
   }
@@ -99,7 +165,10 @@ export function mergePersonaDevelopment(updates,{previous=[],messages,identity,n
     // One bounded first-recorded turning point, not an accumulating event log.
     // Preserve unknown causes as unknown; don't replace them with recent trivia.
     const start=old?.originChange??old??item;
-    item.originChange=clone({floor:start.floor,cause:start.cause??'',evidence:start.evidence??''});
+    // A later state's after cannot reconstruct a missing first-state after.
+    // Recover it only from the same stored source revision, or at first entry.
+    const firstAfter=start.after??(old&&old.floor===start.floor&&old.evidence===start.evidence?old.after:undefined);
+    item.originChange=clone({floor:start.floor,cause:start.cause??'',evidence:start.evidence??'',...(updateContractVersion>=2&&typeof firstAfter==='string'&&firstAfter.trim()?{after:firstAfter}:{}),...(updateContractVersion>=2&&start.evidenceReceipt?{evidenceReceipt:clone(start.evidenceReceipt)}:{})});
     items.set(item.key,item);
   }
   return {items:[...items.values()],rejected};
@@ -112,12 +181,14 @@ export function personaDevelopmentText(items){
   // attitudes toward people; the full event trail stays in memory records.
   const groups=new Map();
   for(const e of [...current].sort((a,b)=>b.floor-a.floor)){const key=e.target||'';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(e);}
+  const floors=e=>e.evidenceReceipt?.parts?.length===2&&e.evidenceReceipt.parts.every(p=>Number.isSafeInteger(p?.floor))?`${e.evidenceReceipt.parts[0].floor}–${e.evidenceReceipt.parts[1].floor}`:e.floor;
   const lines=[...groups].map(([target,rows])=>[
     target?`▶ 对${target}`:'▶ 对所有人或自身',
     ...rows.map(e=>[
-      `${e.topic}${e.scope?' · '+e.scope:''}（第${e.floor}楼${e.storyTime?'；'+e.storyTime:''}）：${e.after}`,
+      `${e.topic}${e.scope?' · '+e.scope:''}（第${floors(e)}楼${e.storyTime?'；'+e.storyTime:''}）：${e.after}`,
       e.cause?`转变缘由：${e.cause}`:'',
-      e.originChange?.cause&&e.originChange.floor!==e.floor?`最早的转折（第${e.originChange.floor}楼，已过去）：${e.originChange.cause}`:'',
+      e.originChange?.floor!==e.floor&&e.originChange?.after?`最早的转折（第${floors(e.originChange)}楼，历史经历，不作为当前指令）：${e.origin?e.origin+' → ':''}${e.originChange.after}${e.originChange.cause?'；缘由：'+e.originChange.cause:''}`:
+        e.originChange?.cause&&e.originChange.floor!==e.floor?`最早的转折（第${floors(e.originChange)}楼，已过去）：${e.originChange.cause}`:'',
     ].filter(Boolean).join('\n')),
   ].join('\n'));
   return '【对各人物的当前态度 · 按对象区分；这里只写现在仍有效的态度、边界和表达】\n'+lines.join('\n\n');

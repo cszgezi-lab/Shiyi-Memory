@@ -7,7 +7,8 @@ import { narrativeEvidence,evidenceWithoutPlanning } from './memory-evidence.js'
 
 // These are views of sourced records, not additional memory tables. A diary is
 // an interpretation aid, never proof that a physical diary exists in-world.
-export const JOURNAL_RULE = '人物有明确的内心、自述或态度转折时，在对应personaChanges或performanceHints附innerLife:{stage:"阶段名称，自由填写",text:"角色视角的心迹",cause:"哪件事促成变化",basis:"observed|character_claim|inferred",status:"current|historical"}，沿用该记录主体、对象、时间、eventRef及sourceRefs。只对有新证据的阶段增补，不每批重复整本日记；不得替角色编造秘密、恋爱回应或全知视角。推测用inferred，私密心迹不是他人知情，也不表示角色实际写了日记。关键对话使用keyDialogues，保存双方各自原话及回应语境；台词status为active（仍重要）或historical（已变化），已撤回不能当作当前承诺。不要为这些视图增加模型调用或重复创建事件。';
+export const SUMMARY_FACTUAL_RULE = '主总结客观归档，动态人设另按原设定与正文分析演变。只记明确发生、说出或描写的事实、关系边界、约定、知情和属性；自述标character_claim。逐项核对所属人物：同事、同单位、同住或亲属不证明职业、能力、偏好相同。单次行为、当次选择及反应只记本次事件或当时状态，不能写成通常如此、习惯或喜欢某物；长期属性须有原文明示的稳定特征。不补原文未说的动作方向、归属、前因或隐藏动机，不推演心理阶段/永久性格。personaChanges只记明示的定向态度变化；performanceHints只记明示且仍适用的表达/行为习惯，无依据用[]，不能把本次动作写成将来演绎指南。原文明示的内心可记录，不另编心理分析或为填满模块重复解读。';
+export const JOURNAL_RULE = '仅当原文明示内心独白、自述或内心变化时，可在对应personaChanges或performanceHints附innerLife:{stage:"原文支持的简短主题",text:"忠实记录原文明示内容",cause:"原文明示原因；未知留空",basis:"observed|character_claim",status:"current|historical"}，沿用该记录主体、对象、时间、eventRef及sourceRefs。没有明确内心内容则省略，不要求每个态度变化另写一份心理阶段，不从动作推演原因或替角色编写第一人称日记。私密心迹不是他人知情，也不表示角色实际写了日记。关键对话使用keyDialogues，保存双方各自原话及回应语境；台词status为active（仍重要）或historical（已变化），已撤回不能当作当前承诺。不要为这些视图增加模型调用或重复创建事件。';
 const clean=(v,max=12000)=>typeof v==='string'&&v.trim().length<=max?v.trim():'';
 export function normalizeInnerLife(value,{manual=false}={}){
   if(!value||typeof value!=='object'||Array.isArray(value))return null;

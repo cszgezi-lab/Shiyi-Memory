@@ -31,6 +31,46 @@ import {extractionHTML,mountExtractionView} from './product-extraction-view.js';
 const ID='shiyi-product-shell';
 const NAV=['memory','people','recording','recall','log','modules'];
 
+export function memoryRetrospectiveHTML(){
+ return `<div class="sy-summary-settings" data-memory-retrospective><div class="sy-actions"><button type="button" data-memory-retrospective-start aria-describedby="sy-memory-retrospective-status">复盘记忆</button><button type="button" data-memory-retrospective-stop hidden>停止复盘</button><button type="button" data-memory-retrospective-undo hidden>撤销本次修复</button></div><p class="sy-help" id="sy-memory-retrospective-status" data-memory-retrospective-status role="status" aria-live="polite" aria-atomic="true">检查当前聊天已保存的记忆与人设，沿用主总结模型。</p><details class="sy-summary-settings" data-memory-retrospective-results hidden><summary>复盘结果</summary><div class="sy-help" data-memory-retrospective-result-list></div></details></div>`;
+}
+
+export function mountMemoryRetrospective({panel,app,run}){
+ const $=selector=>panel.querySelector(selector),start=$('[data-memory-retrospective-start]'),stop=$('[data-memory-retrospective-stop]'),undo=$('[data-memory-retrospective-undo]'),status=$('[data-memory-retrospective-status]'),results=$('[data-memory-retrospective-results]'),resultList=$('[data-memory-retrospective-result-list]');
+ let inFlight=false;
+ function paint(s){
+  if(!start)return;
+  const review=s.memoryRetrospective??{},running=review.status==='running',busy=inFlight||Boolean(s.busy)||Boolean(s.dynamicPersona?.busy),resume=['paused','failed'].includes(review.status);
+  start.disabled=running||busy||!s.chatReady;
+  start.textContent=running?'正在复盘…':resume?'继续复盘':'复盘记忆';
+  start.setAttribute('aria-busy',String(running||inFlight));
+  stop.hidden=!running;stop.disabled=!running;
+  undo.hidden=!review.canUndo;undo.disabled=running||busy||!s.chatReady;
+  const count=value=>Math.max(0,Number.isFinite(Number(value))?Math.floor(Number(value)):0);
+  const progress=Number(review.total)>0?`已检查 ${count(review.scanned)}/${count(review.total)} 条 · 已修复 ${count(review.repaired)} 条${count(review.unresolved)?` · 待确认 ${count(review.unresolved)} 条`:''}`:'';
+  const message=review.message||({running:'正在检查已保存的记录。',paused:'复盘已停止，可继续未完成部分。',failed:'复盘未完成，可再次点击继续。',completed:'本次复盘完成。'}[review.status])||(s.chatReady?'检查当前聊天已保存的记忆与人设，沿用主总结模型。':'打开聊天后可复盘已保存的记录。');
+  const text=[message,progress].filter(Boolean).join(' ');if(status.textContent!==text)status.textContent=text;
+  const issues=(review.issues??[]).filter(issue=>issue.kind!=='coexist'),repairs=review.repairs??[];
+  if(results){results.hidden=!issues.length&&!repairs.length;if(results.open){
+   const cards=new Map((s.cards??[]).map(card=>[card.id,card])),personas=new Map((s.dynamicPersona?.profiles??[]).map(profile=>[`persona:${profile.id??profile.name}`,profile.name]));
+   const title=(id,fallback)=>fallback||(!id?'':cards.has(id)?recordTitle(cards.get(id)):personas.has(id)?`${personas.get(id)}的人设`:id);
+   const pair=(ids,titles=[])=>ids.map((id,i)=>title(id,titles[i])).filter(Boolean).join(' → ');
+   const html=[...issues.map(issue=>`<p><b>待确认</b> ${esc(issue.description??issue.reason??'需要核对记录')}<br>${esc(pair(issue.referenceIds??issue.recordIds??[],issue.titles))}</p>`),...repairs.map(repair=>`<p><b>已转为历史</b> ${esc(pair([repair.oldId,repair.newId],[repair.oldTitle,repair.newTitle]))}<br>${esc(repair.reason??'')}</p>`)].join('');
+   if(resultList.innerHTML!==html)resultList.innerHTML=html;
+  }}
+ }
+ async function invoke(method,name,control){
+  if(inFlight||control.disabled)return;
+  inFlight=true;paint(readViewState(app));
+  try{await run(()=>app[method](),{name,button:control});}finally{inFlight=false;paint(readViewState(app));}
+ }
+ start?.addEventListener('click',()=>void invoke('reviewMemoryConsistency','memory-retrospective',start));
+ undo?.addEventListener('click',()=>void invoke('undoMemoryConsistency','memory-retrospective-undo',undo));
+ stop?.addEventListener('click',()=>void run(()=>typeof app.stopMemoryConsistency==='function'?app.stopMemoryConsistency():app.stop(),{name:'stop',button:stop}));
+ results?.addEventListener('toggle',()=>{if(results.open)paint(readViewState(app));});
+ return {paint};
+}
+
 export function initProductShell({documentRef=globalThis.document,host=globalThis,application=null,controller=null,controllerOptions={}}={}){
  if(!documentRef||documentRef.getElementById?.(ID))return null;
  const panel=documentRef.createElement('section');panel.id=ID;panel.className='sy-root';
@@ -46,7 +86,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  <div class="sy-recent" data-recent-changes><h4>最近修改</h4><div data-recent-list><p class="sy-help">还没有记录。</p></div></div>
  <div class="sy-memory-tools">${qualityPanelHTML()}${memoryEditorHTML()}${customModulesHTML()}</div>
  </section>
- <div data-summary-overview hidden><div class="sy-feature-switches" aria-label="启用功能"><button type="button" data-feature="memory" aria-pressed="false" aria-describedby="sy-memory-feature-status">记忆功能</button><span id="sy-memory-feature-status" data-feature-status="memory" class="sy-sr-only">未启用</span><button type="button" data-feature="persona" aria-pressed="false" aria-describedby="sy-persona-feature-status">动态人设</button><span id="sy-persona-feature-status" data-feature-status="persona" class="sy-sr-only">未启用</span></div><div class="sy-top"><h3>聊天总结</h3><span class="sy-help">进度按已保存的自动设置计算</span><button type="button" data-action="auto-inspect">检查进度</button></div><div data-summary-modules>${summaryModulesHTML()}</div><details class="sy-summary-settings sy-tag-settings" data-tag-settings><summary>标签设置</summary>${extractionHTML({embedded:true})}</details></div>
+ <div data-summary-overview hidden><div class="sy-feature-switches" aria-label="启用功能"><button type="button" data-feature="memory" aria-pressed="false" aria-describedby="sy-memory-feature-status">记忆功能</button><span id="sy-memory-feature-status" data-feature-status="memory" class="sy-sr-only">未启用</span><button type="button" data-feature="persona" aria-pressed="false" aria-describedby="sy-persona-feature-status">动态人设</button><span id="sy-persona-feature-status" data-feature-status="persona" class="sy-sr-only">未启用</span></div><div class="sy-top"><h3>聊天总结</h3><span class="sy-help">进度按已保存的自动设置计算</span><button type="button" data-action="auto-inspect">检查进度</button></div><div data-summary-modules>${summaryModulesHTML()}</div>${memoryRetrospectiveHTML()}<details class="sy-summary-settings sy-tag-settings" data-tag-settings><summary>标签设置</summary>${extractionHTML({embedded:true})}</details></div>
  <div class="sy-record-tabs" hidden><button type="button" data-record-tab="compose" class="active">手动总结</button><button type="button" data-record-tab="automatic">自动总结</button><button type="button" data-record-tab="presets">主总结设置</button><button type="button" data-record-tab="dynamic-persona">人设更新设置</button></div>
  <section data-view="recording" hidden><div data-record-panel="compose"><div class="sy-card"><h4>手动总结</h4>${field('总结范围','<select data-range-mode><option value="recent">最近 N 楼</option><option value="range">指定起止楼层</option></select>')}<div data-range-fields="recent">${field('最近多少楼','<input type="number" min="1" max="100000" value="8" data-count>')}<p class="sy-help">最后一楼为 20、填 10，即整理 11–20。</p></div><div data-range-fields="range" hidden><div class="sy-grid">${field('从哪一楼','<input type="number" min="0" data-start placeholder="与聊天楼号相同" disabled>')}${field('到哪一楼','<input type="number" min="0" data-end placeholder="包含结束楼" disabled>')}</div></div>${field('每多少楼记录一次','<input type="number" min="1" max="200" value="5" data-batch-size>')}<p class="sy-help" data-summary-selection role="status"></p>${field('本次想记得更细的内容','<textarea rows="3" data-focus placeholder="留空时沿用长期记录偏好"></textarea>')}<div class="sy-actions">${button('focus-summary','开始总结',true)}${button('stop','停止')}</div></div>${settingsSection('recording')}${button('save-settings','保存总结设置',true)}</div><div data-record-panel="automatic" hidden>${settingsSection('automatic')}</div><div data-record-panel="presets" hidden>${summaryPresetsHTML()}</div></section>
  <section data-view="current" hidden><h3>本轮记忆</h3><p class="sy-help">本地预览不发送模型请求。向量与重排仅在启用且实际使用时调用。</p>${field('当前剧情查询','<textarea rows="3" data-query></textarea>')}${button('preview','预览本地召回',true)}${button('preview-online','按已启用接口试召回')}<div data-preview></div><h3>最近一次请求准备</h3><div data-actual><p class="sy-empty">尚未向宿主请求加入记忆。</p></div></section>
@@ -65,7 +105,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  <section data-view="settings" hidden><h3>设置与备份</h3>${button('recommended-memory','应用推荐记忆参数')}<p class="sy-help">5 楼一批、总结回复上限 8192，字典/标签/分类候选开启。保留你的 API、记录偏好与自动运行开关。</p><p class="sy-help">插件设置、资料库和助手对话为全局；故事记忆按聊天隔离。</p><details class="sy-card" data-recovery><summary>回收站与归档</summary><h4>记忆批次</h4><div data-batch-recycle-list></div><h4>单条记忆</h4><div data-recycle></div><h4>人物批次</h4><p class="sy-help" data-persona-recovery-status></p><button type="button" data-persona-recovery-restore>恢复上次撤下的人物批次</button></details><details class="sy-card" open><summary>数据与备份</summary><div class="sy-actions">${button('export-config','导出纯配置')}${button('export-global','导出全局资料与助手备份')}${button('export-backup','导出当前聊天备份')}${button('export-backup-recent','导出当前聊天备份（仅最近 100 条助手对话）')}${button('restore-hidden','恢复不再召回的记录')}${button('undo','撤销上次助手配置')}</div><p class="sy-help">纯配置不含记忆、附件、历史或 Key；完整备份包含当前聊天私人内容，请自行保管。"最近 100 条"只裁剪助手对话，记忆、设置与记录保持完整。</p></details></section><p data-progress class="sy-help"></p></div></div>`;
  const logBadSelector=(s,e)=>{(globalThis.__SHIYI_BAD_SELECTORS??=[]).push({selector:String(s).slice(0,200),message:String(e.message).slice(0,120),at:new Date().toISOString()});if(globalThis.__SHIYI_BAD_SELECTORS.length>20)globalThis.__SHIYI_BAD_SELECTORS.length=20;console.error('[拾忆] 非法选择器:',s,e.message);};
  const $=s=>{try{return panel.querySelector?.(s);}catch(e){logBadSelector(s,e);return null;}},$$=s=>{let r;try{r=[...(panel.querySelectorAll?.(s)??[])];}catch(e){logBadSelector(s,e);return [];}return r;};let app=application,snapshot=null,currentPage='memory';
- const modelRequests=new Map(),dirtyApi=new Set();let autoStartDirty=false,autoScope=null,personEditor=null,knowledgeView=null;let runtimeLogPage='';let management=null,customManagement=null,logView=null,dictionaryView=null,recallView=null,mergeView=null;let presetView=null,journalView=null;let floating=null,lastFeedbackId=null,noticeText='打开聊天后自动加载对应记忆和总结批次。',noticeLevel='info';
+ const modelRequests=new Map(),dirtyApi=new Set();let autoStartDirty=false,autoScope=null,personEditor=null,knowledgeView=null;let runtimeLogPage='';let management=null,customManagement=null,logView=null,dictionaryView=null,recallView=null,mergeView=null;let presetView=null,journalView=null,memoryRetrospectiveView=null;let floating=null,lastFeedbackId=null,noticeText='打开聊天后自动加载对应记忆和总结批次。',noticeLevel='info';
  function feedback(text,level='info',toast=false){noticeText=text;noticeLevel=level;floating?.setNotice(text,level);if(toast)host.toastr?.[['success','error','warning','info'].includes(level)?level:'info']?.(text,'拾忆',{escapeHtml:true});}
  function resetModels(kind){const pending=modelRequests.get(kind);pending?.abort();modelRequests.delete(kind);if(pending)feedback('模型列表请求已取消，请按当前配置重新拉取。');const list=$(`[data-model-list="${kind}"]`);if(list){list.innerHTML='<option value="">先拉取模型列表，也可以在下方直接输入</option>';list.disabled=true;}const b=$(`[data-action="models-${kind}"]`);if(b){b.disabled=false;b.textContent='拉取模型列表';}if($(`[data-model-status="${kind}"]`))$(`[data-model-status="${kind}"]`).textContent='';floating?.setBusy(Boolean(app?.state.busy)||modelRequests.size>0);}
  function resetAllModels(){for(const kind of Object.keys(API_INFO))resetModels(kind);}
@@ -323,6 +363,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
     }
     if(recording||currentPage==='dynamic-persona'){
      paintSummaryModules(s);
+     memoryRetrospectiveView?.paint(s);
      for(const kind of ['memory','persona']){const control=$(`[data-feature="${kind}"]`),enabled=kind==='memory'?Boolean(s.settings.autoSummaryEnabled||s.settings.injectionEnabled):Boolean(s.settings.dynamicPersonaEnabled);control.setAttribute('aria-pressed',String(enabled));const status=kind==='memory'?`自动总结${s.settings.autoSummaryEnabled?'开':'关'} · 注入${s.settings.injectionEnabled?'开':'关'}`:!s.settings.dynamicPersonaEnabled?'未启用':s.dynamicPersona?.paused?'更新已暂停 · 档案启用':'自动更新 · 档案启用';control.title=status;$(`[data-feature-status="${kind}"]`).textContent=status;}
     }
     // 日志在独立 page：切到 log page 时加载，加载完重画。
@@ -354,6 +395,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
   }
   const painting=frameScheduler(documentRef.defaultView??host,()=>paint(readViewState(app)));
   app??=createProductApplication({host,controller,...controllerOptions,onChange:paint,onInvalidate:()=>painting.request()});
+  memoryRetrospectiveView=mountMemoryRetrospective({panel,app,run});
   dynamicPersonaView=mountDynamicPersona({panel,app,run,host});
  function fill({apiOnly=false}={}){const s=readViewState(app);for(const f of $$('[data-setting]')){const key=f.getAttribute('data-setting');if(dirtyApi.has(key))continue;if(f.type==='checkbox')f.checked=Boolean(s.settings[key]);else f.value=s.settings[key]??'';}{if($('[data-input]'))$('[data-input]').value=s.draft??'';if($('[data-count]'))$('[data-count]').value=s.settings.messageCount;if($('[data-batch-size]'))$('[data-batch-size]').value=s.settings.summaryBatchSize;const select=$('[data-conversation]');if(select){select.innerHTML=s.conversations.map(c=>`<option value="${esc(c.id)}">${esc(c.title)}</option>`).join('')||'<option value="main">配置对话</option>';select.value=s.conversationId;}}syncInherited();syncSummaryRange();}
  function collect(root=panel){const patch={};for(const f of root.querySelectorAll('[data-setting]')){const k=f.getAttribute('data-setting'),d=PRODUCT_SETTING_REGISTRY[k];if(['number','integer'].includes(d.type)&&f.value.trim()==='')throw new Error(`${d.label}不能为空`);patch[k]=d.type==='boolean'?f.checked:['number','integer'].includes(d.type)?Number(f.value):f.value;}return patch;}

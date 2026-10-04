@@ -1,5 +1,6 @@
 import {clone,sha256} from './utils.js';
 import {foldName} from './persona-identity.js';
+import {personaSpeechPairs,personaSpeechSpanEnd} from './persona-speech-evidence.js';
 
 const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{(?!\s*(?:user|char)\s*\}\})|@@/i;
 export const PERSONA_EDIT_RULE=`局部更新合同：原人物只做有据的最小演进，不重写人格。original.parts中editable=false的是原书引语/口吻范例，不是本聊天已说过的话，不改写或拼接成新台词；新实说只放examples。其它updates每项附before（该ref当前完整文字）、evidence:{floor,quote}（本人物本批连续原文依据），保留对象、否定、条件和未变细节。只提供楼号不是修改依据。
@@ -19,11 +20,72 @@ export function personaNoteParts(profile){
   return text.split(/\n\s*\n/u).filter(s=>s.trim()).map((text,i)=>({ref:`N${i+1}`,text,key:sha256(text).slice(0,24)}));
 }
 
-export function personaEditEvidence(value,{messages,identity,name,speech}){
+// Recover a citation boundary, never write a new quotation or infer a cause.
+// The v3 model sometimes quotes only the predicate after an explicit actor
+// lead. Keep this opt-in and narrower than the ordinary full-quote validator.
+function completeNamedEvidence(text,fragment,{identity,name,speech,reviewEvidence=[],floor}){
+  if(fragment.trim().length<8)return null;
+  const offset=text.indexOf(fragment);
+  if(offset<0||text.indexOf(fragment,offset+1)!==-1)return null;
+  const units=[];let start=0;
+  for(let i=0;i<text.length;i++){
+    if(personaSpeechPairs.has(text[i])){const end=personaSpeechSpanEnd(text,i);if(end<0)return null;i=end;continue;}
+    if(/[。！？!?\r\n\uFFFC]/u.test(text[i])){units.push({start,end:i+1});start=i+1;}
+  }
+  if(start<text.length)units.push({start,end:text.length});
+  const span=units.find(p=>offset>=p.start&&offset+fragment.length<=p.end);
+  if(!span)return null;
+  const sentence=text.slice(span.start,span.end).trim();
+  if(!sentence||sentence.length>2400||unsafe.test(sentence)||sentence.includes('\uFFFC'))return null;
+  const actor=identity.resolve(name),key=actor?.key??foldName(name);
+  const labels=[name,...(actor?[actor.name,...actor.aliases]:[])].filter(label=>identity.resolve(label)?.key===key||label===name).sort((a,b)=>b.length-a.length);
+  const label=labels.find(s=>sentence.startsWith(s));if(!label)return null;
+  if(/[“”「」『』"‘’]/u.test(sentence)){
+    const open=sentence.search(/[“「『"]/u),close=open<0?-1:personaSpeechSpanEnd(sentence,open);
+    if(close<0||/[“”「」『』"‘’]/u.test(sentence.slice(open+1,close)))return null;
+    return speech?.(text,sentence,name,identity,{includeLead:true})?sentence:null;
+  }
+  const tail=sentence.slice(label.length);
+  // A model may cite only a restriction after a semicolon. Recover it only
+  // when its own review selected this exact complete named decision. The
+  // selected review is a candidate boundary, not proof of its interpretation.
+  if(/^决定(?:今后|从今(?:起|后)|此后|以后)?(?:可(?:以)?(?:与|和)|不再|仍|只|仅)/u.test(tail)&&Array.isArray(reviewEvidence)&&reviewEvidence.some(e=>e?.floor===floor&&e.quote===sentence)){
+    const clauses=tail.split(/[；;]/u).slice(1),selected=clauses.find(c=>c.trimStart().startsWith(fragment));
+    const unsafeAttribution=/听见|听到|听说|转述|复述|读到|信中|据说|声称|假如|假设|如果|否认/u;
+    const restriction=/^未(?:经|获(?:得)?|取得)[^，,；;。！？]{1,80}(?:材料|线索|资料|内容|部分|事项|操作|权限)(?:仍|也|都|一律|只|仅|不|禁|需|须|应)/u;
+    const sameSubjectTail=/^(?:也|并|且|仍)(?:保留|不|不得|不能|只|仅|需|须|应)/u;
+    const bounded=clauses.length&&clauses.every(c=>{
+      const pieces=c.trim().split(/[，,]/u);
+      return restriction.test(pieces[0])&&pieces.slice(1).every(p=>sameSubjectTail.test(p.trim()))&&
+        !identity.mentions(c).some(p=>p.key!==key);
+    });
+    if(selected&&bounded&&!unsafeAttribution.test(sentence))return sentence;
+  }
+  // Only explicit causal / declarative leads. Hearing, quoting, possessives,
+  // pronouns, multiple sentences and another actor's speech are not repaired.
+  const lead=/^(?:因(?:为)?[^，。！？\r\n]*，|明确[，：:])/u.exec(tail);
+  if(!lead)return null;
+  const body=tail.slice(lead[0].length);
+  if(!body.startsWith(fragment))return null;
+  // A citation may start at the body itself, so inspecting only its prefix
+  // would miss "现在另一人物…" and "仍听见另一人物…" subject switches.
+  if(/听见|听到|听说|转述|复述|读到|信中|据说|声称|假如|假设|如果|否认/u.test(sentence))return null;
+  const ownDecision=/^决定/u.test(body);
+  const ownDeclaration=/^(?:这|该|上述|本次)(?:份|项|种|次|一)?(?:授权|许可|约定|边界)(?:只对|仅对|限于)/u.test(body);
+  if(!ownDecision&&!ownDeclaration)return null;
+  const laterClauses=body.split(/[；;]/u).slice(1);
+  if(laterClauses.some(clause=>identity.mentions(clause).some(p=>p.key!==key)))return null;
+  return sentence;
+}
+
+export function personaEditEvidence(value,{messages,identity,name,speech,updateContractVersion=1,reviewEvidence=[]}){
   if(!value||!Number.isSafeInteger(value.floor)||typeof value.quote!=='string'||!value.quote.trim()||value.quote.length>2400||unsafe.test(value.quote))return null;
   const m=messages.find(m=>m.index===value.floor);
   if(!m||!m.text.includes(value.quote))return null;
-  if(!identity.mentions(value.quote).some(p=>p.key===foldName(name))&&!speech?.(m.text,value.quote,name,identity))return null;
+  if(!identity.mentions(value.quote).some(p=>p.key===foldName(name))&&!speech?.(m.text,value.quote,name,identity)){
+    const full=updateContractVersion>=2?completeNamedEvidence(m.text,value.quote,{identity,name,speech,reviewEvidence,floor:value.floor}):null;
+    return full?{floor:value.floor,quote:full,citedQuote:value.quote,recovered:'unique_actor_sentence'}:null;
+  }
   return {floor:value.floor,quote:value.quote};
 }
 

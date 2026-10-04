@@ -3,10 +3,10 @@ import {foldName,personaAliases} from './persona-identity.js';
 import {characterKeepsakes,markDiaryHistory} from './character-journal.js';
 import {sourceFloors} from './product-narrative.js';
 import {qualitySourceSegments} from './source-evidence.js';
-import {mergePersonaDevelopment,personaDevelopmentText} from './persona-development.js';
+import {mergePersonaDevelopment,personaDevelopmentText,personaDevelopmentEvidenceParts} from './persona-development.js';
 import {personaChangeCheck,personaReviewedThrough} from './persona-change-check.js';
-import {markPersonaQuoteParts,mergePersonaNotes,personaEditEvidence,personaStyleGroups,personaProjectedSourceParts,safePersonaQuotedProse,personaSourcePartText} from './persona-edit-evidence.js';
-import {personaSpeechPairs as speechPairs,personaSpeechSpanEnd as speechSpanEnd,hasPersonaSpeechEvidence} from './persona-speech-evidence.js';
+import {markPersonaQuoteParts,mergePersonaNotes,personaNoteParts,personaEditEvidence,personaStyleGroups,personaProjectedSourceParts,safePersonaQuotedProse,personaSourcePartText} from './persona-edit-evidence.js';
+import {personaSpeechPairs as speechPairs,personaSpeechSpanEnd as speechSpanEnd,hasPersonaSpeechEvidence,hasPersonaSpeechToEvidence,personaSpeechAudienceEvidence} from './persona-speech-evidence.js';
 export {hasPersonaSpeechEvidence} from './persona-speech-evidence.js';
 
 export const PERSONA_COMPOSITION_RULE=`当前使用原文保留模式。original.parts列出程序保留的原设定片段及当前有效文字；source=chat表示本聊天已保存的初建人物底稿，不是原世界书。ref仅定位本人物片段。不要重写整篇传记。
@@ -147,7 +147,7 @@ export function currentPersonaExamples(examples,development=[],limit=6){
   const arcs=new Map(development.map(d=>[d.key,d])),seen=new Set(),groups=new Map(),pool=[];
   for(const q of [...examples].sort((a,b)=>b.floor-a.floor)){
     const arc=arcs.get(q.developmentKey);
-    if(q.status==='historical'||arc&&q.floor<arc.floor&&q.reaffirmedAt!==arc.floor||seen.has(q.text))continue;
+    if(q.status==='historical'||q.status==='audience_unverified'||arc&&q.floor<arc.floor&&q.reaffirmedAt!==arc.floor||seen.has(q.text))continue;
     seen.add(q.text);pool.push(q);
   }
   const selected=[],rest=[],retainedArcs=new Set(),reserved=Math.max(1,Math.floor(limit/2));
@@ -169,7 +169,7 @@ export function currentPersonaExamples(examples,development=[],limit=6){
   return [...selected,...rest].slice(0,limit);
 }
 
-export function composePersona(row,{spans,previous,messages,developmentMessages,identity,name,fail}){
+export function composePersona(row,{spans,previous,messages,developmentMessages,identity,name,fail,updateContractVersion=1}){
   // Source-only snapshots must not become immutable original-book material.
   // Explicit local-ref edits and legacy player prose retain their editable
   // parts; that mode survives later snapshots so arbitrary fields are not lost.
@@ -177,8 +177,8 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   const parts=spans.length||localPatches?markPersonaQuoteParts(personaParts(spans,previous,{includeNotes:Boolean(row.updates?.length)})):[],byRef=new Map(parts.map(p=>[p.ref,p])),touched=new Set(),changes=[],pendingEdits=[];
   const originalParts=clone(parts),evidenceMessages=developmentMessages??messages.map(m=>({...m,text:qualitySourceSegments(m).map(s=>s.text).join('\n\uFFFC\n')}));
   const styleGroups=personaStyleGroups(parts),retirableKeys=new Set(styleGroups.flatMap(g=>g.map(p=>p.key)));
-  const editContext={messages:evidenceMessages,identity,name,speech:hasPersonaSpeechEvidence};
-  const development=mergePersonaDevelopment(row.development,{previous:previous?.composition?.development??[],messages:evidenceMessages,identity,name});
+  const editContext={messages:evidenceMessages,identity,name,speech:hasPersonaSpeechEvidence,updateContractVersion,reviewEvidence:row.changeCheck?.evidence};
+  const development=mergePersonaDevelopment(row.development,{previous:previous?.composition?.development??[],messages:evidenceMessages,identity,name,updateContractVersion,changeCheck:row.changeCheck});
   if(!parts.length&&!row.text.trim()&&!previous?.text&&!row.noteUpdates?.length)throw fail('text','正文新角色须有可独立阅读的档案，不能只返回局部修改','persona_fields',{personaIssue:'empty_profile'});
   const validFloors=floors=>Array.isArray(floors)&&floors.length&&floors.every(f=>messages.some(m=>m.index===f));
   if(row.updates!==undefined&&!Array.isArray(row.updates))throw fail('text','局部修改应为列表','persona_fields',{personaIssue:'invalid_updates'});
@@ -200,7 +200,7 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
       const canonical=value=>identity.resolve(String(value??''))?.key??foldName(String(value??''));
       const explicitIndex=Object.hasOwn(edit,'developmentIndex');
       const link=Number.isInteger(edit.developmentIndex)&&edit.developmentIndex>0?row.development?.[edit.developmentIndex-1]:null;
-      const currentArcs=development.items.filter(d=>d.target&&evidenceMessages.some(m=>m.index===d.floor&&m.text.includes(d.evidence)));
+      const currentArcs=development.items.filter(d=>d.target&&personaDevelopmentEvidenceParts(d,evidenceMessages,{identity,name}).length);
       const actorOnlyReview=d=>{
         if(!explicitIndex||!evidence||!row.changeCheck?.evidence?.some(e=>e.floor===evidence.floor&&e.quote===evidence.quote))return false;
         const people=identity.mentions(evidence.quote),floor=evidenceMessages.find(m=>m.index===evidence.floor);
@@ -213,8 +213,8 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
           (!Object.hasOwn(edit,'target')||canonical(edit.target)===canonical(d.target))&&
           (!Object.hasOwn(edit,'scope')||(edit.scope??'')===(d.scope??''));
       };
-      const arc=development.items.find(d=>d.target&&evidenceMessages.some(m=>m.index===d.floor&&m.text.includes(d.evidence))&&
-        (explicitIndex?link&&link.floor===d.floor&&link.evidence===d.evidence&&canonical(link.target)===canonical(d.target)&&(link.scope??'')===(d.scope??''):
+      const arc=development.items.find(d=>d.target&&personaDevelopmentEvidenceParts(d,evidenceMessages,{identity,name}).length&&
+        (explicitIndex?link&&link.floor===(d.evidenceReceipt?.declaredFloor??d.floor)&&link.evidence===d.evidence&&canonical(link.target)===canonical(d.target)&&(link.scope??'')===(d.scope??''):
           canonical(d.target)===canonical(edit.target)&&(d.scope??'')===(edit.scope??''))&&
         (d.floor===evidence?.floor||identity.mentions(evidence?.quote??'').some(p=>p.key===canonical(d.target))||actorOnlyReview(d)));
       const reason=!retirableKeys.has(part.key)?'not_independent_source_style':edit.before!==part.original||edit.text!==part.original?'source_style_bytes_changed':!evidence||!editFloors.includes(evidence.floor)?'missing_edit_evidence':!arc||row.changeCheck?.status!=='changed'?'missing_scoped_style_transition':null;
@@ -259,12 +259,31 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
     // supplied again, recheck the actual source instead of trusting an old tag.
     if(prior&&!m){if(!examples.some(p=>p.text===prior.text&&p.floor===prior.floor))examples.push(clone(prior));continue;}
     if(!m||!hasPersonaSpeechEvidence(m.text,text,name,identity)||/<%|%>|<\/?script\b|\{\{(?!\s*(?:user|char)\s*\}\})|@@|\[\[SHIYI_PERSONA:/i.test([text,q?.to,q?.context].join('\n'))){rejectedExamples++;continue;}
-    if(!examples.some(e=>e.text===text&&e.floor===q.floor))examples.push(prior?clone(prior):{text,floor:q.floor,to:typeof q.to==='string'?q.to:'',context:typeof q.context==='string'?q.context:'',kind:'source_quote'});
+    const verified=prior?clone(prior):{text,floor:q.floor,to:typeof q.to==='string'?q.to:'',context:typeof q.context==='string'?q.context:'',kind:'source_quote'};
+    if(updateContractVersion>=2&&(verified.to||verified.developmentKey||Object.hasOwn(q??{},'developmentKey'))){
+      const audience=personaSpeechAudienceEvidence(m.text,text,name,identity),to=identity.resolve(verified.to)?.key??foldName(verified.to);
+      if(audience.status==='ambiguous'||audience.status==='explicit'&&verified.to&&audience.targets[0]!==to){rejectedExamples++;continue;}
+      if(audience.status!=='explicit'){
+        verified.to='';delete verified.developmentKey;delete verified.reaffirmedAt;
+        if(verified.status!=='historical')verified.status='audience_unverified';
+      }
+    }
+    if(!examples.some(e=>e.text===text&&e.floor===q.floor))examples.push(verified);
   }
   const sceneEvidence=personaSceneEvidence(messages,identity,name,previous?.composition?.sceneEvidence);
+  const currentArcEvidence=arc=>personaDevelopmentEvidenceParts(arc,evidenceMessages,{identity,name});
+  const canonicalAudience=value=>identity.resolve(String(value??''))?.key??foldName(String(value??''));
+  const uniqueSpeechArc=(q,arc)=>{
+    const sameTarget=development.items.filter(d=>d.phase!=='historical'&&canonicalAudience(d.target)===canonicalAudience(q.to));
+    const source=messages.find(m=>m.index===q.floor);
+    return q.to&&sameTarget.length===1&&sameTarget[0].key===arc.key&&source&&
+      hasPersonaSpeechToEvidence(source.text,q.text,name,q.to,identity);
+  };
   for(const q of examples){
     const supplied=normalized.find(e=>e?.floor===q.floor&&unwrappedPersonaQuote(e.text)===q.text);
-    const arc=development.items.find(d=>d.key===supplied?.developmentKey&&d.floor===q.floor&&d.evidence.includes(q.text));
+    const arc=development.items.find(d=>d.key===supplied?.developmentKey&&(updateContractVersion>=2?
+      canonicalAudience(d.target)===canonicalAudience(q.to)&&currentArcEvidence(d).some(p=>p.floor===q.floor&&p.quote.includes(q.text))&&
+      hasPersonaSpeechToEvidence(messages.find(m=>m.index===q.floor)?.text,q.text,name,d.target,identity):d.floor===q.floor&&d.evidence.includes(q.text)));
     if(arc)q.developmentKey=arc.key;
   }
   // A model can identify a change yet forget examples. Recover only complete,
@@ -273,36 +292,78 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   for(const arc of development.items){
     const old=previous?.composition?.development?.find(d=>d.key===arc.key);
     if(old?.floor===arc.floor||!messages.some(m=>m.index===arc.floor))continue;
-    const quotes=[...arc.evidence.matchAll(/[“「『"]([^“”「」『』"\n]+)[”」』"]/gu)].map(m=>m[1]);
-    for(const text of quotes.filter(text=>hasPersonaSpeechEvidence(arc.evidence,text,name,identity)).slice(-2)){
-      const existing=examples.find(q=>q.floor===arc.floor&&q.text===text);
+    const proof=updateContractVersion>=2?currentArcEvidence(arc):[{floor:arc.floor,quote:arc.evidence}];
+    const quotes=proof.flatMap(p=>[...p.quote.matchAll(/[“「『"]([^“”「」『』"\n]+)[”」』"]/gu)].map(m=>({text:m[1],floor:p.floor,evidence:p.quote})));
+    for(const {text,floor} of quotes.filter(q=>hasPersonaSpeechEvidence(q.evidence,q.text,name,identity)).slice(-2)){
+      const existing=examples.find(q=>q.floor===floor&&q.text===text);
+      if(updateContractVersion>=2){
+        const supplied=normalized.find(q=>q?.floor===floor&&unwrappedPersonaQuote(q.text)===text);
+        // An explicit selection may reject this association. Otherwise use the
+        // same audience/uniqueness boundary as cross-floor implicit linking.
+        if(supplied&&Object.hasOwn(supplied,'developmentKey')&&supplied.developmentKey!==arc.key)continue;
+        if(!uniqueSpeechArc(existing??{text,floor,to:arc.target},arc))continue;
+      }
       if(existing){existing.developmentKey=arc.key;continue;}
-      examples.push({text,floor:arc.floor,to:arc.target,context:arc.scope??'',kind:'source_quote',developmentKey:arc.key});
+      examples.push({text,floor,to:arc.target,context:arc.scope??'',kind:'source_quote',developmentKey:arc.key});
     }
   }
   const noteResult=mergePersonaNotes(row,previous?.composition?.pendingOnly?undefined:previous,editContext),notes=noteResult.notes;
   const composition={version:2,retiredParts:clone(previous?.composition?.retiredParts??[]),parts,notes,examples:currentPersonaExamples(examples,development.items),exampleArchive:examples.sort((a,b)=>b.floor-a.floor).slice(0,48),sceneEvidence,changes,noteChanges:noteResult.changes,pendingEdits:[...pendingEdits,...noteResult.pending],rejectedExamples,ignoredUpdates,development:development.items,rejectedDevelopment:development.rejected,...(!spans.length?{localMode:localPatches&&parts.length?'patches':'snapshot'}:{}),...(!parts.length?{sourceBaseline:sourcePersonaBaseline(notes,name,row.sourceFloors)}:{})};
-  composition.changeCheck=personaChangeCheck(row,{parts,changes,development:development.items,previousDevelopment:previous?.composition?.development??[],examples:composition.examples,messages,identity,name,initial:!previous});
+  const unresolvedConflicts=updateContractVersion>=2?unpatchedCurrentInstructions({parts,notes,development:development.items,previousDevelopment:previous?.composition?.development??[],messages:evidenceMessages,identity,name}):[];
+  const unverifiedAudienceSpeech=examples.filter(q=>q.status==='audience_unverified');
+  composition.changeCheck=personaChangeCheck(row,{parts,changes,noteParts:personaNoteParts(previous?.composition?.pendingOnly?undefined:previous),noteChanges:noteResult.changes,development:development.items,previousDevelopment:previous?.composition?.development??[],examples:composition.examples,unverifiedAudienceSpeech,rejectedExamples,messages,evidenceMessages,identity,name,initial:!previous,updateContractVersion,unresolvedConflicts});
   if(composition.changeCheck.status==='pending'){
     // A request can complete while its proposed interpretation remains pending.
     // Keep independently verified speech, not unverified current-state claims.
-    composition.pendingRevision={notes,updates:clone(row.updates??[]),noteUpdates:clone(row.noteUpdates??[]),development:clone(row.development??[]),sourceFloors:clone(row.sourceFloors??[]),issues:clone(composition.changeCheck.issues)};
+    composition.pendingRevision={notes,updates:clone(row.updates??[]),noteUpdates:clone(row.noteUpdates??[]),development:clone(row.development??[]),sourceFloors:clone(row.sourceFloors??[]),issues:clone(composition.changeCheck.issues),...(unresolvedConflicts.length?{unresolvedConflicts}: {})};
+    if(updateContractVersion>=2){
+      const priorFor=q=>priorExamples.find(p=>p.kind==='source_quote'&&p.floor===q.floor&&p.text===q.text);
+      composition.pendingRevision.examples=clone(examples.filter(q=>!priorFor(q)));
+      // Keep only revalidated prior survivors, with their accepted annotations.
+      // A pending quote must not enter the archive and become accepted next time.
+      examples.splice(0,examples.length,...examples.map(priorFor).filter(Boolean).map(clone));
+    }
     composition.parts=originalParts;composition.notes=previous?.composition?.notes??(previous&&!previous.composition?previous.text:'')??'';
     composition.development=clone(previous?.composition?.development??[]);composition.changes=[];composition.noteChanges=[];
     composition.examples=currentPersonaExamples(examples,composition.development);
     if(!parts.length)composition.sourceBaseline=sourcePersonaBaseline(composition.notes,name,previous?.sourceFloors??[]);
     composition.pendingOnly=!spans.length&&(!previous||Boolean(previous.composition?.pendingOnly));
   }
+  const acceptedChangeReview=composition.changeCheck.status==='changed';
   if(composition.pendingEdits.length)composition.changeCheck={...composition.changeCheck,status:'pending',issues:[...composition.changeCheck.issues??[],`${composition.pendingEdits.length}项局部修改尚未应用，未变内容保留`]};
   // Reusing an explicitly selected, previously verified utterance is not
   // reviving every old phase. Bind that selection to this accepted revision
   // of the SAME arc and audience; a later reversal must review it again.
-  if(composition.changeCheck.status==='changed'){
+  if(composition.changeCheck.status==='changed'||updateContractVersion>=2&&acceptedChangeReview){
     const canonical=value=>identity.resolve(String(value??''))?.key??foldName(String(value??''));
+    if(updateContractVersion>=2&&composition.changeCheck.expressionCoverage?.status==='covered'){
+      for(const q of examples){
+        if(priorExamples.some(p=>p.floor===q.floor&&p.text===q.text))continue;
+        const supplied=normalized.find(e=>e?.floor===q.floor&&unwrappedPersonaQuote(e.text)===q.text);
+        if(!supplied||!q.to)continue;
+        const source=messages.find(m=>m.index===q.floor);
+        if(!source||!hasPersonaSpeechToEvidence(source.text,q.text,name,q.to,identity))continue;
+        // Include carried-forward scopes: uniqueness among just this batch's
+        // changed arcs would misbind speech when another same-target arc exists.
+        const sameTarget=composition.development.filter(d=>d.phase!=='historical'&&canonical(d.target)===canonical(q.to));
+        if(sameTarget.length!==1)continue;
+        const arc=sameTarget[0],proof=currentArcEvidence(arc);
+        // A correct explicit key may use the same verified cross-floor path;
+        // a wrong key must never be silently reassigned to a convenient arc.
+        if(Object.hasOwn(supplied,'developmentKey')&&supplied.developmentKey!==arc.key)continue;
+        if(!proof.length||!composition.changeCheck.evidence.some(e=>{
+          const people=identity.mentions(e.quote);
+          return proof.some(p=>p.floor===e.floor)||people.some(p=>p.key===canonical(arc.target))||people.length>0&&people.every(p=>p.key===canonical(name));
+        }))continue;
+        if(arc.scope&&q.context!==arc.scope&&!proof.some(p=>p.floor===q.floor&&p.quote.includes(q.text)))continue;
+        q.developmentKey=arc.key;
+        if(q.floor<arc.floor)q.reaffirmedAt=arc.floor;
+      }
+    }
     for(const q of examples){
       const prior=priorExamples.find(p=>p.kind==='source_quote'&&p.floor===q.floor&&p.text===q.text);
       const supplied=normalized.find(e=>e?.floor===q.floor&&unwrappedPersonaQuote(e.text)===q.text&&(!Object.hasOwn(e,'developmentKey')||e.developmentKey===prior?.developmentKey)&&canonical(e.to)===canonical(prior?.to));
-      const arc=prior?.developmentKey&&composition.development.find(d=>d.key===prior.developmentKey&&d.floor>q.floor&&evidenceMessages.some(m=>m.index===d.floor&&m.text.includes(d.evidence)));
+      const arc=prior?.developmentKey&&composition.development.find(d=>d.key===prior.developmentKey&&d.floor>q.floor&&(updateContractVersion>=2?currentArcEvidence(d).length:evidenceMessages.some(m=>m.index===d.floor&&m.text.includes(d.evidence))));
       if(supplied&&arc&&canonical(arc.target)===canonical(q.to))q.reaffirmedAt=arc.floor;
     }
     composition.examples=currentPersonaExamples(examples,composition.development);
@@ -315,9 +376,29 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   }).slice(0,48);
   const reviewedThrough=['changed','unchanged'].includes(composition.changeCheck.status)?Math.max(...messages.map(m=>m.index)):personaReviewedThrough(previous);
   if(Number.isInteger(reviewedThrough)&&reviewedThrough>=0)composition.reviewedThrough=reviewedThrough;
-  if(composition.changeCheck.status==='changed')retireExactSupersededInstructions(composition,identity);
+  if(updateContractVersion<2&&composition.changeCheck.status==='changed')retireExactSupersededInstructions(composition,identity);
   if(!composition.parts.length&&!composition.notes&&!composition.pendingRevision)throw fail('text','新人物尚无可独立阅读的有效概况','persona_fields',{personaIssue:'empty_profile'});
   return {text:personaCompositionText(composition,{hasSources:spans.length>0}),composition:clone(composition)};
+}
+
+// An arc's "before" describes its old state; it is not permission to discard a
+// whole B sentence/N paragraph (which may also hold unchanged facts). Check
+// only a genuinely changed, evidenced current-batch arc and exact whole text.
+// This is a traceable missing-patch guard, not a semantic contradiction test.
+function unpatchedCurrentInstructions({parts,notes,development,previousDevelopment,messages,identity,name}){
+  const conflicts=[],seen=new Set(),canonical=value=>identity.resolve?.(String(value??''))?.key??foldName(String(value??''));
+  const paragraphs=String(notes??'').split(/\n\s*\n/u).filter(p=>p.trim());
+  const add=(ref,arc)=>{const key=JSON.stringify([ref,arc.key]);if(!seen.has(key)){seen.add(key);conflicts.push({ref,developmentKey:arc.key,before:arc.before,target:arc.target,scope:arc.scope??'',floor:arc.floor});}};
+  for(const arc of development){
+    const old=previousDevelopment.find(p=>p.key===arc.key),before=String(arc.before??'').trim(),target=canonical(arc.target);
+    if(arc.phase==='historical'||before.length<8||!target||!String(arc.after??'').trim()||!String(arc.evidence??'').trim())continue;
+    if(old&&!['topic','target','scope','after','cause'].some(k=>(old[k]??'')!==(arc[k]??'')))continue;
+    if(!personaDevelopmentEvidenceParts(arc,messages,{identity,name}).length)continue;
+    if(!identity.mentions?.(before)?.some(p=>p.key===target)&&!foldName(before).includes(foldName(String(arc.target??''))))continue;
+    for(const part of parts)if(part.status!=='historical'&&!part.sourceQuote&&String(part.text??'').trim()===before)add(part.ref,arc);
+    paragraphs.forEach((paragraph,index)=>{if(paragraph.trim()===before)add(`N${index+1}`,arc);});
+  }
+  return conflicts;
 }
 
 /** An accepted arc can name the exact old instruction and still forget the

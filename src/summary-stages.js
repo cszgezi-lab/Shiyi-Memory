@@ -1,5 +1,5 @@
 import { DRAFT_CATEGORIES } from './contracts.js';
-import { JOURNAL_RULE } from './character-journal.js';
+import { JOURNAL_RULE, SUMMARY_FACTUAL_RULE } from './character-journal.js';
 import { clone, sha256 } from './utils.js';
 import { SummaryResponseError } from './errors.js';
 import { summarySources, summaryRecord } from './summary-context.js';
@@ -39,6 +39,7 @@ export function isolateDraftIds(output, scope, operationId, existingEvents=[]){
 
 export function stageContract(contract, categories) {
   const result=clone(contract);
+  result.analysisBoundaryRules=SUMMARY_FACTUAL_RULE;
   result.categories=[...categories];result.requiredCategories=[...categories];result.requiredFields=[...categories];
   result.fields=Object.fromEntries(categories.map(k=>[k,clone(contract.fields[k])]));
   result.categoryTypes=Object.fromEntries(categories.map(k=>[k,contract.categoryTypes[k]]));

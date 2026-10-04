@@ -710,17 +710,56 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     if(!canonicalResults.has(name)){const matches=canonicalNames.get(foldName(name));canonicalResults.set(name,matches?.length===1?matches[0]:name);}
     return canonicalResults.get(name);
   };
+  // An unresolved query spelling may remain searchable, but must not acquire
+  // authority to hide another record through a raw-string fallback.
+  const unsafeAuthorityNames=new Set((lexicon.entries??[]).flatMap(e=>[
+    ...(e.ambiguous??[]),...(e.disabled?[e.name,...(e.aliases??[])]:[]),
+  ]).map(foldName));
+  const authorityName=name=>{
+    if(typeof name!=='string'||!name.trim())return null;
+    const key=foldName(name);
+    return unsafeAuthorityNames.has(key)||(canonicalNames.get(key)?.length??0)>1?null:foldName(canonical(name));
+  };
   const supplied=new Set(dossierPeople.map(name=>foldName(canonical(name))));
-  const dossierCoverage=new Map();
+  const dossierCoverage=new Map(),dossierAttitudes=new Map();
   for(const profile of dossierProfiles??[]){
     if(!profile||typeof profile.name!=='string'||!Number.isInteger(profile.through))continue;
     const through=['pending','unreviewed'].includes(profile.reviewStatus)?profile.reviewedThrough:profile.through;
     if(!Number.isInteger(through)||through<0||through>profile.through)continue;
     const key=foldName(canonical(profile.name)),old=dossierCoverage.get(key)??-1;
     if(through>old)dossierCoverage.set(key,through);
+    // Scoped authority, not semantic deletion: the inserted dossier owns this
+    // person's current expression toward this target. Unknown/custom fields
+    // and different contexts are not classified from their free-form values.
+    if(!supplied.has(key)||authorityName(profile.name)!==key)continue;
+    for(const attitude of Array.isArray(profile.currentAttitudes)?profile.currentAttitudes:[]){
+      if(attitude?.phase==='historical'||typeof attitude?.target!=='string'||!attitude.target.trim()||!Number.isInteger(attitude.floor)||attitude.floor<0||attitude.floor>through||typeof(attitude.scope??'')!=='string')continue;
+      const target=authorityName(attitude.target);if(!target)continue;
+      const rows=dossierAttitudes.get(key)??[];
+      rows.push({target,scope:(attitude.scope??'').trim(),through});dossierAttitudes.set(key,rows);
+    }
   }
+  const coveredAttitudeAttribute=record=>{
+    if(record.category!=='entityFactChanges'||record.customModuleId)return false;
+    // Use the stored field identity, never a friendly label or words found in
+    // the value (which may mix stable facts, capabilities and attitudes).
+    const field=factKey(record);
+    if(typeof field!=='string')return false;
+    const match=/^对(.+?)(?:的)?(?:态度|口吻|表现|具体表现|相处方式|互动方式)$/u.exec(field.trim());
+    if(!match)return false;
+    const target=authorityName(match[1].trim());
+    const owners=characterRecordSubjects(record),floors=sourceFloors(record);
+    if(!target||!owners.length||!floors.length)return false;
+    if(record.context&&record.scope&&record.context!==record.scope)return false;
+    const scope=record.scope??record.context??'';
+    if(typeof scope!=='string')return false;
+    const last=Math.max(...floors);
+    return owners.every(name=>(dossierAttitudes.get(authorityName(name))??[]).some(a=>a.target===target&&a.scope===scope.trim()&&a.through>=last));
+  };
   const coveredPersonaHistory=record=>{
-    if(historyIntent||!['relationshipChanges','personaChanges','performanceHints'].includes(record.category))return false;
+    if(historyIntent)return false;
+    if(record.category==='entityFactChanges')return coveredAttitudeAttribute(record);
+    if(!['relationshipChanges','personaChanges','performanceHints'].includes(record.category))return false;
     const floors=sourceFloors(record);if(!floors.length)return false;
     const last=Math.max(...floors);
     // A target's dossier does not certify the other person's attitude. In a
@@ -729,8 +768,8 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
     return owners.length>0&&owners.every(name=>(dossierCoverage.get(foldName(canonical(name)))??-1)>=last);
   };
   const characters=fullCharacterGroups(selectRecallCards(cards,settings,{includeAwareness:true}).filter(c=>(historyIntent||!historicalIds.has(c.id))&&!coveredPersonaHistory(c)),characterQuery,lexicon);
-  // A dynamic dossier replaces attitude prose. It does not replace standing
-  // attributes, so a mentioned person still gets every field's latest value.
+  // A dynamic dossier replaces covered attitude prose, including explicitly
+  // targeted attitude fields. Objective/unknown attributes keep their values.
   const attributePlan=characters.groups.map(group=>{const {current,older}=currentAttributeRecords(group.records);return {...group,current,older};});
   // Planner must run before retrieval filters are built; otherwise the
   // ordinary-recall filter excludes IDs that the dossier will never actually

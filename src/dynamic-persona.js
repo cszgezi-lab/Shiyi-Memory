@@ -37,6 +37,9 @@ const CONTRACT=`输出合法JSON，顶层profiles为人物数组。每人先写n
 完整累积档案由程序合成，不要求每批返回完整text。original.parts中的B底稿用updates局部修改；previous.noteParts中的N补充用noteUpdates局部修改；未列出的B/N自动保留。有聊天底稿（original.source=chat）或已有N段时返回text:""，新增补充也用noteUpdates的ref:"new"，不把新旧信息整篇重写到text。只有首次无原书人物用text提供完整可靠概况；原书人物尚无N补充时可用text建立首次补充，不重抄稳定底稿。`;
 const BOUNDARY_GUARD='输出前逐条检查限制的对象、目的、时段：禁止因工作打扰某人，不等于禁止全部社交或永远拒绝所有人。不要把某次聊天话题写成今后唯一允许的话题；偏好不扩成收集爱好，能正常用工具不扩成精密操作能力。旧档案中的概括不构成新证据。没有发生变化的原设定尽量保留原措辞；边界句尽量沿用本批原话，只调整必要指代。';
 const SPEECH_ACT_CHECK='台词中的动作只证明说话人提出要求、意愿或承诺；另有叙述明确写已实行，才能写成完成，部分实行不等于全部完成。after/text/noteUpdates/context都遵守，不能原话正确却旁注造事。档案侧重这种表达如何改变待人方式，不罗列未证实的事件结果。';
+// Versioned separately: v1/v2 must reconstruct the exact paid request before
+// reusing a saved reply. New requests do not consume another summary's analysis.
+const PERSONA_SOURCE_BOUNDARY_RULE='要求、意愿、承诺不证明实行，部分实行不等于全部完成；after/text/noteUpdates/context同样遵守。主总结分析不作材料。每份返回人物必须提供changeCheck；development.before不授权删除，对应B/N用updates/noteUpdates显式局改，保留未变细节。';
 const initial=()=>({version:1,startFloor:1,paused:false,batches:[],profiles:[],manualPlan:null,mirror:{status:'not_created'}});
 const canceled=()=>Object.assign(new Error('人设任务已停止，已保存档案保留'),{code:'CANCELED'});
 const invalid=(reason,message,details={})=>Object.assign(new Error(message),{code:'PERSONA_RESPONSE_INVALID',details:{stage:'validate',reason,modelRole:'dynamicPersona',...details}});
@@ -188,7 +191,7 @@ export function personaDossierText(profile){
   return blocks.filter(Boolean).join('\n\n');
 }
 const personaSourceMessages=(messages,readingConfig,readings=[])=>messages.map(m=>{if(readingConfig||/<\/?sy_(?:context|private)\b/i.test(m.text??'')){const r=narrativeReading(m,readingConfig);readings.push(r);return {...m,text:r.chunks.map(p=>p.text).join('\n')};}return {...m,text:qualitySourceSegments(m).map(s=>s.text).join('')};});
-export function personaRequest({messages,world,previous,prompt,dictionary,aliases='',stageMode='narrative',records={},readingConfig='',identityProfiles=[],castingOverrides={},materialsThrough=Infinity,inputLimit=12000,arcReferenceVariant='arc-reference',requestViewVersion=2}){
+export function personaRequest({messages,world,previous,prompt,dictionary,aliases='',stageMode='narrative',records={},readingConfig='',identityProfiles=[],castingOverrides={},materialsThrough=Infinity,inputLimit=12000,arcReferenceVariant='arc-reference',requestViewVersion=3}){
   const readings=[];
   const source=personaSourceMessages(messages,readingConfig,readings);
   const text=source.map(m=>m.text).join('\n');
@@ -268,8 +271,9 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
     development:p.composition?.development?.map(({timeAnchor,...d})=>({...d,scope:d.scope??''})),locked:p.locked,through:p.through,currentStage:stageMode!=='strict'||!p.bindings?.length||p.bindings.every(b=>spans.some(s=>s.id===b.id&&s.stage===b.stage))}));
   const namedFloors=new Map();for(const m of source)for(const p of identity.mentions(m.text)){if(!namedFloors.has(p.key))namedFloors.set(p.key,[]);if(!namedFloors.get(p.key).includes(m.index))namedFloors.get(p.key).push(m.index);}
   const evidenceFloors=identity.people.filter(p=>namedFloors.has(p.key)).map(p=>({name:p.name,floors:namedFloors.get(p.key)}));
-  const request={messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n${PERSONA_CASTING_RULE}\n${PERSONA_CHANGE_CHECK_RULE}\n姓名用original/previous的正式姓名；简称、昵称、简繁写法不创建另一角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}\n${PERSONA_DEVELOPMENT_RULE}\n${PERSONA_IMPACT_RULE}\noriginal.parts已完整提供底稿；previous.text只提供未重复的当前补充。底稿与补充合读，不因不重复发送就认为属性丢失。narrativeFrame是原文明确的全局时点；新的明确切换优先，不把原卡默认年龄/学段写成当前状态。\n${PERSONA_OUTPUT_CHECK_RULE}\nevidenceFloors仅是明确姓名的来源楼号索引，不是结论保证；仍从source逐字引用核对语义，不需回显。`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),narrativeFrame:frame,characterCandidates:personaCharacterCandidates(source,identity),attention:attentionProfiles.map(p=>({name:p.name,weight:personaAttentionWeight(p.casting),casting:p.casting})),original:originals,materials:weightedPersonaMaterials(personaMaterials(records,identity,mentioned,Math.min(endFloor,materialsThrough)),attentionProfiles),previous:prior,reviewFocus:personaReviewFocus(source,identity),evidenceFloors})}],source,spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
-  request.messages[0].content+='\n'+SPEECH_ACT_CHECK;
+  const materials=requestViewVersion>=3?[]:weightedPersonaMaterials(personaMaterials(records,identity,mentioned,Math.min(endFloor,materialsThrough)),attentionProfiles);
+  const request={messages:[{role:'system',content:`${prompt||DYNAMIC_PERSONA_PROMPT}\n${CONTRACT}\n${BOUNDARY_GUARD}\n${PERSONA_CASTING_RULE}\n${PERSONA_CHANGE_CHECK_RULE}\n姓名用original/previous的正式姓名；简称、昵称、简繁写法不创建另一角色。\n${modeRule}\n${PERSONA_COMPOSITION_RULE}\n${PERSONA_DEVELOPMENT_RULE}\n${PERSONA_IMPACT_RULE}\noriginal.parts已完整提供底稿；previous.text只提供未重复的当前补充。底稿与补充合读，不因不重复发送就认为属性丢失。narrativeFrame是原文明确的全局时点；新的明确切换优先，不把原卡默认年龄/学段写成当前状态。\n${PERSONA_OUTPUT_CHECK_RULE}\nevidenceFloors仅是明确姓名的来源楼号索引，不是结论保证；仍从source逐字引用核对语义，不需回显。`},{role:'user',content:JSON.stringify({source:source.map(m=>({floor:m.index,role:m.role,text:m.text})),narrativeFrame:frame,characterCandidates:personaCharacterCandidates(source,identity),attention:attentionProfiles.map(p=>({name:p.name,weight:personaAttentionWeight(p.casting),casting:p.casting})),original:originals,materials,previous:prior,reviewFocus:personaReviewFocus(source,identity),evidenceFloors})}],source,spans,identity,audit:indexed.audit,...(readings.length?{readingReport:narrativeCounters(readings)}:{})};
+  request.messages[0].content+='\n'+(requestViewVersion>=3?PERSONA_SOURCE_BOUNDARY_RULE:SPEECH_ACT_CHECK);
   // New metadata must be included in the same input budget as optional arc
   // references. Legacy saved requests retain their original byte ordering.
   let decorated=requestViewVersion>=2?{messages:clone(request.messages)}:applyPersonaArcReferences(request.messages,{variant:arcReferenceVariant,inputLimit});
@@ -296,10 +300,10 @@ export function personaRequest({messages,world,previous,prompt,dictionary,aliase
   decorated.messages[1].content=JSON.stringify({...context,source:currentSource});
   if(requestViewVersion>=2)decorated=applyPersonaArcReferences(decorated.messages,{variant:arcReferenceVariant,inputLimit});
   const count=value=>JSON.stringify(value??null).length;
-  const inputSize={personaSystemChars:decorated.messages[0].content.length,personaSourceChars:count(currentSource),personaBaselineChars:count(context.original),personaNotesChars:context.previous.reduce((n,p)=>n+String(p.text??'').length,0),personaDevelopmentChars:context.previous.reduce((n,p)=>n+count(p.development),0),personaMaterialsChars:count(context.materials),personaRequestChars:count(decorated.messages),personaSourceParts:context.original.reduce((n,p)=>n+p.parts.length,0),personaNoteParts:context.previous.reduce((n,p)=>n+p.noteParts.length,0),personaPeople:context.previous.length,personaRequestView:requestViewVersion};
+  const inputSize={personaSystemChars:decorated.messages[0].content.length,personaSourceChars:count(currentSource),personaBaselineChars:count(context.original),personaNotesChars:context.previous.reduce((n,p)=>n+String(p.text??'').length,0),personaDevelopmentChars:context.previous.reduce((n,p)=>n+count(p.development),0),personaMaterialsChars:requestViewVersion>=3?0:count(context.materials),personaRequestChars:count(decorated.messages),personaSourceParts:context.original.reduce((n,p)=>n+p.parts.length,0),personaNoteParts:context.previous.reduce((n,p)=>n+p.noteParts.length,0),personaPeople:context.previous.length,personaRequestView:requestViewVersion};
   return {...request,messages:decorated.messages,arcReferences:decorated.meta,inputSize,requestViewVersion};
 }
-export function parsePersonaResponse(response,{messages,spans,previous,identity,dictionary,aliases='',stageMode='narrative',preserveSources=false,developmentMessages,diagnostic=()=>{},collectFailures=false}){
+export function parsePersonaResponse(response,{messages,spans,previous,identity,dictionary,aliases='',stageMode='narrative',preserveSources=false,developmentMessages,diagnostic=()=>{},collectFailures=false,updateContractVersion=1}){
   const reason=response?.choices?.[0]?.finish_reason;
   if(reason==='content_filter')throw Object.assign(new Error('人设接口报告内容过滤；原档案保留，可更换配置后重试'),{code:'MODEL_OUTPUT_BLOCKED'});
   if(['length','max_tokens'].includes(reason))throw Object.assign(new Error('人设回答未完整结束；原档案保留'),{code:'MODEL_OUTPUT_TRUNCATED'});
@@ -336,7 +340,11 @@ export function parsePersonaResponse(response,{messages,spans,previous,identity,
     // Do not mutate the parsed response or normalize explicit invalid values.
     if(omittedDeltaText){
       const uniqueTarget=old.length===1||old.length>1&&(Boolean(old[0].locked)!==Boolean(old[1].locked)||(old[0].through??0)>(old[1].through??0));
-      if(!person||!uniqueTarget)throw fail('text','缺少人物完整正文或唯一旧档案，不能仅凭省略字段建立档案','persona_fields',{personaIssue:'invalid_text'});
+      // A first source-backed B patch already has its full baseline. Only its
+      // optional supplementary text is absent; source-free first biographies
+      // and empty/malformed delta lists still require their original contract.
+      const sourcedDelta=updateContractVersion>=2&&!old.length&&bindings.length>0&&Array.isArray(row.updates)&&row.updates.length>0;
+      if(!person||!uniqueTarget&&!sourcedDelta)throw fail('text','缺少人物完整正文或唯一旧档案，不能仅凭省略字段建立档案','persona_fields',{personaIssue:'invalid_text'});
       diagnostic({phase:'normalize',details:{reason:'persona_delta_text',profileIndex}});
     }
     const id=old[0]?.id??sha256([foldName(name),stage]).slice(0,24);if(seen.has(id))throw fail('name','同一人物重复返回多份档案','persona_duplicate');seen.add(id);
@@ -354,7 +362,7 @@ export function parsePersonaResponse(response,{messages,spans,previous,identity,
       return owners.length===1&&owners[0]===row;
     }):[];
     const development=lifted.length?[...(Array.isArray(row.development)?row.development:[]),...lifted]:row.development;
-    const composed=preserveSources?composePersona({...row,text,development,sourceFloors},{spans:bindings,previous:old[0],messages,developmentMessages,identity:ownIdentity,name,fail}):{text};
+    const composed=preserveSources?composePersona({...row,text,development,sourceFloors},{spans:bindings,previous:old[0],messages,developmentMessages,identity:ownIdentity,name,fail,updateContractVersion}):{text};
     if(composed.composition?.rejectedDevelopment)diagnostic({phase:'validate',level:'warning',details:{profileIndex,accepted:composed.composition.development.length,rejectedRows:composed.composition.rejectedDevelopment}});
     if(composed.composition?.ignoredUpdates)diagnostic({phase:'normalize',details:{profileIndex,normalizedFields:composed.composition.ignoredUpdates}});
     if(!composed.text.trim())throw fail('text','没有可保存的原设定或剧情变化');
@@ -808,9 +816,9 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const liveSuppressed=data.profiles.filter(p=>p.deleted&&p.mergedInto);
       const previous=clone(manualId?(clean?data.manualPlan.workingProfiles:[...data.manualPlan.workingProfiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)),...data.profiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)&&isProtectedProfile(p))]):data.profiles);
       const replayContext={inputLimit:config.dynamicPersonaInputUnits,castingOverrides:data.castingOverrides,identityProfiles:clean?data.manualPlan.identityProfiles:personaRebuildIdentities(data.profiles,data.personaIdentities),...(clean?{materialsThrough:data.manualPlan.replaceFrom-1}:{})};
-      let requestViewVersion=2;
+      let requestViewVersion=3;
       const legacyWorld={...world,entries:world.entries?.filter(s=>s.sourceKind!=='character_card'),spans:world.spans?.filter(s=>s.sourceKind!=='character_card')};
-      const buildPersonaRequest=(economy,messages=range.messages,priorDossier=previous)=>personaRequest({messages,world:requestViewVersion===1?legacyWorld:world,previous:priorDossier,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction,...replayContext,...(economy?{arcReferenceVariant:'off',materialsThrough:-1}:{}),requestViewVersion});
+      const buildPersonaRequest=(economy,messages=range.messages,priorDossier=previous,viewVersion=requestViewVersion)=>personaRequest({messages,world:viewVersion===1?legacyWorld:world,previous:priorDossier,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction,...replayContext,...(economy?{arcReferenceVariant:'off',materialsThrough:-1}:{}),requestViewVersion:viewVersion});
       let request=buildPersonaRequest(false),inputUnits=estimateUnits(JSON.stringify(request.messages));
       // The input limit guards model attention, not a hard wall. Before failing
       // a paid batch, drop the optional attention aids (memory material rows
@@ -822,15 +830,16 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const cacheKey=manualId?`persona-result-${manualId}-${key}`:`persona-result-${key}`;
       personaStep='cached_response';const cached=await bound.read(cacheKey,null);guard();
       let fingerprint=requestFingerprint(request);
-      // Format-only upgrades must not discard a paid, saved result. Rebuild
-      // the exact old view solely to prove its fingerprint, never relax the
-      // source/previous/model guards or translate a cached model response.
+      // Source-policy upgrades must not discard a paid, saved result. Rebuild
+      // each exact old view solely to prove its fingerprint; v2 already had
+      // main-card sources, while v1 predates them. Never relax provenance.
       if(cached?.fingerprint&&cached.fingerprint!==fingerprint&&(cached.response||cached.recovery?.version===PERSONA_RECOVERY_VERSION&&cached.recovery.failed!==true)){
-        requestViewVersion=1;let legacyEconomy=false,legacy=buildPersonaRequest(false),legacyUnits=estimateUnits(JSON.stringify(legacy.messages));
-        if(legacyUnits>config.dynamicPersonaInputUnits){legacyEconomy=true;legacy=buildPersonaRequest(true);legacyUnits=estimateUnits(JSON.stringify(legacy.messages));}
-        if(cached.fingerprint===requestFingerprint(legacy)){
-          request=legacy;inputUnits=legacyUnits;economy=legacyEconomy;fingerprint=cached.fingerprint;
-        }else requestViewVersion=2;
+        for(const viewVersion of [2,1]){
+          let legacyEconomy=false,legacy=buildPersonaRequest(false,range.messages,previous,viewVersion),legacyUnits=estimateUnits(JSON.stringify(legacy.messages));
+          if(legacyUnits>config.dynamicPersonaInputUnits){legacyEconomy=true;legacy=buildPersonaRequest(true,range.messages,previous,viewVersion);legacyUnits=estimateUnits(JSON.stringify(legacy.messages));}
+          if(cached.fingerprint!==requestFingerprint(legacy))continue;
+          requestViewVersion=viewVersion;request=legacy;inputUnits=legacyUnits;economy=legacyEconomy;fingerprint=cached.fingerprint;break;
+        }
       }
       if(request.readingReport)diagnostic({run,task:'persona',phase:'reading',level:request.readingReport.readingFallbacks?'warning':'info',details:request.readingReport});
       view={...view,worldbook:{status:world.status??'ready',cardName:world.cardName,books:[...new Set(world.entries?.map(e=>e.book)??[])],entries:world.entries?.length??0,safeFragments:world.spans?.length??0,audit:request.audit,guide:personaSourceGuide({...world,audit:request.audit})}};emit();
@@ -839,8 +848,18 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       diagnostic({run,task:'persona',phase:'plan',details:{startIndex:next.nextStart,endIndex:next.nextEnd,sourceCount:range.messages.length,inputUnits,inputLimit:config.dynamicPersonaInputUnits,maxTokens:config.dynamicPersonaOutputTokens,plannedRequests:1,modelRole:'dynamicPersona',...request.inputSize}});
       showStep('正在生成／检查人物档案（独立 API）');
       const recoveryGuard=()=>{guard();if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k])))throw canceled();};
+      const savedRecovery=cached?.fingerprint===fingerprint&&cached.recovery?.version===PERSONA_RECOVERY_VERSION&&!cached.recovery.failed?cached.recovery:null;
+      let replayOriginalReply=Boolean(cached?.fingerprint===fingerprint&&cached.response&&(!savedRecovery||savedRecovery.requestCount===0&&!savedRecovery.jobs[0]?.repair&&savedRecovery.jobs[0]?.depth===0));
       const rows=await recoverPersonaBatch({messages:range.messages,previous,fingerprint,cached,inputLimit:config.dynamicPersonaInputUnits,guard:recoveryGuard,
-        makeRequest:(messages,previous)=>buildPersonaRequest(economy,messages,previous),
+        makeRequest:(messages,previous)=>{
+          // Only the already-saved original reply uses its old wire/guards.
+          // Preserve successful recovery candidates but give every pending
+          // model call the current source policy, including legacy repairs.
+          const viewVersion=replayOriginalReply?requestViewVersion:3;replayOriginalReply=false;
+          let next=buildPersonaRequest(economy,messages,previous,viewVersion);
+          if(viewVersion>=3&&!economy&&estimateUnits(JSON.stringify(next.messages))>config.dynamicPersonaInputUnits)next=buildPersonaRequest(true,messages,previous,viewVersion);
+          return next;
+        },
         send:async messages=>{personaStep='model_request';modelRequested=true;const wire={model:config.dynamicPersonaModel,messages,stream:true,...(config.dynamicPersonaJsonMode?{response_format:{type:'json_object'}}:{}),...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})};
          // Corrections may still carry the whole selected source range and can
          // wait for provider quota. Use the configured transport deadline for
@@ -851,7 +870,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
          if(config.dynamicPersonaJsonMode&&!String(reply?.choices?.[0]?.message?.content??'').trim()){diagnostic({run,task:'persona',phase:'response',level:'warning',details:{reason:'persona_json_mode_empty_fallback',modelRole:'dynamicPersona'}});const plain={...wire};delete plain.response_format;reply=await client().chatCompletions(plain,chatOptions);}
          return reply;
         },
-        parse:(response,{messages,previous,request})=>{personaStep='parse_profile';return parsePersonaResponse(response,{messages,spans:request.spans,previous,identity:request.identity,developmentMessages:request.source,stageMode:config.dynamicPersonaMvuMode,preserveSources:true,collectFailures:true,diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});},
+        parse:(response,{messages,previous,request})=>{personaStep='parse_profile';return parsePersonaResponse(response,{messages,spans:request.spans,previous,identity:request.identity,developmentMessages:request.source,stageMode:config.dynamicPersonaMvuMode,preserveSources:true,collectFailures:true,updateContractVersion:request.requestViewVersion>=3?2:1,diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});},
         save:value=>bound.write(cacheKey,value),diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});
       const rejectedProfiles=rows.rejectedProfiles??[];
       diagnostic({run,task:'persona',phase:'validate',level:'info',details:{startIndex:next.nextStart,endIndex:next.nextEnd,personaProfiles:rows.length,rejectedProfiles:rejectedProfiles.length,personaBindings:rows.reduce((n,p)=>n+p.bindings.length,0),
@@ -1141,7 +1160,16 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     if(rules.length)payload.messages.splice(Math.max(0,payload.messages.length-1),0,{role:'system',content:'【强调】只有这几句。和原书、旧态度或后文概括冲突时，只照这里做。\n'+rules.join('\n')});
     if(worldbook.renderText)for(const m of payload.messages)if(m.role==='system'&&typeof m.content==='string'&&m.content.startsWith('【当前路线动态人设补充】'))m.content=worldbook.renderText(m.content);
     const audit=view.worldbook?.audit??[];
-    view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,coverage:{replacedEntries:finalized?.replacedEntries??0,replacedFragments:finalized?.replacedFragments??0,restoredFragments:finalized?.restoredFragments??0,replacedCardFields:finalized?.replacedCardFields??0,rejectedProfiles:rejected.size,owned:audit.filter(a=>a.status==='owned').length,shared:audit.filter(a=>a.status==='shared').length,unresolved:audit.filter(a=>['unresolved','unsupported'].includes(a.status)).length},profiles:selected.map(p=>({id:p.id,name:p.name,through:p.through,reviewStatus:p.composition?.changeCheck?.status,reviewedThrough:personaReviewedThrough(p),chars:p.text.length,mode:used.has(p.id)?'replacement':'supplement'})),text:selected.map(p=>`${p.name}：\n${p.text}`).join('\n\n')}};emit();
+    const recallProfile=p=>{
+      const reviewedThrough=personaReviewedThrough(p);
+      // Metadata from the current, actually inserted projection only. Pending
+      // proposals and hand-edited prose do not certify another recall lane.
+      const currentAttitudes=p.manual||p.locked?[]:(p.composition?.development??[])
+        .filter(d=>d.phase!=='historical'&&typeof d.target==='string'&&d.target.trim()&&typeof d.after==='string'&&d.after.trim()&&Number.isInteger(d.floor)&&d.floor>=0&&Number.isInteger(reviewedThrough)&&d.floor<=reviewedThrough)
+        .map(d=>({target:d.target,scope:d.scope??'',floor:d.floor}));
+      return {id:p.id,name:p.name,through:p.through,reviewStatus:p.composition?.changeCheck?.status,reviewedThrough,currentAttitudes,chars:p.text.length,mode:used.has(p.id)?'replacement':'supplement'};
+    };
+    view={...view,lastInjection:{at:now(),people:selected.map(p=>p.name),replaced:used.size,supplemental:extras.length,coverage:{replacedEntries:finalized?.replacedEntries??0,replacedFragments:finalized?.replacedFragments??0,restoredFragments:finalized?.restoredFragments??0,replacedCardFields:finalized?.replacedCardFields??0,rejectedProfiles:rejected.size,owned:audit.filter(a=>a.status==='owned').length,shared:audit.filter(a=>a.status==='shared').length,unresolved:audit.filter(a=>['unresolved','unsupported'].includes(a.status)).length},profiles:selected.map(recallProfile),text:selected.map(p=>`${p.name}：\n${p.text}`).join('\n\n')}};emit();
     return clone(view.lastInjection);
   }
   return {load,clear,inspect,inspectWorldbook,previewManual,createManual,resumeManual,resumeManualBatch,splitManualBatch,previewApplyManualPrefix,applyManualPrefix,pauseManual,discardManual,wake,process,stop,pause,resume,setStart,edit,setCasting,setPartHistorical,bind,merge,undo,add,profiles,inject,syncMirror,previewDeleteBatch,deletePersonaBatch,restorePersonaBatch,draftDirectives,previewReview,startReview,manageReview,applyReview,reviewMarkdown:()=>personaRefinementMarkdown(data.refinement),interruptReview:()=>Promise.all([refinement.interrupt(),factualReview.interrupt()]),interruptFactReview:()=>factualReview.interrupt(),retryReview:()=>refinement.retry(),processReview:()=>refinement.process(),processFactReview:()=>factualReview.process(),export:()=>clone(data),async dispose(){disposed=true;refinement.dispose();await factualReview.dispose();stop({preserveManual:true});if(job)job.abort();},get state(){return {...clone(publicData()),...view,busy:Boolean(job),lastIndex,plan:plan()};}};
