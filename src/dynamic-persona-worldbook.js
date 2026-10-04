@@ -2,9 +2,11 @@ import {clone,sha256,stableStringify} from './utils.js';
 import {mvuContext,readMvu} from './product-custom-modules.js';
 import {personaSpans,replacePersonaSpans} from './dynamic-persona-stage.js';
 import {personaCardSource,personaPromptSnapshot,personaPromptLayout} from './persona-card-source.js';
+import {personaSourceIndex,personaSharedTitle} from './persona-source-index.js';
+import {foldName} from './persona-identity.js';
 
 export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=>null,stageMode=()=> 'narrative'}={}){
-  const markers=new Map();let sequence=0,cardCapture=null;
+  const markers=new Map();let sequence=0,cardCapture=null,loadedOwnership=null;
   const attachedManagers=new WeakMap();
   const contextKey=()=>stableStringify(context());
   const markerPattern=()=>/\[\[SHIYI_PERSONA:([a-f0-9]+):([a-f0-9]+):([a-f0-9]+)\]\]/g;
@@ -91,11 +93,13 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=
     return {status:'saved',name};
   }
   async function applyLoaded(payload,profiles){
+    loadedOwnership=null;
     if(!payload||typeof payload!=='object'||!profiles.length)return;
     const binding=contextKey(),mode=stageMode(),narrative=mode!=='strict';
     const dynamic=!narrative&&profiles.some(p=>p.bindings?.some(b=>b.stage!=='static'));
     let data={};if(dynamic){try{data=await stageData({foreground:true});}catch{return;}}check();if(binding!==contextKey()||mode!==stageMode())return;
-    const token=sha256([binding,++sequence,Date.now()]).slice(0,24),prepared={context:binding,mode,originals:new Map(),entries:new Map(),profiles:new Map(profiles.map(p=>[p.id,sha256(p)]))};
+    const token=sha256([binding,++sequence,Date.now()]).slice(0,24),prepared={context:binding,mode,originals:new Map(),entries:new Map(),profiles:new Map(profiles.map(p=>[p.id,sha256(p)])),ownershipRejected:new Set()};
+    loadedOwnership=prepared;
     const owned=new Map();for(const p of profiles)for(const b of p.bindings??[]){if(b.sourceKind==='character_card')continue;const key=stableStringify([b.book,b.uid]);if(!owned.has(key))owned.set(key,[]);if(!owned.get(key).includes(p))owned.get(key).push(p);}
     for(const key of ['globalLore','characterLore','chatLore','personaLore']){
       if(!Array.isArray(payload[key]))continue;
@@ -103,8 +107,21 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=
       const entries=payload[key],updated=entries.map(entry=>{
         const book=entry.world??entry.book,uid=entry.uid;
         const candidates=owned.get(stableStringify([book,uid]));if(!candidates?.length)return entry;
-        const spans=personaSpans({book,uid,name:entry.comment??entry.name,content:entry.content},data,{allBranches:narrative}),replacements={};
-        for(const span of spans){const owners=candidates.filter(p=>p.bindings?.some(b=>b.book===book&&b.uid===uid&&b.hash===span.hash&&(narrative||b.id===span.id&&b.stage===span.stage)));
+        const name=entry.comment??entry.name??'';
+        if(entry.enabled===false||entry.disable===true||personaSharedTitle(name)){for(const p of candidates)prepared.ownershipRejected.add(p.id);return entry;}
+        const source={book,uid,name,content:entry.content,enabled:true,keys:Array.isArray(entry.strategy?.keys)?entry.strategy.keys:Array.isArray(entry.key)?entry.key:Array.isArray(entry.keys)?entry.keys:[]};
+        const spans=personaSpans(source,data,{allBranches:narrative});
+        // Old saved bindings are provenance, not permanent ownership. Recheck
+        // the entry metadata already loaded by the host; this does not read a
+        // worldbook, history or model at send time. A renamed/shared/mixed
+        // source must remain original even when its text hash is unchanged.
+        const indexed=personaSourceIndex({entries:[source],spans},{previous:profiles}),replacements={};
+        // Ownership changes apply to the bound entry identity even when its
+        // body also changed. Hashes decide safe text replacement below; they
+        // cannot authorize a stale dossier to bypass a metadata rejection.
+        for(const p of candidates)if(!indexed.spans.length||indexed.spans.some(s=>s.ownerKey!==foldName(p.name)))prepared.ownershipRejected.add(p.id);
+        for(const span of indexed.spans){const matching=candidates.filter(p=>p.bindings?.some(b=>b.book===book&&b.uid===uid&&b.hash===span.hash&&(narrative||b.id===span.id&&b.stage===span.stage))),owners=matching.filter(p=>span.ownerKey===foldName(p.name));
+          for(const p of matching)if(!owners.includes(p)||owners.length!==1)prepared.ownershipRejected.add(p.id);
           if(owners.length!==1)continue;const p=owners[0];
           const key=`${p.id}:${span.id}`;prepared.originals.set(key,span.text);prepared.entries.set(key,stableStringify([book,uid]));replacements[span.id]=`\n[[SHIYI_PERSONA:${token}:${key}]]\n`;
         }
@@ -119,8 +136,14 @@ export function createPersonaWorldbook({host=globalThis,check=()=>{},context=()=
     while(markers.size>128)markers.delete(markers.keys().next().value);
   }
   async function finalize(payload,profiles){
+    const ownership=loadedOwnership;loadedOwnership=null;
     if(!Array.isArray(payload?.messages))return;
     const currentCard=personaCardSource(mvuContext(host)??{}),rejectedSources=new Set(profiles.filter(p=>p.bindings?.some(b=>b.sourceKind==='character_card'&&!currentCard.spans.some(s=>s.cardId===b.cardId&&s.field===b.field&&s.id===b.id&&s.hash===b.hash))).map(p=>p.id));
+    // An activated source with changed/ambiguous ownership cannot fall back to
+    // injecting the same polluted dossier beside its now-preserved original.
+    // Consume only this request's receipt; another chat or dossier revision
+    // must not inherit the rejection.
+    if(ownership?.context===contextKey()&&ownership.mode===stageMode())for(const p of profiles)if(ownership.ownershipRejected.has(p.id)&&ownership.profiles.get(p.id)===sha256(p))rejectedSources.add(p.id);
     const sourceKey=b=>stableStringify([b.cardId,b.field,b.hash]),covered=new Map(),profileById=new Map(profiles.map(p=>[p.id,p])),stalePreparedProfiles=new Set();
     // A card-bound dossier is atomic across its owned fields and worldbook
     // entries. Without complete request provenance, supplemental fallback

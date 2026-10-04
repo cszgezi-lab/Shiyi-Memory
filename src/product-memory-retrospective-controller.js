@@ -50,7 +50,8 @@ export async function runMemoryRetrospective({workspace,snapshot,client,settings
   await persist();
   async function request(bucket,key,messages){
     const payload={model:client.profile.model,messages,...summaryTransportOptions(settings),...(settings.outputBudgetUnits>0?{max_tokens:settings.outputBudgetUnits}:{})};
-    if(estimateModelInputUnits(payload)>(Number(settings.inputBudgetUnits)||60000))throw Object.assign(new Error('完整复盘材料超过当前输入预算，未发送；请调整输入预算后继续'),{code:'RETROSPECTIVE_BUDGET'});
+    const inputUnits=estimateModelInputUnits(payload),inputLimit=Number(settings.inputBudgetUnits)||60000;
+    if(inputUnits>inputLimit)throw Object.assign(new Error('完整复盘材料超过当前输入预算，未发送；请调整输入预算后继续'),{code:'RETROSPECTIVE_BUDGET',details:{reason:'retrospective_input_budget',stage:'prepare',inputUnits,inputLimit,modelRequested:false}});
     const requestHash=sha256(payload);let cached=bucket[key];
     if(cached?.requestHash!==requestHash||cached?.invalid)cached=null;
     if(!cached){

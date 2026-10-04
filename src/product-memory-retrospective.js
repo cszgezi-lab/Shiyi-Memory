@@ -19,7 +19,7 @@ const fingerprint=r=>sha256(clean(r));
 export const retrospectiveData=clean;
 export const retrospectiveRows=records=>rows(records).map(clean);
 const pairKey=d=>`${d.oldId}\u0000${d.newId}`;
-const error=(message,details={})=>Object.assign(new Error(`记忆复盘：${message}`),{code:'RETROSPECTIVE_INVALID',details});
+const error=(message,details={})=>Object.assign(new Error(`记忆复盘：${message}`),{code:'RETROSPECTIVE_INVALID',details:{reason:'retrospective_validation',stage:'validate',...details}});
 const names=r=>[...new Set([...characterRecordSubjects(r),...explicitSubjectNames(r.participants),...(r.entities??[]).filter(e=>e?.kind==='人物').map(e=>e.name)].filter(n=>typeof n==='string'&&n.trim()).map(foldName))];
 const catalogItem=r=>({id:r.id,category:r.category,subjects:names(r),...(r.category==='entityFactChanges'?{field:factKey(r)}:{}),floors:sourceFloors(r),title:recordTitle(r).slice(0,80)});
 
@@ -36,21 +36,29 @@ export function planMemoryRetrospective(records,profiles=[],{maxChars=60000}={})
   const personas=(Array.isArray(profiles)?profiles:Object.values(profiles??{})).map((p,i)=>({...clean(p),id:`persona:${p.id??p.name??i}`,category:'acceptedPersona'}));
   for(const p of personas){if(seen.has(p.id))throw error('人物档案编号重复');seen.add(p.id);}
   const all=[...memory,...personas],catalog=all.map(r=>r.category==='acceptedPersona'?{id:r.id,category:r.category,subjects:[pname(r)].filter(Boolean),floors:[],title:String(r.name??r.id).slice(0,80)}:catalogItem(r));
-  const reserve=RETROSPECTIVE_SCAN_PROMPT.length+1000,capacity=Math.floor((maxChars-reserve)/2),chunks=[];
+  // Rows are JSON inside the user message, which is escaped again in the wire
+  // envelope. Count that exact contribution before packing, not just row JSON.
+  const wireChars=r=>JSON.stringify(JSON.stringify(r)).length-2+1;
+  const coverage=included=>({allRecordsInChunk:true,catalogTotal:catalog.length,catalogIncluded:included,omittedCatalogCount:catalog.length-included,crossChunk:included<catalog.length?'bounded-catalog':'complete-catalog'});
+  const envelope=JSON.stringify(retrospectiveScanMessages(null,{records:[],personas:[],catalog:[],coverage:coverage(0)})).length;
+  // Reserve room for changes in the coverage counters as the catalog grows.
+  const available=maxChars-envelope-32,capacity=Math.floor(available/2),chunks=[];
   let active=[],size=2;
-  for(const r of all){const n=JSON.stringify(r).length+1;if(n>capacity)throw error(`单条已存记录过长，不能在预算内完整复盘：${r.id}`,{recordId:r.id,chars:n,maxChars});if(active.length&&size+n>capacity){chunks.push(active);active=[];size=2;}active.push(r);size+=n;}
+  for(const r of all){const n=wireChars(r);if(n+2>available)throw error(`单条已存记录过长，不能在预算内完整复盘：${r.id}`,{reason:'retrospective_record_too_large',stage:'prepare',recordId:r.id,requestChars:n,maxChars});if(active.length&&size+n>capacity){chunks.push(active);active=[];size=2;}active.push(r);size+=n;}
   if(active.length)chunks.push(active);
   const requests=chunks.map((items,index)=>{
     const refs=items.map(r=>r.id),own=new Set(refs),subjects=new Set(catalog.filter(c=>own.has(c.id)).flatMap(c=>c.subjects));
     const ranked=[...catalog].sort((a,b)=>Number(own.has(b.id))-Number(own.has(a.id))||Number(b.subjects.some(n=>subjects.has(n)))-Number(a.subjects.some(n=>subjects.has(n)))||a.id.localeCompare(b.id));
+    const recordChars=items.reduce((n,r)=>n+wireChars(r),2),catalogCapacity=Math.max(0,Math.min(capacity,available-recordChars));
     let used=2;const directory=[];
-    for(const item of ranked){const n=JSON.stringify(item).length+1;if(used+n>capacity)continue;directory.push(item);used+=n;}
-    const visible=new Set(directory.map(c=>c.id)),omitted=catalog.length-directory.length;
-    const request={id:`scan-${index+1}`,refs,records:items.filter(r=>r.category!=='acceptedPersona'),personas:items.filter(r=>r.category==='acceptedPersona'),catalog:directory,coverage:{allRecordsInChunk:true,catalogTotal:catalog.length,catalogIncluded:directory.length,omittedCatalogCount:omitted,crossChunk:omitted?'bounded-catalog':'complete-catalog'}};
+    for(const item of ranked){const n=wireChars(item);if(used+n>catalogCapacity)continue;directory.push(item);used+=n;}
+    const visible=new Set(directory.map(c=>c.id));
+    const request={id:`scan-${index+1}`,refs,records:items.filter(r=>r.category!=='acceptedPersona'),personas:items.filter(r=>r.category==='acceptedPersona'),catalog:directory,coverage:coverage(directory.length)};
     // Always preserve this chunk's references, even when its metadata was too
     // verbose for the catalog. They are already available as complete rows.
     request.availableRefs=[...new Set([...refs,...visible])];
-    if(JSON.stringify(retrospectiveScanMessages(null,request)).length>maxChars)throw error('完整记录及目录超出单次预算，未发出请求',{requestId:request.id,maxChars});
+    const requestChars=JSON.stringify(retrospectiveScanMessages(null,request)).length;
+    if(requestChars>maxChars)throw error('完整记录及目录超出单次预算，未发出请求',{reason:'retrospective_input_budget',stage:'prepare',requestId:request.id,requestChars,maxChars});
     return request;
   });
   return {version:1,fingerprint:sha256({memory,personas}),recordCount:memory.length,personaCount:personas.length,requestCount:requests.length,requests,coverage:{fullRecordScan:true,crossChunkCompleteCatalog:requests.every(r=>!r.coverage.omittedCatalogCount),limitedRequests:requests.filter(r=>r.coverage.omittedCatalogCount).length}};

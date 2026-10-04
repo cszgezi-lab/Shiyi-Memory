@@ -806,7 +806,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function reviewMemoryConsistency(){
     await prepareSummaryChat();
-    if(personaLaunch||state.dynamicPersona?.busy||foregroundBusy())throw new Error('请等当前人物任务或聊天回复完成后再复盘');
+    if(personaLaunch||state.dynamicPersona?.busy||foregroundBusy()){
+      const personaBusy=Boolean(personaLaunch||state.dynamicPersona?.busy);
+      throw Object.assign(new Error(personaBusy?'人物任务尚未结束，请暂停或等它完成后再复盘':'聊天回复尚未结束，请等回复完成后再复盘'),{code:'RETROSPECTIVE_BUSY',details:{stage:'ui',reason:personaBusy?'retrospective_persona_busy':'retrospective_chat_busy',modelRequested:false}});
+    }
     const op=begin();retrospectiveOperation=op;
     try{return await logged('memory-retrospective',async()=>{
       const snapshot=async()=>{

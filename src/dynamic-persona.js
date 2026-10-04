@@ -749,7 +749,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
     view={...view,status:'running',message:'正在检查人设任务与聊天楼层…'};emit();
     clearTimeout(timer);timer=null;wakePending=false;
     const guard=()=>{check(bound);if(controller.signal.aborted)throw canceled();};
-    let key,success=false,settled=false,personaStep='history_tail',modelRequested=false;
+    let key,success=false,settled=false,personaStep='history_tail',modelRequested=false,repairCalls=0;
     const finish=()=>{
       if(settled)return;
       settled=true;
@@ -793,7 +793,11 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       }
     }
     try{return await log('persona',async run=>{try{
-      if(!retry&&historyRetryAt>now())return {phase:'waiting',level:'info',diagnostics:{reason:'history_retry_wait',retryDelayMs:historyRetryAt-now(),modelRequested:false}};
+      if(!retry&&historyRetryAt>now()){
+        const retryDelayMs=historyRetryAt-now();
+        view={...view,status:'waiting',message:`聊天原文暂未就绪，等待 ${Math.ceil(retryDelayMs/1000)} 秒后重读；已有档案保留`};
+        return {message:view.message,phase:'waiting',level:'info',diagnostics:{reason:'history_retry_wait',retryDelayMs,modelRequested:false}};
+      }
       lastIndex=await historyTail();guard();
       const pending=manualId?personaManualPending(data.manualPlan):null;
       const next=manualId&&pending?{nextStart:pending.startIndex,nextEnd:pending.endIndex,ready:pending.endIndex<=lastIndex}:plan();
@@ -871,7 +875,10 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
          return reply;
         },
         parse:(response,{messages,previous,request})=>{personaStep='parse_profile';return parsePersonaResponse(response,{messages,spans:request.spans,previous,identity:request.identity,developmentMessages:request.source,stageMode:config.dynamicPersonaMvuMode,preserveSources:true,collectFailures:true,updateContractVersion:request.requestViewVersion>=3?2:1,diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});},
-        save:value=>bound.write(cacheKey,value),diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});
+        save:value=>bound.write(cacheKey,value),diagnostic:event=>{
+          if(event.phase==='repair_request')showStep(`正在补答第 ${++repairCalls} 次 · 已保留 ${event.details?.accepted??0} 份，剩余 ${event.details?.pendingItems??0} 项`);
+          diagnostic({run,task:'persona',level:'info',...event});
+        }});
       const rejectedProfiles=rows.rejectedProfiles??[];
       diagnostic({run,task:'persona',phase:'validate',level:'info',details:{startIndex:next.nextStart,endIndex:next.nextEnd,personaProfiles:rows.length,rejectedProfiles:rejectedProfiles.length,personaBindings:rows.reduce((n,p)=>n+p.bindings.length,0),
         // Whether the model rewrote retained original-book sentences or only

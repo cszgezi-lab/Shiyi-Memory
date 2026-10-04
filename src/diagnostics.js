@@ -2,6 +2,11 @@ import {PERSONA_ISSUES} from './persona-validation.js';
 // Shared, content-free diagnostics. Never serialize Error.message, API bodies,
 // headers, URLs, user filenames or arbitrary server error objects into exports.
 export const DIAGNOSTIC_REASONS = Object.freeze({
+  retrospective_validation:'复盘材料或返回格式未通过检查，原记录保留',
+  retrospective_record_too_large:'单条已存记录超过复盘输入预算，未截断或发送',
+  retrospective_input_budget:'完整复盘请求超过输入预算，未发送',
+  retrospective_persona_busy:'人物任务尚未结束，本次未启动复盘',
+  retrospective_chat_busy:'聊天回复尚未结束，本次未启动复盘',
   summary_batch_split:'已将所选未完成总结批次按完整楼层拆小，其它批次与已完成结果保留，未调用模型',
   summary_prefix_applied:'已按确认终点应用连续完成的总结前段，剩余任务已取消，旧结果已归档，自动接续暂停',
   summary_batches_deleted:'已按所选范围或已确认的级联范围撤下总结批次，原文保留',
@@ -140,6 +145,8 @@ files.add('product-quality-evidence.js');
 files.add('product-knowledge-review.js');
 files.add('persona-composition.js');
 files.add('persona-response-recovery.js');
+files.add('product-memory-retrospective.js');
+files.add('product-memory-retrospective-controller.js');
 const verificationCodes=new Set(['invalid_shape','missing_evidence','quote_not_in_source','protected_or_unknown_field','source_mismatch','source_removal','unknown_or_duplicate_target','unknown_category','missing_sources','duplicate_id']);
 const verificationPath=/^(?:verification|reviewedSourceIds|reviews|checks|updates|repartitions|(?:edits|splitEvents|updates|additions|repartition)\[\d{1,6}\](?:\.events\[\d{1,6}\])?(?:\.(?:value|sources)|\.evidence\[\d{1,6}\]\.(?:sourceId|quote))?)$/;
 let sequence=0;

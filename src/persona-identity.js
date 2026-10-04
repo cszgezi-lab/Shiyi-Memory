@@ -6,16 +6,32 @@ import {sha256} from './utils.js';
 export {foldName};
 const personName=value=>validTerm(value)&&!/[\n，。！？；：:<>%=|]/.test(value)&&value.length>=1&&value.length<=32;
 const aliasName=value=>personName(value)||validTerm(value)&&/^[\p{Script=Han}]$/u.test(value);
-const genericTitle=/^(?:人物|角色|人设|人設|基本|基础|基礎|背景|外貌|性格|兴趣爱好|興趣愛好|爱好|愛好|阶段|階段|资料|資料|设定|設定|档案|檔案|关系|關係|行为|行為|描写|描寫|.*规则|.*規則)$/;
+// Titles are metadata, not evidence that every noun names a person. Keep
+// generic personal sections separate from public/world sections: a personal
+// section can still be owned through an explicit name/key in the source index.
+const categoryWords=/人物|角色|人设|人設|档案|檔案|外貌|性格|口吻|语料|語料|衣着|衣著|爱好|愛好|兴趣|興趣|基础|基礎|基本|资料|資料|设定|設定|背景|关系|關係|行为|行為|描写|描寫|身份|能力|属性|屬性|说明|說明|信息|資訊|简介|簡介|介绍|介紹|描述|性别|性別|年龄|年齡|阶段|階段|主卡|与|與|和|及|\s|[·・•:：/、_-]|profile|appearance|personality|dialogue|description/gi;
+export const personaCategoryTitle=value=>!String(value??'').trim().replace(categoryWords,'');
+const publicTitle=/规则|規則|系统|系統|世界观|世界觀|世界设定|世界設定|世界线|世界線|变量|變量|初始化|状态栏|狀態欄|提示词|提示詞|多人|全体|全體|家庭|家族|地图|地圖|剧情大纲|劇情大綱|all\s*characters|world\s*rules|family|map\b/i;
+const publicHeading=/^(?:(?:当前|當前|原|新|旧|舊|世界|环境|環境|场景|場景|背景)[·:：\s]*)*(?:迷宫(?:地下城)?|迷宮(?:地下城)?|地下城|种族(?:多样性|概览|總覽|总览)|種族(?:多樣性|概覽|總覽)|语言(?:隔阂|障碍|概览|总览)|語言(?:隔閡|障礙|概覽|總覽)|世界(?:背景|历史|歷史|地理)|dungeon|racial\s+diversity|language\s+barriers?)(?:[·:：\s]*(?:设定|設定|说明|說明|介绍|介紹|规则|規則))?$/iu;
+export const personaSharedTitle=value=>publicTitle.test(String(value??''))||publicHeading.test(String(value??'').trim());
+const genericTitle=value=>personaCategoryTitle(value)||personaSharedTitle(value);
 export function personaTitleNames(title){
   // Leading bracket groups are metadata only when a real title follows.
   // A standalone [Alice] remains a name; no card-specific prefix list.
   let value=String(title??'').trim();
   const prefix=/^(?:(?:\[[^\]\r\n]+\]|【[^】\r\n]+】)\s*)+/.exec(value);
   if(prefix&&value.slice(prefix[0].length).trim())value=value.slice(prefix[0].length);
-  return value.split(/[·|｜:：\[\]【】（）()/_—]+/u).map(s=>s.trim().replace(/(?:的)?(?:人物设定|人物設定|人物档案|人物檔案|基础资料|基礎資料|基础档案|基礎檔案|人设|人設|档案|檔案|性格|阶段|階段|语料|語料|口吻|外貌|profile|dialogue|appearance)$/iu,'').trim()).filter(s=>personName(s)&&!genericTitle.test(s));
+  if(personaSharedTitle(value))return [];
+  return value.split(/[|｜:：\[\]【】（）()/_—]+/u).map(s=>{
+    s=s.trim();
+    // Middle dots inside a transliterated full name are part of its identity.
+    // Remove only a trailing known section, not the surname itself.
+    let suffix;while((suffix=/[·・•]([^·・•]+)$/u.exec(s))&&personaCategoryTitle(suffix[1]))s=s.slice(0,suffix.index).trim();
+    return s.replace(/(?:的)?(?:人物设定|人物設定|人物档案|人物檔案|基础资料|基礎資料|基础档案|基礎檔案|人设|人設|档案|檔案|性格|阶段|階段|语料|語料|口吻|外貌|profile|dialogue|appearance)$/iu,'').trim();
+  }).filter(s=>personName(s)&&!genericTitle(s));
 }
 function shortNames(name){
+  if(/^[\p{Script=Han}]{2,8}(?:[·・•][\p{Script=Han}]{2,8})+$/u.test(name))return [name.split(/[·・•]/u)[0]];
   if(!/^[\p{Script=Han}]{3,8}$/u.test(name))return [];
   const words=[];
   for(let i=1;i<name.length-1;i++)words.push(name.slice(i));
@@ -27,7 +43,7 @@ function shortNames(name){
 export function personaIdentity({spans=[],previous=[],dictionary={entries:[]},aliases='',source=''}={}){
   const people=new Map(),overrides=manualDictionary(aliases),terms=dictionary.entries??[];
   const add=(name,extra={})=>{
-    if(!personName(name)||genericTitle.test(name))return null;
+    if(!personName(name)||genericTitle(name))return null;
     const key=foldName(name).trim();let p=people.get(key);
     if(!p){p={key,name:name.trim(),characterId:extra.characterId??sha256(['persona-character',key]).slice(0,24),aliases:new Set(),titleNames:new Set(),profiles:[]};people.set(key,p);}
     if(extra.profile)p.profiles.push(extra.profile);
@@ -46,7 +62,7 @@ export function personaIdentity({spans=[],previous=[],dictionary={entries:[]},al
     if(bound&&!t.manual&&t.kind==='人物'&&!canonical?.profiles.length)continue;
     add(t.name,{aliases:t.aliases});
   }
-  const titleNames=spans.flatMap(s=>personaTitleNames(s.name).slice(0,1));
+  const titleNames=spans.flatMap(s=>personaTitleNames(s.name));
   for(const name of titleNames.sort((a,b)=>b.length-a.length)){
     const known=[...people.values()].filter(p=>p.key===foldName(name)||[...p.aliases,...shortNames(p.name)].some(a=>foldName(a)===foldName(name)));
     if(known.length===1){known[0].titleNames.add(name);if(!known[0].profiles.some(row=>row.aliasPolicy==='manual'))known[0].aliases.add(name);continue;}
