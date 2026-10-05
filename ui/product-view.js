@@ -279,8 +279,8 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
        const status=node.querySelector('[data-persona-task-status]');
        const progress=unfinished?`已完成 ${manual.items.filter(b=>b.status==='saved').length}/${manual.items.length} 批；可应用连续已完成前段。`:'';
        const failureCode=current?.errorCode??d.failureDetails?.code;
-       const reason=Number.isInteger(d.failureDetails?.status)?`接口返回 HTTP ${d.failureDetails.status}`:({TIMEOUT:'接口响应超时',PROVIDER_HTTP_ERROR:'接口请求失败',PERSONA_RESPONSE_INVALID:'人物回答未通过检查',MODEL_OUTPUT_TRUNCATED:'模型回答被截断',INPUT_BUDGET_EXCEEDED:'本批超过输入预算',HISTORY_UNAVAILABLE:'聊天原文暂未就绪'})[failureCode]??String(current?.message??d.message??'未完成').split(/[。；]/)[0].slice(0,100);
-       const detail=retrying?`${reason}；将在 ${new Date(current.retryAt).toLocaleTimeString()} 自动重试（${Math.min(current.attempts??1,3)}/3）。`:current?.status==='failed'||d.status==='failed'?`${reason}，详情见日志；可直接继续。`:running||d.status==='saved'?d.message:'';
+       const reason=failureText({code:failureCode,details:{...d.failureDetails,modelRole:'dynamicPersona'},message:current?.message??d.message});
+       const detail=retrying?`${reason} 将在 ${new Date(current.retryAt).toLocaleTimeString()} 自动重试（${Math.min(current.attempts??1,3)}/3）。`:current?.status==='failed'||d.status==='failed'?`${reason} 处理后可继续未完成批次。`:running||d.status==='saved'?d.message:'';
        const queued=unfinished&&manual.status==='running'||settings.dynamicPersonaEnabled&&!d.paused;
        status.textContent=`${running?'':`${label}${range}。`}${blocked?`${blocked}${queued?'；恢复后自动接续':''}。`:''}${s.requestQueueNotice?.startsWith('动态人设：')&&running?`${s.requestQueueNotice}。`:''}${detail??''}${progress}`;
        node.querySelector('[data-summary-state]').textContent=label;
