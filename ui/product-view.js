@@ -625,10 +625,14 @@ $('[data-memory-page]')?.addEventListener('change',()=>{memoryCurrentPage=Math.m
    setPage(kind);journalView.selectPerson?.(kind,name);
  }});
  extractionView=mountExtractionView({panel,app,run,host,download});
+ const tagSettings=$('[data-tag-settings]');
+ const paintOpenedTags=()=>{if(tagSettings?.open)extractionView?.paint(readViewState(app));};
+ tagSettings?.addEventListener('toggle',paintOpenedTags);
+ paintOpenedTags();
  knowledgeView=mountKnowledgeView({panel,app,run,host});
  floating=mountFloatingProduct({panel,documentRef,host,version:PRODUCT_VERSION,onOpen:()=>{painting.flush();void app.followCurrentChat?.().catch(e=>feedback(`聊天记忆读取未完成：${failureText(e)}`,'warning'));},onClose:()=>painting.request(),onStop:()=>run(()=>app.stop()),onLogs:()=>{openLogs();}});floating.setNotice(noticeText,noticeLevel);
  let destroyed=false;
  Promise.resolve(app.loadApiSettings?.()).then(()=>{if(!destroyed){fill({apiOnly:true});paint(readViewState(app));return app.startChatTracking?.();}}).catch(e=>{if(!destroyed)feedback(`读取全局配置失败：${failureText(e)}`,'error');});
  return {panel,application:app,controller:controller??app.core,setPage,floating,openMemoryRecord,
-   async destroy(){destroyed=true;painting.dispose();clearTimeout(timer);resetAllModels();floating.destroy();await app.dispose?.();}};
+   async destroy(){destroyed=true;tagSettings?.removeEventListener('toggle',paintOpenedTags);painting.dispose();clearTimeout(timer);resetAllModels();floating.destroy();await app.dispose?.();}};
 }
