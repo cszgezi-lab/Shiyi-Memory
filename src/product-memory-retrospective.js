@@ -7,6 +7,9 @@ import {foldName} from './name-fold.js';
 // Review lifecycle and current-state links differ from field-level quality
 // edits. Keep a reversible sidecar; never rewrite the original summary rows.
 export const RETROSPECTIVE_STORE_KEY='memory-retrospective-v1';
+// Private policy: main-summary tuning must not turn a small JSON audit into a
+// huge output reservation. No settings migration or extra customer controls.
+export const RETROSPECTIVE_POLICY=Object.freeze({version:2,scanChars:48000,catalogChars:8000,maxRequestChars:120000,scanOutputTokens:4096,verifyOutputTokens:8192,rpmLimit:2,minIntervalMs:30000});
 const categories=['events','awarenessChanges','entityFactChanges','relationshipChanges','personaChanges','commitmentChanges','performanceHints','summaryView','conflicts'];
 const kinds=new Set(['replace','duplicate','coexist','uncertain']);
 const excluded=new Set(['originalSource','history','coverage','rawMessages','messages','snapshots','checkpoint','checkpoints']);
@@ -29,39 +32,62 @@ export const RETROSPECTIVE_SCAN_PROMPT=`你是已保存剧情记忆的复盘员�
 
 /** Every saved row is sent in full once. A metadata catalog connects chunks;
  * bounded catalogs explicitly disclose omitted cross-chunk comparisons. */
-export function planMemoryRetrospective(records,profiles=[],{maxChars=60000}={}){
+export function planMemoryRetrospective(records,profiles=[],{maxChars=60000,relatedCatalog=false,catalogChars=8000,maxRecordChars=maxChars,includeRefs=null,idPrefix='scan'}={}){
   if(!Number.isFinite(maxChars)||maxChars<8000)throw error('单次输入预算过小，至少需要 8000 字符');
   const memory=rows(records).map(clean),seen=new Set();
   for(const r of memory){if(typeof r.id!=='string'||!r.id||seen.has(r.id))throw error('当前记录编号缺失或重复');seen.add(r.id);}
   const personas=(Array.isArray(profiles)?profiles:Object.values(profiles??{})).map((p,i)=>({...clean(p),id:`persona:${p.id??p.name??i}`,category:'acceptedPersona'}));
   for(const p of personas){if(seen.has(p.id))throw error('人物档案编号重复');seen.add(p.id);}
   const all=[...memory,...personas],catalog=all.map(r=>r.category==='acceptedPersona'?{id:r.id,category:r.category,subjects:[pname(r)].filter(Boolean),floors:[],title:String(r.name??r.id).slice(0,80)}:catalogItem(r));
+  const selected=includeRefs?new Set(includeRefs):null,metadata=new Map(catalog.map(r=>[r.id,r]));
+  const offered=all.filter(r=>!selected||selected.has(r.id));
+  if(relatedCatalog)offered.sort((a,b)=>{
+    const key=r=>{const c=metadata.get(r.id);return `${c.category}\u0000${[...c.subjects].sort().join('\u0000')}\u0000${c.field??''}`;};
+    return key(a).localeCompare(key(b))||Math.min(...sourceFloors(a),Infinity)-Math.min(...sourceFloors(b),Infinity)||a.id.localeCompare(b.id);
+  });
   // Rows are JSON inside the user message, which is escaped again in the wire
   // envelope. Count that exact contribution before packing, not just row JSON.
   const wireChars=r=>JSON.stringify(JSON.stringify(r)).length-2+1;
   const coverage=included=>({allRecordsInChunk:true,catalogTotal:catalog.length,catalogIncluded:included,omittedCatalogCount:catalog.length-included,crossChunk:included<catalog.length?'bounded-catalog':'complete-catalog'});
   const envelope=JSON.stringify(retrospectiveScanMessages(null,{records:[],personas:[],catalog:[],coverage:coverage(0)})).length;
   // Reserve room for changes in the coverage counters as the catalog grows.
-  const available=maxChars-envelope-32,capacity=Math.floor(available/2),chunks=[];
+  const available=maxChars-envelope-64,capacity=relatedCatalog?Math.max(1,available-catalogChars):Math.floor(available/2),hardAvailable=maxRecordChars-envelope-64,chunks=[];
   let active=[],size=2;
-  for(const r of all){const n=wireChars(r);if(n+2>available)throw error(`单条已存记录过长，不能在预算内完整复盘：${r.id}`,{reason:'retrospective_record_too_large',stage:'prepare',recordId:r.id,requestChars:n,maxChars});if(active.length&&size+n>capacity){chunks.push(active);active=[];size=2;}active.push(r);size+=n;}
+  for(const r of offered){const n=wireChars(r);if(n+2>hardAvailable)throw error(`单条已存记录过长，不能在预算内完整复盘：${r.id}`,{reason:'retrospective_record_too_large',stage:'prepare',recordId:r.id,requestChars:n,maxChars:maxRecordChars});if(active.length&&size+n>capacity){chunks.push(active);active=[];size=2;}active.push(r);size+=n;}
   if(active.length)chunks.push(active);
   const requests=chunks.map((items,index)=>{
     const refs=items.map(r=>r.id),own=new Set(refs),subjects=new Set(catalog.filter(c=>own.has(c.id)).flatMap(c=>c.subjects));
-    const ranked=[...catalog].sort((a,b)=>Number(own.has(b.id))-Number(own.has(a.id))||Number(b.subjects.some(n=>subjects.has(n)))-Number(a.subjects.some(n=>subjects.has(n)))||a.id.localeCompare(b.id));
-    const recordChars=items.reduce((n,r)=>n+wireChars(r),2),catalogCapacity=Math.max(0,Math.min(capacity,available-recordChars));
+    const ranked=catalog.filter(c=>!relatedCatalog||!own.has(c.id)&&(c.subjects.some(n=>subjects.has(n))||items.some(r=>r.category===c.category&&recordTitle(r)===c.title)))
+      .sort((a,b)=>Number(own.has(b.id))-Number(own.has(a.id))||Number(b.subjects.some(n=>subjects.has(n)))-Number(a.subjects.some(n=>subjects.has(n)))||a.id.localeCompare(b.id));
+    const recordChars=items.reduce((n,r)=>n+wireChars(r),2),chunkLimit=relatedCatalog&&items.length===1&&recordChars>available?maxRecordChars:maxChars;
+    const chunkAvailable=chunkLimit-envelope-64,catalogCapacity=Math.max(0,Math.min(relatedCatalog?catalogChars:capacity,chunkAvailable-recordChars));
     let used=2;const directory=[];
     for(const item of ranked){const n=wireChars(item);if(used+n>catalogCapacity)continue;directory.push(item);used+=n;}
     const visible=new Set(directory.map(c=>c.id));
-    const request={id:`scan-${index+1}`,refs,records:items.filter(r=>r.category!=='acceptedPersona'),personas:items.filter(r=>r.category==='acceptedPersona'),catalog:directory,coverage:coverage(directory.length)};
+    const request={id:`${idPrefix}-${index+1}`,refs,records:items.filter(r=>r.category!=='acceptedPersona'),personas:items.filter(r=>r.category==='acceptedPersona'),catalog:directory,coverage:coverage(relatedCatalog?new Set([...refs,...visible]).size:directory.length)};
     // Always preserve this chunk's references, even when its metadata was too
     // verbose for the catalog. They are already available as complete rows.
     request.availableRefs=[...new Set([...refs,...visible])];
     const requestChars=JSON.stringify(retrospectiveScanMessages(null,request)).length;
-    if(requestChars>maxChars)throw error('完整记录及目录超出单次预算，未发出请求',{reason:'retrospective_input_budget',stage:'prepare',requestId:request.id,requestChars,maxChars});
+    if(requestChars>chunkLimit)throw error('完整记录及目录超出单次预算，未发出请求',{reason:'retrospective_input_budget',stage:'prepare',requestId:request.id,requestChars,maxChars:chunkLimit});
     return request;
   });
-  return {version:1,fingerprint:sha256({memory,personas}),recordCount:memory.length,personaCount:personas.length,requestCount:requests.length,requests,coverage:{fullRecordScan:true,crossChunkCompleteCatalog:requests.every(r=>!r.coverage.omittedCatalogCount),limitedRequests:requests.filter(r=>r.coverage.omittedCatalogCount).length}};
+  return {version:relatedCatalog?2:1,fingerprint:sha256({memory,personas}),recordCount:memory.length,personaCount:personas.length,requestCount:requests.length,requests,coverage:{fullRecordScan:true,crossChunkCompleteCatalog:requests.every(r=>!r.coverage.omittedCatalogCount),limitedRequests:requests.filter(r=>r.coverage.omittedCatalogCount).length}};
+}
+export function planAutomaticRetrospective(records,profiles=[],options={}){
+  return planMemoryRetrospective(records,profiles,{maxChars:RETROSPECTIVE_POLICY.scanChars,relatedCatalog:true,catalogChars:RETROSPECTIVE_POLICY.catalogChars,maxRecordChars:RETROSPECTIVE_POLICY.maxRequestChars,...options});
+}
+
+/** Upgrade only unpaid/invalid legacy chunks. Paid successful results and
+ * responses awaiting local parsing keep their exact materials and identifiers. */
+export function adaptRetrospectivePlan(plan,scans={}){
+  if(plan.version===2)return plan;
+  const kept=plan.requests.filter(p=>scans[p.id]?.result||scans[p.id]?.response&&!scans[p.id]?.invalid);
+  const pending=plan.requests.filter(p=>!kept.includes(p)).flatMap(p=>p.refs);
+  const records=Object.fromEntries(categories.map(c=>[c,[]])),profiles=[];
+  for(const p of plan.requests){for(const r of p.records)records[r.category].push(r);for(const r of p.personas)profiles.push({...r,id:r.id.replace(/^persona:/u,'')});}
+  const next=planAutomaticRetrospective(records,profiles,{includeRefs:pending,idPrefix:'scan-v2'}),requests=[...kept,...next.requests];
+  return {...next,requests,requestCount:requests.length,coverage:{fullRecordScan:true,crossChunkCompleteCatalog:requests.every(r=>!r.coverage.omittedCatalogCount),limitedRequests:requests.filter(r=>r.coverage.omittedCatalogCount).length}};
 }
 function pname(p){return typeof p.name==='string'?foldName(p.name):'';}
 export function retrospectiveScanMessages(plan,request){
