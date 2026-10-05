@@ -13,6 +13,8 @@ const NETWORK = {
   'network.request_failed':'网络请求失败，请检查服务是否可访问。',
 };
 const CODES = {
+  NARRATIVE_REGEX_INVALID:'标签规则无法使用。请编辑这条正则，先预览再保存；聊天原文和已保存内容保留。',
+  NARRATIVE_READING_EMPTY:'按当前正则，本批没有可读取的正文，已停止请求。请先打开“标签管理”预览并调整提取或排除范围，再继续；原文、已有档案和成功批次保留。',
   FILE_EXPORT_FAILED:'文件导出未完成；可在日志页查看／复制文本，不需要重新运行任务。',
   PERSONA_RESPONSE_INVALID:'人设回答的格式、人物或来源未通过检查；旧档案保留，可在动态人设页重试。具体原因见运行日志。',
   PERSONA_STAGE_CHANGED:'MVU阶段或原设定已改变，本批旧阶段回答未覆盖档案；可在动态人设页重试，不需重新总结。',
@@ -378,6 +380,15 @@ export function productFailure(error) {
   const rawStatus=Number(error?.details?.status);
   const status=Number.isInteger(rawStatus)&&rawStatus>=400&&rawStatus<=599?rawStatus:null;
   let message=HTTP[status]??NETWORK[code]??CODES[code];
+  if(code==='NARRATIVE_REGEX_INVALID'){
+    const fields={includeRegex:'提取正则',excludeRegex:'排除正则',config:'标签规则'};
+    const reasons={schema:'保存的规则格式不完整，请编辑相应标签并重新保存。',syntax:'写法不正确，请检查括号、方括号和转义。',flags:'末尾标志不支持或重复，请检查斜杠后的字母。',length:'表达式太长，请缩短。',unsafe:'重复匹配过于复杂，请简化重复分组和量词。', 'work-limit':'这些规则处理当前正文的负担过大，请简化表达式。','match-limit':'匹配次数过多，请缩小要匹配的范围。'};
+    const label=Object.hasOwn(fields,error?.details?.field)?fields[error.details.field]:'标签规则';
+    const index=error?.details?.ruleIndex;
+    const field=Number.isSafeInteger(index)&&index>=0&&index<64?`第 ${index+1} 条${label}`:label;
+    const reason=Object.hasOwn(reasons,error?.details?.reason)?reasons[error.details.reason]:'暂时无法使用，请重新检查写法。';
+    message=`${field}：${reason}修改后先预览再保存；聊天原文和已保存内容保留。`;
+  }
   const location=modelLocation(error?.details?.modelRole),upstreamCode=upstreamErrorCode({code:error?.details?.upstreamCode})??upstreamErrorCode(error);
   if(code==='MODEL_UNAVAILABLE')message=error?.details?.modelRole==='dynamicPersona'?'请打开 API → 动态人设模型，补齐地址和模型并保存；该项地址、模型和 Key 均留空时沿用总结连接，请检查“总结模型”的地址和模型。':`请打开${location}，填写地址和模型并保存。`;
   if(code==='PROVIDER_PROFILE_INVALID')message=`请打开${location}，检查服务地址格式、地址模式和认证方式；本次未发送模型请求。`;
