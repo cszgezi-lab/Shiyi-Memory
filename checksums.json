@@ -1,7 +1,7 @@
 {
   "index.js": "8fb280b963085b16b4c16000535a2bbef8dad8ef1812326f149683c8cf129247",
   "ui/product-view.js": "0c1a8afe15b267e99348394cb70803ca73fce1542dff94fe55018ef36c55f4bf",
-  "src/product-application.js": "cad6cab27eacf1bbafd1fd31e0d60a09317c8b55360aa960a358c1467b8ed5d6",
+  "src/product-application.js": "46d20b91711d13202587328a4c5cc349c8ac263fcc9f017525f8f98f97c2b07a",
   "src/host-adapter.js": "f7fb6dd917b95333cebcc6d39db01a8acf89a0bf36587cf20cd1d02fd8a72a03",
   "src/errors.js": "f6af25f08c160e740db91881b1bdd0bb26eb9007979b5ecdf6a79c5897d3ed45",
   "src/utils.js": "46c4f73af429204d965385e8ee15d1feea97cb11509bdf30ae4e2cecbd11e306",
@@ -37,7 +37,7 @@
   "src/provider-stream.js": "207c1d4b211e66b9102115587bb09376f106595ea05687afb86252983a35d1f4",
   "src/provider-scheduler.js": "244f2e1fe2b41dbaec793da7372606148e603b38152e4abfda8b841214f9dd09",
   "src/reliable-storage.js": "845461b3c2de0dcf2294057ae23631f49c23621d9814a25322f10673756f5958",
-  "src/product-release.js": "3878f85c00b69e1cae52b13e4865d07e477d77d83c56b7179ef43c0c16dabefe",
+  "src/product-release.js": "63651b0af6d96a2efde5c42b1212c103eb4eff46cb60751d1621480c4253d6d4",
   "src/dynamic-persona-plan.js": "f719478b3c47f88b8c0139ede136cb92125e0677666d278c24cd21a9aa436b34",
   "src/persona-rebuild.js": "52344589e07f6e69c103cc580cffb1c543cd631128d80c296e85b3945d51d518",
   "src/persona-identity.js": "6df1c636c26fd7365d5dc65ff90b1c340d847489b9a4eefc3089e306e6a7cc8f",
@@ -127,9 +127,9 @@
   "ui/product-quality-view.js": "339349e54814b6663ed28bd87573ce3418e3abef5f8c75e295fbcbae322e321d",
   "ui/product-extraction-view.js": "aa1b597f4377a6ba31ea3575d90c2672485cc57255716407d093f7389a208f90",
   "src/user-extractors.js": "0af29be61772d962beca250d670cb9032affdd4d9a7a214d7b7146db09021696",
-  "manifest.json": "faabe42a94a86b5e7f780779e64dcabd9f15310b05bd110648810ce4fb10f7bd",
+  "manifest.json": "2112ff416bb91441cc064e24e4b6023c1842e0a4c4c5a37ef687d14c2f4d1302",
   "ui/product-view.css": "6b78476219e66b00e62ed605af5bf1fc2c8b7faafe3289e889ef1ce8d5a495c8",
   "README.md": "3eb5d0ecda29398b7d57607eb8848dcb98cb554891010c6f9c313fa623f2a080",
-  "CHANGELOG.md": "76d49ca2796efa691641ed4abd56eb4f1c4049a96913d0c125a668630ec62635",
+  "CHANGELOG.md": "6e4b24b3c31dda967f550bf2ea15d570f83db4626afad1047ba37c7b447ae7ae",
   ".gitattributes": "cc641658d855cb2ba3f269f3248111fa65fa54225c87b56c5c8e98b6d3d574bf"
 }

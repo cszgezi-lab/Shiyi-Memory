@@ -89,7 +89,11 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   // requiring an extra panel "open" action. Unconfigured APIs do not dispatch
   // automatic work; disable() keeps this session paused.
   let workspace = null, boundScope = null, boundRefKey = null, epoch = 0, active = null, bindings = [], enabled = true;
-  let cancelVersion = 0, knowledgeCache = [], opening = false, feedbackSequence = 0;
+  // The one batch the current summarize task is executing. A persisted
+  // 'running' row belongs to a dead session unless it names this batch, so
+  // stale rows recover instead of blocking retry and automatic summary.
+  let activeSummaryBatchId = null;
+  let cancelVersion = 0, knowledgeCache = [], opening = false, feedbackSequence = 0, stopForceTimer = null;
   let recallRevision = 0;
   let recallSafetyRevision = 0, committedRecall = null;
   let autoTimer=null,autoPending=false,autoTask=null,autoHistoryAttempts=0,autoRetryAt=0;
@@ -795,7 +799,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       const scheduled=item.status==='queued'&&item.freshStart;
       const cutoff=view.controls?.automation?.summaryHold;
       const abandonedTail=Boolean(cutoff&&item.replacement&&cutoff.id===item.replacement.id&&item.endIndex>cutoff.endIndex);
-      const status=abandonedTail?'deleted':scheduled?'queued':mode==='active'?'saved':mode==='deleted'?'deleted':item.status==='running'&&!active?'interrupted':item.status;
+      const status=abandonedTail?'deleted':scheduled?'queued':mode==='active'?'saved':mode==='deleted'?'deleted':item.status==='running'&&activeSummaryBatchId!==item.id?'interrupted':item.status;
       return {...item,status,...(!scheduled&&mode==='active'?{error:null,savedOperationId:item.operationId}:{}),records,counts:Object.fromEntries(MEMORY_CATEGORIES.map(k=>[k,records[k].length]))};
     });
     if(view.controls?.automation?.summaryHold){
@@ -805,7 +809,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     // Reconcile UI bookkeeping against the committed view after a restart.
     // This never activates pending content or changes memory evidence.
-    const recovered=state.batches.filter(b=>list.some(old=>old.id===b.id&&(b.status==='saved'&&(old.status!=='saved'||old.savedOperationId!==b.operationId||old.error)||b.status==='deleted'&&old.status!=='deleted')));
+    const recovered=state.batches.filter(b=>list.some(old=>old.id===b.id&&(b.status==='saved'&&(old.status!=='saved'||old.savedOperationId!==b.operationId||old.error)||b.status==='deleted'&&old.status!=='deleted'||b.status==='interrupted'&&old.status==='running')));
     if(recovered.length){
       await bound.update('summary-batches',rows=>rows.map(row=>{
         const valid=recovered.find(b=>b.id===row.id&&b.operationId===row.operationId);
@@ -964,6 +968,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         op.check();const item=planned[i],continuing=resume&&!item.freshStart&&Boolean(item.operationId),operationId=continuing?item.operationId:makeId('product-summary');
         const oldOperation=item.status==='deleted'?null:savedBatchOperation(item);
         currentBatch={...item,status:'running',freshStart:!continuing,error:null,operationId,autoIndex:Boolean(core.settings.vectorEnabled),previousOperation:oldOperation??null,attempts:batchOperationIds(item).filter(id=>id!==operationId),updatedAt:Date.now()};
+        activeSummaryBatchId=item.id;
         await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
         // Staged generations survive crashes but are never available for recall.
         if(!continuing)await core.updateMemoryControls({operations:{[operationId]:'pending'}});op.check();
@@ -1054,7 +1059,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       runtimeLog.record({run:diagnosticRun,task:'summary',phase:'queue_remaining',details:{savedBatches:saved,pendingBatches:remainingPlanned}});
       if(op.token===epoch)summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批${remainingPlanned?`，另有 ${remainingPlanned} 批排队保留` :''}。${failureText(error)}`,trigger);
       throw error;
-    }finally{op.finish();}
+    }finally{activeSummaryBatchId=null;op.finish();}
   }
   async function processMergeQueue(op,ids=null,{automatic=false}={}){
     await refresh();op.check();
@@ -1246,9 +1251,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function retryBatch(id){
     // A stale retry button can be clicked again before the busy UI paints.
     // Keep the current operation (and its progress) intact; never start a twin.
-    if(active||opening)return {status:'running',requests:0,level:'warning'};
+    // The skip stays silent to the caller but tells the user why nothing ran.
+    if(active||opening){summaryFeedback('info','已有总结任务正在运行；本批重试已跳过，当前任务结束后可再试。','manual');return {status:'running',requests:0,level:'warning'};}
     assertCurrent();await refresh();const row=state.batches.find(b=>b.id===id);
-    if(active||opening)return {status:'running',requests:0,level:'warning'};
+    if(active||opening){summaryFeedback('info','已有总结任务正在运行；本批重试已跳过，当前任务结束后可再试。','manual');return {status:'running',requests:0,level:'warning'};}
     if(!row)throw new Error('批次不存在');
     if(row.status==='saved'){summaryFeedback('info','该批总结已保存，无需重复总结；索引未完成时可单独补建。','manual');return {status:'saved',requests:0};}
     if(!['failed','interrupted','queued'].includes(row.status))throw new Error('此批次当前不能续跑');
@@ -2029,7 +2035,28 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function deleteConversation(){await loadApiSettings();if(assistantActive)throw new Error('请先停止助手');await globalWorkspace.remove(`assistant-${state.conversationId}`);state.history=[];state.conversations=await globalWorkspace.update('conversations',list=>list.filter(c=>c.id!==state.conversationId),[]);await newConversation();setMessage('助手对话已删除，已应用设置和记忆未改变');}
   async function hideRecord(id){assertCurrent();const ids=state.cards.find(c=>c.id===id)?.mergedIds??[id];recallBusy++;recallChanged();try{state.hidden=await workspace.update('hidden',list=>[...new Set([...list,...ids])],[]);await refresh();}finally{recallBusy--;}}
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
-  async function stop(){personaCommandVersion++;await dynamicPersona.pause();vectorStopped=true;clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();await core.cancelSummary();if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());setMessage('正在停止；已有保存结果保留');}
+  async function stop(){personaCommandVersion++;
+    // A persona transaction can reject or stall while the workspace is
+    // switching. Stopping must still reach every other task, so the pause is
+    // bounded and its failure never blocks the aborts below.
+    await Promise.race([dynamicPersona.pause().catch(error=>void reportError(error,{task:'persona',stage:'ui'})),new Promise(resolve=>setTimeout(resolve,2000))]);
+    vectorStopped=true;clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();
+    try{await core.cancelSummary();}catch(error){if(error?.code!=='CANCELED')void reportError(error,{task:'summary',stage:'ui'});}
+    // A signal-blind await can keep an operation from ever settling after
+    // abort. Force-release the exclusive slots shortly after without holding
+    // 停止 open; a late wake-up hits the bumped cancelVersion at its checkpoint.
+    clearTimeout(stopForceTimer);
+    if(active||opening)stopForceTimer=setTimeout(()=>{
+      stopForceTimer=null;
+      if(!active&&!opening)return;
+      cancelVersion++;for(const op of operations)op.abort();operations.clear();active=null;opening=false;
+      runtimeLog.record({task:'operation',phase:'canceled',level:'warning',details:{stage:'ui'}});
+      notify();wakeChatFollower();queueAutomaticSummary();dynamicPersona.wake();wakeVectors();
+      setMessage('已强制停止未响应的任务；已有保存结果保留');
+    },500);
+    stopForceTimer?.unref?.();
+    if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());
+    setMessage('正在停止；已有保存结果保留');}
   async function disable(){enabled=false;automaticPaused=true;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
   // Main-card commands use the same persisted manual worker, never hidden UI
   // drafts. Coalesce clicks and reserve scheduling while a plan is prepared.
@@ -2153,7 +2180,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     setKey(kind,value,endpoint){if(!Object.hasOwn(keys,kind))throw new Error('未知连接');keyEdited.add(kind);keyVersions[kind]=(keyVersions[kind]??0)+1;keys[kind]=String(value??'');keyOrigins[kind]=credentialOrigin(endpoint??core.settings[`${prefixFor(kind)}Endpoint`]);if(kind==='summary')core.setSessionCredential(effectiveKeys().summary);if(['embedding','rerank'].includes(kind))recallChanged({vectors:true,scheduleVectors:false});},
     exportSettings(){return {kind:'shiyi-config',version:1,modules:clone(state.modules),settings:persistedProductSettings(core.settings)};},
     async exportBackup(options={}){assertCurrent();const assistantLimit=Number.isFinite(options.assistantLimit)?Math.max(0,Math.floor(options.assistantLimit)):null;const assistant=assistantLimit==null?state.history:state.history.slice(-assistantLimit);return {kind:'shiyi-backup',version:1,scope:boundScope,modules:clone(state.modules),moduleSnapshots:clone(state.moduleSnapshots),eventMergeDecisions:clone(mergeDecisions),settings:persistedProductSettings(core.settings),memory:await core.readMemoryView(),documents:await Promise.all(state.documents.map(async d=>({...d,parts:await Promise.all(Array.from({length:d.chunks},(_,i)=>globalWorkspace.read(documentPartKey(d,i))))}))),assistant};},
-    async dispose(){disposed=true;host.document?.removeEventListener?.('visibilitychange',resumeAutomaticTasks);host.removeEventListener?.('online',resumeAutomaticTasks);await dynamicPersona.dispose();host.document?.removeEventListener?.('visibilitychange',resumeVectorMaintenance);host.removeEventListener?.('online',resumeVectorMaintenance);host.removeEventListener?.('offline',resumeVectorMaintenance);tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of [...chatListeners.splice(0),...generationListeners.splice(0)]){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();stopRequestScheduler();stopTransportDiagnostics();stopErrorBoundary();for(const resolve of followWaiters.splice(0))resolve(publicState());await flushDiagnostics();},
+    async dispose(){disposed=true;clearTimeout(stopForceTimer);stopForceTimer=null;host.document?.removeEventListener?.('visibilitychange',resumeAutomaticTasks);host.removeEventListener?.('online',resumeAutomaticTasks);await dynamicPersona.dispose();host.document?.removeEventListener?.('visibilitychange',resumeVectorMaintenance);host.removeEventListener?.('online',resumeVectorMaintenance);host.removeEventListener?.('offline',resumeVectorMaintenance);tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of [...chatListeners.splice(0),...generationListeners.splice(0)]){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();stopRequestScheduler();stopTransportDiagnostics();stopErrorBoundary();for(const resolve of followWaiters.splice(0))resolve(publicState());await flushDiagnostics();},
   };
   application.deletePerson=deletePerson;
   const exportRawBackup=application.exportBackup;
