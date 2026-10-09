@@ -8,7 +8,7 @@ import { mountPersonEditor } from './product-profile-editor.js';
 import { knowledgeImportHTML,mountKnowledgeView } from './product-knowledge-view.js';
 import { PRODUCT_SETTING_REGISTRY, PRODUCT_API_SETTING_KEYS } from '../src/product-settings.js';
 import { CATEGORY_LABELS, recordDescription, renderMemoryCard } from '../src/product-memory.js';
-import { exportProductJson } from '../src/product-host-ui.js';
+import { exportProductJson, createProductConfirmation } from '../src/product-host-ui.js';
 import { PRODUCT_VERSION, PRODUCT_REPOSITORY } from '../src/product-release.js';
 import { mountFloatingProduct } from '../src/product-floating.js';
 import { esc, button, field, settingsSection, apiSettingsHTML, missingRecommendations, API_INFO } from '../src/product-settings-ui.js';
@@ -74,6 +74,7 @@ export function mountMemoryRetrospective({panel,app,run}){
 
 export function initProductShell({documentRef=globalThis.document,host=globalThis,application=null,controller=null,controllerOptions={}}={}){
  if(!documentRef||documentRef.getElementById?.(ID))return null;
+ const confirmation=createProductConfirmation({host,documentRef}),uiHost=confirmation.host;
  const panel=documentRef.createElement('section');panel.id=ID;panel.className='sy-root';
  panel.innerHTML=`<div class="sy-shell"><div class="sy-brand"><span class="sy-mark">拾</span><span>拾忆<small>让故事有迹可循</small></span><span class="sy-version">${PRODUCT_VERSION}</span></div><div class="sy-body">
  <div class="sy-top"><span data-scope>尚未打开聊天</span></div><p role="status" aria-live="polite" class="sy-status" data-status>连接一个模型，就可以开始整理故事。</p>
@@ -314,10 +315,10 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
    for(const b of changedButtons('[data-hide]'))b.addEventListener('click',()=>run(()=>app.hideRecord(b.dataset.hide)));
    for(const b of changedButtons('[data-edit]'))b.addEventListener('click',()=>management?.edit(b.dataset.edit));
    for(const b of changedButtons('[data-edit-profile]'))b.addEventListener('click',()=>personEditor?.open(b.dataset.editProfile));personEditor?.reattach();
-   for(const b of changedButtons('[data-delete]'))b.addEventListener('click',()=>run(async()=>{if(host.confirm?.('删除这条记忆？可从回收站恢复，不影响聊天原文。'))await app.deleteRecord(b.dataset.delete);}));
+   for(const b of changedButtons('[data-delete]'))b.addEventListener('click',()=>run(async()=>{if(await uiHost.confirm?.('删除这条记忆？可从回收站恢复，不影响聊天原文。'))await app.deleteRecord(b.dataset.delete);}));
    for(const b of changedButtons('[data-delete-profile]'))b.addEventListener('click',()=>run(async()=>{
      const ids=snapshot.cards.filter(c=>!c.customModuleId&&c.category==='entityFactChanges'&&(c.entity??c.entityId)===b.dataset.deleteProfile).map(c=>c.id);
-     if(host.confirm?.(`删除“${b.dataset.deleteProfile}”档案中的 ${ids.length} 条属性记录？可在回收站恢复，不删除聊天原文及其他模块。`))await app.deleteRecords(ids);
+     if(await uiHost.confirm?.(`删除“${b.dataset.deleteProfile}”档案中的 ${ids.length} 条属性记录？可在回收站恢复，不删除聊天原文及其他模块。`))await app.deleteRecords(ids);
    }));
  }
  function paint(s){snapshot=s;for(const [sel,value]of [['[data-status]',s.message],['[data-scope]',s.chatReady?`当前聊天 · 已连接${s.enabled?'':' · 自动任务未启用'}`:s.status==='loading'?'正在加载当前聊天…':s.status==='no_chat'?'尚未打开聊天':s.stale?'正在重新核对聊天来源…':'等待当前聊天就绪'],['[data-progress]',s.progress]])if($(sel)&&$(sel).textContent!==value)$(sel).textContent=value;
@@ -397,7 +398,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
   const painting=frameScheduler(documentRef.defaultView??host,()=>paint(readViewState(app)));
   app??=createProductApplication({host,controller,...controllerOptions,onChange:paint,onInvalidate:()=>painting.request()});
   memoryRetrospectiveView=mountMemoryRetrospective({panel,app,run});
-  dynamicPersonaView=mountDynamicPersona({panel,app,run,host});
+  dynamicPersonaView=mountDynamicPersona({panel,app,run,host:uiHost});
  function fill({apiOnly=false}={}){const s=readViewState(app);for(const f of $$('[data-setting]')){const key=f.getAttribute('data-setting');if(dirtyApi.has(key))continue;if(f.type==='checkbox')f.checked=Boolean(s.settings[key]);else f.value=s.settings[key]??'';}{if($('[data-input]'))$('[data-input]').value=s.draft??'';if($('[data-count]'))$('[data-count]').value=s.settings.messageCount;if($('[data-batch-size]'))$('[data-batch-size]').value=s.settings.summaryBatchSize;const select=$('[data-conversation]');if(select){select.innerHTML=s.conversations.map(c=>`<option value="${esc(c.id)}">${esc(c.title)}</option>`).join('')||'<option value="main">配置对话</option>';select.value=s.conversationId;}}syncInherited();syncSummaryRange();}
  function collect(root=panel){const patch={};for(const f of root.querySelectorAll('[data-setting]')){const k=f.getAttribute('data-setting'),d=PRODUCT_SETTING_REGISTRY[k];if(['number','integer'].includes(d.type)&&f.value.trim()==='')throw new Error(`${d.label}不能为空`);patch[k]=d.type==='boolean'?f.checked:['number','integer'].includes(d.type)?Number(f.value):f.value;}return patch;}
  function apiPatch(kind,forRequest=false){const patch=collect($(`[data-api-card="${kind}"]`));if(forRequest&&kind==='knowledge'&&patch.knowledgeFollowAssistant)Object.assign(patch,apiPatch('assistant',true));if(forRequest&&['assistant','supplement'].includes(kind)&&patch[`${kind}FollowSummary`])Object.assign(patch,collect($('[data-api-card="summary"]')));return patch;}
@@ -434,7 +435,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
    const extra=[...preview.prefix,...preview.suffix].map(r=>`${r.startIndex}–${r.endIndex} 楼`).join('、');
    const text=`本次 ${preview.requested.startIndex}–${preview.requested.endIndex} 楼，共 ${preview.plannedBatches} 批。${preview.grouped?'旧结果在整组成功后替换；失败保留旧记忆。':''}${preview.discardedTail?`完成后撤下旧 ${preview.discardedTail.startIndex}–${preview.discardedTail.endIndex} 楼，不重算后续；自动接续暂停，需主动继续。`:''}${extra?`为保留起点前的完整事实，另需重算 ${extra}，额外 ${preview.extraBatches} 批（已计入总数）。`:''}输入预算、分工或复核可能增加请求。`;
    $('[data-summary-selection]').textContent=text;
-   if((preview.extraBatches||preview.discardedTail)&&await host.confirm?.(text+' 是否继续？')!==true)return {status:'canceled'};
+   if((preview.extraBatches||preview.discardedTail)&&await uiHost.confirm?.(text+' 是否继续？')!==true)return {status:'canceled'};
    return app.summarize({...options,previewHash:preview.previewHash});
  }
  async function download(data,name,{preferBrowser='picker'}={}){
@@ -458,12 +459,12 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
     else if(result?.status==='dispatched')host.toastr?.warning?.(result.dispatch==='share-unconfirmed'?'导出未确认保存：已交给系统分享，请确认目标位置已收到文件，或改用日志 → 查看／复制文本。':'导出未确认保存：当前宿主下载通道返回成功但未真正写入文件，请到日志 → 查看／复制文本 自行保存。');
     return result;
   }
- const actions={open:async()=>{await app.open();fill();},disable:()=>app.disable(),refresh:()=>app.refresh(),summarize:()=>summarize(false),'focus-summary':()=>summarize(true),stop:()=>app.stop(),'assistant-stop':()=>app.stop(),remember:async()=>{await app.remember($('[data-note]')?.value??'',$('[data-people]')?.value??'',{category:$('[data-note-category]')?.value??'events',subject:$('[data-note-subject]')?.value??'',target:$('[data-note-target]')?.value??'',field:$('[data-note-field]')?.value??'',eventRef:$('[data-note-event]')?.value??''});if($('[data-note]'))$('[data-note]').value='';},preview:()=>app.preview($('[data-query]')?.value??''),'preview-online':()=>app.preview($('[data-query]')?.value??'',{online:true}),'vector-status':()=>app.refreshVectorStatus(),'save-settings':()=>app.saveSettings(collect()),'test-summary':()=>app.testConnection('summary'),'test-assistant':()=>app.testConnection('assistant'),'test-embedding':()=>app.testConnection('embedding'),'test-rerank':()=>app.testConnection('rerank'),import:async()=>{for(const f of Array.from($('[data-files]')?.files??[]))await app.addDocument({name:f.name,text:await f.text(),purpose:$('[data-purpose]')?.value});},analyze:()=>app.analyzeDocuments(),assistant:async()=>{await app.assistant($('[data-input]')?.value??'');if($('[data-input]'))$('[data-input]').value='';},beginner:async()=>{await app.analyzeDocuments();await app.assistant('按我导入的配置规则一次性生成完整设置方案，只有必要信息缺失才询问，不需要逐项问卷。');},'new-conversation':async()=>{await app.newConversation();fill();},'delete-conversation':async()=>{if(host.confirm?.('删除当前助手对话？已应用设置和记忆不会删除。')){await app.deleteConversation();fill();}},'restore-hidden':()=>app.restoreHidden(),vectors:()=>app.buildVectors(),undo:async()=>{await app.undoSettings();fill();},'export-config':()=>download(app.exportSettings(),'拾忆-配置.json'),'export-global':async()=>download(await app.exportGlobalBackup(),'拾忆-全局备份.json'),'export-backup':async()=>download(await app.exportBackup(),'拾忆-聊天备份.json'),'export-backup-recent':async()=>download(await app.exportBackup({assistantLimit:100}),'拾忆-聊天备份-最近100条.json')};
+ const actions={open:async()=>{await app.open();fill();},disable:()=>app.disable(),refresh:()=>app.refresh(),summarize:()=>summarize(false),'focus-summary':()=>summarize(true),stop:()=>app.stop(),'assistant-stop':()=>app.stop(),remember:async()=>{await app.remember($('[data-note]')?.value??'',$('[data-people]')?.value??'',{category:$('[data-note-category]')?.value??'events',subject:$('[data-note-subject]')?.value??'',target:$('[data-note-target]')?.value??'',field:$('[data-note-field]')?.value??'',eventRef:$('[data-note-event]')?.value??''});if($('[data-note]'))$('[data-note]').value='';},preview:()=>app.preview($('[data-query]')?.value??''),'preview-online':()=>app.preview($('[data-query]')?.value??'',{online:true}),'vector-status':()=>app.refreshVectorStatus(),'save-settings':()=>app.saveSettings(collect()),'test-summary':()=>app.testConnection('summary'),'test-assistant':()=>app.testConnection('assistant'),'test-embedding':()=>app.testConnection('embedding'),'test-rerank':()=>app.testConnection('rerank'),import:async()=>{for(const f of Array.from($('[data-files]')?.files??[]))await app.addDocument({name:f.name,text:await f.text(),purpose:$('[data-purpose]')?.value});},analyze:()=>app.analyzeDocuments(),assistant:async()=>{await app.assistant($('[data-input]')?.value??'');if($('[data-input]'))$('[data-input]').value='';},beginner:async()=>{await app.analyzeDocuments();await app.assistant('按我导入的配置规则一次性生成完整设置方案，只有必要信息缺失才询问，不需要逐项问卷。');},'new-conversation':async()=>{await app.newConversation();fill();},'delete-conversation':async()=>{if(await uiHost.confirm?.('删除当前助手对话？已应用设置和记忆不会删除。')){await app.deleteConversation();fill();}},'restore-hidden':()=>app.restoreHidden(),vectors:()=>app.buildVectors(),undo:async()=>{await app.undoSettings();fill();},'export-config':()=>download(app.exportSettings(),'拾忆-配置.json'),'export-global':async()=>download(await app.exportGlobalBackup(),'拾忆-全局备份.json'),'export-backup':async()=>download(await app.exportBackup(),'拾忆-聊天备份.json'),'export-backup-recent':async()=>download(await app.exportBackup({assistantLimit:100}),'拾忆-聊天备份-最近100条.json')};
  actions.remember=()=>management?.remember();
  actions['variable-template']=()=>{const value=$('[data-variable-template]').value;if(!value)return;const input=$('[data-setting="externalStatePaths"]'),paths=input.value.split('\n').map(s=>s.trim()).filter(Boolean);if(!paths.includes(value))input.value=[...paths,value].join('\n');dirtyApi.add('externalStatePaths');feedback('路径模板已填入，检查后保存；未读取或改写变量。');};
  qualityView=mountQualityView({panel,app,run});
  actions['review-memory']=()=>app.previewQuality();
- actions['undo-quality']=async()=>{if(host.confirm?.('撤销此聊天的自动校对？恢复原总结；校对补入的属性和知情项将撤下，人工修改的原记录保留。'))await app.undoQuality();};
+ actions['undo-quality']=async()=>{if(await uiHost.confirm?.('撤销此聊天的自动校对？恢复原总结；校对补入的属性和知情项将撤下，人工修改的原记录保留。'))await app.undoQuality();};
  actions['builtin-beginner']=()=>app.assistant('按内置新手配置规则帮助我配置拾忆。先查看当前设置和相关规则，保留已经填好的模型连接。只有卡类型、变量系统或记录偏好等必要信息缺失时才询问；生成可确认应用的方案。');
  $('[data-auto-start]')?.addEventListener('input',()=>{autoStartDirty=true;});
  for(const control of $$('[data-feature]'))control.addEventListener('click',()=>{if(control.disabled)return;const value=control.getAttribute('aria-pressed')!=='true';void run(()=>app.setFeature(control.dataset.feature,value),{name:'save-feature',button:control});});
@@ -495,7 +496,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  $('[data-persona-pause-inline]')?.addEventListener('click',()=>run(()=>app.pauseDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-pause-inline]')}));
  $('[data-persona-resume-batches]')?.addEventListener('click',()=>run(()=>app.queueDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-resume-batches]')}));
  $('[data-persona-pause-batches]')?.addEventListener('click',()=>run(()=>app.pauseDynamicPersona(),{name:'dynamic-persona',button:$('[data-persona-pause-batches]')}));
- $('[data-persona-discard-plan]')?.addEventListener('click',e=>void run(async()=>{const scope=JSON.stringify(readViewState(app).core?.scope),plan=readViewState(app).dynamicPersona?.manualPlan;if(!plan||!['running','paused','failed'].includes(plan.status))throw new Error('没有待放弃的人设计划');if(!await host.confirm?.(`放弃 ${plan.startIndex}–${plan.endIndex} 楼的人设补建计划？候选会归档，原档案和主总结保留。`))return;if(readViewState(app).dynamicPersona?.busy)await app.pauseDynamicPersonaManual();for(let i=0;i<100&&readViewState(app).dynamicPersona?.busy;i++)await new Promise(resolve=>setTimeout(resolve,100));checkPersonaBatchScope(scope);if(readViewState(app).dynamicPersona?.manualPlan?.id!==plan.id)throw new Error('人设计划已变化，请重新查看');if(readViewState(app).dynamicPersona?.busy)throw new Error('当前请求尚未退出，已暂停；稍后可直接放弃计划');await app.discardDynamicPersonaManual({planId:plan.id});},{name:'dynamic-persona',button:e.currentTarget}));
+ $('[data-persona-discard-plan]')?.addEventListener('click',e=>void run(async()=>{const scope=JSON.stringify(readViewState(app).core?.scope),plan=readViewState(app).dynamicPersona?.manualPlan;if(!plan||!['running','paused','failed'].includes(plan.status))throw new Error('没有待放弃的人设计划');if(!await uiHost.confirm?.(`放弃 ${plan.startIndex}–${plan.endIndex} 楼的人设补建计划？候选会归档，原档案和主总结保留。`))return;if(readViewState(app).dynamicPersona?.busy)await app.pauseDynamicPersonaManual();for(let i=0;i<100&&readViewState(app).dynamicPersona?.busy;i++)await new Promise(resolve=>setTimeout(resolve,100));checkPersonaBatchScope(scope);if(readViewState(app).dynamicPersona?.manualPlan?.id!==plan.id)throw new Error('人设计划已变化，请重新查看');if(readViewState(app).dynamicPersona?.busy)throw new Error('当前请求尚未退出，已暂停；稍后可直接放弃计划');await app.discardDynamicPersonaManual({planId:plan.id});},{name:'dynamic-persona',button:e.currentTarget}));
  $('[data-persona-resume-auto]')?.addEventListener('click',e=>run(()=>app.setFeature('persona',true),{name:'dynamic-persona',button:e.currentTarget}));
  $('[data-summary-persona-batches]')?.addEventListener('toggle',()=>paintSummaryModules(readViewState(app)));
  const checkPersonaBatchScope=scope=>{if(JSON.stringify(readViewState(app).core?.scope)!==scope)throw new Error('聊天已切换，请重新选择批次');};
@@ -515,7 +516,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
      throw new Error('候选人设不能跳过中间一批。可重试或拆小当前未完成批，也可应用已完成前段。');
    }else{
      const selected={batches:rows.map(b=>({startIndex:b.startIndex,endIndex:b.endIndex,versionId:b.versionId,sourceHash:b.sourceHash}))},preview=await app.previewDeleteDynamicPersonaBatch(selected);checkPersonaBatchScope(scope);
-     if(!await host.confirm?.(`已选 ${preview.selectedCount} 批，另有 ${preview.dependentCount} 批后续累积人设需一起撤下。实际删除 ${preview.startIndex}–${preview.endIndex} 楼共 ${preview.count} 批；保存归档并暂停自动补回，手工档案、主总结与原文保留。继续？`))return;
+     if(!await uiHost.confirm?.(`已选 ${preview.selectedCount} 批，另有 ${preview.dependentCount} 批后续累积人设需一起撤下。实际删除 ${preview.startIndex}–${preview.endIndex} 楼共 ${preview.count} 批；保存归档并暂停自动补回，手工档案、主总结与原文保留。继续？`))return;
      checkPersonaBatchScope(scope);await app.deleteDynamicPersonaBatch({...selected,hash:preview.hash});
    }
    personaBatchSelection.clear();paintSummaryModules(readViewState(app));
@@ -528,7 +529,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  $('[data-persona-batch-split-selected]')?.addEventListener('click',e=>void run(async()=>{
    const {scope,row,plan,options}=selectedPersonaCandidate(),batchSize=Math.ceil((row.endIndex-row.startIndex+1)/2);
    if(!['pending','failed'].includes(row.status)||row.endIndex<=row.startIndex)throw new Error('请单选可拆分的未完成批次');
-   if(!await host.confirm?.(`把 ${row.startIndex}–${row.endIndex} 楼拆为每 ${batchSize} 楼一批？仅调整待处理计划，不调用模型；已有成功候选保留。`))return;
+   if(!await uiHost.confirm?.(`把 ${row.startIndex}–${row.endIndex} 楼拆为每 ${batchSize} 楼一批？仅调整待处理计划，不调用模型；已有成功候选保留。`))return;
    checkPersonaBatchScope(scope);if(plan.status==='running')await app.pauseDynamicPersonaManual();checkPersonaBatchScope(scope);
    if(readViewState(app).dynamicPersona?.manualPlan?.id!==plan.id)throw new Error('人设计划已变化，请重新查看');
    const result=await app.splitDynamicPersonaManualBatch({...options,batchSize});personaBatchSelection.clear();return result;
@@ -540,16 +541,16 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
    const preview=await app.previewDynamicPersonaManualPrefix({planId:plan.id});checkPersonaBatchScope(scope);
    const tail=preview.discardedTail?`旧 ${preview.discardedTail.startIndex}–${preview.discardedTail.endIndex} 楼人设将撤下归档。`:'';
    const rest=preview.unappliedRange?`剩余 ${preview.unappliedRange.startIndex}–${preview.unappliedRange.endIndex} 楼共 ${preview.pendingCount} 批取消并归档，可稍后手动补建。`:'';
-   if(!await host.confirm?.(`应用已完成的 ${preview.startIndex}–${preview.endIndex} 楼（${preview.savedCount} 批）？${tail}${rest}自动接续暂停；不调用模型，主总结与聊天原文保留。`))return;
+   if(!await uiHost.confirm?.(`应用已完成的 ${preview.startIndex}–${preview.endIndex} 楼（${preview.savedCount} 批）？${tail}${rest}自动接续暂停；不调用模型，主总结与聊天原文保留。`))return;
    checkPersonaBatchScope(scope);
    if(readViewState(app).dynamicPersona?.manualPlan?.id!==plan.id)throw new Error('人设计划已变化，请重新查看');
    const result=await app.applyDynamicPersonaManualPrefix(preview);personaBatchSelection.clear();return result;
  },{name:'dynamic-persona',button:e.currentTarget}));
  $('[data-persona-batch-details]')?.addEventListener('click',()=>{const key=[...personaBatchSelection][0],row=personaBatchItems.find(item=>item.selectionKey===key),detail=$('[data-persona-batch-detail]');if(!row||!detail)return;detail.textContent=`${row.startIndex}–${row.endIndex} 楼 · ${row.candidate?'本次计划候选':'正式人物批次'} · ${row.status==='saved'?'已保存':row.status==='failed'?'未完成':row.status==='running'?'处理中':'待处理'}${row.message?` · ${row.message}`:''}`;detail.hidden=false;detail.scrollIntoView?.({block:'nearest'});});
- $('[data-persona-recovery-restore]')?.addEventListener('click',e=>void run(async()=>{const scope=JSON.stringify(readViewState(app).core?.scope);if(await host.confirm?.('恢复上次撤下的人物批次？恢复前会核对原文、归档和当前档案状态。')){checkPersonaBatchScope(scope);await app.restoreDynamicPersonaBatch();}},{name:'dynamic-persona',button:e.currentTarget}));
+ $('[data-persona-recovery-restore]')?.addEventListener('click',e=>void run(async()=>{const scope=JSON.stringify(readViewState(app).core?.scope);if(await uiHost.confirm?.('恢复上次撤下的人物批次？恢复前会核对原文、归档和当前档案状态。')){checkPersonaBatchScope(scope);await app.restoreDynamicPersonaBatch();}},{name:'dynamic-persona',button:e.currentTarget}));
  for(const [key,delta] of [['prev',-1],['next',1]])$(`[data-persona-batch-${key}]`)?.addEventListener('click',()=>{personaBatchPage=Math.max(0,personaBatchPage+delta);paintSummaryModules(readViewState(app));});
  actions['per-call-mode']=async()=>{const patch={summaryReviewEnabled:false,summaryStaged:false,autoMergeEnabled:false,autoQualityEnabled:false};await app.saveSettings(patch);for(const key of Object.keys(patch))dirtyApi.delete(key);fill();feedback('已改为一次主总结；不自动追加分工、合并和校对请求。API、楼数、回复上限不变。','success');};
- actions['recommended-memory']=async()=>{if(!host.confirm?.('将总结与召回参数设为推荐值（5楼一批、回复8192）。不改 API、Key、记录偏好和自动运行开关。确认应用？'))return;await app.saveSettings(RECOMMENDED_MEMORY_SETTINGS);for(const k of Object.keys(RECOMMENDED_MEMORY_SETTINGS))dirtyApi.delete(k);fill();};
+ actions['recommended-memory']=async()=>{if(!await uiHost.confirm?.('将总结与召回参数设为推荐值（5楼一批、回复8192）。不改 API、Key、记录偏好和自动运行开关。确认应用？'))return;await app.saveSettings(RECOMMENDED_MEMORY_SETTINGS);for(const k of Object.keys(RECOMMENDED_MEMORY_SETTINGS))dirtyApi.delete(k);fill();};
  actions['save-recall-preset']=async()=>{const count=Number($('[data-recall-level]').value),patch={dictionaryEnabled:true,tagRecallEnabled:true,distributedEnabled:true,distributedStrategy:'broadcast',retrievalCandidateLimit:count,rerankMaxCandidates:count};await app.saveSettings(patch);for(const key of Object.keys(patch))dirtyApi.delete(key);fill();};
  async function savePatch(patch,save=()=>app.saveSettings(patch)){await save();for(const [key,value]of Object.entries(patch)){const f=$(`[data-setting="${key}"]`);if(f&&(f.type==='checkbox'?f.checked===value:f.value===String(value)))dirtyApi.delete(key);}}
  actions['save-settings']=async()=>{if(currentPage==='api'){for(const kind of Object.keys(API_INFO))await saveApiCard(kind);await savePatch(collect($('[data-view="api"]')));}else await savePatch(collect($(`[data-view="${currentPage}"]`)));};
@@ -557,7 +558,7 @@ const label=name.startsWith('test-')?`${API_INFO[name.slice(5)]?.title??'模型'
  async function saveApiCard(kind){const input=$(`[data-key="${kind}"]`),value=input.value,patch=apiPatch(kind);if(value)app.setKey(kind,value,patch[`${API_INFO[kind].prefix}Endpoint`]);await savePatch(patch,()=>app.saveApi(kind,patch,{keyValue:value}));if(input.value===value)input.value='';}
  for(const kind of Object.keys(API_INFO)){
    actions[`save-api-${kind}`]=()=>saveApiCard(kind);
-   actions[`forget-key-${kind}`]=async()=>{if(host.confirm?.('清除此模型保存的 Key？地址、模型和记忆不会删除。')){await app.forgetKey(kind);$(`[data-key="${kind}"]`).value='';resetModels(kind);}};
+   actions[`forget-key-${kind}`]=async()=>{if(await uiHost.confirm?.('清除此模型保存的 Key？地址、模型和记忆不会删除。')){await app.forgetKey(kind);$(`[data-key="${kind}"]`).value='';resetModels(kind);}};
    actions[`test-${kind}`]=()=>app.testConnection(kind,apiPatch(kind,true));
    actions[`models-${kind}`]=()=>loadModels(kind);
    actions[`recommend-${kind}`]=()=>{const patch=missingRecommendations(apiPatch(kind),kind);for(const [k,v]of Object.entries(patch)){$(`[data-setting="${k}"]`).value=v;dirtyApi.add(k);}resetModels(kind);$(`[data-model-status="${kind}"]`).textContent=Object.keys(patch).length?'已补齐，点击保存后生效。':'已有配置保持不变。';};
@@ -613,26 +614,26 @@ $('[data-memory-page]')?.addEventListener('change',()=>{memoryCurrentPage=Math.m
  updates.innerHTML=`<summary>版本与更新 · ${PRODUCT_VERSION}</summary><p class="sy-help">从 Git 安装后，在 TT 的扩展管理中检查拾忆更新。更新完成，等待当前任务结束、保存设置后重载页面即可生效，不需要重装 TT。记忆与已保存的 Key 保留。</p><a href="${PRODUCT_REPOSITORY}" target="_blank" rel="noopener noreferrer">安装地址与更新说明</a>`;
  $('[data-view="settings"]')?.appendChild(updates);
  // Populate the real form at mount, before any explicit chat binding or request.
- presetView=mountSummaryPresets({panel,app,run,host,download});mergeView=mountMergeManagement({panel,app,run,host});recallView=mountRecallView({panel,app,run,setPage,host,download});logView=mountRuntimeLog({panel,app,run,host,download});management=mountMemoryManagement({panel,app,run,host});
+ presetView=mountSummaryPresets({panel,app,run,host:uiHost,download});mergeView=mountMergeManagement({panel,app,run,host:uiHost});recallView=mountRecallView({panel,app,run,setPage,host:uiHost,download});logView=mountRuntimeLog({panel,app,run,host:uiHost,download});management=mountMemoryManagement({panel,app,run,host:uiHost});
  // 「新增记忆」在工具栏里，但表单本体只有一份：把它移进工具条内的容器。
  if($('[data-add-memory-body]')&&$('[data-add-memory-body-fields]'))$('[data-add-memory-body]').append($('[data-add-memory-body-fields]'));
- dictionaryView=mountDictionary({panel,app,run,save:async input=>{if(dirtyApi.has('aliases'))throw new Error('字典高级文本尚未保存，请先保存字典设置');await app.saveDictionaryEntry(input);$('[data-setting="aliases"]').value=readViewState(app).settings.aliases;}});customManagement=mountCustomModules({panel,app,run,host,download,onAssistant:async text=>{await app.setDraft(text);fill();setPage('assistant');}});fill();paint(readViewState(app));
+ dictionaryView=mountDictionary({panel,app,run,save:async input=>{if(dirtyApi.has('aliases'))throw new Error('字典高级文本尚未保存，请先保存字典设置');await app.saveDictionaryEntry(input);$('[data-setting="aliases"]').value=readViewState(app).settings.aliases;}});customManagement=mountCustomModules({panel,app,run,host:uiHost,download,onAssistant:async text=>{await app.setDraft(text);fill();setPage('assistant');}});fill();paint(readViewState(app));
  personEditor=mountPersonEditor({panel,app,run});
- journalView=mountCharacterJournal({panel,app,run,host});
- peopleView=mountPeopleView({panel,app,run,host,setPage:page=>{setPage(page);if(page==='dynamic-persona')$('[data-persona-controls]').open=true;},onSelect:({name,profileId,kind})=>{
+ journalView=mountCharacterJournal({panel,app,run,host:uiHost});
+ peopleView=mountPeopleView({panel,app,run,host:uiHost,setPage:page=>{setPage(page);if(page==='dynamic-persona')$('[data-persona-controls]').open=true;},onSelect:({name,profileId,kind})=>{
    if(kind==='facts'){$('[data-search]').value=name;$('[data-category]').value='entityFactChanges';cardStamp='';setPage('memory');return;}
    if(kind==='dynamic-persona'){setPage(profileId?'persona-profiles':'dynamic-persona');dynamicPersonaView.focus?.(profileId??name);return;}
    setPage(kind);journalView.selectPerson?.(kind,name);
  }});
- extractionView=mountExtractionView({panel,app,run,host,download});
+ extractionView=mountExtractionView({panel,app,run,host:uiHost,download});
  const tagSettings=$('[data-tag-settings]');
  const paintOpenedTags=()=>{if(tagSettings?.open)extractionView?.paint(readViewState(app));};
  tagSettings?.addEventListener('toggle',paintOpenedTags);
  paintOpenedTags();
- knowledgeView=mountKnowledgeView({panel,app,run,host});
+ knowledgeView=mountKnowledgeView({panel,app,run,host:uiHost});
  floating=mountFloatingProduct({panel,documentRef,host,version:PRODUCT_VERSION,onOpen:()=>{painting.flush();void app.followCurrentChat?.().catch(e=>feedback(`聊天记忆读取未完成：${failureText(e)}`,'warning'));},onClose:()=>painting.request(),onStop:()=>run(()=>app.stop()),onLogs:()=>{openLogs();}});floating.setNotice(noticeText,noticeLevel);
  let destroyed=false;
  Promise.resolve(app.loadApiSettings?.()).then(()=>{if(!destroyed){fill({apiOnly:true});paint(readViewState(app));return app.startChatTracking?.();}}).catch(e=>{if(!destroyed)feedback(`读取全局配置失败：${failureText(e)}`,'error');});
  return {panel,application:app,controller:controller??app.core,setPage,floating,openMemoryRecord,
-   async destroy(){destroyed=true;tagSettings?.removeEventListener('toggle',paintOpenedTags);painting.dispose();clearTimeout(timer);resetAllModels();floating.destroy();await app.dispose?.();}};
+   async destroy(){destroyed=true;confirmation.dispose();tagSettings?.removeEventListener('toggle',paintOpenedTags);painting.dispose();clearTimeout(timer);resetAllModels();floating.destroy();await app.dispose?.();}};
 }

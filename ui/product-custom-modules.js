@@ -54,11 +54,11 @@ export function mountCustomModules({panel,app,run,host,onAssistant,download}){
     }).join('')||'<p class="sy-help">还没有扩展区块。</p>';
     const bind=(selector,fn)=>{for(const b of root.querySelectorAll(selector))b.addEventListener('click',()=>run(()=>fn(b)));};
     bind('[data-edit-module]',b=>edit(modules.find(m=>m.id===b.dataset.editModule)));
-    bind('[data-archive-module]',async b=>{if(host.confirm?.('删除这个区块？可以恢复，已有记录和原 MVU 数据不会被删除。'))await app.archiveModule(b.dataset.archiveModule);});
+    bind('[data-archive-module]',async b=>{if(await host.confirm?.('删除这个区块？可以恢复，已有记录和原 MVU 数据不会被删除。'))await app.archiveModule(b.dataset.archiveModule);});
     bind('[data-restore-module]',b=>app.archiveModule(b.dataset.restoreModule,false));
     bind('[data-add-module-record]',b=>{const m=modules.find(m=>m.id===b.dataset.addModuleRecord);record(m,m.fields.find(f=>f.id===b.dataset.moduleField));});
     bind('[data-edit-module-record]',b=>{const c=s.cards.find(c=>c.id===b.dataset.editModuleRecord),m=modules.find(m=>m.id===c.customModuleId);record(m,m.fields.find(f=>f.id===c.fieldId),c);});
-    bind('[data-delete-module-record]',async b=>{if(host.confirm?.('删除这条记录？可从记录页回收站恢复。'))await app.deleteRecord(b.dataset.deleteModuleRecord);});
+    bind('[data-delete-module-record]',async b=>{if(await host.confirm?.('删除这条记录？可从记录页回收站恢复。'))await app.deleteRecord(b.dataset.deleteModuleRecord);});
   }
   return {paint};
 }

@@ -29,7 +29,7 @@ export function mountMergeManagement({panel,app,run,host}){
     for(const row of panel.querySelectorAll('[data-merge-row]')){
       const id=row.dataset.mergeRow;
       row.querySelector('[data-merge-retry]').addEventListener('click',e=>run(()=>app.retryMerges([id]),{name:'merge',button:e.currentTarget}));
-      row.querySelector('[data-merge-separate]').addEventListener('click',()=>run(async()=>{if(host.confirm?.('保持两条原记录独立？如已合并，将撤销该合并关系。'))await app.keepMergeSeparate(id);},{name:'merge'}));
+      row.querySelector('[data-merge-separate]').addEventListener('click',()=>run(async()=>{if(await host.confirm?.('保持两条原记录独立？如已合并，将撤销该合并关系。'))await app.keepMergeSeparate(id);},{name:'merge'}));
       const fill=()=>{const q=row.querySelector('[data-merge-search]').value.trim();row.querySelector('[data-merge-target]').innerHTML='<option value="">请选择</option>'+(readViewState(app).records.events??[]).filter(e=>e.id!==id&&`${e.title??''} ${e.description??''}`.includes(q)).slice(0,30).map(e=>`<option value="${esc(e.id)}">${esc(e.title||e.description?.slice(0,80)||'事件')}</option>`).join('');};
       row.querySelector('[data-merge-target-editor]').addEventListener('toggle',e=>{if(e.currentTarget.open)fill();});
       row.querySelector('[data-merge-search]').addEventListener('input',fill);

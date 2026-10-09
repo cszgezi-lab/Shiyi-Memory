@@ -192,6 +192,6 @@ export function mountRuntimeLog({panel,app,run,host,download}){
     catch(error){report(error);if(snapshot)showText({...snapshot,exportFailure:safeLogDetails(errorDiagnostics(error))},`文件未导出：${failureText(error)}。日志已在下方展开，可直接复制，无需重跑任务。`);else status(`日志未导出：${failureText(error)}`);}
     finally{exporting=false;$('[data-log-export]').disabled=false;}
   });
-  $('[data-log-clear]')?.addEventListener('click',()=>run(async()=>{if(host.confirm?.('清空运行日志？记忆、总结批次、设置和助手对话不会删除。')){await app.clearRuntimeLog();opened.clear();page=1;signature='';paint(readViewState(app));}}));
+  $('[data-log-clear]')?.addEventListener('click',()=>run(async()=>{if(await host.confirm?.('清空运行日志？记忆、总结批次、设置和助手对话不会删除。')){await app.clearRuntimeLog();opened.clear();page=1;signature='';paint(readViewState(app));}}));
   return {paint};
 }

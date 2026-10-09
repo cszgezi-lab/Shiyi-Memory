@@ -68,7 +68,7 @@ export function mountKnowledgeView({panel,app,run,host}){
       if(b.dataset.kbAnalyze)return app.analyzeDocuments([b.dataset.kbAnalyze]);
       if(b.dataset.kbBuild)return app.buildKnowledgeVectors([b.dataset.kbBuild]);
       if(b.dataset.kbToggle){const d=readViewState(app).documents.find(d=>d.id===b.dataset.kbToggle);await app.updateDocument(d.id,{enabled:d.importOptions?.enabled===false});}
-      if(b.dataset.removeDoc&&host.confirm?.('删除这份资料？无法在插件内撤销，请保留原文件；聊天原文不受影响。'))await app.removeDocument(b.dataset.removeDoc);
+      if(b.dataset.removeDoc&&await host.confirm?.('删除这份资料？无法在插件内撤销，请保留原文件；聊天原文不受影响。'))await app.removeDocument(b.dataset.removeDoc);
     },{name:b.dataset.kbBuild?'vectors':b.dataset.kbAnalyze?'analyze':b.dataset.kbSave?'knowledge-edit':'',button:b});
   });
   return {paint};

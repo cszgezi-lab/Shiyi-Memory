@@ -1,5 +1,36 @@
 import { exportAndroidJson } from './product-android-export.js';
 
+/** TT desktop replaces window.confirm with a native command that 2.2 does not
+ * permit. Keep confirmation inside the WebView; never grant native permissions
+ * or replace the host global. Ordinary browsers retain their own confirm. */
+export function createProductConfirmation({host=globalThis,documentRef=host.document}={}) {
+  let cancelPending=null;
+  const confirm=message=>{
+    if(!host.__TAURI_INTERNALS__)return Promise.resolve(host.confirm?.call(host,message)).then(value=>value===true);
+    if(cancelPending)return Promise.resolve(false);
+    return new Promise((resolve,reject)=>{
+      const previous=documentRef.activeElement,dialog=documentRef.createElement('dialog');
+      dialog.className='sy-confirm';dialog.setAttribute('aria-label','确认操作');
+      const text=documentRef.createElement('p');text.textContent=String(message);
+      const actions=documentRef.createElement('div'),cancel=documentRef.createElement('button'),accept=documentRef.createElement('button');
+      cancel.type=accept.type='button';cancel.textContent='取消';accept.textContent='确认';
+      cancel.dataset.confirmCancel='';accept.dataset.confirmAccept='';dialog.dataset.shiyiConfirm='';
+      actions.append(cancel,accept);dialog.append(text,actions);
+      let settled=false;
+      const finish=value=>{if(settled)return;settled=true;cancelPending=null;dialog.remove();if(previous?.isConnected)previous.focus?.({preventScroll:true});resolve(value);};
+      cancelPending=()=>finish(false);cancel.addEventListener('click',()=>finish(false));accept.addEventListener('click',()=>finish(true));
+      dialog.addEventListener('cancel',event=>{event.preventDefault();finish(false);});dialog.addEventListener('close',()=>finish(false));
+      try{documentRef.body.appendChild(dialog);dialog.showModal();cancel.focus();}
+      catch(error){cancelPending=null;dialog.remove();reject(error);}
+    });
+  };
+  // The facade is used only by view modules (confirm/prompt/toastr/navigator).
+  // Application, floating window and export bridges retain the original host.
+  const uiHost={confirm,prompt:typeof host.prompt==='function'?host.prompt.bind(host):undefined,
+    get navigator(){return host.navigator;},get toastr(){return host.toastr;}};
+  return {host:uiHost,confirm,dispose:()=>cancelPending?.()};
+}
+
 function triggerBrowserExport(blob, name, documentRef) {
   if (!documentRef?.createElement || !documentRef?.body) throw new Error('TT 下载桥和浏览器导出接口均不可用');
   const url = URL.createObjectURL(blob), anchor = documentRef.createElement('a');

@@ -55,7 +55,7 @@ export function mountBatchList({panel,app,run,host}){
     body.querySelector('[data-retry-batch]')?.addEventListener('click',event=>run(()=>app.retryBatch(b.id),{name:'focus-summary',button:event.currentTarget}));
     body.querySelector('[data-retry-batch-vectors]')?.addEventListener('click',event=>run(()=>app.retryBatchVectors(b.id),{name:'vectors',button:event.currentTarget}));
     body.querySelector('[data-regenerate-batch]')?.addEventListener('click',event=>run(()=>app.regenerateBatch(b.id),{name:'focus-summary',button:event.currentTarget}));
-    body.querySelector('[data-delete-batch]')?.addEventListener('click',()=>run(async()=>{if(host.confirm?.(b.replacement&&!b.savedOperationId?'删除该批候选？仅移除本批，旧正式记忆和其它候选保留；可在设置中的回收站恢复。':'删除该批生成的记忆？聊天原文不变，可恢复或重生。'))await app.deleteBatch(b.id);}));
+    body.querySelector('[data-delete-batch]')?.addEventListener('click',()=>run(async()=>{if(await host.confirm?.(b.replacement&&!b.savedOperationId?'删除该批候选？仅移除本批，旧正式记忆和其它候选保留；可在设置中的回收站恢复。':'删除该批生成的记忆？聊天原文不变，可恢复或重生。'))await app.deleteBatch(b.id);}));
     body.querySelector('[data-restore-batch]')?.addEventListener('click',()=>run(()=>app.restoreBatch(b.id)));
   }
   function paint(view){

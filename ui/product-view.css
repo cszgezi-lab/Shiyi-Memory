@@ -500,3 +500,11 @@
 #shiyi-product-shell .sy-extraction-item button{min-height:44px;padding:6px 9px;font-size:13px}
 #shiyi-product-shell [data-extraction-editor]{margin-top:12px;padding-top:12px;border-top:1px solid var(--sy-border)}
 #shiyi-product-shell [data-extraction-kind]{max-width:160px}
+
+/* WebView-local confirmation: native TT 2.2 confirm is denied by host ACL. */
+.sy-confirm{box-sizing:border-box;width:min(440px,calc(100% - 32px));max-height:calc(100dvh - 32px);overflow:auto;border:1px solid #777;border-radius:12px;padding:20px;background:var(--SmartThemeBlurTintColor,#20252e);color:var(--SmartThemeBodyColor,#eee);font:inherit;box-shadow:0 8px 40px #0008}
+.sy-confirm::backdrop{background:#0008}
+.sy-confirm p{white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 20px;line-height:1.6}
+.sy-confirm>div{display:flex;justify-content:flex-end;gap:12px}
+.sy-confirm button{min-height:44px;min-width:76px;padding:8px 16px;border:1px solid #888;border-radius:8px;background:transparent;color:inherit;font:inherit;cursor:pointer}
+.sy-confirm button:focus-visible{outline:2px solid currentColor;outline-offset:3px}
