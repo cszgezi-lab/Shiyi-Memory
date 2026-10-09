@@ -579,7 +579,7 @@ export function createProductShellController({
     }
       if(preflightAbort.signal.aborted||!tokenValid(token,session))throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
     }catch(error){
-      if(activeTask===operationId){activeTask=null;abortController=null;}
+      if(activeTask===operationId&&abortController===preflightAbort){activeTask=null;abortController=null;}
       if(preflightAbort.signal.aborted||!tokenValid(token,session))return {status:PRODUCT_SHELL_STATUS.CANCELED,errorCode:'CANCELED',operationId};
       mark(PRODUCT_SHELL_STATUS.FAILED,errorCode(error,'PERSISTENCE_ERROR'),'任务暂存未完成，原文与侧重点保留。');
       state.draft={range:clone(state.range),focus:normalizedFocus,status:'retryable'};
@@ -597,8 +597,8 @@ export function createProductShellController({
     summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations})).records;
     try {
       engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, verified:state.settings.summaryReviewEnabled, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
-      const result = await engine.process(batch, { signal: abortController.signal, onDiagnostic, onSourcePlan:plan=>{
-        if(!tokenValid(token,session)||abortController?.signal.aborted||activeTask!==operationId)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
+      const result = await engine.process(batch, { signal: preflightAbort.signal, onDiagnostic, onSourcePlan:plan=>{
+        if(!tokenValid(token,session)||preflightAbort.signal.aborted||activeTask!==operationId||abortController!==preflightAbort)throw Object.assign(new Error('任务已停止'),{code:'CANCELED'});
         if(plan.operationId!==operationId||plan.sourceRevision!==batch.sourceRevision||stableStringify(plan.scope)!==stableStringify(session.scope))throw Object.assign(new Error('总结来源计划不一致'),{code:'SOURCE_INVALIDATED'});
         summarySourceGuard={operationId,token,sourceRevision:plan.sourceRevision,scopeKey:stableStringify(plan.scope),range:clone(plan.range),children:new Map(plan.children.map(child=>[child.operationId,Object.freeze({...child})])),report:onDiagnostic};
       }});
@@ -625,7 +625,7 @@ export function createProductShellController({
       return { status: PRODUCT_SHELL_STATUS.SAVED, operationId, requests: result.requests, committedRevision: snapshot.committedRevision, counts: clone(state.lastSaved.counts) };
     } catch (error) {
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode, operationId };
-      if (abortController?.signal.aborted || error?.code === 'CANCELED' || error?.name === 'AbortError') {
+      if (preflightAbort.signal.aborted || error?.code === 'CANCELED' || error?.name === 'AbortError') {
         if (token !== generation) return { status: state.status, errorCode: state.errorCode, operationId };
         if (token === generation) mark(PRODUCT_SHELL_STATUS.CANCELED, 'CANCELED', '本次整理已取消；范围与侧重点草稿已保留。');
         state.draft.status = 'canceled';
@@ -641,19 +641,23 @@ export function createProductShellController({
       return { status: PRODUCT_SHELL_STATUS.FAILED, errorCode: code, failure: safeFailure, errorDetails: { ...safeLogDetails(errorDiagnostics(error)), status: safeFailure.status }, operationId };
     } finally {
       if(summarySourceGuard?.operationId===operationId&&summarySourceGuard.token===token)summarySourceGuard=null;
-      if (activeTask === operationId) activeTask = null;
-      if (abortController?.signal.aborted || !activeTask) abortController = null;
-      state.job = state.job && state.job.operationId === operationId ? { ...state.job, active: false } : state.job;
+      if (activeTask === operationId && abortController === preflightAbort) { activeTask = null; abortController = null; }
+      if (token === generation && state.job?.operationId === operationId) state.job = { ...state.job, active: false };
     }
   }
 
   async function cancelSummary() {
     if (!activeTask || !abortController) return { status: state.status, canceled: false };
+    const operationId=activeTask,controller=abortController;
     generation += 1;
-    abortController.abort('user canceled');
+    controller.abort('user canceled');
+    // Native storage/model awaits may never settle. Cancellation revokes this
+    // task's ownership now; its local signal/generation still reject late work.
+    activeTask=null;abortController=null;summarySourceGuard=null;
+    if(state.job?.operationId===operationId)state.job={...state.job,active:false};
     state.draft.status = 'canceled';
     mark(PRODUCT_SHELL_STATUS.CANCELED, 'CANCELED', '本次整理已取消；范围与侧重点草稿已保留。');
-    return { status: PRODUCT_SHELL_STATUS.CANCELED, canceled: true, operationId: activeTask };
+    return { status: PRODUCT_SHELL_STATUS.CANCELED, canceled: true, operationId };
   }
 
   async function previewRecall(query, options = {}) {

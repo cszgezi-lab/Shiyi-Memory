@@ -93,6 +93,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   // 'running' row belongs to a dead session unless it names this batch, so
   // stale rows recover instead of blocking retry and automatic summary.
   let activeSummaryBatchId = null;
+  let activeSummaryOperation = null;
   let cancelVersion = 0, knowledgeCache = [], opening = false, feedbackSequence = 0, stopForceTimer = null;
   let recallRevision = 0;
   let recallSafetyRevision = 0, committedRecall = null;
@@ -918,7 +919,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     if(!workspace)throw Object.assign(new Error('当前聊天尚未读取'),{code:'CHAT_REF_UNAVAILABLE'});
     batchSize??=core.settings.summaryBatchSize;
-    const op=begin();let saved=0,currentBatch=null,remainingPlanned=0,bookkeepingWarning=false,deferredRecords=0,automaticQualityIds=[],usedVerification=core.settings.summaryReviewEnabled,stagedOnly=false;
+    const op=begin();activeSummaryOperation=op;let saved=0,currentBatch=null,remainingPlanned=0,bookkeepingWarning=false,deferredRecords=0,automaticQualityIds=[],usedVerification=core.settings.summaryReviewEnabled,stagedOnly=false;
     summaryFeedback('running','正在读取总结范围…',trigger);
     try{
       // Read current source again only inside the same bound chat.
@@ -1050,16 +1051,16 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       // a model/validation success or a commit-start marker.
       error.details={...error.details,savedBatches:saved,pendingBatches:remainingPlanned,modelMs,publishMs,
         ...(currentBatch?{startIndex:currentBatch.startIndex,endIndex:currentBatch.endIndex}:{})};
-      if(op.token===epoch)summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批。${failureText(error)}`,trigger);
-      if(currentBatch&&workspace?.isCurrent()&&op.token===epoch){
+      if(op.token===epoch&&activeSummaryOperation===op)summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批。${failureText(error)}`,trigger);
+      if(currentBatch&&workspace?.isCurrent()&&op.token===epoch&&activeSummaryOperation===op){
         const failed={...currentBatch,status:op.signal.aborted?'interrupted':'failed',error:failureText(error)};
-        await workspace.update('summary-batches',rows=>rows.map(b=>b.id===failed.id?failed:b),[]).catch(()=>{});
+        await workspace.update('summary-batches',rows=>rows.map(b=>b.id===failed.id&&b.operationId===failed.operationId&&b.status==='running'?failed:b),[]).catch(()=>{});
         await refresh().catch(()=>{});
       }
       runtimeLog.record({run:diagnosticRun,task:'summary',phase:'queue_remaining',details:{savedBatches:saved,pendingBatches:remainingPlanned}});
-      if(op.token===epoch)summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批${remainingPlanned?`，另有 ${remainingPlanned} 批排队保留` :''}。${failureText(error)}`,trigger);
+      if(op.token===epoch&&activeSummaryOperation===op)summaryFeedback(op.signal.aborted?'info':'error',`${op.signal.aborted?'总结已停止':'总结未完成'}；已保存 ${saved} 批${remainingPlanned?`，另有 ${remainingPlanned} 批排队保留` :''}。${failureText(error)}`,trigger);
       throw error;
-    }finally{activeSummaryBatchId=null;op.finish();}
+    }finally{if(activeSummaryOperation===op){activeSummaryOperation=null;activeSummaryBatchId=null;}op.finish();}
   }
   async function processMergeQueue(op,ids=null,{automatic=false}={}){
     await refresh();op.check();
@@ -2036,27 +2037,29 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   async function hideRecord(id){assertCurrent();const ids=state.cards.find(c=>c.id===id)?.mergedIds??[id];recallBusy++;recallChanged();try{state.hidden=await workspace.update('hidden',list=>[...new Set([...list,...ids])],[]);await refresh();}finally{recallBusy--;}}
   async function restoreHidden(){assertCurrent();state.hidden=await workspace.write('hidden',[]);await refresh();}
   async function stop(){personaCommandVersion++;
-    // A persona transaction can reject or stall while the workspace is
-    // switching. Stopping must still reach every other task, so the pause is
-    // bounded and its failure never blocks the aborts below.
-    await Promise.race([dynamicPersona.pause().catch(error=>void reportError(error,{task:'persona',stage:'ui'})),new Promise(resolve=>setTimeout(resolve,2000))]);
+    const stoppedActive=active,stoppedOperations=[...operations],stoppedSummary=activeSummaryOperation;
     vectorStopped=true;clearTimeout(vectorTimer);vectorTimer=null;vectorJob?.cancel();abortAll();for(const op of apiOperations)op.abort();
     try{await core.cancelSummary();}catch(error){if(error?.code!=='CANCELED')void reportError(error,{task:'summary',stage:'ui'});}
+    // A persona transaction can reject or stall while the workspace is
+    // switching. Other tasks have already been canceled above; waiting for
+    // persona pause is bounded and cannot hold their cancellation hostage.
     // A signal-blind await can keep an operation from ever settling after
     // abort. Force-release the exclusive slots shortly after without holding
     // 停止 open; a late wake-up hits the bumped cancelVersion at its checkpoint.
     clearTimeout(stopForceTimer);
-    if(active||opening)stopForceTimer=setTimeout(()=>{
+    if(stoppedActive&&active===stoppedActive)stopForceTimer=setTimeout(()=>{
       stopForceTimer=null;
-      if(!active&&!opening)return;
-      cancelVersion++;for(const op of operations)op.abort();operations.clear();active=null;opening=false;
+      if(active!==stoppedActive)return;
+      for(const op of stoppedOperations){op.abort();operations.delete(op);}active=null;opening=false;
+      if(activeSummaryOperation===stoppedSummary){activeSummaryOperation=null;activeSummaryBatchId=null;}
       runtimeLog.record({task:'operation',phase:'canceled',level:'warning',details:{stage:'ui'}});
       notify();wakeChatFollower();queueAutomaticSummary();dynamicPersona.wake();wakeVectors();
       setMessage('已强制停止未响应的任务；已有保存结果保留');
     },500);
     stopForceTimer?.unref?.();
     if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());
-    setMessage('正在停止；已有保存结果保留');}
+    setMessage('正在停止；已有保存结果保留');
+    await Promise.race([dynamicPersona.pause().catch(error=>void reportError(error,{task:'persona',stage:'ui'})),new Promise(resolve=>setTimeout(resolve,2000))]);}
   async function disable(){enabled=false;automaticPaused=true;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
   // Main-card commands use the same persisted manual worker, never hidden UI
   // drafts. Coalesce clicks and reserve scheduling while a plan is prepared.
