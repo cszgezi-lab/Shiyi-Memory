@@ -28,6 +28,7 @@ import { customModulesHTML,mountCustomModules,moduleProposalHTML } from './produ
 import {qualityPanelHTML,mountQualityView} from './product-quality-view.js';
 import {peopleHTML,mountPeopleView} from './product-people-view.js';
 import {extractionHTML,mountExtractionView} from './product-extraction-view.js';
+import {taskMonitorHTML,mountTaskMonitor} from './product-task-monitor.js';
 
 const ID='shiyi-product-shell';
 const NAV=['memory','people','recording','recall','log','modules'];
@@ -79,6 +80,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  panel.innerHTML=`<div class="sy-shell"><div class="sy-brand"><span class="sy-mark">拾</span><span>拾忆<small>让故事有迹可循</small></span><span class="sy-version">${PRODUCT_VERSION}</span></div><div class="sy-body">
  <div class="sy-top"><span data-scope>尚未打开聊天</span></div><p role="status" aria-live="polite" class="sy-status" data-status>连接一个模型，就可以开始整理故事。</p>
  <nav class="sy-nav" aria-label="拾忆导航">${['记忆','人物','总结','召回','日志','设置'].map((v,i)=>`<button type="button" data-page="${NAV[i]}" ${i===0?'class="active"':''}>${v}</button>`).join('')}</nav>
+ ${taskMonitorHTML()}
  <section data-view="memory"><div class="sy-top"><h3>故事记忆</h3>${button('refresh','刷新')}</div>
  <div class="sy-progress" data-memory-progress><div class="sy-dial" data-memory-dial><span data-memory-floor>0</span></div><div class="sy-progress-text"><b data-memory-through>尚未开始记录</b><p data-memory-gap></p><p data-memory-next-batch></p></div></div>
  <div class="sy-memory-bar"><details class="sy-add-memory" data-add-memory-inline><summary>新增记忆</summary><div data-add-memory-body></div></details><input data-search aria-label="搜索记忆" placeholder="搜索记忆"><span class="sy-memory-total" data-memory-total></span><select data-category aria-label="记忆类别" class="sy-sr-only"><option value="none">未展开</option><option value="all">全部类别</option>${categoryOptions()}</select></div>
@@ -107,7 +109,7 @@ export function initProductShell({documentRef=globalThis.document,host=globalThi
  <section data-view="settings" hidden><h3>设置与备份</h3>${button('recommended-memory','应用推荐记忆参数')}<p class="sy-help">5 楼一批、总结回复上限 8192，字典/标签/分类候选开启。保留你的 API、记录偏好与自动运行开关。</p><p class="sy-help">插件设置、资料库和助手对话为全局；故事记忆按聊天隔离。</p><details class="sy-card" data-recovery><summary>回收站与归档</summary><h4>记忆批次</h4><div data-batch-recycle-list></div><h4>单条记忆</h4><div data-recycle></div><h4>人物批次</h4><p class="sy-help" data-persona-recovery-status></p><button type="button" data-persona-recovery-restore>恢复上次撤下的人物批次</button></details><details class="sy-card" open><summary>数据与备份</summary><div class="sy-actions">${button('export-config','导出纯配置')}${button('export-global','导出全局资料与助手备份')}${button('export-backup','导出当前聊天备份')}${button('export-backup-recent','导出当前聊天备份（仅最近 100 条助手对话）')}${button('restore-hidden','恢复不再召回的记录')}${button('undo','撤销上次助手配置')}</div><p class="sy-help">纯配置不含记忆、附件、历史或 Key；完整备份包含当前聊天私人内容，请自行保管。"最近 100 条"只裁剪助手对话，记忆、设置与记录保持完整。</p></details></section><p data-progress class="sy-help"></p></div></div>`;
  const logBadSelector=(s,e)=>{(globalThis.__SHIYI_BAD_SELECTORS??=[]).push({selector:String(s).slice(0,200),message:String(e.message).slice(0,120),at:new Date().toISOString()});if(globalThis.__SHIYI_BAD_SELECTORS.length>20)globalThis.__SHIYI_BAD_SELECTORS.length=20;console.error('[拾忆] 非法选择器:',s,e.message);};
  const $=s=>{try{return panel.querySelector?.(s);}catch(e){logBadSelector(s,e);return null;}},$$=s=>{let r;try{r=[...(panel.querySelectorAll?.(s)??[])];}catch(e){logBadSelector(s,e);return [];}return r;};let app=application,snapshot=null,currentPage='memory';
- const modelRequests=new Map(),dirtyApi=new Set();let autoStartDirty=false,autoScope=null,personEditor=null,knowledgeView=null;let runtimeLogPage='';let management=null,customManagement=null,logView=null,dictionaryView=null,recallView=null,mergeView=null;let presetView=null,journalView=null,memoryRetrospectiveView=null;let floating=null,lastFeedbackId=null,noticeText='打开聊天后自动加载对应记忆和总结批次。',noticeLevel='info';
+ const modelRequests=new Map(),dirtyApi=new Set();let autoStartDirty=false,autoScope=null,personEditor=null,knowledgeView=null;let runtimeLogPage='';let management=null,customManagement=null,logView=null,dictionaryView=null,recallView=null,mergeView=null;let presetView=null,journalView=null,memoryRetrospectiveView=null,taskMonitorView=null;let floating=null,lastFeedbackId=null,noticeText='打开聊天后自动加载对应记忆和总结批次。',noticeLevel='info';
  function feedback(text,level='info',toast=false){noticeText=text;noticeLevel=level;floating?.setNotice(text,level);if(toast)host.toastr?.[['success','error','warning','info'].includes(level)?level:'info']?.(text,'拾忆',{escapeHtml:true});}
  function resetModels(kind){const pending=modelRequests.get(kind);pending?.abort();modelRequests.delete(kind);if(pending)feedback('模型列表请求已取消，请按当前配置重新拉取。');const list=$(`[data-model-list="${kind}"]`);if(list){list.innerHTML='<option value="">先拉取模型列表，也可以在下方直接输入</option>';list.disabled=true;}const b=$(`[data-action="models-${kind}"]`);if(b){b.disabled=false;b.textContent='拉取模型列表';}if($(`[data-model-status="${kind}"]`))$(`[data-model-status="${kind}"]`).textContent='';floating?.setBusy(Boolean(app?.state.busy)||modelRequests.size>0);}
  function resetAllModels(){for(const kind of Object.keys(API_INFO))resetModels(kind);}
@@ -349,6 +351,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
    if(noticeLevel==='error'&&$('[data-status]'))$('[data-status]').textContent=noticeText;
     floating?.setBusy(s.busy||modelRequests.size>0);
     if(floating?.window.hidden)return;
+    taskMonitorView?.paint(s.taskMonitor);
     journalView?.paint(s,currentPage);
     if(['dynamic-persona','persona-profiles'].includes(currentPage)){
       dynamicPersonaView?.paint(s);
@@ -397,6 +400,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
   }
   const painting=frameScheduler(documentRef.defaultView??host,()=>paint(readViewState(app)));
   app??=createProductApplication({host,controller,...controllerOptions,onChange:paint,onInvalidate:()=>painting.request()});
+  taskMonitorView=mountTaskMonitor({panel,app,run});
   memoryRetrospectiveView=mountMemoryRetrospective({panel,app,run});
   dynamicPersonaView=mountDynamicPersona({panel,app,run,host:uiHost});
  function fill({apiOnly=false}={}){const s=readViewState(app);for(const f of $$('[data-setting]')){const key=f.getAttribute('data-setting');if(dirtyApi.has(key))continue;if(f.type==='checkbox')f.checked=Boolean(s.settings[key]);else f.value=s.settings[key]??'';}{if($('[data-input]'))$('[data-input]').value=s.draft??'';if($('[data-count]'))$('[data-count]').value=s.settings.messageCount;if($('[data-batch-size]'))$('[data-batch-size]').value=s.settings.summaryBatchSize;const select=$('[data-conversation]');if(select){select.innerHTML=s.conversations.map(c=>`<option value="${esc(c.id)}">${esc(c.title)}</option>`).join('')||'<option value="main">配置对话</option>';select.value=s.conversationId;}}syncInherited();syncSummaryRange();}

@@ -508,3 +508,13 @@
 .sy-confirm>div{display:flex;justify-content:flex-end;gap:12px}
 .sy-confirm button{min-height:44px;min-width:76px;padding:8px 16px;border:1px solid #888;border-radius:8px;background:transparent;color:inherit;font:inherit;cursor:pointer}
 .sy-confirm button:focus-visible{outline:2px solid currentColor;outline-offset:3px}
+
+#shiyi-product-shell .sy-task-monitor{margin:8px 0 14px;padding:10px 12px;border:1px solid var(--sy-border);border-radius:8px;background:var(--sy-surface);overflow-wrap:anywhere}
+#shiyi-product-shell .sy-task-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+#shiyi-product-shell .sy-task-head strong{font-size:13px;line-height:1.5;min-width:0}
+#shiyi-product-shell .sy-task-head button{flex:0 0 auto;min-height:44px;padding:6px 10px;font-size:13px}
+#shiyi-product-shell .sy-task-monitor p{margin:4px 0}
+#shiyi-product-shell .sy-task-meta{display:flex;flex-wrap:wrap;column-gap:12px;row-gap:4px}
+#shiyi-product-shell .sy-task-monitor details{margin-top:6px}
+#shiyi-product-shell .sy-task-monitor summary{min-height:44px;align-content:center;font-size:13px;cursor:pointer}
+#shiyi-product-shell .sy-task-monitor ul{padding-left:20px;font-size:13px;margin:4px 0;line-height:1.6}

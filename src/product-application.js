@@ -97,7 +97,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   let cancelVersion = 0, knowledgeCache = [], opening = false, feedbackSequence = 0, stopForceTimer = null;
   let recallRevision = 0;
   let recallSafetyRevision = 0, committedRecall = null;
-  let autoTimer=null,autoPending=false,autoTask=null,autoHistoryAttempts=0,autoRetryAt=0;
+  let autoTimer=null,autoPending=false,autoTask=null,autoTaskOwner=null,autoRunOwner=null,autoHistoryAttempts=0,autoRetryAt=0;
   let foreground=false,injecting=0,autoFailureCount=0,autoFailureRange='';
   let dictionaryRevision=-1, dictionaryCache=null,dictionaryProfiles=null;
   let recallBusy = 0, moduleSourceBaseline=null,moduleSourceChatId=null,sourcePrefixVerified=false,sourceContextComplete=false;
@@ -197,13 +197,48 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   function captureRecallSnapshot(){
     return {memoryCards:state.cards,cards:[...state.cards,...(core.settings.knowledgeEnabled?knowledgeCache.filter(card=>!state.hidden.includes(card.id)):[])],settings:core.settings,dictionary:activeDictionary(),revision:recallRevision,safetyRevision:recallSafetyRevision};
   }
-  function publicState() { return { ...clone(state),automatic:automaticPlan(),autoRunning, merges:workspace?.isCurrent()&&!state.stale?clone(state.merges??[]):[], injectionLog:workspace?.isCurrent()?injectionLog?.state:null, dictionary:clone(activeDictionary()), runtimeLog:runtimeLog.state, enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
+  function taskMonitor(plan=automaticPlan()){
+    const manualPending=state.batches.filter(batch=>['queued','running','failed','interrupted'].includes(batch.status)&&batch.trigger!=='auto'&&!hasNewerSavedCoverage(batch,state.batches)).length;
+    const automatic={status:'waiting',reason:'pending',retryAt:autoRetryAt||null,manualPending,nextStart:plan.nextStart,nextEnd:plan.nextEnd,ready:plan.ready};
+    const waiting=(status,reason)=>Object.assign(automatic,{status,reason});
+    if(!enabled||automaticPaused||disposed)waiting('paused','plugin_paused');
+    else if(!core.settings.autoSummaryEnabled)waiting('disabled','disabled');
+    else if(state.summaryHold)waiting('paused','summary_hold');
+    else if(manualPending)waiting('blocked','manual_plan');
+    else if(opening||followPending||following||state.stale)waiting('waiting','chat_loading');
+    else if(!workspace?.isCurrent())waiting('blocked','no_chat');
+    else if(autoRunning||autoTaskOwner)waiting('running','running');
+    else if(active)waiting('waiting','task_busy');
+    else if(foregroundBusy())waiting('waiting','foreground');
+    else if(host.document?.visibilityState==='hidden')waiting('waiting','hidden');
+    else if(!apiConnectionReady('summary'))waiting('blocked','api_unconfigured');
+    else if(autoHistoryAttempts>3&&!autoPending)waiting('blocked','history_unavailable');
+    else if(autoFailureCount>3)waiting('blocked','retry_exhausted');
+    else if(autoPending&&autoRetryAt>Date.now())waiting('waiting','retry_wait');
+    else if(plan.ready&&core.settings.focusMode==='ask_every')waiting('blocked','focus_required');
+    else if(plan.lastIndex===null)waiting('waiting','progress_unknown');
+    else if(!plan.ready)waiting('waiting','not_enough_floors');
+    else if(autoPending)waiting('ready','ready');
+    const batch=activeSummaryBatchId?state.batches.find(row=>row.id===activeSummaryBatchId):null;
+    let current=null;
+    if(activeSummaryOperation)current={kind:'summary',trigger:activeSummaryOperation.monitor?.trigger??batch?.trigger??'manual',phase:batch?'running':'preparing',...(batch?{batchId:batch.id,startIndex:batch.startIndex,endIndex:batch.endIndex}:activeSummaryOperation.monitor??{})};
+    else if(autoRunOwner||autoTaskOwner)current={kind:'summary',trigger:'auto',phase:'preparing',startIndex:plan.nextStart,endIndex:plan.nextEnd};
+    else if(opening||following)current={kind:'chat',trigger:null,phase:'preparing'};
+    else if(active)current={kind:'operation',trigger:null,phase:'running'};
+    else if(personaLaunch||state.dynamicPersona?.busy)current={kind:'persona',trigger:null,phase:state.dynamicPersona?.busy?'running':'preparing'};
+    else if(vectorJob)current={kind:'vectors',trigger:null,phase:'running'};
+    else if(qualityOperation)current={kind:'quality',trigger:'auto',phase:'running'};
+    else if(apiOperations.size)current={kind:'api',trigger:null,phase:'running'};
+    const providerRequests=[...queuedRequests.entries()].map(([requestId,details])=>({requestId,...Object.fromEntries(['modelRole','purpose','reason','queuePosition','queueWaitMs','retryDelayMs'].filter(key=>details[key]!==undefined).map(key=>[key,details[key]]))}));
+    return {current,providerRequests,automatic};
+  }
+  function publicState() { const automatic=automaticPlan();return { ...clone(state),automatic,autoRunning,taskMonitor:taskMonitor(automatic), merges:workspace?.isCurrent()&&!state.stale?clone(state.merges??[]):[], injectionLog:workspace?.isCurrent()?injectionLog?.state:null, dictionary:clone(activeDictionary()), runtimeLog:runtimeLog.state, enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
   const viewIdentities=new WeakMap();let nextViewIdentity=0;
   const viewIdentity=value=>{if(!value||typeof value!=='object')return value;if(!viewIdentities.has(value))viewIdentities.set(value,++nextViewIdentity);return viewIdentities.get(value);};
   function readViewState(){
     const readers=Object.fromEntries(Object.entries(state).map(([key,value])=>[key,()=>clone(value)]));
     const cardRevision=viewIdentity(state.cards);
-    return lazyViewState({...readers,cardRevision:()=>cardRevision,batchRevision:()=>viewIdentity(state.batches),automatic:automaticPlan,autoRunning:()=>autoRunning,
+    return lazyViewState({...readers,cardRevision:()=>cardRevision,batchRevision:()=>viewIdentity(state.batches),automatic:automaticPlan,autoRunning:()=>autoRunning,taskMonitor,
       // Compare source identities before the people view consumes/clones large fields.
       peopleRevision:()=>{const settings=core.settings;return JSON.stringify([cardRevision,viewIdentity(state.dynamicPersona),viewIdentity(activeDictionary()),settings.aliases,settings.dynamicPersonaMvuMode]);},
       merges:()=>workspace?.isCurrent()&&!state.stale?clone(state.merges??[]):[],injectionLog:()=>workspace?.isCurrent()?injectionLog?.state:null,
@@ -213,6 +248,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       credentialPresent:()=>Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)]))});
   }
   function assertCurrent(token = epoch) { if (!workspace || token !== epoch || !workspace.isCurrent()) throw Object.assign(new Error('聊天或来源已变化，旧聊天操作已停止'),{code:'CHAT_CHANGED'}); }
+  function continuationCheck(parentCheck){
+    const token=epoch,version=cancelVersion;
+    return ()=>{if(disposed||version!==cancelVersion)throw Object.assign(new Error('已停止'),{code:'CANCELED'});assertCurrent(token);parentCheck?.();};
+  }
   function begin(exclusive = true) {
     if(exclusive&&qualityOperation){qualityOperation.preempted=true;qualityOperation.abort();}
     if (exclusive && active) throw new Error('已有任务正在运行');
@@ -222,7 +261,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       check() { if (controller.signal.aborted || version !== cancelVersion) throw Object.assign(new Error('已停止'),{code:'CANCELED'}); assertCurrent(token); },
       finish() { operations.delete(controller); if (active === controller) active = null; notify(); wakeChatFollower(); wakeAutomaticSummary(); wakeVectors(); } };
   }
-  function abortAll() { cancelVersion++;autoPending=false;autoHistoryAttempts=0;autoRetryAt=0;clearTimeout(autoTimer);autoTimer=null;for (const op of operations) op.abort(); }
+  function abortAll() {
+    cancelVersion++;autoPending=false;autoHistoryAttempts=0;autoRetryAt=0;clearTimeout(autoTimer);autoTimer=null;
+    for (const op of operations) op.abort();
+    // A native history/storage await may never settle after abort. Retire its
+    // automatic wrapper now; late callbacks are fenced by the captured owner.
+    const owner=autoRunOwner??autoTaskOwner;
+    if(owner?.controller&&active===owner.controller){operations.delete(active);active=null;if(activeSummaryOperation?.monitor?.trigger==='auto'){activeSummaryOperation=null;activeSummaryBatchId=null;}}
+    autoTask=null;autoTaskOwner=null;autoRunOwner=null;autoRunning=false;
+  }
   function beginApi() {
     const controller=new AbortController();apiOperations.add(controller);notify();
     return {signal:controller.signal,check(){if(controller.signal.aborted)throw Object.assign(new Error('已停止'),{code:'CANCELED'});},finish(){apiOperations.delete(controller);notify();}};
@@ -666,14 +713,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     await globalWorkspace.write('legacy-imported',{at:Date.now()});
   }
-  async function refresh({boundOnly=false,summaryCommit=false}={}) {
-    if(tracking&&!boundOnly&&(!workspace?.isCurrent()||state.stale)){await followCurrentChat();if(!workspace?.isCurrent())throw Object.assign(new Error('当前没有可读取的聊天'),{code:'CHAT_REF_UNAVAILABLE'});return;}
+  async function refresh({boundOnly=false,summaryCommit=false,check:parentCheck}={}) {
+    parentCheck?.();
+    if(tracking&&!boundOnly&&(!workspace?.isCurrent()||state.stale)){await followCurrentChat();parentCheck?.();if(!workspace?.isCurrent())throw Object.assign(new Error('当前没有可读取的聊天'),{code:'CHAT_REF_UNAVAILABLE'});return;}
     recallBusy++; if(!summaryCommit)recallChanged();
     try {
-    const token = epoch, bound = workspace; assertCurrent(token);
-    const view = await core.readMemoryView(); assertCurrent(token);
+    const token = epoch, bound = workspace,check=()=>{assertCurrent(token);parentCheck?.();};check();
+    const view = await core.readMemoryView();check();
     const validity = await core.sourceValidity(view.records ?? {},{includeMessages:true});
-    assertCurrent(token);
+    check();
     const liveChat=mvuContext(host)?.chat;
     sourcePrefixVerified=validity.totalCount===null&&!sourceEventRelevant('SOURCE_REFRESH')||Array.isArray(liveChat)&&liveChat.length===validity.totalCount&&!validity.invalidKeys.length&&!validity.unknownKeys.length&&(validity.messages??[]).every(m=>{
       const raw=liveChat[m.index];return raw&&String(raw.text??raw.mes??raw.content??'')===m.text&&(raw.version??raw.swipeId??raw.swipe_id??0)===m.version&&(!(raw.id??raw.messageId??raw.uuid??raw.sourceId)||(raw.id??raw.messageId??raw.uuid??raw.sourceId)===m.id);
@@ -685,19 +733,19 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     state.deletedRecords=[...new Map(all.filter(r=>view.controls?.deletedRecords?.[r.id]).map(r=>[r.id,r])).values()];
     state.rawRecords=filtered;state.memoryControls=view.controls??{};
     state.summaryHold=view.controls?.automation?.summaryHold??null;
-    qualitySaved=await bound.read(QUALITY_STORE_KEY,{});assertCurrent(token);
+    const loadedQuality=await bound.read(QUALITY_STORE_KEY,{});check();qualitySaved=loadedQuality;
     state.records=projectQualityRecords(filtered,qualitySaved,view.controls);
     state.quality=qualityStatus(filtered,qualitySaved,view.controls,state.records);
-    retrospectiveSaved=await bound.read(RETROSPECTIVE_STORE_KEY,null);assertCurrent(token);
+    const loadedRetrospective=await bound.read(RETROSPECTIVE_STORE_KEY,null);check();retrospectiveSaved=loadedRetrospective;
     if(!retrospectiveOperation)state.memoryRetrospective=retrospectiveState(retrospectiveSaved,{records:state.records,controls:view.controls,dictionary:activeDictionary()});
     state.records=projectRetrospectiveRecords(state.records,retrospectiveEntries(retrospectiveSaved),view.controls,{dictionary:activeDictionary()});
     const qualityDeleted=Object.values(qualitySaved).filter(e=>qualityEntryCurrent(e,filtered)).flatMap(e=>(e.additions??[]).map(a=>a.record)).filter(r=>view.controls?.deletedRecords?.[r.id]);
     state.deletedRecords.push(...qualityDeleted);
-    mergeDecisions=await bound.read(MERGE_STORE_KEY,{});assertCurrent(token);
+    const loadedMerges=await bound.read(MERGE_STORE_KEY,{});check();mergeDecisions=loadedMerges;
     state.merges=mergeJobs(state.records,mergeDecisions);
-    try{await modules.sync();}catch(error){void reportError(error,{task:'background',stage:'background'});assertCurrent(token);state.message='MVU 暂不可读，扩展区块没有使用旧值；可点击刷新重试';}
-    assertCurrent(token);state.cards = projectMergedCards(modules.cards(memoryCards(state.records, { hidden: state.hidden, includeAwareness:true })),state.records,mergeDecisions).filter(c=>!state.hidden.includes(c.id));
-    await readBatches(view);
+    try{await modules.sync();}catch(error){check();void reportError(error,{task:'background',stage:'background'});state.message='MVU 暂不可读，扩展区块没有使用旧值；可点击刷新重试';}
+    check();state.cards = projectMergedCards(modules.cards(memoryCards(state.records, { hidden: state.hidden, includeAwareness:true })),state.records,mergeDecisions).filter(c=>!state.hidden.includes(c.id));
+    await readBatches(view,{check});check();
     // Publish a completed view atomically for sends. Pure additions do not
     // invalidate an in-flight recall of the preceding committed snapshot.
     // Replacements/deletions/knowledge changes still invalidate it immediately.
@@ -706,8 +754,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     recallChanged({publicationOnly:Boolean(additive)});
     state.sourceStatus = {invalid:validity.invalidKeys.length,unknown:validity.unknownKeys.length};
     autoInvalidSources=new Set([...validity.invalidKeys,...validity.unknownKeys]);
-    const docs = await globalWorkspace.read('documents', []); assertCurrent(token);
-    state.documents = docs; await warmRecall(); assertCurrent(token);
+    const docs = await globalWorkspace.read('documents', []);check();
+    state.documents = docs; await warmRecall();check();
     committedRecall=captureRecallSnapshot();
     rememberModuleSources();
     notify(); return view;
@@ -715,8 +763,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   }
   async function syncModulesQuietly(){
     if(!workspace?.isCurrent()||state.stale||!state.modules.some(m=>m.mode==='mvu'&&m.enabled&&!m.archived))return;
-    try{const different=await modules.sync();assertCurrent();rememberModuleSources();if(!different)return;state.cards=projectMergedCards(modules.cards(memoryCards(state.records,{hidden:state.hidden,includeAwareness:true})),state.records,mergeDecisions).filter(c=>!state.hidden.includes(c.id));recallChanged();notify();}
-    catch(error){void reportError(error,{task:'background',stage:'background'});state.cards=state.cards.filter(c=>!c.readonly);recallChanged();setMessage('MVU 读取未完成，旧变量未注入；请重新加载当前聊天或刷新变量');}
+    const token=epoch,version=cancelVersion,bound=workspace,current=()=>!disposed&&token===epoch&&version===cancelVersion&&workspace===bound&&bound.isCurrent();
+    try{const different=await modules.sync();if(!current())return;rememberModuleSources();if(!different)return;state.cards=projectMergedCards(modules.cards(memoryCards(state.records,{hidden:state.hidden,includeAwareness:true})),state.records,mergeDecisions).filter(c=>!state.hidden.includes(c.id));recallChanged();notify();}
+    catch(error){if(!current())return;void reportError(error,{task:'background',stage:'background'});state.cards=state.cards.filter(c=>!c.readonly);recallChanged();setMessage('MVU 读取未完成，旧变量未注入；请重新加载当前聊天或刷新变量');}
   }
   async function saveSettings(patch) {
     const valid=validateProductEdit(patch,core.settings);
@@ -783,9 +832,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(Object.keys(consolidated.retire).length)await core.updateMemoryControls({operations:consolidated.retire});
     await workspace.write('summary-batches',consolidated.rows);
   }
-  async function readBatches(view){
-    const token=epoch,bound=workspace;assertCurrent(token);
-    let list=await bound.read('summary-batches',[]);assertCurrent(token);
+  async function readBatches(view,{check:parentCheck}={}){
+    const token=epoch,bound=workspace,check=()=>{assertCurrent(token);parentCheck?.();};check();
+    let list=await bound.read('summary-batches',[]);check();
     const known=new Set(list.flatMap(b=>[b.operationId,b.previousOperation,...(b.attempts??[])]));
     const parents=[...new Set((view.records?.history??[]).map(h=>h.operationId?.split('/child-')[0]).filter(id=>id?.startsWith('product-summary_')&&!known.has(id)))];
     const legacy=parents.map((operationId,i)=>{
@@ -793,7 +842,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       return {id:makeId('legacy-batch'),number:list.length+i+1,operationId,startIndex:indices.length?Math.min(...indices):null,endIndex:indices.length?Math.max(...indices):null,status:'saved',legacy:true,attempts:[],focus:''};
     });
     if(legacy.length)list=await bound.write('summary-batches',[...list,...legacy]);
-    assertCurrent(token);
+    check();
     state.batches=list.map(item=>{
       const mode=view.controls?.operations?.[item.operationId];
       const records=batchRecords(view.records?.history,item.operationId);
@@ -813,9 +862,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const recovered=state.batches.filter(b=>list.some(old=>old.id===b.id&&(b.status==='saved'&&(old.status!=='saved'||old.savedOperationId!==b.operationId||old.error)||b.status==='deleted'&&old.status!=='deleted'||b.status==='interrupted'&&old.status==='running')));
     if(recovered.length){
       await bound.update('summary-batches',rows=>rows.map(row=>{
+        check();
         const valid=recovered.find(b=>b.id===row.id&&b.operationId===row.operationId);
         return valid?{...row,status:valid.status,...(valid.status==='saved'?{savedOperationId:valid.operationId,error:null}:{})}:row;
-      }),[]).catch(()=>{});assertCurrent(token);
+      }),[]).catch(()=>{});check();
       state.savedThrough=Math.max(state.savedThrough,...recovered.filter(b=>b.status==='saved').map(b=>b.endIndex).filter(Number.isInteger));
     }
   }
@@ -919,7 +969,9 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
     if(!workspace)throw Object.assign(new Error('当前聊天尚未读取'),{code:'CHAT_REF_UNAVAILABLE'});
     batchSize??=core.settings.summaryBatchSize;
-    const op=begin();activeSummaryOperation=op;let saved=0,currentBatch=null,remainingPlanned=0,bookkeepingWarning=false,deferredRecords=0,automaticQualityIds=[],usedVerification=core.settings.summaryReviewEnabled,stagedOnly=false;
+    const op=begin();op.monitor={trigger:trigger==='auto'?'auto':'manual',...(Number.isSafeInteger(startIndex)?{startIndex}:{}),...(Number.isSafeInteger(endIndex)?{endIndex}:{})};activeSummaryOperation=op;
+    if(trigger==='auto'&&autoRunOwner)autoRunOwner.controller=active;
+    let saved=0,currentBatch=null,remainingPlanned=0,bookkeepingWarning=false,deferredRecords=0,automaticQualityIds=[],usedVerification=core.settings.summaryReviewEnabled,stagedOnly=false;
     summaryFeedback('running','正在读取总结范围…',trigger);
     try{
       // Read current source again only inside the same bound chat.
@@ -1242,35 +1294,38 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       await op.workspace.update(MERGE_STORE_KEY,rows=>({...rows,[id]:decision}),{});op.check();await refresh();setMessage('合并目标已更新，点击“只重试合并”进行核对。');
     }finally{op.finish();}
   }
-  async function regenerateBatch(id,{trigger='manual'}={}){
-    assertCurrent();const rows=await workspace.read('summary-batches',[]),row=rows.find(b=>b.id===id);
+  async function regenerateBatch(id,{trigger='manual',check:parentCheck}={}){
+    const check=continuationCheck(parentCheck);check();const rows=await workspace.read('summary-batches',[]);check();const row=rows.find(b=>b.id===id);
     if(!row)throw new Error('批次不存在');
     if(row.replacedBy||row.status==='deleted'&&rows.some(b=>b.id!==row.id&&b.status==='saved'&&b.startIndex<=row.endIndex&&b.endIndex>=row.startIndex))throw new Error('旧批次已被范围覆盖，请从手动总结选择需要重新覆盖的范围');
     if(!Number.isInteger(row.startIndex)||!Number.isInteger(row.endIndex))throw new Error('旧版未保存楼层范围，请在手动总结中指定范围重新整理');
+    check();
     return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id,trigger,rebuildCandidate:Boolean(row.replacement&&row.status!=='saved'&&row.status!=='deleted')});
   }
-  async function retryBatch(id){
+  async function retryBatch(id,{check:parentCheck}={}){
+    const check=continuationCheck(parentCheck);check();
     // A stale retry button can be clicked again before the busy UI paints.
     // Keep the current operation (and its progress) intact; never start a twin.
     // The skip stays silent to the caller but tells the user why nothing ran.
     if(active||opening){summaryFeedback('info','已有总结任务正在运行；本批重试已跳过，当前任务结束后可再试。','manual');return {status:'running',requests:0,level:'warning'};}
-    assertCurrent();await refresh();const row=state.batches.find(b=>b.id===id);
+    await refresh({check});check();const row=state.batches.find(b=>b.id===id);
     if(active||opening){summaryFeedback('info','已有总结任务正在运行；本批重试已跳过，当前任务结束后可再试。','manual');return {status:'running',requests:0,level:'warning'};}
     if(!row)throw new Error('批次不存在');
     if(row.status==='saved'){summaryFeedback('info','该批总结已保存，无需重复总结；索引未完成时可单独补建。','manual');return {status:'saved',requests:0};}
     if(!['failed','interrupted','queued'].includes(row.status))throw new Error('此批次当前不能续跑');
     if(!row.replacementReady&&!row.freshStart&&row.operationId&&core.inspectSummaryResume){
-      const recovery=await core.inspectSummaryResume(row.operationId,{focus:row.focus});assertCurrent();
+      const recovery=await core.inspectSummaryResume(row.operationId,{focus:row.focus});check();
       if((!recovery.frozen||recovery.revisionChanged)&&!recovery.hasCachedResponse&&!recovery.hasCommittedChildren){
         summaryFeedback('info','其它批次已保存，本批尚无可复用的成功答复；正在单独重试此批，已成功批次保留。','manual');
-        return regenerateBatch(id,{trigger:row.trigger??'manual'});
+        return regenerateBatch(id,{trigger:row.trigger??'manual',check});
       }
     }
     if(row.replacementReady&&row.replacement){
       // Reuse the successful candidate with no model call. The original
       // formal results remain active while any required member is missing.
-      const op=begin();try{const applied=await publishSummaryReplacement(row.replacement,op);await refresh();return {status:applied?'saved':'staged',requests:0};}finally{op.finish();}
+      const op=begin();try{const applied=await publishSummaryReplacement(row.replacement,op);check();await refresh({check});check();return {status:applied?'saved':'staged',requests:0};}finally{op.finish();}
     }
+    check();
     return summarize({startIndex:row.startIndex,endIndex:row.endIndex,batchSize:row.endIndex-row.startIndex+1,focus:row.focus,replaceBatchId:id,resume:true,trigger:row.trigger??'manual'});
   }
   async function retryIncompleteBatches(){
@@ -1620,18 +1675,23 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       if(token!==epoch||version!==cancelVersion||disposed){autoPending=false;return;}
       if(active||opening||followPending||following||state.stale||unfinishedManualSummary()||foregroundBusy())return;
       autoPending=false;
-      autoTask=(async()=>{await syncModulesQuietly();if(token===epoch&&version===cancelVersion&&!disposed)await autoSummary();})()
-        .catch(error=>{if(!disposed)void reportError(error,{task:'background',stage:'background'});})
-        .finally(()=>{autoTask=null;wakeAutomaticSummary();});
+      const owner={token,version};autoTaskOwner=owner;
+      const task=(async()=>{await syncModulesQuietly();if(autoTaskOwner===owner&&token===epoch&&version===cancelVersion&&!disposed)await autoSummary({owner});})()
+        .catch(error=>{if(autoTaskOwner===owner&&token===epoch&&version===cancelVersion&&!disposed)void reportError(error,{task:'background',stage:'background'});})
+        .finally(()=>{if(autoTaskOwner!==owner)return;autoTask=null;autoTaskOwner=null;notify();wakeAutomaticSummary();});
+      autoTask=task;notify();
     },Math.max(0,autoRetryAt-Date.now()));
   }
-  async function autoSummary({force=false}={}) {
+  async function autoSummary({force=false,owner={token:epoch,version:cancelVersion}}={}) {
     if (active || followPending || following || state.stale || foregroundBusy() || (!force&&(automaticPaused||state.summaryHold||!core.settings.autoSummaryEnabled||!apiConnectionReady('summary'))) || !workspace?.isCurrent()) return;
     if(force&&state.summaryHold){await core.updateMemoryControls({automation:{summaryHold:null}});state.summaryHold=null;}
     if(unfinishedManualSummary()){if(force)summaryFeedback('warning','手动计划尚未完成；请在本页“总结批次”重试或删除所选候选后再继续自动总结。','auto');return;}
-    const feedbackAtStart = feedbackSequence,op=begin();autoRunning=true;
+    const feedbackAtStart = feedbackSequence,op=begin();owner.controller=active;autoRunOwner=owner;autoRunning=true;
+    const owns=()=>autoRunOwner===owner&&owner.token===epoch&&owner.version===cancelVersion&&!disposed;
+    const check=()=>{op.check();if(!owns())throw Object.assign(new Error('已停止'),{code:'CANCELED'});};
+    notify();
     try {
-      state.autoLastIndex=await settledHistoryTail();op.check();
+      const lastIndex=await settledHistoryTail();check();state.autoLastIndex=lastIndex;
       const plan=automaticPlan();notify();
       const rangeKey=`${plan.nextStart}-${plan.nextEnd}`;
       if(autoFailureRange!==rangeKey){autoFailureRange=rangeKey;autoFailureCount=0;}
@@ -1640,25 +1700,26 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       if(core.settings.focusMode==='ask_every'&&!force){setMessage('自动总结等待侧重点，可在手动总结中处理下一批');return;}
       op.finish();
       const pending=state.batches.find(batch=>batch.trigger==='auto'&&['failed','interrupted','queued'].includes(batch.status)&&!batch.replacement&&batch.startIndex===plan.nextStart&&batch.endIndex===plan.nextEnd);
-      if(pending)await retryBatch(pending.id);
+      if(pending)await retryBatch(pending.id,{check});
       else await summarize({startIndex:plan.nextStart,endIndex:plan.nextEnd,batchSize:plan.batchSize,trigger:'auto'});
+      check();
       autoHistoryAttempts=0;autoRetryAt=0;autoFailureCount=0;
       if(!force)queueAutomaticSummary();
     }catch(error){
-      if(!force&&!op.signal.aborted&&op.token===epoch&&error?.code==='HISTORY_UNAVAILABLE'){
+      if(!force&&owns()&&!op.signal.aborted&&error?.code==='HISTORY_UNAVAILABLE'){
         autoHistoryAttempts++;const delay=[1500,5000,15000][autoHistoryAttempts-1]??30000;autoRetryAt=Date.now()+delay;
         if(autoHistoryAttempts<=3)autoPending=true;
         summaryFeedback('warning',autoHistoryAttempts<=3?'聊天原文暂未就绪，自动总结稍后重读；已有记忆保留':'聊天原文仍不可读，等待下一次回复完成或回到前台再试；已有记忆保留','auto');
         runtimeLog.record({task:'background',phase:'waiting',details:{...errorDiagnostics(error),reason:'history_retry_wait',retryDelayMs:delay,historyReadAttempts:autoHistoryAttempts}});
-      }else if(!force&&!op.signal.aborted&&op.token===epoch){
+      }else if(!force&&owns()&&!op.signal.aborted){
         const delay=backgroundRetryDelay(error,++autoFailureCount);
         autoRetryAt=delay?Date.now()+delay:0;if(delay)autoPending=true;else autoFailureCount=4;
         summaryFeedback('warning',delay?`本批未完成：${failureText(error)} ${Math.ceil(delay/1000)} 秒后自动重试（${autoFailureCount}/3）；已保存内容不重做。`:`自动总结暂缓：${failureText(error)} 可从总结页重试；已有记忆保留。`,'auto');
         if(delay)runtimeLog.record({task:'background',phase:'retry_wait',details:{...errorDiagnostics(error),retryDelayMs:delay}});
-      }else if(!op.signal.aborted&&op.token===epoch&&feedbackSequence===feedbackAtStart)summaryFeedback('error',`自动总结未完成：${failureText(error)}`,'auto');
+      }else if(owns()&&!op.signal.aborted&&feedbackSequence===feedbackAtStart)summaryFeedback('error',`自动总结未完成：${failureText(error)}`,'auto');
       if(force)throw error;
     }
-    finally{autoRunning=false;op.finish();}
+    finally{if(autoRunOwner===owner){autoRunOwner=null;autoRunning=false;}op.finish();}
   }
   async function loadKnowledge() {
     recallBusy++; recallChanged();
