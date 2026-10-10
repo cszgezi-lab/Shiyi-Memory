@@ -2,6 +2,7 @@ import {clone,sha256} from './utils.js';
 import {foldName} from './persona-identity.js';
 import {nameMentionAt} from './name-fold.js';
 import {storyTimeRange} from './temporal.js';
+import {hasPersonaSpeechEvidence} from './persona-speech-evidence.js';
 export const PERSONA_IMPACT_RULE=`动态人设不是第二份事件记忆。客观事件、完整时间线和发生经过由记忆模块保存；写这个人怎样待人、什么性子，不罗列发生了什么，事件只作态度与性格的证据一句带过；这里只写现在仍有效的态度、边界和表达：对谁、在何种场合、现在怎样。当前描述与development按对象写现在状态，重大变化放最前；同一对象、同一情境只保留当前状态，不逐批追加日记。被后续状态代替的旧说法退出当前描述，不改写成留在当前层的否定句。客观事实留在底稿。缘由按对象分量点到即止：重要对象一两句，其余更短；不重复事件经过。
 必须核对本批是否改变了之后的选择、边界、目标、自我认知或对特定对象的表达。变化不限一种方向。不因原有一般性格抹掉有依据的对象变化，也不把一次反应写成永久人格替换。沿用development的主题与对象更新当前after，before/origin只是历史，不是当前指令。保留其他仍有效的对象关系。
 examples优先选体现当前态度改变、措辞和表达方式的真实原话，写明对谁及情境；保留否定、条件与不确定性，不把威胁或玩笑升格为会执行的永久行为。稳定外貌、身份、独立爱好由底稿保留，不为缩短删除未变细节。应退出当前演绎的旧关系/口吻通过对应updates明确注明历史，不只追加矛盾结论。无依据不“彻底、完全、永远”强化。`;
@@ -16,6 +17,19 @@ export const PERSONA_DEVELOPMENT_RULE=`正文新人物与原书人物同等处�
 
 export const PERSONA_CURRENT_ARC_RULE=`development是当前变化索引，不是事件清单。同一变化即使换了topic措辞，也要回填previous.development中的key；新主题省略key，不编造。target和scope界定对象与适用情境，沿用旧项的原值；不同对象、公开/私下、条件不同分别保留，不为压缩强合。可填scope（原文支持的情境，旧项无此字段时为空串）、phase:"current"或"historical"、storyTime（原文逐字明确的日期；未知省略）。倒叙项用historical，不覆盖当前项；来源楼号增加不等于时间推进。每个key输出一个当前完整after及仍有效的边界，origin/before/evidence留作追溯，被后续状态代替的早期说法不与当前说法同时当作必须演绎的指令。
 本批明确改变表达方式时，development.evidence尽量包含完整人物归属和有代表性的真实原话，不截掉条件/否定。examples可用developmentKey关联已给出的key，但必须逐字出自同条证据、同楼；未知就省略。选择几条不同情境的当前语料，不因强烈措辞更醒目就全选威胁/拒绝。堆叠与详略按attention权重：权重≥3（含玩家role=user对象）自首建充实、随批次加深，after写透现状、边界、表达与例外，五句以内；权重1–2的配角客串始终一两句，不堆叠。`;
+
+// Old constants remain byte-exact for paid v1/v2/v3 request reconstruction.
+// v4 changes the editing contract, not the response schema or call count.
+export const PERSONA_DEVELOPMENT_RULE_V4=PERSONA_DEVELOPMENT_RULE
+  .replace('档案持续叠加，后续按新证据充实不重写；底稿简陋不改底稿，补充段按人物卡格式写清。','旧档案按原设定、已接受状态与本批正文比较：有效B/N保留，过时处局部修改，新增无冲突信息才补充；不整篇重写，不因底稿简略冻结状态，不追加矛盾段。')
+  .replace('保留底色、未改变的自由属性，关系和口吻按对象与场景区分。','保留未改变的身份、爱好与属性；性格、价值观、动机、目标与策略的明确持续演进也可局部更新，关系和口吻按对象与场景区分。')
+  .replace('target用正式姓名；不能把不同对象合成泛泛的信任。','有外部对象时target用正式姓名；自身变化填空串，不推断对所有人，不混写不同对象。');
+
+export const PERSONA_IMPACT_RULE_V4=`动态人设保存当前完整人物。比较原设定、已接受状态与本批正文，分清真实演进、原本特征显露和临时情绪；不编造相反旧状态或成长原因。主题不限对USER或他人的态度，也包括性格、价值观、动机、目标、自我认知、策略与边界。没有实质变化不制造转折，不要求每批改人设。
+development的after写当前表现及适用边界，before/origin只作历史；自身变化target可为空串，有对象或情境时准确限定，不推广为全人格逆转。事件仅作变化依据，原因未说明留空，不逐批追加日记。与B/N冲突就局部updates/noteUpdates，不能只补态度或development而留下相反旧指令。未变身份、爱好、能力与其他对象边界保留。
+examples选真实本人原话，兼顾仍有效的转折与当前表达，保留对象、否定、条件与不确定性，不让最新杂务台词替代整个人物，不编预期台词。`;
+
+export const PERSONA_CURRENT_ARC_RULE_V4=PERSONA_CURRENT_ARC_RULE.replace('target和scope界定对象与适用情境，沿用旧项的原值；','target空串表示自身变化或未指定外部对象，不表示对所有人；沿用旧项时target/scope保持原值；');
 
 const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{(?!\s*(?:user|char)\s*\}\})|@@/i;
 const generic=/^(?:旁白|叙述|系統|系统|剧情|選項|选项|时间|地點|地点|角色|人物|姓名|我|你|他|她|它|大家|众人|有人|路人|老师|先生|小姐|店员|玩家|用户|助手|assistant|user|system|narrator)$/i;
@@ -136,7 +150,8 @@ export function mergePersonaDevelopment(updates,{previous=[],messages,identity,n
     // Ignore any metadata supplied by a model. Only this exact source check
     // can produce a durable multi-floor receipt under the new contract.
     const receipt=!m.text.includes(row.evidence)&&updateContractVersion>=2?joinedNarrativeReceipt(row,{messages,identity,name,changeCheck}):null;
-    if(!m.text.includes(row.evidence)&&!receipt||!identity.mentions(row.evidence).some(p=>p.key===foldName(name))){rejected++;continue;}
+    const owned=identity.mentions(row.evidence).some(p=>p.key===foldName(name))||updateContractVersion>=4&&hasPersonaSpeechEvidence(m.text,row.evidence,name,identity,{allowQuotedSpan:true});
+    if(!m.text.includes(row.evidence)&&!receipt||!owned){rejected++;continue;}
     if(receipt)row.floor=receipt.parts.at(-1).floor;
     if(row.phase!==undefined&&!['current','historical'].includes(row.phase)||row.scope!==undefined&&(typeof row.scope!=='string'||unsafe.test(row.scope))||row.storyTime!==undefined&&!hasSceneStoryTime(row.storyTime,row.floor,messages)){rejected++;continue;}
     if(row.phase==='historical')continue;
@@ -174,16 +189,16 @@ export function mergePersonaDevelopment(updates,{previous=[],messages,identity,n
   return {items:[...items.values()],rejected};
 }
 
-export function personaDevelopmentText(items){
+export function personaDevelopmentText(items,{evolution=false}={}){
   const current=items.filter(e=>e.phase!=='historical');
   if(!current.length)return '';
-  // Group by the person this character is reacting to. The dossier is about
-  // attitudes toward people; the full event trail stays in memory records.
+  // An empty target does not assert a universal interpersonal attitude. Old
+  // saved compositions keep their exact projection for request replay.
   const groups=new Map();
   for(const e of [...current].sort((a,b)=>b.floor-a.floor)){const key=e.target||'';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(e);}
   const floors=e=>e.evidenceReceipt?.parts?.length===2&&e.evidenceReceipt.parts.every(p=>Number.isSafeInteger(p?.floor))?`${e.evidenceReceipt.parts[0].floor}–${e.evidenceReceipt.parts[1].floor}`:e.floor;
   const lines=[...groups].map(([target,rows])=>[
-    target?`▶ 对${target}`:'▶ 对所有人或自身',
+    target?`▶ 对${target}`:evolution?'▶ 自身变化或未指定外部对象':'▶ 对所有人或自身',
     ...rows.map(e=>[
       `${e.topic}${e.scope?' · '+e.scope:''}（第${floors(e)}楼${e.storyTime?'；'+e.storyTime:''}）：${e.after}`,
       e.cause?`转变缘由：${e.cause}`:'',
@@ -191,5 +206,5 @@ export function personaDevelopmentText(items){
         e.originChange?.cause&&e.originChange.floor!==e.floor?`最早的转折（第${floors(e.originChange)}楼，已过去）：${e.originChange.cause}`:'',
     ].filter(Boolean).join('\n')),
   ].join('\n'));
-  return '【对各人物的当前态度 · 按对象区分；这里只写现在仍有效的态度、边界和表达】\n'+lines.join('\n\n');
+  return (evolution?'【当前人物变化 · 按主题、对象与情境理解】\n':'【对各人物的当前态度 · 按对象区分；这里只写现在仍有效的态度、边界和表达】\n')+lines.join('\n\n');
 }

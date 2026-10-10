@@ -43,14 +43,49 @@ export function personaSpokenAliases(messages,name,identity){
 
 // A small exact-source index, not another summary or extra model request.
 // Full source remains available; truncating this optional index loses no input.
-export function personaReviewFocus(messages,identity){
+export function personaReviewFocus(messages,identity,{stateReview=false,currentEntryReview=false}={}){
+  if(currentEntryReview){
+    // The old optional index drops an entire paragraph over 600 characters.
+    // New requests inspect complete source lines/sentences instead. Every hint
+    // is one unchanged, uniquely named source span, never a confirmed fact or
+    // a pronoun/scene-based attribution. No excerpt crosses a source newline.
+    const state=/换上|換上|换成|換成|脱下|脫下|剪短|染成|受伤|受傷|新增|学会|學會|不再|成为|成為|确认|確認|告白|分手|承诺|承諾|搬家|改行|决定|決定|约定|約定|目标|目標|渴望|希望|理想|将来|將來|未来|未來|资格|資格|奖学金|獎學金|奨学金|自立|独立|獨立|收入|収入|学习|學習|勉強|规划|規劃|計画|计划|方法|策略|优先|優先|限制|条件|條件|必须|必須|不得|不接受|不答应|不答應|擅长|擅長|只会|只會|年级|年級|中学|中學|高中/;
+    const perPerson=new Map();
+    for(const m of messages)for(const line of m.text.match(/[^\r\n]+/gu)??[]){
+      if(/^\s*(?:time|scene)\s*[:：]/iu.test(line))continue;
+      const spans=line.length<=600?[line]:line.match(/[^。！？]+[。！？]*/gu)??[];
+      for(const excerpt of spans){
+        if(excerpt.length>600||!state.test(excerpt))continue;
+        const people=identity.mentions(excerpt);if(people.length!==1)continue;
+        const person=people[0],list=perPerson.get(person.key)??[];
+        if(list.some(item=>item.floor===m.index&&item.excerpt===excerpt))continue;
+        list.push({floor:m.index,name:person.name,excerpt});if(list.length>8)list.shift();perPerson.set(person.key,list);
+      }
+    }
+    return [...perPerson.values()].flat();
+  }
   const change=/换上|換上|换成|換成|脱下|脫下|剪短|染成|受伤|受傷|新增|学会|學會|不再|成为|成為|确认|確認|告白|分手|承诺|承諾|搬家|改行|决定|決定|约定|約定/;
   const perPerson=new Map();
   for(const m of messages)for(const sentence of m.text.match(/[^。！？\n]+[。！？]?/gu)??[]){
     if(!change.test(sentence)||sentence.length>600)continue;
     const people=identity.mentions(sentence);for(const person of people){const list=perPerson.get(person.key)??[];list.push({floor:m.index,name:person.name,excerpt:sentence});if(list.length>8)list.shift();perPerson.set(person.key,list);}
   }
-  return [...perPerson.values()].flat();
+  const focus=[...perPerson.values()].flat();
+  if(!stateReview)return focus;
+  // Optional exact-source hints for important newly revealed state, not only
+  // explicit turning verbs. These remain candidates; full source and evidence
+  // validation decide ownership, meaning and whether anything should change.
+  const state=/目标|目標|渴望|理想|将来|將來|未来|未來|资格|資格|优先|優先|限制|条件|條件|必须|必須|不得|不接受|不答应|不答應|擅长|擅長|只会|只會|年级|年級|中学|中學|高中/;
+  const stateByPerson=new Map();
+  for(const m of messages)for(const paragraph of m.text.split(/\n\s*\n/u)){
+    if(!state.test(paragraph)||paragraph.length>600)continue;
+    for(const person of identity.mentions(paragraph)){
+      if(focus.some(item=>item.name===person.name&&item.floor===m.index&&item.excerpt===paragraph))continue;
+      const list=stateByPerson.get(person.key)??[];
+      list.push({floor:m.index,name:person.name,excerpt:paragraph});if(list.length>8)list.shift();stateByPerson.set(person.key,list);
+    }
+  }
+  return [...focus,...[...stateByPerson.values()].flat()];
 }
 
 // Carry an exact, dated scene reference even when the model omits a brief
@@ -193,7 +228,16 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
     // omitted list; never replace an explicit invalid/out-of-range list.
     const quotedFloor=evidenceMessages.find(m=>m.index===edit?.evidence?.floor&&typeof edit.evidence.quote==='string'&&edit.evidence.quote.trim()&&m.text.includes(edit.evidence.quote))?.index;
     const editFloors=edit?.sourceFloors===undefined&&quotedFloor!==undefined?[quotedFloor]:edit?.sourceFloors;
-    const issue=!part?'unknown_ref':touched.has(part.key)?'duplicate_ref':typeof edit?.text!=='string'||!edit.text.trim()?'empty_edit':!validFloors(editFloors)?'invalid_edit_floors':/<%|%>|<\/?script\b|\{\{(?!\s*(?:user|char)\s*\}\})|@@|\[\[SHIYI_PERSONA:/i.test(edit.text)?'unsafe_edit':null;
+    const unsafeEdit=typeof edit?.text==='string'&&/<%|%>|<\/?script\b|\{\{(?!\s*(?:user|char)\s*\}\})|@@|\[\[SHIYI_PERSONA:/i.test(edit.text);
+    const issue=!part?'unknown_ref':touched.has(part.key)?'duplicate_ref':typeof edit?.text!=='string'||!edit.text.trim()?'empty_edit':updateContractVersion>=6&&unsafeEdit?'unsafe_edit':!validFloors(editFloors)?'invalid_edit_floors':unsafeEdit?'unsafe_edit':null;
+    // An in-range floor is not an exact quotation. Report the failed quote
+    // coordinate rather than claiming that a real floor is outside the batch.
+    // Earlier contracts retain their original error and recovery wire.
+    if(updateContractVersion>=6&&(!issue||issue==='invalid_edit_floors'&&edit?.sourceFloors===undefined)&&
+      messages.some(m=>m.index===edit?.evidence?.floor)&&typeof edit?.evidence?.quote==='string'&&edit.evidence.quote.trim()&&quotedFloor===undefined){
+      throw fail('updates','局部修改引文与指定楼的原文不逐字相符，原档案保留','persona_fields',{
+        personaIssue:'nonliteral_edit_quote',editIndex,editRef:part.ref,evidenceFloor:edit.evidence.floor,evidenceField:'evidence.quote'});
+    }
     if(issue)throw fail('text','局部修改没有唯一对应本人物原文或本批依据，原档案保留','persona_fields',{personaIssue:issue,editIndex});
     touched.add(part.key);
     if(edit.status==='historical'){
@@ -309,7 +353,8 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   }
   const noteResult=mergePersonaNotes(row,previous?.composition?.pendingOnly?undefined:previous,editContext),notes=noteResult.notes;
   const composition={version:2,retiredParts:clone(previous?.composition?.retiredParts??[]),parts,notes,examples:currentPersonaExamples(examples,development.items),exampleArchive:examples.sort((a,b)=>b.floor-a.floor).slice(0,48),sceneEvidence,changes,noteChanges:noteResult.changes,pendingEdits:[...pendingEdits,...noteResult.pending],rejectedExamples,ignoredUpdates,development:development.items,rejectedDevelopment:development.rejected,...(!spans.length?{localMode:localPatches&&parts.length?'patches':'snapshot'}:{}),...(!parts.length?{sourceBaseline:sourcePersonaBaseline(notes,name,row.sourceFloors)}:{})};
-  const unresolvedConflicts=updateContractVersion>=2?unpatchedCurrentInstructions({parts,notes,development:development.items,previousDevelopment:previous?.composition?.development??[],messages:evidenceMessages,identity,name}):[];
+  if(updateContractVersion>=3||previous?.composition?.evolutionVersion===1)composition.evolutionVersion=1;
+  const unresolvedConflicts=updateContractVersion>=2?unpatchedCurrentInstructions({parts,notes,development:development.items,previousDevelopment:previous?.composition?.development??[],messages:evidenceMessages,identity,name,includeSelf: updateContractVersion>=3}):[];
   const unverifiedAudienceSpeech=examples.filter(q=>q.status==='audience_unverified');
   composition.changeCheck=personaChangeCheck(row,{parts,changes,noteParts:personaNoteParts(previous?.composition?.pendingOnly?undefined:previous),noteChanges:noteResult.changes,development:development.items,previousDevelopment:previous?.composition?.development??[],examples:composition.examples,unverifiedAudienceSpeech,rejectedExamples,messages,evidenceMessages,identity,name,initial:!previous,updateContractVersion,unresolvedConflicts});
   if(composition.changeCheck.status==='pending'){
@@ -374,10 +419,14 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   composition.exampleArchive=[...composition.examples,...examples.sort((a,b)=>b.floor-a.floor)].filter(q=>{
     const key=JSON.stringify([q.floor,q.text]);if(archived.has(key))return false;archived.add(key);return true;
   }).slice(0,48);
-  const reviewedThrough=['changed','unchanged'].includes(composition.changeCheck.status)?Math.max(...messages.map(m=>m.index)):personaReviewedThrough(previous);
+  const acceptedUncertain=updateContractVersion>=8&&composition.changeCheck.status==='uncertain'&&!composition.pendingRevision&&!composition.pendingOnly&&!composition.pendingEdits.length;
+  const reviewedThrough=['changed','unchanged'].includes(composition.changeCheck.status)||acceptedUncertain?Math.max(...messages.map(m=>m.index)):personaReviewedThrough(previous);
   if(Number.isInteger(reviewedThrough)&&reviewedThrough>=0)composition.reviewedThrough=reviewedThrough;
   if(updateContractVersion<2&&composition.changeCheck.status==='changed')retireExactSupersededInstructions(composition,identity);
   if(!composition.parts.length&&!composition.notes&&!composition.pendingRevision)throw fail('text','新人物尚无可独立阅读的有效概况','persona_fields',{personaIssue:'empty_profile'});
+  // Saved older contracts retain their existing projection. Only a newly
+  // accepted current contract opts in; held proposals never gain priority.
+  if(updateContractVersion>=8&&!composition.pendingRevision&&!composition.pendingOnly&&!composition.pendingEdits.length)composition.currentPartsVersion=1;
   return {text:personaCompositionText(composition,{hasSources:spans.length>0}),composition:clone(composition)};
 }
 
@@ -385,16 +434,19 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
 // whole B sentence/N paragraph (which may also hold unchanged facts). Check
 // only a genuinely changed, evidenced current-batch arc and exact whole text.
 // This is a traceable missing-patch guard, not a semantic contradiction test.
-function unpatchedCurrentInstructions({parts,notes,development,previousDevelopment,messages,identity,name}){
+function unpatchedCurrentInstructions({parts,notes,development,previousDevelopment,messages,identity,name,includeSelf=false}){
   const conflicts=[],seen=new Set(),canonical=value=>identity.resolve?.(String(value??''))?.key??foldName(String(value??''));
   const paragraphs=String(notes??'').split(/\n\s*\n/u).filter(p=>p.trim());
   const add=(ref,arc)=>{const key=JSON.stringify([ref,arc.key]);if(!seen.has(key)){seen.add(key);conflicts.push({ref,developmentKey:arc.key,before:arc.before,target:arc.target,scope:arc.scope??'',floor:arc.floor});}};
   for(const arc of development){
     const old=previousDevelopment.find(p=>p.key===arc.key),before=String(arc.before??'').trim(),target=canonical(arc.target);
-    if(arc.phase==='historical'||before.length<8||!target||!String(arc.after??'').trim()||!String(arc.evidence??'').trim())continue;
+    if(arc.phase==='historical'||before.length<8||!target&&!includeSelf||!String(arc.after??'').trim()||!String(arc.evidence??'').trim())continue;
     if(old&&!['topic','target','scope','after','cause'].some(k=>(old[k]??'')!==(arc[k]??'')))continue;
     if(!personaDevelopmentEvidenceParts(arc,messages,{identity,name}).length)continue;
-    if(!identity.mentions?.(before)?.some(p=>p.key===target)&&!foldName(before).includes(foldName(String(arc.target??''))))continue;
+    // A self-directed change can cite the character's exact owned B/N text
+    // without an external target. Require the explicit patch for that same
+    // whole unit; never infer a replacement from a shorter phrase or delete it.
+    if(target&&!identity.mentions?.(before)?.some(p=>p.key===target)&&!foldName(before).includes(foldName(String(arc.target??''))))continue;
     for(const part of parts)if(part.status!=='historical'&&!part.sourceQuote&&String(part.text??'').trim()===before)add(part.ref,arc);
     paragraphs.forEach((paragraph,index)=>{if(paragraph.trim()===before)add(`N${index+1}`,arc);});
   }
@@ -425,9 +477,18 @@ function retireExactSupersededInstructions(composition,identity){
 export function personaCompositionText(composition,{hasSources=false}={}){
   const {parts=[],notes='',sceneEvidence=[],development=[]}=composition;
   const examples=currentPersonaExamples(composition.examples??[],development);
+  const projectedParts=personaProjectedSourceParts(parts);
+  // Promote whole accepted current B-parts, including changes retained from
+  // earlier batches. `changes` only describes this batch. Move, never copy,
+  // and leave protected speech groups and immutable source bytes intact.
+  const currentParts=composition.currentPartsVersion===1&&!composition.pendingRevision&&!composition.pendingOnly&&!composition.pendingEdits?.length
+    ?projectedParts.filter(p=>p.status!=='historical'&&!p.sourceQuote&&typeof p.original==='string'&&p.text!==p.original&&
+      Number.isSafeInteger(p.editEvidence?.floor)&&typeof p.editEvidence.quote==='string'&&p.editEvidence.quote.trim()&&p.sourceFloors?.includes(p.editEvidence.floor))
+    :[];
+  const currentKeys=new Set(currentParts.map(p=>p.key));
   const blocks=[];let last;
   const focus=(composition.reviewFocus??[]).filter(q=>!examples.some(e=>e.floor===q.floor&&e.text===q.quote));
-  for(const part of personaProjectedSourceParts(parts)){if(part.status==='historical')continue;const speech=/语料|語料|台词|臺詞|dialogue|speech|quotes?/iu.test(part.title??'');const key=JSON.stringify([part.book,part.uid,part.spanId]);if(last?.key!==key){last={key,title:part.title,speech,source:part.source,allQuoted:true,text:''};blocks.push(last);}if(String(part.original??part.text).trim())last.allQuoted&&=part.sourceQuote;last.text+=personaSourcePartText(part);}
+  for(const part of projectedParts){if(part.status==='historical'||currentKeys.has(part.key))continue;const speech=/语料|語料|台词|臺詞|dialogue|speech|quotes?/iu.test(part.title??'');const key=JSON.stringify([part.book,part.uid,part.spanId]);if(last?.key!==key){last={key,title:part.title,speech,source:part.source,allQuoted:true,text:''};blocks.push(last);}if(String(part.original??part.text).trim())last.allQuoted&&=part.sourceQuote;last.text+=personaSourcePartText(part);}
   const exampleText=examples.map(q=>`第${q.floor}楼${q.to?' 对'+q.to:''}：${q.text}${q.context?'〔'+q.context+'〕':''}`).join('\n');
   // A failed refresh preserves evidence, not a claim that the old notes are
   // the latest state. In particular B patches can apply while an N patch is
@@ -439,7 +500,7 @@ export function personaCompositionText(composition,{hasSources=false}={}){
   // much shorter latest change even though checkpoints already preserve history.
   const targets=[...new Set(development.filter(e=>e.phase!=='historical'&&e.target).map(e=>e.target))];
   const scopedStyle=targets.length?`；对${targets.join('、')}按顶部当前态度，不照这里的口吻`:'';
-  const text=[personaDevelopmentText(development),notes&&!notesPending?`【当前剧情变化 · 最新状态优先】\n${notes}`:'',focus.length?`【当前演绎核对依据 · 按原话对象与条件理解，不外推为永久规则】\n${focus.map(q=>`第${q.floor}楼：${q.quote}`).join('\n')}`:'',examples.length?`【表达语料 · 原话仅供模仿表达，不要求复读；按来源情境理解，旧话不覆盖当前关系】\n${exampleText}`:'',...blocks.map(b=>`【${(b.speech||b.allQuoted)?(b.source==='chat'?'聊天档案保留引语 · 实说归属以已核对语料为准':`原书口吻范例 · 非聊天实说，不据此建立当前关系或事件${scopedStyle}`):`保留设定 · 仅未被当前剧情改变的部分有效${scopedStyle}`} · ${b.title}】\n${b.text}`),retainedNotes,sceneEvidence.length?`【最近外观情境 · 逐字原文，按当时场景理解，不是永久外貌或当前穿着指令】\n${sceneEvidence.map(e=>`第${e.floor}楼：${e.text}`).join('\n')}`:'',hasSources?'【适用边界】稳定外貌与习惯以保留设定为底稿；当前叙事时点可能处于倒叙，原卡默认时点的年龄、学段、关系不自动适用于当前场景，无明确依据不猜年龄或学校。来源楼号不是故事日期，原话及衣着按来源当时的时间、对象与场景理解；旧阶段语料不证明当前关系。服装描述服从当前场景与最新明确换装，不把旧场景穿着当永久外貌。当前关系以已发生剧情为准；若较早关系、口吻或演绎方式与本档案顶部的最新状态或最新正文冲突，不回退到旧阶段。对某人的表达与好感不推广给所有对象，私密心迹不赋予他人知情。':''].filter(Boolean).join('\n\n');
+  const text=[personaDevelopmentText(development,{evolution:composition.evolutionVersion===1}),notes&&!notesPending?`【当前剧情变化 · 最新状态优先】\n${notes}`:'',currentParts.length?`【当前有效对应设定 · 按所述对象与条件采用，未改设定见后文】\n${currentParts.map(personaSourcePartText).join('')}`:'',focus.length?`【当前演绎核对依据 · 按原话对象与条件理解，不外推为永久规则】\n${focus.map(q=>`第${q.floor}楼：${q.quote}`).join('\n')}`:'',examples.length?`【表达语料 · 原话仅供模仿表达，不要求复读；按来源情境理解，旧话不覆盖当前关系】\n${exampleText}`:'',...blocks.map(b=>`【${(b.speech||b.allQuoted)?(b.source==='chat'?'聊天档案保留引语 · 实说归属以已核对语料为准':`原书口吻范例 · 非聊天实说，不据此建立当前关系或事件${scopedStyle}`):`保留设定 · 仅未被当前剧情改变的部分有效${scopedStyle}`} · ${b.title}】\n${b.text}`),retainedNotes,sceneEvidence.length?`【最近外观情境 · 逐字原文，按当时场景理解，不是永久外貌或当前穿着指令】\n${sceneEvidence.map(e=>`第${e.floor}楼：${e.text}`).join('\n')}`:'',hasSources?'【适用边界】稳定外貌与习惯以保留设定为底稿；当前叙事时点可能处于倒叙，原卡默认时点的年龄、学段、关系不自动适用于当前场景，无明确依据不猜年龄或学校。来源楼号不是故事日期，原话及衣着按来源当时的时间、对象与场景理解；旧阶段语料不证明当前关系。服装描述服从当前场景与最新明确换装，不把旧场景穿着当永久外貌。当前关系以已发生剧情为准；若较早关系、口吻或演绎方式与本档案顶部的最新状态或最新正文冲突，不回退到旧阶段。对某人的表达与好感不推广给所有对象，私密心迹不赋予他人知情。':''].filter(Boolean).join('\n\n');
   // Supplemental characters need the same audience/privacy/scene boundaries
   // as original-book characters, rather than losing them when parts is empty.
   const boundary=hasSources?'':'【适用边界】本人物依据当前聊天正文建立，不代表有原世界书设定。保留仍有效的个性与自由属性；关系、口吻和成长仅适用于所述对象与情境。若较早关系、口吻或演绎方式与本档案顶部的最新状态或最新正文冲突，不回退到旧阶段。私密心迹不赋予其他人知情；衣着服从当前场景，旧台词不要求复读，倒叙经历不自动推翻当前状态。';

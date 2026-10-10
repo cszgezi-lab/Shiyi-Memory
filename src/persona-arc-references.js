@@ -29,12 +29,15 @@ export function retrieve(text,compiled=library,{limit=4}={}){
  const result=[],themes=new Set();for(const [index,m]of ranked){const row=compiled.rows[index];if(themes.has(row.theme))continue;themes.add(row.theme);result.push({row,score:m.score});if(result.length>=Math.max(0,Math.min(4,limit)))break;}
  return result;
 }
-export function applyPersonaArcReferences(messages,{variant='arc-reference',inputLimit=12000,compiled=library}={}){
+export function applyPersonaArcReferences(messages,{variant='arc-reference',inputLimit=12000,compiled=library,includeTask=true}={}){
  const output=structuredClone(messages),before=estimateUnits(JSON.stringify(messages));
  const meta={variant,libraryVersion:corpusVersion,libraryHash:compiled.hash,baseUnits:before,selected:[],referenceUnits:0};
  if(!['arc-task','arc-reference'].includes(variant))return {messages:output,meta};
  // No source/prior JSON is edited, shortened, or supplemented with expected answers.
- output[0].content+='\n'+TASK;
+ // Fresh integrated requests already provide the task. Keep optional source-
+ // free references without appending the older object/turning-point contract.
+ if(includeTask)output[0].content+='\n'+TASK;
+ else meta.taskIncluded=false;
  const taskUnits=estimateUnits(JSON.stringify(output));meta.taskUnits=taskUnits;
  if(taskUnits>inputLimit)return {messages:structuredClone(messages),meta:{...meta,skipped:'no-budget',finalUnits:before}};
  if(variant==='arc-reference'){

@@ -42,7 +42,7 @@ function personaSpeechLead(lead,speaker,identity){
 /** Local exact utterance attribution, reusable without a model call. Identity
  * folding applies only to speaker labels; source words are never normalized.
  * This checks explicit forms, not semantic truth, chronology or who heard them. */
-function scanPersonaSpeech(evidence,quote,speaker,identity,{includeLead=false,availabilityOnly=false,audienceOnly=false}={}){
+function scanPersonaSpeech(evidence,quote,speaker,identity,{includeLead=false,allowQuotedSpan=false,availabilityOnly=false,audienceOnly=false}={}){
   if(typeof speaker!=='string'||!speaker.trim()||!availabilityOnly&&(typeof quote!=='string'||!quote.trim()||!String(evidence??'').includes(quote)))return false;
   // Reuse the source filter, retaining boundaries across removed planning,
   // variable or script blocks so removal cannot manufacture an attribution.
@@ -72,7 +72,7 @@ function scanPersonaSpeech(evidence,quote,speaker,identity,{includeLead=false,av
       const close=speechSpanEnd(source,i);if(close<0)break;
       if(/[“「『"]/u.test(c)){
         const ownsSpeech=attributed(source.slice(start,i));
-        if(ownsSpeech&&(availabilityOnly?Boolean(source.slice(i+1,close).trim()):source.slice(i+1,close).trim()===quote||includeLead&&source.slice(start,close+1).trim()===quote.trim())){
+        if(ownsSpeech&&(availabilityOnly?Boolean(source.slice(i+1,close).trim()):source.slice(i+1,close).trim()===quote||allowQuotedSpan&&source.slice(i,close+1)===quote||includeLead&&source.slice(start,close+1).trim()===quote.trim())){
           if(!audienceOnly)return true;audiences.push(personaSpeechRecipient(source.slice(start,i),speaker,identity));
         }
         // Keep the Japanese opener's subject through its matching closer and
@@ -81,7 +81,7 @@ function scanPersonaSpeech(evidence,quote,speaker,identity,{includeLead=false,av
         if(translated){
           const at=close+translated[0].length,last=speechSpanEnd(source,at);
           if(last<0)break;
-          if(ownsSpeech&&(availabilityOnly?Boolean(source.slice(at+1,last).trim()):source.slice(at+1,last).trim()===quote)){
+          if(ownsSpeech&&(availabilityOnly?Boolean(source.slice(at+1,last).trim()):source.slice(at+1,last).trim()===quote||allowQuotedSpan&&source.slice(at,last+1)===quote)){
             if(!audienceOnly)return true;audiences.push(personaSpeechRecipient(source.slice(start,i),speaker,identity));
           }
           i=last;start=i+1;continue;
@@ -127,8 +127,8 @@ function explicitAudienceKey(value,identity){
 }
 
 export {speechPairs as personaSpeechPairs,speechSpanEnd as personaSpeechSpanEnd};
-export function hasPersonaSpeechEvidence(evidence,quote,speaker,identity,{includeLead=false}={}){
-  return scanPersonaSpeech(evidence,quote,speaker,identity,{includeLead});
+export function hasPersonaSpeechEvidence(evidence,quote,speaker,identity,{includeLead=false,allowQuotedSpan=false}={}){
+  return scanPersonaSpeech(evidence,quote,speaker,identity,{includeLead,allowQuotedSpan});
 }
 export function hasPersonaSpeechToEvidence(evidence,quote,speaker,target,identity){
   const audience=personaSpeechAudienceEvidence(evidence,quote,speaker,identity),targetKey=explicitAudienceKey(target,identity);

@@ -17,7 +17,11 @@ export function personaChangeCheck(row,{parts,changes,noteParts=[],noteChanges=[
   // Saved responses made under the older contract retain their original replay
   // semantics. Fresh requests may not apply an unreviewed proposed revision.
   if(!value||!['changed','unchanged','uncertain'].includes(value.status))return {status:updateContractVersion>=2?'pending':'unreviewed',issues:['未返回变化核对'],floors:row.sourceFloors};
-  const evidence=Array.isArray(value.evidence)?value.evidence.filter(e=>typeof e?.quote==='string'&&e.quote.length>=4&&e.quote.length<=600&&messages.some(m=>m.index===e.floor&&m.text.includes(e.quote))&&identity.mentions(e.quote).some(p=>p.name===name)):[];
+  // A verified speaker label may sit outside the quoted words. Fresh reviews
+  // can use that same-floor attribution without changing the quote or actor;
+  // paid replies under contracts 1/2 retain their prior acceptance behavior.
+  const evidence=Array.isArray(value.evidence)?value.evidence.filter(e=>typeof e?.quote==='string'&&e.quote.length>=4&&e.quote.length<=600&&messages.some(m=>m.index===e.floor&&m.text.includes(e.quote)&&
+    (identity.mentions(e.quote).some(p=>p.name===name)||updateContractVersion>=3&&hasPersonaSpeechEvidence(m.text,e.quote,name,identity,{allowQuotedSpan:updateContractVersion>=4})))):[];
   if(!evidence.length)issues.push('缺少可定位的本人物核对依据');
   // A first source-free, unchanged biography has no B-reference universe.
   // Recover only an omitted redundant empty list, never null/invalid values,
@@ -39,7 +43,7 @@ export function personaChangeCheck(row,{parts,changes,noteParts=[],noteChanges=[
     // was actually changed with a valid current-batch attribution.
     return !noteChanges.some(c=>c.ref===ref&&c.before===note.text&&typeof c.after==='string'&&c.after.trim()&&
       typeof c.evidence?.quote==='string'&&c.evidence.quote.trim()&&messages.some(m=>m.index===c.evidence.floor&&m.text.includes(c.evidence.quote)&&
-        (identity.mentions(c.evidence.quote).some(person=>person.name===name)||hasPersonaSpeechEvidence(m.text,c.evidence.quote,name,identity))));
+        (identity.mentions(c.evidence.quote).some(person=>person.name===name)||hasPersonaSpeechEvidence(m.text,c.evidence.quote,name,identity,{allowQuotedSpan:updateContractVersion>=4}))));
   }))issues.push('声明的旧设定冲突尚未逐项修改');
   if(updateContractVersion>=2&&unresolvedConflicts.length)issues.push(`本批转变仍逐字指向未更新的旧片段：${unresolvedConflicts.map(c=>c.ref).join('、')}；需显式局部修改，未自动移除`);
   // Explanatory narration and the character's actual utterance often occupy
@@ -111,9 +115,15 @@ export function personaChangeCheck(row,{parts,changes,noteParts=[],noteChanges=[
       }
     }
   }
-  // A fulfilled appointment can update a chat-authored state without a new
-  // personality/relationship arc. This does not excuse a declared conflict or
-  // a source-book characterization change; exact B-edit evidence still applies.
-  if(value.status==='unchanged'&&(refs?.length||changes.some(c=>parts.find(p=>p.key===c.key)?.source!=='chat')))issues.push('无变化声明与修改冲突');
-  return {status:issues.length||value.status==='uncertain'?'pending':value.status,evidence,issues,floors:row.sourceFloors,...(expressionChanged?{expressionChanged:true,expressionCoverage,...(warnings.length?{warnings}:{})}:{})};
+  // Earlier contracts require a transition for every source-book B edit.
+  // New contracts may integrate newly revealed, compatible goals/methods into
+  // that existing entry without inventing an arc. `changes` contains applied
+  // deltas from composePersona's exact-before/owned-evidence/quote checks;
+  // this only removes the blanket source-B veto. Declared conflicts, missing
+  // review evidence and newly changed development remain blocking above.
+  if(value.status==='unchanged'&&(refs?.length||updateContractVersion<7&&changes.some(c=>parts.find(p=>p.key===c.key)?.source!=='chat')))issues.push('无变化声明与修改冲突');
+  // Uncertain describes the interpretation of a transition, not a failure of
+  // independently validated B/N edits. Fresh contracts retain that label while
+  // applying grounded edits; older paid replies keep their pending behavior.
+  return {status:issues.length||value.status==='uncertain'&&updateContractVersion<8?'pending':value.status,evidence,issues,floors:row.sourceFloors,...(expressionChanged?{expressionChanged:true,expressionCoverage,...(warnings.length?{warnings}:{})}:{})};
 }

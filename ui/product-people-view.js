@@ -238,6 +238,7 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
   if (!group) return '<p class="sy-person-empty">还没有人物。整理一段聊天后会自动出现，也可以直接新建一个角色。</p>';
   const profileId = group.profiles[0]?.id ?? '';
   const profile=group.profiles[0];
+  const personaUnapplied=Boolean(profile?.composition?.pendingRevision||profile?.composition?.pendingOnly||profile?.composition?.pendingEdits?.length||profile?.composition?.changeCheck?.issues?.length);
   const reviewRows=(profile?.reviewSuggestions??[]).map(s=>`<div class="sy-card"><div class="sy-packet">${esc(profile.composition?.parts?.find(p=>p.key===s.key)?.text??'片段已变化')}</div><p>${esc(s.reason)}</p><p class="sy-help">第${esc(s.evidence.floor)}楼依据：${esc(s.evidence.quote)}</p><button type="button" data-persona-history="${esc(s.key)}" data-profile="${esc(profile.id)}" data-history-value="true">确认移入历史（不删除）</button></div>`).join('');
   const archived=(profile?.composition?.parts??[]).filter(p=>p.status==='historical').map(p=>`<div class="sy-card"><div class="sy-packet">${esc(p.text)}</div><button type="button" data-persona-history="${esc(p.key)}" data-profile="${esc(profile.id)}" data-history-value="false">恢复当前设定</button></div>`).join('');
   const casting=personaCasting(group.casting??group.profiles[0]?.casting);
@@ -288,7 +289,7 @@ export function peopleDetailHTML(group, allProfiles = group?.profiles ?? [], edi
     ${peopleMergeHTML(allProfiles, group.ambiguous ? group.name : '')}
     ${fieldGroup('人物属性', group.fieldCount, factRows, '还没有属性记录。', { category: 'entityFactChanges', add: 'attribute' })}
     <div class="sy-persona-block" data-people-persona-block>
-      ${profile?.composition?.changeCheck?`<p class="sy-help" data-persona-change-check>${esc(['changed','unchanged'].includes(profile.composition.changeCheck.status)?'本批变化结构核对已完成（不代表模型语义已人工验收）':'本批变化仍待核对：'+(profile.composition.changeCheck.issues??[]).join('；'))}</p>`:''}
+      ${profile?.composition?.changeCheck?`<p class="sy-help" data-persona-change-check>${esc(personaUnapplied?'保留原有可用内容；未应用的历史改动可在档案来源中展开查看。正常更新会自动保存，无需逐条批准。':'人设已自动更新并保存'+(profile.composition.changeCheck.status==='uncertain'?'；部分解释仍有不确定性。':'。'))}</p>`:''}
       ${fieldGroup('动态人设', group.profiles.length, profileRows, '还没有动态人设档案。', { category: 'dynamic-persona' })}
     </div>
     ${fieldGroup('关系', relationThreads.length, relationshipRows, '还没有关系记录。', { category: 'relationshipChanges', add: 'relationship' })}

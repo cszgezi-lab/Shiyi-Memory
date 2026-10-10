@@ -82,7 +82,7 @@ export function personaEditEvidence(value,{messages,identity,name,speech,updateC
   if(!value||!Number.isSafeInteger(value.floor)||typeof value.quote!=='string'||!value.quote.trim()||value.quote.length>2400||unsafe.test(value.quote))return null;
   const m=messages.find(m=>m.index===value.floor);
   if(!m||!m.text.includes(value.quote))return null;
-  if(!identity.mentions(value.quote).some(p=>p.key===foldName(name))&&!speech?.(m.text,value.quote,name,identity)){
+  if(!identity.mentions(value.quote).some(p=>p.key===foldName(name))&&!speech?.(m.text,value.quote,name,identity,{allowQuotedSpan:updateContractVersion>=4})){
     const full=updateContractVersion>=2?completeNamedEvidence(m.text,value.quote,{identity,name,speech,reviewEvidence,floor:value.floor}):null;
     return full?{floor:value.floor,quote:full,citedQuote:value.quote,recovered:'unique_actor_sentence'}:null;
   }
