@@ -804,7 +804,7 @@ export function createProductShellController({
       if(!cached||!tokenValid(cached.token,cached.session)||stableStringify(cached.scope)!==stableStringify(state.scope))throw Object.assign(new Error('本次存储快照已变化，请重新读取'),{code:'PERSISTENCE_ERROR',details:{reason:'storage_mismatch',storageStage:'compare',storageArtifact:'memory'}});
       reuseSnapshot=cached.snapshot;
     }
-    const snapshot = await repository.readScope(state.scope,reuseSnapshot?{reuseSnapshot}:{});
+    const snapshot = await repository.readScope(state.scope,{check,...(reuseSnapshot?{reuseSnapshot}:{})});
     check();
     return memoryView(snapshot);
   }

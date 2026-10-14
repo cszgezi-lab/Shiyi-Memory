@@ -410,6 +410,7 @@ export function productFailure(error) {
   if(upstreamCode==='insufficient_quota')message='模型服务额度已用尽，已停止自动重试。请恢复额度或在 API 中选择可用服务；已保存记忆保留。';
   else if(status===524)message='模型服务的网关等待回答超时。已有档案和成功批次保留，等服务恢复后继续未完成批次即可。';
   else if(status===429)message=error?.details?.retryAfterMs>0?'服务限流，请按接口提示等待后重试；已保存记忆保留。':'服务限流，未提供恢复时间，已停止自动重试。请稍后重试或检查服务额度；已保存记忆保留。';
+  else if(status===422)message=`模型服务拒绝了本次请求（422）。请打开${location}，核对所选模型和请求参数；接口未提供可确认的具体原因。本批未保存，其他已保存批次保留。`;
   else if([502,503,504].includes(status)){
     const hint=error?.details?.upstreamHint;
     const cause=({timeout:'服务报文提示上游等待超时。',overloaded:'服务报文提示模型繁忙。',connection_reset:'服务报文提示上游连接断开。',context_limit:'服务报文提示输入上下文超限。'})[hint]??'接口未提供可确认的具体原因。';
@@ -421,6 +422,11 @@ export function productFailure(error) {
   }
   if(error?.details?.upstreamHint==='content_blocked')message='服务错误报文明确提到内容过滤；这不是 JSON 填写或回复上限问题。请检查服务规则与输入内容，已保存的记忆保留。';
   if(error?.details?.upstreamHint==='context_limit')message='服务报文明确提到上下文超限；请核对该接口实际支持的上下文及日志中的输入体积。增大回复上限不能解决输入超限。已保存批次保留。';
+  if(code==='SUMMARY_RESPONSE_ERROR'&&error?.details?.reason==='invalid_model_json'){
+    const chars=error.details.bodyChars??error.details.responseChars;
+    const size=Number.isSafeInteger(chars)&&chars>=0?`（${chars} 字符）`:'';
+    message=`${error.details.repairAttempted?'已按格式自动重试一次，仍未收到有效 JSON':'模型返回的正文不是有效 JSON'}${size}。本批未保存，其他已保存批次保留；请检查所选模型或接口的回答格式。`;
+  }
   if(code==='VALIDATION_ERROR'){
     const issue=humanValidationIssueText(error?.details?.validationIssues?.[0]);
     if(issue)message=`${error?.details?.repairAttempted?'已自动纠错一次，但仍未通过：':''}${issue}。本批未保存，其他已保存批次保留；可继续未完成任务。`;

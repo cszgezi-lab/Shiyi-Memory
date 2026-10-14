@@ -87,6 +87,9 @@ async function parseModelResponse(raw, { onMetadata = () => {}, onNormalize = ()
     const error=new SummaryResponseError('summary model output was truncated', {...metadata,reason:'output_truncated',stage:'parse_content'});error.code='MODEL_OUTPUT_TRUNCATED';throw error;
   }
   if(finishReason==='content_filter'){const error=new SummaryResponseError('summary model output was filtered',{...metadata,reason:'output_blocked',stage:'parse_content'});error.code='MODEL_OUTPUT_BLOCKED';throw error;}
+  if(typeof payload?.choices?.[0]?.message?.refusal==='string'&&payload.choices[0].message.refusal.trim()){
+    const error=new SummaryResponseError('summary model refused the request',{...metadata,reason:'output_blocked',stage:'parse_content'});error.code='MODEL_OUTPUT_BLOCKED';throw error;
+  }
   if(payload?.choices&&typeof content!=='string')throw new SummaryResponseError('summary response has no textual content',{...metadata,reason:'empty_model_content',stage:'parse_content',contentType:contentType(content),choicesCount:payload.choices.length});
   if (payload?.choices?.[0]?.message?.content !== undefined) payload = payload.choices[0].message.content;
   else if (payload?.output_text !== undefined) payload = payload.output_text;
@@ -151,6 +154,8 @@ function modelEnvelope(request) {
   return verificationEnvelope(value);
 }
 
+const FORMAT_RECOVERY_RULE='上次完整返回的正文未形成有效的总结 JSON。请依据同一完整原文和本次 outputContract 重新输出单个完整 JSON，不加解释或 Markdown，不省略必需区块和逐楼摘要，不猜测事实或来源。';
+
 function modelInvoker(model) {
   if (typeof model === 'function') return model;
   if (typeof model?.summarize === 'function') return model.summarize.bind(model);
@@ -169,7 +174,7 @@ function modelInvoker(model) {
         ? { max_tokens: request.effectiveMaxTokens }
         : model.profile?.maxTokens > 0 ? { max_tokens: model.profile.maxTokens } : {}),
       messages: [
-        { role: 'system', content: request.kind==='ShiyiSummaryRequest'&&!request.summaryStage ? (summaryPresetFromRules(request.extractionContext?.rules)?`${PRESET_TRANSPORT_GUARD}\n${summaryPresetFromRules(request.extractionContext.rules).instructions}`:moduleSummaryInstructions) : request.instructions },
+        { role: 'system', content: (request.kind==='ShiyiSummaryRequest'&&!request.summaryStage ? (summaryPresetFromRules(request.extractionContext?.rules)?`${PRESET_TRANSPORT_GUARD}\n${summaryPresetFromRules(request.extractionContext.rules).instructions}`:moduleSummaryInstructions) : request.instructions)+(request.formatRecovery===true?'\n\n'+FORMAT_RECOVERY_RULE:'') },
         { role: 'user', content: JSON.stringify(envelope) },
       ],
       };
@@ -602,7 +607,11 @@ export class SummaryEngine {
     }
     const checkpoint = typeof this.repository.getCheckpoint === 'function' ? await this.repository.getCheckpoint(batch.operationId, batch.scope) : null;
     const frozenPlan = this.packRequests ? await this.repository.readPrivateTask?.(batch.scope, batch.operationId) : null;
+    const contextBinding=value=>sha256({scope:value.scope,sourceRevision:value.sourceRevision,rules:value.rules,focus:value.focusSpec,configVersion:value.configVersion,rulesVersion:value.rulesVersion});
+    const initialContextBinding=contextBinding(batch);
+    const initialContextRevision=this.packRequests&&typeof this.repository.getCommittedRevision==='function'?await this.repository.getCommittedRevision(batch.scope):null;
     const authoritativeRecords = this.packRequests && this.repository.listRecords ? await this.repository.listRecords(batch.scope) : null;
+    const contextReadRevision=initialContextRevision!==null?await this.repository.getCommittedRevision(batch.scope):null;
     const children = this.packRequests ? await planSummaryRequests(batch, {
       maxSourceUnits: this.maxSourceUnits ?? this.maxInputUnits,
       frozen: frozenPlan?.requestPlan,
@@ -673,7 +682,7 @@ export class SummaryEngine {
     emit('plan',{plannedRequests:(children.length-completed.size)*(this.staged||this.verified?2:1),totalChildren:children.length,completedChildren:completed.size,sourceCount:batch.sourceMessages.length});
     if (completed.size === children.length) return state;
     let recoveryCalls=0, verifyBeforeRequest=null, childCalls=0;
-    const invoke=async(request,baseDetails,{extra=false}={})=>{
+    const invoke=async(request,baseDetails,{extra=false,allowTransientRetry=true}={})=>{
       if(extra&&++recoveryCalls>2)throw new ShiyiError('本次自动恢复预算已用完，已返回结果保留','RECOVERY_LIMIT');
       let compacted=false;
       for(;;){
@@ -723,7 +732,7 @@ export class SummaryEngine {
         catch(error){
           error.details={...error.details,elapsedMs:error.details?.requestElapsedMs??Math.max(0,Math.round(this.now()-started)),requestId:baseDetails.requestId,purpose};
           emit('response',{...baseDetails,...errorDiagnostics(error)},'error');
-          if(this.verified||!this.recoveryEnabled||!transientSummaryError(error)||recoveryCalls>=recoveryAttemptLimit(error))throw error;
+          if(this.verified||!this.recoveryEnabled||!allowTransientRetry||!transientSummaryError(error)||recoveryCalls>=recoveryAttemptLimit(error))throw error;
           // Long rate limits require user action later, not ignoring Retry-After
           // or holding a mobile task open indefinitely.
           if((error.details?.retryAfterMs??0)>5000)throw error;
@@ -769,7 +778,15 @@ export class SummaryEngine {
             state.receipts.push(receipt);completed.add(childIndex);state.completedChildren=[...completed];emit('resume_commit',baseDetails,'success');continue;
           }
         }
-        const { request, context, configuredLimit } = await this._prepareRequest(child, batch, { relevantRecords });
+        // Planning already verified this same-scope snapshot. Only the first
+        // child at that exact revision may reuse it; subsequent commits need
+        // new context, and changed controls/source/rules revoke this shortcut.
+        let firstContext=null;
+        if(childIndex===0&&authoritativeRecords&&initialContextRevision!==null&&initialContextRevision===contextReadRevision&&child.expectedRevision===initialContextRevision&&contextBinding(child)===initialContextBinding){
+          throwIfAborted(signal);
+          if(await this.repository.getCommittedRevision(child.scope)===initialContextRevision)firstContext=authoritativeRecords;
+        }
+        const { request, context, configuredLimit } = await this._prepareRequest(child, batch, { relevantRecords,authoritativeRecords:firstContext });
         this.requestLog.push({ operationId: child.operationId, parentOperationId: batch.operationId, childIndex, sourceIds: child.sourceMessages.map((message) => message.id) });
         baseDetails.inputLimit=configuredLimit;
         const resultBinding=sha256({sourceRevision:child.sourceRevision,scope:child.scope,rules:child.rules,focus:child.focusSpec,configVersion:child.configVersion});
@@ -843,7 +860,29 @@ export class SummaryEngine {
         }
         throwIfAborted(signal);
         phase='response';
-        let parsed = await parseModelResponse(raw,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started}),onNormalize:details=>emit('normalize',{...baseDetails,...details},details.duplicateEmptyModules?'warning':'success')});
+        const parseResponse=answer=>parseModelResponse(answer,{onMetadata:metadata=>emit('response',{...baseDetails,...metadata,elapsedMs:this.now()-started}),onNormalize:details=>emit('normalize',{...baseDetails,...details},details.duplicateEmptyModules?'warning':'success')});
+        let parsed;
+        try{parsed=await parseResponse(raw);}
+        catch(error){
+          if(!this.recoveryEnabled||this.staged||this.verified||recoveryCalls>=2||signal?.aborted||error?.code!=='SUMMARY_RESPONSE_ERROR'||error.details?.stage!=='parse_content'||!['stop','end_turn'].includes(error.details?.finishReason)||!['invalid_model_json','invalid_model_root','empty_model_content'].includes(error.details?.reason))throw error;
+          throwIfAborted(signal);
+          // A known-invalid response must not become the paid cache fallback
+          // if this one new request fails before it can return a replacement.
+          const patch={retryModel:true};this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
+          await this.repository.savePrivateTask?.(child.scope,child.operationId,patch).catch(e=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(e),storageArtifact:'response-cache'},'warning'));
+          const retryRequest=Object.defineProperties({},Object.getOwnPropertyDescriptors(request));
+          defineModelAlias(retryRequest,'formatRecovery',true);retryRequest.instructions+='\n\n'+FORMAT_RECOVERY_RULE;
+          emit('partial_repair',{...baseDetails,...errorDiagnostics(error),purpose:'summary'},'warning');
+          try{
+            phase='request';raw=await invoke(retryRequest,baseDetails,{extra:true,allowTransientRetry:false});throwIfAborted(signal);
+            if(typeof raw?.text==='function'||raw?.body!==undefined)raw={status:responseStatus(raw),body:await readRawBody(raw)};
+            await keepResponse(raw);throwIfAborted(signal);phase='response';parsed=await parseResponse(raw);
+            emit('repair_complete',{...baseDetails,purpose:'summary'},'success');
+          }catch(repairError){
+            if(!signal?.aborted&&!['CANCELED','CHAT_CHANGED','SOURCE_INVALIDATED'].includes(repairError?.code)&&repairError?.name!=='AbortError')repairError.details={...repairError.details,repairAttempted:true};
+            throw repairError;
+          }
+        }
         if(this.verified&&parsed?.format==='shiyi-module-records-v1'){
           parsed={...parsed};for(const key of VERIFICATION_MODULES)if(!Object.hasOwn(parsed,key))parsed[key]=[];
         }
