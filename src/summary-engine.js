@@ -31,6 +31,8 @@ function responseStatus(response) {
   return Number(response?.status ?? response?.statusCode ?? 200);
 }
 
+const invalidResponseSource = validation => validation?.validationIssues?.some(issue => ['source_mismatch','unknown_source','missing_source','source_ambiguous'].includes(issue.reason));
+
 async function readRawBody(response) {
   if (response?.aborted || response?.bodyAborted || response?.truncated || response?.complete === false) {
     throw new SummaryResponseError('summary response body was interrupted or truncated', { status:responseStatus(response),stage:'read_body',reason:'body_interrupted' });
@@ -715,7 +717,7 @@ export class SummaryEngine {
         emit('request',{...baseDetails,summaryStage:request.summaryStage,modelRole:request.summaryRole??'summary',sourceInputUnits:estimateUnits(JSON.stringify(request.sourceMessages??[])),historyInputUnits:estimateUnits(JSON.stringify(request.relevantRecords??{})),schemaInputUnits:estimateUnits(JSON.stringify(wireContract??request.outputContract??{})),bridgeInputUnits:estimateUnits(JSON.stringify(request.bridgeMessages??[])),inputUnits:units,maxTokens:providerPayload?.max_tokens??0,recoveryCalls});
         const started=this.now();state.requests++;childCalls++;
         try{
-          try{return await model(request,{signal,requestId:baseDetails.requestId,purpose});}
+          try{return await model(request,{signal,requestId:baseDetails.requestId,purpose,bypassForeground:true});}
           finally{emit('wait_complete',{...baseDetails,modelMs:Math.max(0,Math.round(this.now()-started))});}
         }
         catch(error){
@@ -809,9 +811,14 @@ export class SummaryEngine {
             // A known floor with a wrong fragment, or a missing single-floor
             // locator, also cannot become valid by replaying the same answer.
             const expanded=expandModuleSummary(expandCompactSummary(cached,child.sourceMessages),child.sourceMessages);
-            bindDraftBundle(expanded,{scope:child.scope,operationId:child.operationId,expectedRevision:child.expectedRevision,sourceRefs:evidenceRefsFor(child)});
-          }catch(error){if(error?.details?.validationIssues?.some(i=>['source_mismatch','unknown_source','missing_source','source_ambiguous'].includes(i.reason)))cachedForeignSource=true;/* Other parse/shape recovery remains authoritative. */}
-          if(cachedForeignSource)emit('resume_rejected_source',baseDetails,'warning');
+            const bound=bindDraftBundle(expanded,{scope:child.scope,operationId:child.operationId,expectedRevision:child.expectedRevision,sourceRefs:evidenceRefsFor(child)});
+            cachedForeignSource ||= invalidResponseSource(validateDraftBundle(bound,{allowedSourceIds:allowed,knownRecordIds:context.ids??new Set(),expectedSourceRefs:sourceRefsFor(child)}));
+          }catch(error){if(invalidResponseSource(error?.details))cachedForeignSource=true;/* Other parse/shape recovery remains authoritative. */}
+          if(cachedForeignSource){
+            const patch={retryModel:true};this.repository.retainPrivateResponse?.(child.scope,child.operationId,patch);
+            await this.repository.savePrivateTask?.(child.scope,child.operationId,patch).catch(error=>emit('checkpoint_warning',{...baseDetails,...errorDiagnostics(error),storageArtifact:'response-cache'},'warning'));
+            emit('resume_rejected_source',baseDetails,'warning');
+          }
         }
         if(prior?.raw!==undefined&&!prior.retryModel&&!cachedForeignSource){raw=prior.raw;emit('resume_response',baseDetails,'success');}
         else{

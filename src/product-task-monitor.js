@@ -7,17 +7,28 @@ const AUTOMATIC={
 };
 const number=value=>Number.isSafeInteger(value)&&value>=0?value:null;
 const range=(start,end)=>number(start)!==null&&number(end)!==null&&end>=start?`${start}–${end} 楼`:'';
+const PHASES={preparing:'正在准备',queued:'正在等待接口',waiting:'等待模型答复',composing:'正在生成总结',validating:'正在检查与整理',saving:'正在保存',running:'正在进行'};
 
 // A closed projection keeps raw provider details and source text out of the UI.
 export function taskMonitorText(monitor={}){
  const current=monitor.current,requests=Array.isArray(monitor.providerRequests)?monitor.providerRequests:[],automatic=monitor.automatic??{};
  const task=current?`${current.trigger==='auto'?'自动':current.trigger==='manual'?'手动':''}${TASKS[current.kind]??'当前任务'}`:'当前没有运行任务';
- const phase=current?.phase==='preparing'?'正在准备':current?.phase==='queued'?'正在等待接口':'正在进行';
- const currentText=current?[task,range(current.startIndex,current.endIndex),phase].filter(Boolean).join(' · '):task;
+ const phase=PHASES[current?.phase]??'正在进行';
+ const total=number(current?.totalBatches),done=number(current?.completedBatches);
+ const progress=total>0&&done!==null&&done<=total?{value:done,max:total}:null;
+ const currentText=current?[task,range(current.startIndex,current.endIndex),progress?`已保存 ${done}/${total} 批`:'',phase].filter(Boolean).join(' · '):task;
  const requestRows=requests.map(request=>{
   const label=ROLES[request.modelRole]??'模型请求',reason=WAIT[request.reason]??'等待接口可用',position=number(request.queuePosition);
   return `${label} · ${reason}${position!==null&&position>0?` · 排队位置 ${position}`:''}`;
  });
  const next=range(automatic.nextStart,automatic.nextEnd),pending=number(automatic.manualPending)??0;
- return {current:currentText,automatic:`自动总结：${AUTOMATIC[automatic.reason]??'正在检查状态。'}`,next:next?`下一批：${next}`:'',manualPending:pending?`未完成的手动批次：${pending}`:'',requests:requestRows,queueTitle:requestRows.length?`等待接口的请求（${requestRows.length}）`:'等待接口的请求',canStop:Boolean(current)||requestRows.length>0};
+ return {current:currentText,automatic:`自动总结：${AUTOMATIC[automatic.reason]??'正在检查状态。'}`,next:next?`下一批：${next}`:'',manualPending:pending?`未完成的手动批次：${pending}`:'',requests:requestRows,queueTitle:requestRows.length?`等待接口的请求（${requestRows.length}）`:'等待接口的请求',canStop:Boolean(current)||requestRows.length>0,progress};
+}
+
+// Closed, small projection for the host chat surface, independent of panel visibility.
+export function hostTaskStatus(monitor={}){
+ const text=taskMonitorText(monitor),blocked=['history_unavailable','retry_exhausted'].includes(monitor.automatic?.reason),busy=text.canStop;
+ return {visible:busy||blocked,title:busy?(monitor.current?text.current:'任务正在等待接口'):'自动总结已暂停',detail:text.requests[0]??(blocked?text.automatic:''),
+  hint:monitor.current?.kind==='summary'?'聊天与召回可继续；切换聊天或删改本批原文前，请先停止或等保存完成。':busy?'后台任务进行中；需要切换或删改相关内容时，可先停止任务。':blocked?'打开拾忆查看未完成批次，再重试或继续。':'',
+  canStop:busy,progress:text.progress};
 }

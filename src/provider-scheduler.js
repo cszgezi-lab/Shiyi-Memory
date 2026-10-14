@@ -46,24 +46,29 @@ export function createProviderScheduler({requestsPerMinute=()=>0,now=()=>Date.no
     lane.starts=lane.starts.filter(t=>t>now()-60000);
     if(lane.ratePenaltyUntil<=now()){lane.rateFailures=0;lane.ratePenaltyUntil=0;}
     if(disposed||!lane.pending.length)return;
-    const limits=[Number(requestsPerMinute()),Number(lane.pending[0]?.rpmLimit)].filter(n=>Number.isFinite(n)&&n>0);
+    // Foreground host work is outside this plugin lane. Only explicitly
+    // admitted work may pass that pause; it still shares active/RPM/cooldown.
+    const selectedIndex=foreground?lane.pending.findIndex(item=>item.bypassForeground):0;
+    const selected=lane.pending[Math.max(0,selectedIndex)];
+    const limits=[Number(requestsPerMinute()),Number(selected?.rpmLimit)].filter(n=>Number.isFinite(n)&&n>0);
     const rpm=limits.length?Math.max(1,Math.floor(Math.min(...limits))):0;
     const rpmUntil=rpm&&lane.starts.length>=rpm?lane.starts[lane.starts.length-rpm]+60000:0;
-    const minimumInterval=Math.max(positive(lane.pending[0]?.minIntervalMs),lane.ratePenaltyUntil>now()?60000:0);
+    const minimumInterval=Math.max(positive(selected?.minIntervalMs),lane.ratePenaltyUntil>now()?60000:0);
     const spacingUntil=lane.lastStart===null?0:lane.lastStart+minimumInterval;
     const rateUntil=Math.max(rpmUntil,spacingUntil);
     const until=Math.max(rateUntil,lane.cooldownUntil);
-    const reason=foreground?'queue_foreground':lane.active?'queue_busy':until>now()?(lane.cooldownUntil>=rateUntil||lane.ratePenaltyUntil>now()&&spacingUntil>=rpmUntil?'queue_cooldown':'queue_rpm'):null;
+    const reason=selectedIndex<0?'queue_foreground':lane.active?'queue_busy':until>now()?(lane.cooldownUntil>=rateUntil||lane.ratePenaltyUntil>now()&&spacingUntil>=rpmUntil?'queue_cooldown':'queue_rpm'):null;
     if(reason){
       lane.pending.forEach((item,i)=>{
-        const details={stage:'queue',reason,queuePosition:i+1,queueWaitMs:Math.max(0,now()-item.queuedAt),retryDelayMs:Math.max(0,until-now())};
-        const signature=`${reason}:${i}:${until}`;
+        const itemReason=foreground&&!item.bypassForeground?'queue_foreground':reason;
+        const details={stage:'queue',reason:itemReason,queuePosition:i+1,queueWaitMs:Math.max(0,now()-item.queuedAt),retryDelayMs:Math.max(0,until-now())};
+        const signature=`${itemReason}:${i}:${until}`;
         if(item.notified!==signature){item.notified=signature;try{item.onWait?.(details);}catch{/* diagnostics cannot prevent dispatch */}}
       });
-      if(!foreground&&!lane.active)lane.stop=schedule(Math.max(1,until-now()),()=>pump(lane));
+      if(selectedIndex>=0&&!lane.active)lane.stop=schedule(Math.max(1,until-now()),()=>pump(lane));
       return;
     }
-    const item=lane.pending.shift();item.signal?.removeEventListener('abort',item.abort);
+    const [item]=lane.pending.splice(selectedIndex,1);item.signal?.removeEventListener('abort',item.abort);
     if(item.signal?.aborted){item.reject(canceled());pump(lane);return;}
     lane.active=true;lane.lastStart=now();lane.starts.push(lane.lastStart);let released=false;
     item.resolve({queueWaitMs:Math.max(0,now()-item.queuedAt),finish(error){
@@ -93,13 +98,13 @@ export function createProviderScheduler({requestsPerMinute=()=>0,now=()=>Date.no
   }
   return {
     setForeground(value){foreground=Boolean(value);for(const lane of lanes.values())pump(lane);},
-    acquire(key,{signal,onWait,rpmLimit=0,minIntervalMs=0,priority=0}={}){
+    acquire(key,{signal,onWait,rpmLimit=0,minIntervalMs=0,priority=0,bypassForeground=false}={}){
       if(disposed||signal?.aborted)return Promise.reject(canceled());
       sweep();
       let lane=lanes.get(key);
       if(!lane){lane={active:false,pending:[],starts:[],lastStart:null,cooldownUntil:0,failures:0,rateFailures:0,ratePenaltyUntil:0,stop:null};lanes.set(key,lane);}
       return new Promise((resolve,reject)=>{
-        const item={signal,onWait,rpmLimit,minIntervalMs,priority,resolve,reject,queuedAt:now()};
+        const item={signal,onWait,rpmLimit,minIntervalMs,priority,bypassForeground:bypassForeground===true,resolve,reject,queuedAt:now()};
         item.abort=()=>{const i=lane.pending.indexOf(item);if(i<0)return;lane.pending.splice(i,1);signal?.removeEventListener('abort',item.abort);reject(canceled());pump(lane);};
         signal?.addEventListener('abort',item.abort,{once:true});lane.pending.push(item);lane.pending.sort((a,b)=>b.priority-a.priority);pump(lane);
       });

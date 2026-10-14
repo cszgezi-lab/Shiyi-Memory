@@ -1,4 +1,5 @@
 import { frameScheduler } from './product-view-scheduling.js';
+import { hostTaskStatus } from './product-task-monitor.js';
 const STORAGE_KEY = 'shiyi-memory-floating-ui-v1';
 const clamp = (value, low, high) => Math.min(Math.max(value, low), Math.max(low, high));
 const ratio = value => Number.isFinite(value) ? clamp(value, 0, 1) : null;
@@ -49,9 +50,18 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onOpen
   const stopButton=documentRef.createElement('button');stopButton.type='button';stopButton.textContent='停止';stopButton.hidden=true;stopButton.className='sy-dock-stop';
   const logButton=documentRef.createElement('button');logButton.type='button';logButton.textContent='日志';logButton.className='sy-dock-logs';logButton.setAttribute('aria-label','查看运行日志');
   dock.append(notice,logButton,stopButton);
+  const taskBar=documentRef.createElement('aside');taskBar.className='sy-host-task-bar';taskBar.hidden=true;taskBar.setAttribute('data-host-task','');taskBar.setAttribute('data-tt-mobile-surface','free-window');
+  const taskText=documentRef.createElement('div');taskText.className='sy-host-task-text';taskText.setAttribute('role','status');taskText.setAttribute('aria-live','polite');taskText.setAttribute('aria-atomic','true');
+  const taskTitle=documentRef.createElement('strong'),taskDetail=documentRef.createElement('div'),taskHint=documentRef.createElement('small'),taskProgress=documentRef.createElement('progress');
+  taskTitle.setAttribute('data-host-task-current','');taskDetail.setAttribute('data-host-task-detail','');taskHint.setAttribute('data-host-task-hint','');taskProgress.setAttribute('aria-label','本次计划已保存批次');
+  taskText.append(taskTitle,taskDetail,taskHint,taskProgress);
+  const taskActions=documentRef.createElement('div');taskActions.className='sy-host-task-actions';
+  const taskOpen=documentRef.createElement('button');taskOpen.type='button';taskOpen.textContent='详情';taskOpen.setAttribute('aria-label','打开拾忆查看任务详情');
+  const taskStop=documentRef.createElement('button');taskStop.type='button';taskStop.textContent='停止';taskStop.setAttribute('data-host-task-stop','');
+  taskActions.append(taskOpen,taskStop);taskBar.append(taskText,taskActions);
   // Navigation and feedback must not scroll away with a long API form.
   const nav=panel.querySelector('.sy-nav');
-  header.append(grip, closeButton); windowEl.append(header);if(nav)windowEl.append(nav);windowEl.append(content,dock);layer.append(launcher, windowEl); documentRef.body.appendChild(layer);
+  header.append(grip, closeButton); windowEl.append(header);if(nav)windowEl.append(nav);windowEl.append(content,dock);layer.append(launcher, windowEl,taskBar); documentRef.body.appendChild(layer);
   // A manual popover is non-modal and escapes drawer/theme stacking contexts.
   // Old WebViews retain a fixed high-z-index surface; no showModal or scroll lock.
   if (typeof layer.showPopover === 'function') {
@@ -67,9 +77,12 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onOpen
   let disposed = false, raf = null, unsubscribe = null;
   const cancelDrags = [];
   const cleanup = [];
+  let taskStatus=hostTaskStatus(),taskStopping=false,taskSignature=JSON.stringify(taskStatus);
   function listen(target, type, fn, options) { target?.addEventListener?.(type, fn, options); cleanup.push(() => target?.removeEventListener?.(type, fn, options)); }
   listen(stopButton,'click',onStop);
   listen(logButton,'click',onLogs);
+  listen(taskOpen,'click',()=>show());
+  listen(taskStop,'click',async()=>{if(taskStopping||!taskStatus.canStop)return;taskStopping=true;paintTask();try{await onStop();}finally{taskStopping=false;if(!disposed)paintTask();}});
   // A touch opens on pointerup and hides its target. Some WebViews then retarget
   // the compatibility click to the newly exposed window control under the finger.
   // Consume only that gesture's click; a new pointerdown or keyboard click is free.
@@ -107,7 +120,22 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onOpen
     setPx(windowEl, 'height', Math.min(720, frame.height * .92));
     if (!windowEl.hidden) place(windowEl, preferences.window);
     if (!launcher.hidden) place(launcher, preferences.bubble);
+    placeTask();
     keepInputVisible();
+  }
+  function placeTask(){
+    if(taskBar.hidden||disposed)return;
+    const frame=frameFor(taskBar);setPx(taskBar,'width',Math.min(560,frame.width));
+    const size=taskBar.getBoundingClientRect();setPx(taskBar,'left',frame.x+Math.max(0,(frame.width-size.width)/2));
+    setPx(taskBar,'top',frame.y+Math.min(48,Math.max(0,frame.height-size.height)));
+  }
+  function paintTask(){
+    taskBar.hidden=!windowEl.hidden||!taskStatus.visible;
+    for(const [node,value]of [[taskTitle,taskStatus.title],[taskDetail,taskStatus.detail],[taskHint,taskStatus.hint]]){if(node.textContent!==value)node.textContent=value;node.hidden=!value;}
+    taskStop.hidden=!taskStatus.canStop&&!taskStopping;taskStop.disabled=taskStopping;taskStop.textContent=taskStopping?'正在停止…':'停止';taskStop.setAttribute('aria-busy',String(taskStopping));
+    taskProgress.hidden=!taskStatus.canStop;
+    if(taskStatus.progress){taskProgress.max=taskStatus.progress.max;taskProgress.value=taskStatus.progress.value;}else taskProgress.removeAttribute('value');
+    placeTask();
   }
   function keepInputVisible() {
     const input=documentRef.activeElement;
@@ -121,11 +149,11 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onOpen
     if (disposed) return;
     windowEl.hidden = false; launcher.hidden = true; launcher.setAttribute('aria-expanded', 'true'); layout();
     grip.focus({ preventScroll: true });
-    onOpen();
+    paintTask();onOpen();
   }
   function hide() {
     windowEl.hidden = true; launcher.hidden = !preferences.showLauncher; launcher.setAttribute('aria-expanded', 'false'); layout();
-    onClose(); (launcher.hidden ? shortcutButton : launcher).focus({ preventScroll: true });
+    paintTask();onClose(); (launcher.hidden ? shortcutButton : launcher).focus({ preventScroll: true });
   }
   function move(element, kind, x, y, persist = false) {
     const frame = frameFor(element), size = element.getBoundingClientRect();
@@ -218,6 +246,7 @@ export function mountFloatingProduct({ panel, documentRef, host, version, onOpen
   }).catch(() => { /* CSS contract remains available */ });
   launcher.hidden = !preferences.showLauncher; layout();
   return { layer, launcher, window: windowEl, content, shortcut, show, hide,
+    setTaskMonitor(monitor){const next=hostTaskStatus(monitor),signature=JSON.stringify(next);if(signature===taskSignature)return;taskSignature=signature;taskStatus=next;paintTask();},
     setNotice(text,level='info'){notice.textContent=text;notice.dataset.level=level;launcher.dataset.notice=level;launcher.title=`打开拾忆 · ${text}`;},
     setBusy(busy){stopButton.hidden=!busy;},
     destroy() { disposed = true; if (raf !== null) win.cancelAnimationFrame(raf); observer?.disconnect(); for (const off of cleanup) off(); Promise.resolve().then(() => unsubscribe?.()).catch(() => {}); layer.remove(); shortcut.remove(); } };

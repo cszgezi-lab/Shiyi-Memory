@@ -14,9 +14,12 @@ import {
 } from './contracts.js';
 import { clone, isPlainObject, makeId, sha256, stableStringify } from './utils.js';
 import { mergeEventDetails, exactEventDuplicate } from './event-consolidation.js';
-import {losslessStore,verifiedWrite} from './reliable-storage.js';
+import {losslessStore,verifiedWrite,runStorageOperation} from './reliable-storage.js';
 
 const DEFAULT_NAMESPACE = 'shiyi-memory-core';
+// One-operation capabilities only. Ordinary reads still verify every chunk.
+// A serialized JSON snapshot cannot qualify for the in-memory reuse path.
+const VERIFIED_SCOPE_READS=new WeakMap();
 const CATEGORIES = [
   'events',
   'awarenessChanges',
@@ -367,10 +370,19 @@ export class MemoryRepository {
 
   async getCommittedRevision(scope) { return (await this._getPointer(normalizeScope(scope))).committedRevision; }
 
-  async readScope(scope, { includeOperations = [], excludeOperations = [] } = {}) {
+  async readScope(scope, options = {}) {
+    return this._readScope(scope,options,options.reuseSnapshot??null,null,Boolean(options.reuseSnapshot));
+  }
+
+  async _readScope(scope, { includeOperations = [], excludeOperations = [] } = {},reuseSnapshot=null,expectedPointer=null,captureChunks=false) {
     const frozenScope = normalizeScope(scope);
+    const reuse=reuseSnapshot?VERIFIED_SCOPE_READS.get(reuseSnapshot):null;
+    if(reuseSnapshot&&(!reuse||reuse.store!==this.store||reuse.namespace!==this.namespace||reuse.scopeKey!==scopeKey(frozenScope)))throw new PersistenceError('本次存储快照已变化，请重新读取',{storageArtifact:'memory',storageStage:'compare',reason:'storage_mismatch'});
     const pointer = await this._getPointer(frozenScope);
-    if (!pointer.manifestRef) return { scope: frozenScope, committedRevision: 0, records: emptyRecords(), pointer, manifest: null };
+    if (!pointer.manifestRef) {
+      if(reuseSnapshot)throw new PersistenceError('本次存储快照已变化，请重新读取',{storageArtifact:'memory',storageStage:'compare',reason:'storage_mismatch'});
+      return { scope: frozenScope, committedRevision: 0, records: emptyRecords(), pointer, manifest: null };
+    }
     const manifestFound = await optionalGet(this.store, { namespace: this.namespace, key: pointer.manifestRef });
     if (!manifestFound.found) throw new PersistenceError('manifest pointer target is missing');
     const manifest = manifestFound.value;
@@ -378,8 +390,10 @@ export class MemoryRepository {
       throw new PersistenceError('manifest does not match committed pointer');
     }
     if (!pointer.manifestSha256 || sha256(manifest) !== pointer.manifestSha256) throw new PersistenceError('manifest hash does not match committed pointer');
+    if(reuseSnapshot&&(stableStringify(reuse.refs)!==stableStringify(manifest.chunks??[])||stableStringify(expectedPointer??reuse.pointer)!==stableStringify(pointer)))throw new PersistenceError('本次存储快照已变化，请重新读取',{storageArtifact:'memory',storageStage:'compare',reason:'storage_mismatch'});
     const chunks = [];
     for (const ref of manifest.chunks ?? []) {
+      if(reuse){chunks.push(reuse.chunks.get(ref.key));continue;}
       const found = await optionalGet(this.store, { namespace: this.namespace, key: ref.key });
       if (!found.found) throw new PersistenceError(`immutable chunk is missing: ${ref.key}`);
       if (sha256(found.value) !== ref.sha256) throw new PersistenceError(`immutable chunk hash mismatch: ${ref.key}`);
@@ -394,27 +408,33 @@ export class MemoryRepository {
     for(const category of CATEGORIES)records[category]=records[category].filter(r=>!controls.deletedRecords?.[r.id]).map(r=>controls.edits?.[r.id]?{...r,...clone(controls.edits[r.id]),epistemicStatus:'user_asserted'}:r);
     const eventIds=new Set(records.events.map(r=>r.id));
     records.awarenessChanges=records.awarenessChanges.filter(r=>[r.eventRef,...(r.eventRefs??[])].filter(Boolean).every(id=>eventIds.has(id)));
-    return { scope: frozenScope, committedRevision: pointer.committedRevision, records, pointer, manifest };
+    const snapshot={ scope: frozenScope, committedRevision: pointer.committedRevision, records, pointer, manifest };
+    if(captureChunks)VERIFIED_SCOPE_READS.set(snapshot,{store:this.store,namespace:this.namespace,scopeKey:scopeKey(frozenScope),pointer:clone(pointer),refs:clone(manifest.chunks??[]),chunks:reuse?.chunks??new Map((manifest.chunks??[]).map((ref,i)=>[ref.key,chunks[i]]))});
+    return snapshot;
   }
 
   /** Recoverable view changes: immutable evidence is retained, projection is atomic. */
-  async updateControls(scope, patch, { check=()=>{} }={}) {
+  async updateControls(scope, patch, { check:callerCheck=()=>{},signal,waitMs=0,returnView=false }={}) {
     const frozen=normalizeScope(scope);
-    return withScopeLock(this.store,frozen,async()=>{
-      check();const previous=await this.readScope(frozen),keys=this._keys(frozen);
+    return runStorageOperation(check=>withScopeLock(this.store,frozen,async()=>{
+      check();const previous=await this._readScope(frozen,{},null,null,returnView),keys=this._keys(frozen);
+      check();
       const controls=clone(previous.manifest?.controls??{});
       for(const key of ['operations','deletedRecords','edits','automation'])controls[key]={...controls[key],...clone(patch[key]??{})};
       const revision=previous.committedRevision+1,operationId=makeId('memory-view');
       const manifest={schemaVersion:1,kind:'memory-manifest',scope:frozen,scopeKey:scopeKey(frozen),committedRevision:revision,chunks:previous.manifest?.chunks??[],controls,operationId,createdAt:this.now()};
       const manifestSha256=sha256(manifest),manifestRef=`${keys.manifestPrefix}-${revision}-${manifestSha256.slice(0,20)}`;
-      await verifiedWrite(this.store,{namespace:this.namespace,key:manifestRef},manifest);
+      await verifiedWrite(this.store,{namespace:this.namespace,key:manifestRef},manifest,{check});
       check();const current=await this._getPointer(frozen);
+      check();
       if(current.committedRevision!==previous.committedRevision)throw new RevisionConflictError('memory controls revision changed');
       const pointer={schemaVersion:1,kind:'memory-pointer',scope:frozen,scopeKey:scopeKey(frozen),committedRevision:revision,manifestRef,manifestSha256,operationId,updatedAt:this.now()};
-      await verifiedWrite(this.store,{namespace:this.namespace,key:keys.pointer},pointer);
+      await verifiedWrite(this.store,{namespace:this.namespace,key:keys.pointer},pointer,{check});
       check();
-      return {status:'saved',committedRevision:revision};
-    });
+      const viewSnapshot=returnView?await this._readScope(frozen,{},previous,pointer,true):null;
+      check();
+      return {status:'saved',committedRevision:revision,...(viewSnapshot?{viewSnapshot}:{})};
+    }),{check:callerCheck,signal,waitMs,storageArtifact:'memory'});
   }
 
   async _findReceipt(operationId) {

@@ -3,7 +3,7 @@ import { knowledgeImportPlan } from './product-knowledge-import.js';
 import { isMissingProductEntry } from './product-host-adapters.js';
 import { PersistenceError } from './errors.js';
 import { encodeVectorDocumentAsync, decodeVectorDocumentAsync, sameVectorDocument, vectorStorageArtifact } from './product-vector-storage.js';
-import {losslessStore,verifiedWrite} from './reliable-storage.js';
+import {losslessStore,verifiedWrite,runStorageOperation} from './reliable-storage.js';
 
 const NS = 'shiyi-product-workspace';
 const queues = new WeakMap();
@@ -17,40 +17,46 @@ export function createWorkspace(bound) {
   const storageError = (name, storageStage, causeError) => new PersistenceError(
     ({read:'当前聊天资料读取失败，请重试',write:'资料写入失败，尚未确认保存',readback:'资料写入后读取失败，尚未确认保存',compare:'保存读回不一致，尚未确认保存'})[storageStage]??'资料保存校验失败',
     { storageStage,reason:({read:'storage_read',write:'storage_write',readback:'storage_readback',compare:'storage_mismatch',decode:'storage_decode'})[storageStage],causeError,storageArtifact:vectorStorageArtifact(name)??'workspace' });
-  async function readRaw(name, fallback = null) {
-    guard();
+  async function readRaw(name, fallback = null,check=()=>{}) {
+    guard();check();
     const key = `${prefix}-${name}`;
     let found;
     try { found = store.tryGetJson ? await store.tryGetJson({ namespace: NS, key }) : { found: true, value: await store.getJson({ namespace: NS, key }) }; }
     catch (error) {
       if (!store.tryGetJson && isMissingProductEntry(error)) found = { found:false };
-      else { guard(); throw storageError(name, 'read',error); }
+      else { guard();check(); throw storageError(name, 'read',error); }
     }
-    guard();
+    guard();check();
     return clone(found?.found && found.value !== undefined ? found.value : fallback);
   }
-  async function read(name, fallback = null) {
-    const value=await decodeVectorDocumentAsync(name, await readRaw(name, fallback));guard();return value;
+  function read(name, fallback = null,options={}) {
+    return runStorageOperation(async check=>{const value=await decodeVectorDocumentAsync(name,await readRaw(name,fallback,check));guard();check();return value;},{...options,waitMs:options.waitMs??0});
   }
-  async function write(name, value,{returnValue=true}={}) {
-    guard();
+  async function writeRaw(name, value,{returnValue=true,check=()=>{}}={}) {
+    guard();check();
     const vector=Boolean(vectorStorageArtifact(name));
-    const frozen = await encodeVectorDocumentAsync(name, clone(value));guard();
+    const frozen = await encodeVectorDocumentAsync(name, clone(value));guard();check();
     let actual;
-    try { actual=await verifiedWrite(store,{namespace:NS,key:`${prefix}-${name}`},frozen,vector?{equals:sameVectorDocument}:{}); }
-    catch(error) { guard(); throw storageError(name,error?.details?.storageStage??'write',error); }
-    guard();
+    try { actual=await verifiedWrite(store,{namespace:NS,key:`${prefix}-${name}`},frozen,vector?{equals:sameVectorDocument,check}:{check}); }
+    catch(error) { guard();check(); throw storageError(name,error?.details?.storageStage??'write',error); }
+    guard();check();
     // verifiedWrite already performed exact readback. Rehashing/decoding the
     // entire index again here added seconds per checkpoint on mobile.
     if(!returnValue)return;
     return vector?JSON.parse(actual.payload):actual;
   }
-  function update(name, callback, fallback = null) {
+  function enqueue(name,task) {
     let byKey = queues.get(store); if (!byKey) { byKey = new Map(); queues.set(store, byKey); }
     const key = `${prefix}-${name}`;
-    const operation = (byKey.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => write(name, await callback(await read(name, fallback))));
+    const operation = (byKey.get(key) ?? Promise.resolve()).catch(() => {}).then(task);
     byKey.set(key, operation);
     return operation.finally(() => { if (byKey.get(key) === operation) byKey.delete(key); });
+  }
+  function write(name,value,options={}){
+    return runStorageOperation(check=>enqueue(name,()=>writeRaw(name,value,{...options,check})),{...options,waitMs:options.waitMs??0});
+  }
+  function update(name,callback,fallback=null,options={}){
+    return runStorageOperation(check=>enqueue(name,async()=>{check();const prior=await read(name,fallback,{check});check();const next=await callback(prior);check();return writeRaw(name,next,{...options,check});}),{...options,waitMs:options.waitMs??0});
   }
   async function remove(name) {
     guard();

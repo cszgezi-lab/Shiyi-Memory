@@ -89,7 +89,19 @@ export function buildProviderHeaders(profile = {}, extra = {}) {
   return headers;
 }
 
-async function readBody(response,onBody=()=>{}) {
+function discardResponseBody(response){
+  let reader;
+  try{
+    const stream=response?.body;
+    const cancellation=typeof stream?.cancel==='function'?stream.cancel():
+      typeof stream?.getReader==='function'?(reader=stream.getReader()).cancel?.():
+        stream?.[Symbol.asyncIterator]?.().return?.();
+    Promise.resolve(cancellation).catch(()=>{});
+  }catch{/* late transport cleanup cannot change the settled request */}
+  finally{try{reader?.releaseLock();}catch{/* already released */}}
+}
+
+async function readBody(response,onBody=()=>{},signal) {
   if (response?.aborted || response?.bodyAborted || response?.truncated) throw new SummaryResponseError('provider response body was interrupted', { aborted: true,stage:'read_body',reason:'body_interrupted' });
   try {
     if (typeof response === 'string') {if(response.length)onBody(true);return response;}
@@ -102,13 +114,32 @@ async function readBody(response,onBody=()=>{}) {
         if(typeof chunk==='string'){if(bytes)chunks.push(decoder.decode());bytes=false;chunks.push(chunk);}
         else{bytes=true;chunks.push(decoder.decode(chunk,{stream:true}));}
       };
-      if(typeof stream.getReader==='function'){
-        const reader=stream.getReader();
-        try{while(true){const {done,value}=await reader.read();if(done)break;consume(value);}}
-        finally{reader.releaseLock();}
-      }else{
-        for await (const chunk of stream)consume(chunk);
-      }
+      const reader=typeof stream.getReader==='function'?stream.getReader():null;
+      const iterator=reader?null:stream[Symbol.asyncIterator]();
+      let stopped=false,rejectAbort;
+      const aborted=new Promise((_,reject)=>{rejectAbort=reject;});
+      // A late response can arrive with an already-aborted signal, before the
+      // first read installs its race handler.
+      void aborted.catch(()=>{});
+      const cancel=()=>{
+        if(stopped)return;stopped=true;
+        // A misbehaving adapter may never settle cancellation. Request exit
+        // and lock release must not wait on that promise or the pending read.
+        try{Promise.resolve(reader?reader.cancel?.():iterator.return?.()).catch(()=>{});}catch{/* cleanup must not replace the original failure */}
+      };
+      const onAbort=()=>{cancel();rejectAbort(new ShiyiError('request canceled','CANCELED'));};
+      signal?.addEventListener('abort',onAbort,{once:true});
+      try{
+        if(signal?.aborted)onAbort();
+        while(true){
+          if(signal?.aborted)throw new ShiyiError('request canceled','CANCELED');
+          const read=reader?reader.read():iterator.next();
+          const {done,value}=await(signal?Promise.race([read,aborted]):read);
+          if(signal?.aborted)throw new ShiyiError('request canceled','CANCELED');
+          if(done)break;consume(value);
+        }
+      }catch(error){cancel();throw error;}
+      finally{signal?.removeEventListener('abort',onAbort);try{reader?.releaseLock();}catch{/* an adapter may already have released its lock */}}
       if(bytes)chunks.push(decoder.decode());
       return chunks.join('');
     }
@@ -121,20 +152,20 @@ async function readBody(response,onBody=()=>{}) {
   }
 }
 
-export async function parseProviderJson(response, { requireStatus = true, onMetadata=()=>{},onBody=()=>{},allowStream=false } = {}) {
+export async function parseProviderJson(response, { requireStatus = true, onMetadata=()=>{},onBody=()=>{},allowStream=false,signal } = {}) {
   const status = Number(response?.status ?? response?.statusCode ?? 200);
   const mime=response?.headers?.get?.('content-type')??'';
   const metadata={status,statusKnown:response?.status!==undefined||response?.statusCode!==undefined,responseType:/json/i.test(mime)?'json':/html/i.test(mime)?'html':/text/i.test(mime)?'text':mime?'other':'unknown'};
   onMetadata(metadata);
   if (requireStatus && (status < 200 || status >= 300)) {
-    let bodyError;const body = await readBody(response,onBody).catch(error => {bodyError=error;return '';});
+    let bodyError;const body = await readBody(response,onBody,signal).catch(error => {bodyError=error;return '';});
     let errorBody;try{errorBody=JSON.parse(body);}catch{errorBody={message:body.slice(0,4096)};}
     const upstreamCode=upstreamErrorCode(errorBody),upstreamHint=upstreamErrorHint(errorBody);
     const header=response?.headers?.get?.('retry-after'),seconds=header&&Number(header);
     const retryAfterMs=header?(Number.isFinite(seconds)?Math.max(0,seconds*1000):Math.max(0,Date.parse(header)-Date.now())):0;
     throw new ShiyiError(`provider returned HTTP ${status}`, 'PROVIDER_HTTP_ERROR', { ...metadata,stage:'request',reason:'http_error',bodyChars:body.length,upstreamDetailsProvided:Boolean(body.trim()),upstreamCode,upstreamHint,causeError:bodyError,...(Number.isFinite(retryAfterMs)&&retryAfterMs>0?{retryAfterMs}: {}) });
   }
-  const text = await readBody(response,onBody);
+  const text = await readBody(response,onBody,signal);
   if(allowStream&&(/event-stream/i.test(mime)||/^\s*(?::|data:|event:)/.test(text)))return parseChatEventStream(text);
   try { return JSON.parse(text); } catch (error) {
     throw new SummaryResponseError('provider returned invalid JSON', jsonFailure(error,text,{...metadata,stage:'parse_envelope'}));
@@ -152,7 +183,7 @@ export class ProviderClient {
     this.modelRole=modelRole;
   }
 
-  async request(resource, payload, { signal, timeoutMs, headers = {}, method = 'POST', requestId=diagnosticRequestId(), purpose, onDiagnostic, rpmLimit=0, minIntervalMs=0 } = {}) {
+  async request(resource, payload, { signal, timeoutMs, headers = {}, method = 'POST', requestId=diagnosticRequestId(), purpose, onDiagnostic, rpmLimit=0, minIntervalMs=0,bypassForeground=false } = {}) {
     const started=Date.now(),observer=onDiagnostic??observers.get(this.fetch);let finished=false;
     const emit=(phase,details={},level='info')=>{if(finished)return;try{observer?.({phase,level,details:{requestId,purpose:purpose??resource,modelRole:this.modelRole,elapsedMs:Date.now()-started,...details}});}catch{/* diagnostics never fail a request */}};
     const serialized=JSON.stringify(payload??{});
@@ -162,7 +193,7 @@ export class ProviderClient {
       const scheduler=resource==='chat'?schedulers.get(this.fetch):null;
       if(scheduler){
         const limits=[Number(rpmLimit),...(this.modelRole==='personaReview'?[5]:[])].filter(value=>Number.isFinite(value)&&value>0);
-        lease=await scheduler.acquire(providerQueueScope(resolveProviderEndpoint(this.profile,resource),buildProviderHeaders(this.profile,headers)),{signal,onWait:details=>emit('queued',details),rpmLimit:limits.length?Math.min(...limits):0,minIntervalMs,...(this.modelRole==='personaReview'?{priority:-1}:{})});
+        lease=await scheduler.acquire(providerQueueScope(resolveProviderEndpoint(this.profile,resource),buildProviderHeaders(this.profile,headers)),{signal,onWait:details=>emit('queued',details),rpmLimit:limits.length?Math.min(...limits):0,minIntervalMs,bypassForeground,...(this.modelRole==='personaReview'?{priority:-1}:{})});
       }
       networkStarted=Date.now();
       emit('request',{stage:'request',...requestMeta,queueWaitMs:lease?.queueWaitMs??0,maxTokens:payload?.max_tokens??0,timeoutMs:timeoutMs??this.profile.timeoutMs});
@@ -209,7 +240,12 @@ export class ProviderClient {
       if (controller.signal.aborted) onAbort(); else controller.signal.addEventListener('abort', onAbort, { once:true });
     });
     try {
-      const result=await Promise.race([(async () => { if(controller.signal.aborted)throw new ShiyiError('request canceled','CANCELED'); return parseProviderJson(await this.fetch(url, init),{allowStream:resource==='chat'&&payload?.stream===true,onBody,onMetadata:details=>{receiveMeta.responseHeadersMs=Date.now()-receivingStarted;emit('response',{...details,...receiveMeta,stage:'read_body'});}}); })(), canceled]);
+      const result=await Promise.race([(async () => {
+        if(controller.signal.aborted)throw new ShiyiError('request canceled','CANCELED');
+        const response=await this.fetch(url,init);
+        if(controller.signal.aborted){discardResponseBody(response);throw new ShiyiError('request canceled','CANCELED');}
+        return parseProviderJson(response,{allowStream:resource==='chat'&&payload?.stream===true,signal:controller.signal,onBody,onMetadata:details=>{receiveMeta.responseHeadersMs=Date.now()-receivingStarted;emit('response',{...details,...receiveMeta,stage:'read_body'});}});
+      })(), canceled]);
       const message=result?.choices?.[0]?.message;
       emit('complete',{stage:'parse_envelope',...receiveMeta,...result?._shiyiStream,contentType:contentType(message?.content??result),responseChars:typeof message?.content==='string'?message.content.length:undefined,choicesCount:Array.isArray(result?.choices)?result.choices.length:undefined,toolCallsCount:message?.tool_calls?.length,finishReason:result?.choices?.[0]?.finish_reason,promptTokens:result?.usage?.prompt_tokens,completionTokens:result?.usage?.completion_tokens,totalTokens:result?.usage?.total_tokens},'success');
       return result;

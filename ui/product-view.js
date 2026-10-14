@@ -350,6 +350,7 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
    // Background diagnostic persistence must not erase a visible operation error.
    if(noticeLevel==='error'&&$('[data-status]'))$('[data-status]').textContent=noticeText;
     floating?.setBusy(s.busy||modelRequests.size>0);
+    floating?.setTaskMonitor(s.taskMonitor);
     if(floating?.window.hidden)return;
     taskMonitorView?.paint(s.taskMonitor);
     journalView?.paint(s,currentPage);

@@ -182,6 +182,7 @@ export function createProductShellController({
   let globalApiSettings = null, legacyApiSettings = {}, legacySettings = {};
   let sessionStore = null;
   let repository = null;
+  const operationMemoryViews=new WeakMap();
   let engine = null;
   let transport = null;
   let abortController = null;
@@ -794,9 +795,20 @@ export function createProductShellController({
     } finally { manualOperation = null; }
   }
 
-  async function readMemoryView() {
+  async function readMemoryView({check=()=>{},reuse=null}={}) {
+    check();
     if (!repository || !state.scope) return { status: 'empty', persistence: 'unavailable', records: null };
-    const snapshot = await repository.readScope(state.scope);
+    let reuseSnapshot;
+    if(reuse){
+      const cached=operationMemoryViews.get(reuse);operationMemoryViews.delete(reuse);
+      if(!cached||!tokenValid(cached.token,cached.session)||stableStringify(cached.scope)!==stableStringify(state.scope))throw Object.assign(new Error('本次存储快照已变化，请重新读取'),{code:'PERSISTENCE_ERROR',details:{reason:'storage_mismatch',storageStage:'compare',storageArtifact:'memory'}});
+      reuseSnapshot=cached.snapshot;
+    }
+    const snapshot = await repository.readScope(state.scope,reuseSnapshot?{reuseSnapshot}:{});
+    check();
+    return memoryView(snapshot);
+  }
+  function memoryView(snapshot){
     return {
       status: 'ready',
       committedRevision: snapshot.committedRevision,
@@ -922,7 +934,13 @@ export function createProductShellController({
       }
       return {frozen:true,revisionChanged,hasCachedResponse,hasCommittedChildren:completed.size>0};
     },
-    async updateMemoryControls(patch){if(!repository||!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');const token=currentToken(),session=state.session;const check=()=>{if(!tokenValid(token,session))throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});};check();return repository.updateControls(session.scope,patch,{check});},
+    async updateMemoryControls(patch,{check:callerCheck=()=>{},signal,waitMs=0,returnView=false}={}){
+      if(!repository||!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');
+      const token=currentToken(),session=state.session,check=()=>{if(!tokenValid(token,session))throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});callerCheck();};
+      check();const {viewSnapshot,...result}=await repository.updateControls(session.scope,patch,{check,signal,waitMs,returnView});check();
+      if(viewSnapshot){const value=memoryView(viewSnapshot);operationMemoryViews.set(value,{snapshot:viewSnapshot,scope:clone(session.scope),token,session});return {...result,memoryView:value};}
+      return result;
+    },
     remember,
     sourceValidity,
     workspace() {
