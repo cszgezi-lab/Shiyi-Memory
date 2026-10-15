@@ -444,6 +444,17 @@ export function productFailure(error) {
     const cause=(Object.hasOwn(nativeText,error.details.nativeErrorCode)?nativeText[error.details.nativeErrorCode]:undefined)??(Object.hasOwn(upstreamText,error.details.upstreamHint)?upstreamText[error.details.upstreamHint]:undefined);
     message=error.details.nativeErrorCode==='network.body_interrupted'?'回答还没接收完整就中断了；已有档案和成功批次保留，稍后继续未完成批次即可。':cause?`${cause}；本批没有得到完整回答。已有档案和成功批次保留，稍后继续未完成批次即可。`:`回答接收途中发生错误，暂时无法确认具体原因；本批未保存，已有档案和成功批次保留。${FAILURE_LOG}`;
   }
+  if(error?.details?.modelRole==='dynamicPersona'){
+    if(code==='PERSONA_RESPONSE_INVALID'&&error.details.reason==='invalid_model_json'){
+      const chars=error.details.bodyChars;
+      const size=Number.isSafeInteger(chars)&&chars>=0?`（${chars} 字符）`:'';
+      message=`${error.details.repairAttempted?'已按格式补答一次，仍未收到有效 JSON':'动态人设接口返回的正文不是有效 JSON'}${size}。本批未保存，旧档案和成功批次保留；请核对该接口的回答格式，恢复后只继续未完成批次。`;
+    }else if(code==='MODEL_OUTPUT_BLOCKED'){
+      message='动态人设模型明确拒绝或过滤了本次输出。本批未保存，旧档案和成功批次保留；请核对该服务的使用规则，恢复后只继续未完成批次。';
+    }else if(error.details.reason==='stream_error'&&!status&&error.details.nativeErrorCode==='network.dns_failed'){
+      message='找不到动态人设模型服务的地址，本批没有得到完整回答。请检查 API → 动态人设模型的服务地址及运行设备的网络；旧档案和成功批次保留，恢复后只继续未完成批次。';
+    }
+  }
   if((error?.details?.purpose==='embeddings'||error?.details?.modelRole==='embedding')&&message){
     message=message.replace('在批次管理中继续未完成任务即可，不必重新总结成功批次。','').replace('已保存批次保留，','');
     message+= ' 故事记忆已保存的部分不受影响；请在批次或召回页补建未完成索引，只调用向量模型，不重新总结。';
@@ -451,6 +462,13 @@ export function productFailure(error) {
   if(error?.details?.modelRole==='dynamicPersona'&&message){
     const field=PERSONA_ISSUES[error.details.personaIssue]??({name:'姓名无法唯一对应本批人物',text:'档案正文或局部修改未通过检查',sourceFloors:'来源楼号缺失或不在本批原文中'})[error.details.personaField];
     if(code==='PERSONA_RESPONSE_INVALID'&&field)message=`第${Number.isSafeInteger(error.details.profileIndex)?error.details.profileIndex+1:'?'}份人设${Number.isSafeInteger(error.details.editIndex)?`的第${error.details.editIndex+1}项修改`:''}：${field}。旧档案与有效候选保留；自动恢复只处理未完成部分，也可在总结页继续。`;
+    if(code==='PERSONA_RESPONSE_INVALID'&&error.details.personaIssue==='unapplied_revision'){
+      const reviewCauses={REQUEST_SHAPE:'回答不符合本次人设比较格式',REVIEW_MISSING:'缺少对原设定的对应比较',REVIEW_SHAPE:'原设定比较结果的格式不完整',ROW_SHAPE:'人物比较条目的格式不完整',UNKNOWN_FOCUS:'比较对象不在本次请求中',DUPLICATE_FOCUS:'同一比较对象重复返回',MISSING_FOCUS:'遗漏了本次需要比较的条目',NAME_OWNERSHIP:'比较结果的人物归属不一致',REF_OWNERSHIP:'修改引用不属于该人物',INVALID_EVIDENCE:'引用的正文依据未能对应本批人物',FOCUS_EVIDENCE:'正文依据没有对应到这项人物变化',INVALID_CURRENT:'当前人设表述未能通过检查',INVALID_DECISION:'人物变化的比较结论不完整',INTEGRATION_NOT_APPLIED:'已声明的对应修改没有实际应用',REFLECTED_REF_MISSING:'比较结论缺少对应的原条目'};
+      const pendingCauses={before_mismatch:'修改前的文字未能匹配原条目',note_before_mismatch:'修改前的文字未能匹配已有补充',missing_edit_evidence:'修改缺少可核验的正文依据',missing_note_evidence:'补充修改缺少可核验的正文依据',protected_source_quote:'修改触及须保留的原始引语',source_style_bytes_changed:'修改改动了须逐字保留的原始引语',unknown_note_ref:'修改引用的已有补充不存在',duplicate_note_ref:'同一补充被重复修改',invalid_note_text:'补充修改的正文格式不正确',missing_note_updates:'已有补充的修改没有完整返回',invalid_note_updates:'已有补充的修改列表格式不正确',incomplete_style_group:'原始语料组的调整未完整对应',missing_scoped_style_transition:'原始语料调整缺少对应变化依据',not_independent_source_style:'语料调整未对应独立的原始片段'};
+      const reviewCode=error.details.entryReviewIssues?.[0]?.code,pendingReason=error.details.pendingEditReasons?.[0]??error.details.pendingEdits?.[0]?.reason;
+      const cause=Object.hasOwn(reviewCauses,reviewCode)?reviewCauses[reviewCode]:Object.hasOwn(pendingCauses,pendingReason)?pendingCauses[pendingReason]:'';
+      message=`本批人设修改尚未全部应用${cause?`：${cause}`:''}。旧档案和成功批次保留；自动纠错只处理未完成部分，仍失败时可继续本批。`;
+    }
     if(code==='MODEL_OUTPUT_TRUNCATED'&&error.details.recoveryExhausted)message='人设回答拆小后仍被截断，已停止重复相同请求；原档案与已完成候选保留。请检查服务输出能力或人设回复预算后继续，本批尚未应用。';
     message=message.replace('在批次管理中继续未完成任务即可，不必重新总结成功批次。','手动补建请点“继续未完成”；自动更新可重试下一批。无需重做主总结。').replace('提高总结输入预算','调整人设输入预算');
   }

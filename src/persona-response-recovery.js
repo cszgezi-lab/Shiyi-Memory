@@ -2,6 +2,7 @@
 import {clone,estimateUnits,sha256} from './utils.js';
 import {foldName} from './persona-identity.js';
 import {PERSONA_ISSUES,PERSONA_RECOVERY_VERSION,personaValidationError} from './persona-validation.js';
+import {safeDiagnosticFields,safePersonaValidationDetails} from './diagnostics.js';
 
 const label=e=>e?.details?.personaIssue??(e?.details?.reason==='invalid_model_json'?'invalid_json':e?.details?.reason==='persona_duplicate'?'duplicate_profile':e?.details?.reason==='persona_character'?'ambiguous_name':e?.details?.personaField==='sourceFloors'?'invalid_floors':e?.details?.personaField==='name'?'missing_name':'invalid_text');
 const validationFields=new Set(['name','text','sourceFloors','changeCheck','updates','noteUpdates','development','examples']);
@@ -225,7 +226,7 @@ export async function recoverPersonaBatch({messages,previous,fingerprint,cached,
   else{
    if(reviewing){binding=reference.seal(request);if(binding?.version!==2||binding.messageSha256!==exactSha(request.messages))throw reviewError([{code:'REQUEST_SHAPE'}]);}
    state.requestCount++;requestCount++;
-   if(job.repair)diagnostic({phase:'repair_request',details:{personaIssue:job.issue,editIndex:job.editIndex,recoveryCalls:state.requestCount-1,accepted:state.candidates.length,pendingItems:state.jobs.length}});
+   if(job.repair)diagnostic({phase:'repair_request',level:'warning',details:{personaIssue:job.issue,editIndex:job.editIndex,...safePersonaValidationDetails({...job.validation,entryReviewIssues:job.entryReviewIssues}),recoveryCalls:state.requestCount-1,accepted:state.candidates.length,pendingItems:state.jobs.length}});
    response=await send(request.messages,{repair:!!job.repair});guard();
   }
   let rows,reviewRecords=[];
@@ -264,7 +265,7 @@ export async function recoverPersonaBatch({messages,previous,fingerprint,cached,
    if(reviewing&&!job.target)job.target=null;
    if(reviewing&&error.details?.entryReviewIssues)job.entryReviewIssues=entryReview.safeIssues(error.details.entryReviewIssues);
    if(request.requestViewVersion>=8&&Number.isSafeInteger(error.details?.editIndex)&&error.details.editIndex>=0)job.editIndex=error.details.editIndex;
-   await persist();if(wasRepair){state.failed=true;await persist();throw error;}continue;
+   await persist();if(wasRepair){error.details={...error.details,repairAttempted:true};state.failed=true;await persist();throw error;}continue;
   }
   const failures=[...rows.failures,...reviewRecords.filter(record=>record.issues?.length&&!record.skipped).map(record=>({target:record.target,reviewOnly:true,error:reviewError(record.issues)}))];
   state.rejectedProfiles=[...(state.rejectedProfiles??[]),...(rows.rejectedProfiles??[])];
@@ -290,8 +291,8 @@ export async function recoverPersonaBatch({messages,previous,fingerprint,cached,
     ...(reviewing?{reviewOnly:g.reviewOnly,entryReviewIssues:g.entryReviewIssues}:{}),
     invalidProfiles:rows.body.profiles.filter(p=>foldName(canonical(p?.name))===foldName(g.target))}));
    state.jobs.splice(0,1,...repairs);await persist();
-   for(const f of failures)diagnostic({phase:'repair_failed',level:'warning',details:{...f.error.details,personaIssue:label(f.error),accepted:state.candidates.length,pendingItems:state.jobs.length}});
-   if(job.repair){state.failed=true;await persist();throw failures[0].error;}
+   for(const f of failures)diagnostic({phase:'repair_failed',level:'warning',details:{...safeDiagnosticFields(f.error.details),...safePersonaValidationDetails(f.error.details),personaIssue:label(f.error),...(job.repair?{repairAttempted:true}:{}),accepted:state.candidates.length,pendingItems:state.jobs.length}});
+   if(job.repair){failures[0].error.details={...failures[0].error.details,repairAttempted:true};state.failed=true;await persist();throw failures[0].error;}
    continue;
   }
  stage(rows,source,reviewing?packetFor(reviewRecords.filter(r=>r.receipt&&!r.skipped),rows,request,source,job,bound):[]);state.jobs.shift();await persist();

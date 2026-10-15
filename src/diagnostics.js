@@ -166,6 +166,52 @@ const verificationPath=/^(?:verification|reviewedSourceIds|reviews|checks|update
 let sequence=0;
 export const QUALITY_REASONS=Object.freeze(['证据片段不存在或已变化','获知证据未对应人物与原文','约定状态不正确','知情状态不正确','知情途径不正确','角色心迹字段不正确','关键台词字段不正确','台词不属于原文发言','返回格式或条数不正确','缺少原文依据','依据不能对应原文','含不允许修改的字段','事实性质不正确','文字字段不正确','列表字段不正确','更新对象不在本批或重复','更新依据不属于原记录','新增区块或来源锚点不正确','新增记录不正确','新增依据不属于来源锚点','新增依据不属于本次校对来源','新增记录过长','新增记录含未知字段','知情字段缺失或事件不存在','知情字段缺失或关联事件/属性不存在','人物属性缺失或越权确认','疑点没有关联原记录','没有一项校对结果通过验证','校对项未通过原文与字段校验']);
 export function diagnosticRequestId(){return `req-${Date.now().toString(36)}-${(++sequence).toString(36)}`;}
+// Privacy projection of the existing persona recovery/review labels. Keep this
+// boundary independent of the business modules: no parser, identity or I/O import.
+const personaValidationFields=new Set(['name','text','sourceFloors','changeCheck','updates','noteUpdates','development','examples','entryReview']);
+const personaPendingReasons=new Set(['not_independent_source_style','source_style_bytes_changed','missing_edit_evidence','missing_scoped_style_transition','protected_source_quote','before_mismatch','incomplete_style_group','missing_note_updates','invalid_note_updates','unknown_note_ref','duplicate_note_ref','invalid_note_text','note_before_mismatch','missing_note_evidence']);
+const personaCheckIssues=new Set(['未返回变化核对','缺少可定位的本人物核对依据','冲突片段范围未确认','声明的旧设定冲突尚未逐项修改','有变化声明但缺少已接受的转折记录','无变化声明却新增或改写人物弧光','表达变化缺少本批已接受语料','无变化声明与修改冲突']);
+const personaReviewCodes=new Set(['REQUEST_SHAPE','REVIEW_MISSING','REVIEW_SHAPE','ROW_SHAPE','UNKNOWN_FOCUS','DUPLICATE_FOCUS','MISSING_FOCUS','NAME_OWNERSHIP','REF_OWNERSHIP','INVALID_EVIDENCE','FOCUS_EVIDENCE','INVALID_CURRENT','INVALID_DECISION','INTEGRATION_NOT_APPLIED','REFLECTED_REF_MISSING']);
+const personaRef=value=>typeof value==='string'&&/^(?:[BN][1-9]\d{0,5}|new)$/.test(value);
+const personaFocus=value=>typeof value==='string'&&/^F[1-9]\d{0,5}$/.test(value);
+const personaDiagnosticKeys=['personaField','profileIndex','editIndex','changeCheckIssues','pendingEditReasons','pendingEdits','entryReviewIssues','editRef','evidenceFloor','evidenceField','personaValidationOmitted'];
+const diagnosticCount=value=>Number.isSafeInteger(value)&&value>=0&&value<=1000000?value:0;
+export function safePersonaValidationDetails(value,{compact=false}={}){
+  const out={};if(!value||typeof value!=='object')return out;
+  const rowLimit=compact?1:24,coordinateLimit=compact?3:12,omitted={};
+  for(const key of ['changeCheckIssues','pendingEditReasons','pendingEdits','entryReviewIssues','changeCheckRefs'])if(diagnosticCount(value.personaValidationOmitted?.[key]))omitted[key]=value.personaValidationOmitted[key];
+  if(personaValidationFields.has(value.personaField))out.personaField=value.personaField;
+  for(const key of ['profileIndex','editIndex','evidenceFloor'])if(Number.isSafeInteger(value[key])&&value[key]>=0)out[key]=value[key];
+  if(typeof value.editRef==='string'&&/^[BN][1-9]\d{0,5}$/.test(value.editRef))out.editRef=value.editRef;
+  if(value.evidenceField==='evidence.quote')out.evidenceField=value.evidenceField;
+  const select=(key,rows)=>{
+    if(!rows.length)return;
+    out[key]=rows.slice(0,rowLimit);
+    if(rows.length>rowLimit)omitted[key]=Math.min(1000000,(omitted[key]??0)+rows.length-rowLimit);
+  };
+  const coordinates=(row,key,valid)=>{
+    const all=[...new Set((Array.isArray(row[key])?row[key]:[]).slice(0,128).filter(valid))],result={[key]:all.slice(0,coordinateLimit)};
+    const count=Math.min(1000000,diagnosticCount(row[key+'Omitted'])+Math.max(0,all.length-coordinateLimit));
+    if(count)result[key+'Omitted']=count;
+    return result;
+  };
+  if(Array.isArray(value.changeCheckIssues))select('changeCheckIssues',[...new Set(value.changeCheckIssues.slice(0,128).flatMap(issue=>{
+    if(personaCheckIssues.has(issue)||typeof issue==='string'&&/^[1-9]\d{0,3}项局部修改尚未应用，未变内容保留$/.test(issue))return [issue];
+    if(typeof issue!=='string'||issue.length>1000)return [];
+    const refs=/^本批转变仍逐字指向未更新的旧片段：([BN][1-9]\d{0,5}(?:、[BN][1-9]\d{0,5})*)；需显式局部修改，未自动移除$/.exec(issue)?.[1].split('、');
+    if(!refs)return [];
+    if(refs.length>coordinateLimit)omitted.changeCheckRefs=Math.min(1000000,(omitted.changeCheckRefs??0)+refs.length-coordinateLimit);
+    return [`本批转变仍逐字指向未更新的旧片段：${refs.slice(0,coordinateLimit).join('、')}；需显式局部修改，未自动移除`];
+  }))]);
+  if(Array.isArray(value.pendingEditReasons))select('pendingEditReasons',[...new Set(value.pendingEditReasons.slice(0,128).filter(reason=>personaPendingReasons.has(reason)))]);
+  if(Array.isArray(value.pendingEdits))select('pendingEdits',value.pendingEdits.slice(0,128).filter(row=>row&&personaPendingReasons.has(row.reason)).map(row=>({
+    ...(['source','notes'].includes(row.kind)?{kind:row.kind}:{}),...(personaRef(row.ref)?{ref:row.ref}:{}),
+    ...(Array.isArray(row.refs)?coordinates(row,'refs',personaRef):{}),reason:row.reason,
+  })));
+  if(Array.isArray(value.entryReviewIssues))select('entryReviewIssues',value.entryReviewIssues.slice(0,128).filter(row=>row&&personaReviewCodes.has(row.code)).map(row=>({code:row.code,...coordinates(row,'focusIds',personaFocus),...coordinates(row,'refs',personaRef)})));
+  if(Object.keys(omitted).length)out.personaValidationOmitted=omitted;
+  return out;
+}
 export function safeDiagnosticFields(value={}){
   const result={};
   // Fixed regex metadata locates a failed rule without storing its expression,
@@ -211,7 +257,7 @@ export function safeDiagnosticFields(value={}){
   if(typeof value?.requestId==='string'&&/^req-[a-z0-9]{1,16}-[a-z0-9]{1,10}$/.test(value.requestId))result.requestId=value.requestId;
   if(errorTypes.has(value?.errorType))result.errorType=value.errorType;
   if(errorTypes.has(value?.causeErrorType))result.causeErrorType=value.causeErrorType;
-  if(['name','text','sourceFloors'].includes(value?.personaField))result.personaField=value.personaField;
+  Object.assign(result,safePersonaValidationDetails(value));
   if(Object.hasOwn(PERSONA_ISSUES,value?.personaIssue))result.personaIssue=value.personaIssue;
   if(Number.isSafeInteger(value?.editIndex)&&value.editIndex>=0)result.editIndex=value.editIndex;
   if(typeof value?.recoveryExhausted==='boolean')result.recoveryExhausted=value.recoveryExhausted;
@@ -236,6 +282,10 @@ export function errorDiagnostics(error){
   const frames=[...String(error?.stack??'').matchAll(/(?:[/\\])([a-z-]+\.js):(\d{1,7}):(\d{1,7})/g)].filter(m=>files.has(m[1])).map(m=>`${m[1]}:${m[2]}:${m[3]}`);
   const allFrames=[...new Set([...(safeDiagnosticFields(error?.details).stackFrames??[]),...frames])];
   const details={...error?.details,errorType:errorTypes.has(error?.name)?error.name:'Error',code:error?.code??'OPERATION_FAILED',stackFrames:allFrames.slice(0,12),stackFramesOmitted:Math.max(0,allFrames.length-12)};
+  // A producer may attach rich private repair data. New diagnostic fields must
+  // cross the same closed boundary here and again on persistence/export.
+  for(const key of personaDiagnosticKeys)delete details[key];
+  Object.assign(details,safePersonaValidationDetails(error?.details));
   if(!details.reason)details.reason='unclassified';
   // The wrapped host error keeps its own type beside the wrapper, so a Java
   // bridge failure stays identifiable without any raw message or path.

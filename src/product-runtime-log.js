@@ -2,7 +2,7 @@ import { clone, stableStringify } from './utils.js';
 import { productStoreFromSession } from './product-host-adapters.js';
 import { PRODUCT_VERSION } from './product-release.js';
 import { safeValidationIssues } from './validation-diagnostics.js';
-import { safeDiagnosticFields, errorDiagnostics } from './diagnostics.js';
+import { safeDiagnosticFields, errorDiagnostics, safePersonaValidationDetails } from './diagnostics.js';
 
 export const RUNTIME_LOG_ADDRESS = Object.freeze({ namespace: 'shiyi-product-diagnostics', key: 'runtime-v1' });
 export const RUNTIME_LOG_LIMIT = 2000;
@@ -74,6 +74,7 @@ function safeEntry(value) {
  * frames, nested cause chains, validation issue lists) is what made even a
  * filtered export tens of thousands of characters long. */
 const COMPACT_KEYS=['action','reason','field','ruleIndex','kind','stage','storageStage','storageArtifact','saveStage','exportAttempt','exportBytes','hostOperations','code','errorType','causeErrorType','personaStep','personaIssue','personaField','profileIndex','editIndex','recoveryExhausted','modelRequested','modelRole','status','upstreamCode','upstreamHint','startIndex','endIndex','beforeBatches','afterBatches','retainedBatches','removedBatches','candidateBatches','archived','retryDelayMs','stackFrames','validationIssues'];
+const PERSONA_COMPACT_RESPONSE_KEYS=['bodyChars','contentType','repairAttempted'];
 /** Local bounded diagnostics. Never accepts prompts, response bodies, keys or URLs. */
 export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),ioWaitMs=1000} = {}) {
   let entries=[],store,loaded=false,loading,queue=Promise.resolve(),nextRun=0,nextId=0,persistence='not_loaded';
@@ -163,6 +164,10 @@ export function createRuntimeLog({getStore,onChange=()=>{},now=()=>Date.now(),io
   function compactEntry(entry){
     const details={};
     for(const key of COMPACT_KEYS)if(entry.details?.[key]!==undefined)details[key]=entry.details[key];
+    if(entry.task==='persona')for(const key of PERSONA_COMPACT_RESPONSE_KEYS)if(entry.details?.[key]!==undefined)details[key]=entry.details[key];
+    // Keep one concrete persona failure with bounded local coordinates. Other
+    // valid causes remain counted and are available in the full safe export.
+    Object.assign(details,safePersonaValidationDetails(entry.details,{compact:true}));
     // Native failures already identify the exact bridge operation. For other
     // failures retain one safe code location and one validation path instead of
     // removing the only clue (or exporting an entire repeated stack).

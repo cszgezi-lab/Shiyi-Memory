@@ -2,7 +2,7 @@ import {clone,sha256,stableStringify,estimateUnits,makeId} from './utils.js';
 import {autoSummaryPlan} from './product-auto-summary.js';
 import {failureText} from './product-feedback.js';
 import {safeLogDetails} from './product-runtime-log.js';
-import {errorDiagnostics} from './diagnostics.js';
+import {errorDiagnostics,contentType} from './diagnostics.js';
 import {backgroundRetryDelay} from './provider-scheduler.js';
 import {qualitySourceSegments} from './source-evidence.js';
 import {narrativeReading,narrativeReadingText,assertNarrativeReadingContent,NARRATIVE_READING_RULE,narrativeCounters} from './narrative-reading.js';
@@ -102,6 +102,7 @@ examples少量选真实本人完整原话，每条仅{text,floor,to,context}。t
 const initial=()=>({version:1,startFloor:1,paused:false,batches:[],profiles:[],manualPlan:null,mirror:{status:'not_created'}});
 const canceled=()=>Object.assign(new Error('人设任务已停止，已保存档案保留'),{code:'CANCELED'});
 const invalid=(reason,message,details={})=>Object.assign(new Error(message),{code:'PERSONA_RESPONSE_INVALID',details:{stage:'validate',reason,modelRole:'dynamicPersona',...details}});
+const structuredPersonaRefusal=response=>typeof response?.choices?.[0]?.message?.refusal==='string'&&Boolean(response.choices[0].message.refusal.trim());
 const unsafe=/\[\[SHIYI_PERSONA:|<%|%>|<\/?script\b|\{\{(?!\s*(?:user|char)\s*\}\})|@@/i;
 function normalizeUserDirectives(value){
   const lines=(Array.isArray(value)?value:String(value??'').split(/\n/u)).map(item=>String(item??'').trim()).filter(Boolean);
@@ -379,10 +380,11 @@ export function personaRequest(options){
 }
 export function parsePersonaResponse(response,{messages,spans,previous,identity,dictionary,aliases='',stageMode='narrative',preserveSources=false,developmentMessages,diagnostic=()=>{},collectFailures=false,updateContractVersion=1}){
   const reason=response?.choices?.[0]?.finish_reason;
-  if(reason==='content_filter')throw Object.assign(new Error('人设接口报告内容过滤；原档案保留，可更换配置后重试'),{code:'MODEL_OUTPUT_BLOCKED'});
+  const content=response?.choices?.[0]?.message?.content,responseShape={bodyChars:typeof content==='string'?content.length:0,contentType:contentType(content)};
+  if(reason==='content_filter'||structuredPersonaRefusal(response))throw Object.assign(new Error('人设接口明确报告拒答或内容过滤；原档案保留，可更换配置后重试'),{code:'MODEL_OUTPUT_BLOCKED',details:{stage:'validate',reason:'output_blocked',modelRole:'dynamicPersona',...responseShape}});
   if(['length','max_tokens'].includes(reason))throw Object.assign(new Error('人设回答未完整结束；原档案保留'),{code:'MODEL_OUTPUT_TRUNCATED'});
-  const content=response?.choices?.[0]?.message?.content;let body;
-  try{body=JSON.parse(String(content??'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));}catch{throw invalid('invalid_model_json','人设回答不是完整 JSON；可重试该批，不需重新总结');}
+  let body;
+  try{body=JSON.parse(String(content??'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));}catch{throw invalid('invalid_model_json','人设回答不是完整 JSON；可重试该批，不需重新总结',responseShape);}
   if(updateContractVersion>=5&&Array.isArray(body)&&body.every(row=>row&&typeof row==='object'&&!Array.isArray(row))){
     body={profiles:body};diagnostic({phase:'normalize',details:{reason:'persona_profiles_array',profileCount:body.profiles.length}});
   }
@@ -985,7 +987,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const exactPersonaHash=value=>sha256(JSON.stringify(value));
       const parseBoundPersona=(response,context,binding)=>{
         if(binding?.version!==2||binding.messageSha256!==exactPersonaHash(context.request.messages))throw personaValidationError('unapplied_revision',{personaField:'entryReview',entryReviewIssues:[{code:'REQUEST_SHAPE',focusIds:[],refs:[]}]});
-        if(['length','max_tokens','content_filter'].includes(response?.choices?.[0]?.finish_reason))return {rows:parseNativePersona(response,context)};
+        if(['length','max_tokens','content_filter'].includes(response?.choices?.[0]?.finish_reason)||structuredPersonaRefusal(response))return {rows:parseNativePersona(response,context)};
         let raw;try{raw=JSON.parse(String(response?.choices?.[0]?.message?.content??'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));}catch{return {rows:parseNativePersona(response,context)};}
         const expanded=binding.expand(raw,{request:context.request,responseMessagesSha256:binding.messageSha256}),hydrated={...response,choices:response.choices.map((choice,index)=>index?choice:{...choice,message:{...choice.message,content:JSON.stringify(expanded)}})};
         return {protocolVersion:2,rows:parseNativePersona(hydrated,context),encodedModelBody:raw,expandedBodySha256:exactPersonaHash(expanded),currentProvenance:binding.provenance()};
@@ -1008,7 +1010,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
          const chatOptions={signal:controller.signal};
          let reply=await client().chatCompletions(wire,chatOptions);
          // 某些网关对 response_format 返回空正文（计费但无内容）。自动去掉 JSON 模式重发一次。
-         if(config.dynamicPersonaJsonMode&&!String(reply?.choices?.[0]?.message?.content??'').trim()){diagnostic({run,task:'persona',phase:'response',level:'warning',details:{reason:'persona_json_mode_empty_fallback',modelRole:'dynamicPersona'}});const plain={...wire};delete plain.response_format;reply=await client().chatCompletions(plain,chatOptions);}
+         if(config.dynamicPersonaJsonMode&&!['length','max_tokens','content_filter'].includes(reply?.choices?.[0]?.finish_reason)&&!structuredPersonaRefusal(reply)&&!String(reply?.choices?.[0]?.message?.content??'').trim()){diagnostic({run,task:'persona',phase:'response',level:'warning',details:{reason:'persona_json_mode_empty_fallback',modelRole:'dynamicPersona'}});const plain={...wire};delete plain.response_format;reply=await client().chatCompletions(plain,chatOptions);}
          return reply;
         },
         parse:parseNativePersona,
