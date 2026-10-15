@@ -27,6 +27,27 @@ function unwrappedPersonaQuote(value){
   return text.slice(1,-1).trim();
 }
 
+// A model can copy the complete attributed source sentence instead of only
+// its utterance. Accept that wrapper only when the original speaker validator
+// recognizes the entire sentence and exactly one complete quote ends it.
+// The extracted words must independently pass the ordinary exact-source check.
+function verifiedPersonaQuote(value,source,name,identity,{allowLead=false}={}){
+  const raw=typeof value==='string'?value.trim():'';
+  if(hasPersonaSpeechEvidence(source,raw,name,identity))return raw;
+  const unwrapped=unwrappedPersonaQuote(raw);
+  if(unwrapped!==raw&&hasPersonaSpeechEvidence(source,unwrapped,name,identity))return unwrapped;
+  if(!allowLead||!hasPersonaSpeechEvidence(source,raw,name,identity,{includeLead:true}))return unwrapped;
+  const spans=[];
+  for(let i=0;i<raw.length;i++){
+    if(!['“','「','『','"','‘','〔'].includes(raw[i]))continue;
+    const end=speechSpanEnd(raw,i);if(end<0)return unwrapped;
+    spans.push({start:i,end});i=end;
+  }
+  if(spans.length!==1||spans[0].start===0||spans[0].end!==raw.length-1)return unwrapped;
+  const text=raw.slice(spans[0].start+1,spans[0].end).trim();
+  return hasPersonaSpeechEvidence(source,text,name,identity)?text:unwrapped;
+}
+
 // Only an attributed self-naming utterance establishes a new spoken alias.
 // A narrator mentioning two names or someone saying "call her X" does not.
 export function personaSpokenAliases(messages,name,identity){
@@ -286,7 +307,8 @@ export function composePersona(row,{spans,previous,messages,developmentMessages,
   const normalized=(Array.isArray(row.examples)?row.examples:[]).map(q=>{
     if(!q||typeof q!=='object')return q;
     const conflict=(Object.hasOwn(q,'text')&&Object.hasOwn(q,'quote')&&q.text!==q.quote)||(Object.hasOwn(q,'to')&&Object.hasOwn(q,'target')&&foldName(String(q.to))!==foldName(String(q.target)));
-    return conflict?null:{...q,text:Object.hasOwn(q,'text')?q.text:q.quote,to:Object.hasOwn(q,'to')?q.to:q.target};
+    const raw=Object.hasOwn(q,'text')?q.text:q.quote,m=messages.find(m=>m.index===q.floor);
+    return conflict?null:{...q,text:verifiedPersonaQuote(raw,m?.text??'',name,identity,{allowLead:updateContractVersion>=8}),to:Object.hasOwn(q,'to')?q.to:q.target};
   });
   // The archive is authoritative for duplicates (including retirement), but a
   // legacy capped archive may have dropped a still-selected current example.

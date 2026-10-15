@@ -3,6 +3,7 @@ import {clone,estimateUnits,sha256} from './utils.js';
 import {foldName} from './persona-identity.js';
 import {PERSONA_ISSUES,PERSONA_RECOVERY_VERSION,personaValidationError} from './persona-validation.js';
 import {safeDiagnosticFields,safePersonaValidationDetails} from './diagnostics.js';
+import {personaJSONBody} from './persona-json-body.js';
 
 const label=e=>e?.details?.personaIssue??(e?.details?.reason==='invalid_model_json'?'invalid_json':e?.details?.reason==='persona_duplicate'?'duplicate_profile':e?.details?.reason==='persona_character'?'ambiguous_name':e?.details?.personaField==='sourceFloors'?'invalid_floors':e?.details?.personaField==='name'?'missing_name':'invalid_text');
 const validationFields=new Set(['name','text','sourceFloors','changeCheck','updates','noteUpdates','development','examples']);
@@ -235,7 +236,7 @@ export async function recoverPersonaBatch({messages,previous,fingerprint,cached,
     if(binding?.messageSha256!==exactSha(request.messages))throw reviewError([{code:'REQUEST_SHAPE'}]);
     const parsed=reference.parseBoundReply(response,{messages:source,previous:working,request},binding);
     rows=parsed?.rows;
-    let original;try{original=JSON.parse(String(response?.choices?.[0]?.message?.content??'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));}catch{throw reviewError([{code:'REVIEW_SHAPE'}]);}
+    let original;try{original=personaJSONBody(response?.choices?.[0]?.message?.content,{allowRestart:true});}catch{throw reviewError([{code:'REVIEW_SHAPE'}]);}
     if(parsed?.protocolVersion!==2||original?.contractVersion!==2||!Array.isArray(rows)||exactSha(parsed.encodedModelBody)!==exactSha(original)||parsed.expandedBodySha256!==exactSha(rows.body))throw reviewError([{code:'REVIEW_SHAPE'}]);
     bound={protocolVersion:2,exactWireSha256:binding.messageSha256,encodedModelBody:parsed.encodedModelBody,expandedBodySha256:parsed.expandedBodySha256};
    }else rows=parse(response,{messages:source,previous:working,request});

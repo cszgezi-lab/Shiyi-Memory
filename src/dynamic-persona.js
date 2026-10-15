@@ -26,8 +26,10 @@ import {PERSONA_RECOVERY_VERSION,personaValidationError} from './persona-validat
 import {hasPersonaSpeechEvidence} from './persona-speech-evidence.js';
 import {applyPersonaArcReferences} from './persona-arc-references.js';
 import {recoverPersonaBatch} from './persona-response-recovery.js';
+import {personaJSONBody} from './persona-json-body.js';
+export {personaJSONBody} from './persona-json-body.js';
 import * as personaEntryReview from './persona-entry-review.js';
-import {prepareCorrespondingRequest} from './persona-correspondence-request.js';
+import {prepareCorrespondingRequest,PERSONA_FRESH_REQUEST_VIEW} from './persona-correspondence-request.js';
 import {sealReferenceProtocol,inspectCurrentClaims} from './persona-reference-protocol.js';
 import {personaDirectiveRequest,parsePersonaDirectiveResponse} from './persona-directive-assist.js';
 
@@ -251,7 +253,10 @@ export function personaDossierText(profile){
   return blocks.filter(Boolean).join('\n\n');
 }
 const personaSourceMessages=(messages,readingConfig,readings=[])=>messages.map(m=>{if(readingConfig||/<\/?sy_(?:context|private)\b/i.test(m.text??'')){const r=narrativeReading(m,readingConfig);readings.push(r);return {...m,text:narrativeReadingText(r)};}return {...m,text:qualitySourceSegments(m).map(s=>s.text).join('')};});
-function personaRequestBase({messages,world,previous,prompt,dictionary,aliases='',stageMode='narrative',records={},readingConfig='',identityProfiles=[],castingOverrides={},materialsThrough=Infinity,inputLimit=12000,arcReferenceVariant='arc-reference',requestViewVersion=12}){
+const builtInPersonaPrompt=prompt=>!prompt||prompt===DYNAMIC_PERSONA_PROMPT;
+const freshPersonaRequestView=prompt=>builtInPersonaPrompt(prompt)?PERSONA_FRESH_REQUEST_VIEW:12;
+const customPersonaTask=prompt=>builtInPersonaPrompt(prompt)?undefined:prompt;
+function personaRequestBase({messages,world,previous,prompt,dictionary,aliases='',stageMode='narrative',records={},readingConfig='',identityProfiles=[],castingOverrides={},materialsThrough=Infinity,inputLimit=12000,arcReferenceVariant='arc-reference',requestViewVersion=freshPersonaRequestView(prompt)}){
   const evolution=requestViewVersion>=4;
   const basePrompt=evolution&&(!prompt||prompt===DYNAMIC_PERSONA_PROMPT)?requestViewVersion>=6?DYNAMIC_PERSONA_PROMPT_V6:DYNAMIC_PERSONA_PROMPT_V4:prompt||DYNAMIC_PERSONA_PROMPT;
   const compositionRule=evolution?PERSONA_COMPOSITION_RULE_V4:PERSONA_COMPOSITION_RULE;
@@ -376,7 +381,7 @@ function personaRequestBase({messages,world,previous,prompt,dictionary,aliases='
 }
 export function personaRequest(options){
   const request=personaRequestBase(options);
-  return request.requestViewVersion>=12?prepareCorrespondingRequest(request,{inputLimit:options.inputLimit??12000}):request;
+  return request.requestViewVersion>=12?prepareCorrespondingRequest(request,{inputLimit:options.inputLimit??12000,taskPrompt:customPersonaTask(options.prompt)}):request;
 }
 export function parsePersonaResponse(response,{messages,spans,previous,identity,dictionary,aliases='',stageMode='narrative',preserveSources=false,developmentMessages,diagnostic=()=>{},collectFailures=false,updateContractVersion=1}){
   const reason=response?.choices?.[0]?.finish_reason;
@@ -384,7 +389,7 @@ export function parsePersonaResponse(response,{messages,spans,previous,identity,
   if(reason==='content_filter'||structuredPersonaRefusal(response))throw Object.assign(new Error('人设接口明确报告拒答或内容过滤；原档案保留，可更换配置后重试'),{code:'MODEL_OUTPUT_BLOCKED',details:{stage:'validate',reason:'output_blocked',modelRole:'dynamicPersona',...responseShape}});
   if(['length','max_tokens'].includes(reason))throw Object.assign(new Error('人设回答未完整结束；原档案保留'),{code:'MODEL_OUTPUT_TRUNCATED'});
   let body;
-  try{body=JSON.parse(String(content??'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));}catch{throw invalid('invalid_model_json','人设回答不是完整 JSON；可重试该批，不需重新总结',responseShape);}
+  try{body=personaJSONBody(content,{allowRestart:updateContractVersion>=8});}catch{throw invalid('invalid_model_json','人设回答不是完整 JSON；可重试该批，不需重新总结',responseShape);}
   if(updateContractVersion>=5&&Array.isArray(body)&&body.every(row=>row&&typeof row==='object'&&!Array.isArray(row))){
     body={profiles:body};diagnostic({phase:'normalize',details:{reason:'persona_profiles_array',profileCount:body.profiles.length}});
   }
@@ -948,9 +953,10 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const liveSuppressed=data.profiles.filter(p=>p.deleted&&p.mergedInto);
       const previous=clone(manualId?(clean?data.manualPlan.workingProfiles:[...data.manualPlan.workingProfiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)),...data.profiles.filter(p=>!liveSuppressed.some(m=>m.id===p.id)&&isProtectedProfile(p))]):data.profiles);
       const replayContext={inputLimit:config.dynamicPersonaInputUnits,castingOverrides:data.castingOverrides,identityProfiles:clean?data.manualPlan.identityProfiles:personaRebuildIdentities(data.profiles,data.personaIdentities),...(clean?{materialsThrough:data.manualPlan.replaceFrom-1}:{})};
-      let requestViewVersion=12;
+      const freshRequestViewVersion=freshPersonaRequestView(config.dynamicPersonaPrompt);
+      let requestViewVersion=freshRequestViewVersion;
       const legacyWorld={...world,entries:world.entries?.filter(s=>s.sourceKind!=='character_card'),spans:world.spans?.filter(s=>s.sourceKind!=='character_card')};
-      const buildPersonaRequest=(economy,messages=range.messages,priorDossier=previous,viewVersion=requestViewVersion,prepared=true)=>{const raw=personaRequestBase({messages,world:viewVersion===1?legacyWorld:world,previous:priorDossier,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction,...replayContext,...(economy?{arcReferenceVariant:'off',materialsThrough:-1}:{}),requestViewVersion:viewVersion});return prepared&&viewVersion>=12?prepareCorrespondingRequest(raw):raw;};
+      const buildPersonaRequest=(economy,messages=range.messages,priorDossier=previous,viewVersion=requestViewVersion,prepared=true)=>{const raw=personaRequestBase({messages,world:viewVersion===1?legacyWorld:world,previous:priorDossier,prompt:config.dynamicPersonaPrompt,dictionary:dictionary(),aliases:config.aliases,stageMode:config.dynamicPersonaMvuMode,records:records(),readingConfig:config.narrativeExtraction,...replayContext,...(economy?{arcReferenceVariant:'off',materialsThrough:-1}:{}),requestViewVersion:viewVersion});return prepared&&viewVersion>=12?prepareCorrespondingRequest(raw,{taskPrompt:customPersonaTask(config.dynamicPersonaPrompt)}):raw;};
       let request=buildPersonaRequest(false),inputUnits=estimateUnits(JSON.stringify(request.messages));
       // The input limit guards model attention, not a hard wall. Before failing
       // a paid batch, drop the optional attention aids (memory material rows
@@ -966,7 +972,7 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       // each exact old view solely to prove its fingerprint; v3 used the older
       // evolution contract, v2 had main-card sources, and v1 predates them.
       if(cached?.fingerprint&&cached.fingerprint!==fingerprint&&(cached.response||cached.recovery?.version===PERSONA_RECOVERY_VERSION&&cached.recovery.failed!==true)){
-        for(const viewVersion of [11,10,9,8,7,6,5,4,3,2,1]){
+        for(const viewVersion of [12,13,14,15,11,10,9,8,7,6,5,4,3,2,1]){
           let legacyEconomy=false,legacy=buildPersonaRequest(false,range.messages,previous,viewVersion),legacyUnits=estimateUnits(JSON.stringify(legacy.messages));
           if(legacyUnits>config.dynamicPersonaInputUnits){legacyEconomy=true;legacy=buildPersonaRequest(true,range.messages,previous,viewVersion);legacyUnits=estimateUnits(JSON.stringify(legacy.messages));}
           if(cached.fingerprint!==requestFingerprint(legacy))continue;
@@ -982,25 +988,25 @@ export function createDynamicPersona({settings,getWorkspace,readRange,historyTai
       const recoveryGuard=()=>{guard();if(Object.keys(config).filter(k=>k.startsWith('dynamicPersona')||k==='aliases').some(k=>stableStringify(settings()[k])!==stableStringify(config[k])))throw canceled();};
       const savedRecovery=cached?.fingerprint===fingerprint&&cached.recovery?.version===PERSONA_RECOVERY_VERSION&&!cached.recovery.failed?cached.recovery:null;
       let replayOriginalReply=Boolean(cached?.fingerprint===fingerprint&&cached.response&&(!savedRecovery||savedRecovery.requestCount===0&&!savedRecovery.jobs[0]?.repair&&savedRecovery.jobs[0]?.depth===0));
-      const buildScopeRawRequest=(messages,previous,viewVersion)=>{let next=buildPersonaRequest(economy,messages,previous,viewVersion,false);if(viewVersion>=3&&!economy&&estimateUnits(JSON.stringify(next.messages))>config.dynamicPersonaInputUnits)next=buildPersonaRequest(true,messages,previous,viewVersion,false);return next;};
+      const buildScopeRawRequest=(messages,previous,viewVersion)=>{let next=buildPersonaRequest(economy,messages,previous,viewVersion,false);const measured=viewVersion===PERSONA_FRESH_REQUEST_VIEW?prepareCorrespondingRequest(next,{taskPrompt:customPersonaTask(config.dynamicPersonaPrompt)}):next;if(viewVersion>=3&&!economy&&estimateUnits(JSON.stringify(measured.messages))>config.dynamicPersonaInputUnits)next=buildPersonaRequest(true,messages,previous,viewVersion,false);return next;};
       const parseNativePersona=(response,{messages,previous,request})=>{personaStep='parse_profile';return parsePersonaResponse(response,{messages,spans:request.spans,previous,identity:request.identity,developmentMessages:request.source,stageMode:config.dynamicPersonaMvuMode,preserveSources:true,collectFailures:true,updateContractVersion:request.requestViewVersion>=12?8:request.requestViewVersion>=10?7:request.requestViewVersion>=8?6:request.requestViewVersion>=7?5:request.requestViewVersion>=5?4:request.requestViewVersion>=4?3:request.requestViewVersion>=3?2:1,diagnostic:event=>diagnostic({run,task:'persona',level:'info',...event})});};
       const exactPersonaHash=value=>sha256(JSON.stringify(value));
       const parseBoundPersona=(response,context,binding)=>{
         if(binding?.version!==2||binding.messageSha256!==exactPersonaHash(context.request.messages))throw personaValidationError('unapplied_revision',{personaField:'entryReview',entryReviewIssues:[{code:'REQUEST_SHAPE',focusIds:[],refs:[]}]});
         if(['length','max_tokens','content_filter'].includes(response?.choices?.[0]?.finish_reason)||structuredPersonaRefusal(response))return {rows:parseNativePersona(response,context)};
-        let raw;try{raw=JSON.parse(String(response?.choices?.[0]?.message?.content??'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));}catch{return {rows:parseNativePersona(response,context)};}
+        let raw;try{raw=personaJSONBody(response?.choices?.[0]?.message?.content,{allowRestart:true});}catch{return {rows:parseNativePersona(response,context)};}
         const expanded=binding.expand(raw,{request:context.request,responseMessagesSha256:binding.messageSha256}),hydrated={...response,choices:response.choices.map((choice,index)=>index?choice:{...choice,message:{...choice.message,content:JSON.stringify(expanded)}})};
         return {protocolVersion:2,rows:parseNativePersona(hydrated,context),encodedModelBody:raw,expandedBodySha256:exactPersonaHash(expanded),currentProvenance:binding.provenance()};
       };
       const referenceProtocol={version:2,seal:request=>sealReferenceProtocol(request,{enabled:true}),parseBoundReply:parseBoundPersona,replayStoredPacket:(packet,context)=>parseBoundPersona({choices:[{finish_reason:'stop',message:{content:JSON.stringify(packet.encodedModelBody)}}]},context,sealReferenceProtocol(context.request,{enabled:true})),inspectCurrentClaims};
-      const entryReview={...personaEntryReview,decorate:(request,manifest)=>prepareCorrespondingRequest(request,{inputLimit:config.dynamicPersonaInputUnits,frozenManifest:manifest}),referenceProtocol};
+      const entryReview={...personaEntryReview,decorate:(request,manifest)=>prepareCorrespondingRequest(request,{inputLimit:config.dynamicPersonaInputUnits,frozenManifest:manifest,taskPrompt:customPersonaTask(config.dynamicPersonaPrompt)}),referenceProtocol};
       const rows=await recoverPersonaBatch({messages:range.messages,previous,fingerprint,cached,inputLimit:config.dynamicPersonaInputUnits,guard:recoveryGuard,entryReview,expectedRequestViewVersion:requestViewVersion,expectedReferenceProtocolVersion:requestViewVersion>=12?2:undefined,
         rebuildAuditRequest:({messages,previous,requestViewVersion})=>buildScopeRawRequest(messages,previous,requestViewVersion),
         makeRequest:(messages,previous)=>{
           // Only the already-saved original reply uses its old wire/guards.
           // Preserve successful recovery candidates but give every pending
           // model call the current source policy, including legacy repairs.
-          const viewVersion=replayOriginalReply?requestViewVersion:12;replayOriginalReply=false;
+          const viewVersion=replayOriginalReply?requestViewVersion:freshRequestViewVersion;replayOriginalReply=false;
           return buildScopeRawRequest(messages,previous,viewVersion);
         },
         send:async messages=>{personaStep='model_request';modelRequested=true;const wire={model:config.dynamicPersonaModel,messages,stream:true,...(config.dynamicPersonaJsonMode?{response_format:{type:'json_object'}}:{}),...(config.dynamicPersonaOutputTokens>0?{max_tokens:config.dynamicPersonaOutputTokens}:{})};
