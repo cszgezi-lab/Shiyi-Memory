@@ -1826,7 +1826,12 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const lookup=context?`${query}\n最近剧情参照：${context}\n当前询问：${query}`:query;
     if(!clock)try{clock=sceneClockFromMessages(await core.sceneMessages?.()??[],{fallbackDate:settings.storyDate});}catch(error){op.check();void reportError(error,{task:'recall',stage:'prepare'});clock={date:null,status:'unavailable',source:'scene'};}
     op.check();
-    const result = await recallMemory(cards, lookup, {...settings,storyDate:clock.date??'',sceneClock:clock}, { ...(online ? await retrievalAdapters(selectRecallCards(cards, settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:snapshot?.dictionary??activeDictionary(),focusQuery:query,ordinaryQuery:context?[query,context].join('\n'):query,characterQuery:[query,characterContext].filter(Boolean).join('\n'),dossierPeople,dossierProfiles });
+    let playerName='';
+    if(settings.skillEvidenceEnabled===true)try{
+      const name=mvuContext(host)?.name1;
+      if(typeof name==='string'&&name.length<=160)playerName=name.trim();
+    }catch{/* Optional identity unavailable: preserve ordinary recall and uncertainty. */}
+    const result = await recallMemory(cards, lookup, {...settings,storyDate:clock.date??'',sceneClock:clock}, { ...(online ? await retrievalAdapters(selectRecallCards(cards, settings)) : {}),signal:op.signal, indexCache: recallCache, scopeKey: stableStringify(boundScope), revision, dictionary:snapshot?.dictionary??activeDictionary(),focusQuery:query,ordinaryQuery:context?[query,context].join('\n'):query,characterQuery:[query,characterContext].filter(Boolean).join('\n'),dossierPeople,dossierProfiles,...(settings.skillEvidenceEnabled===true?{playerName}:{} ) });
     result.sceneClock=clock;
     result.trace.timings.backgroundWaitMs=backgroundWaitMs;
     if(backgroundFallback){result.degraded=true;result.trace.vector={status:'skipped',reason:'background_pending'};}

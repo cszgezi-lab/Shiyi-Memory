@@ -26,6 +26,7 @@ const copy = {
   autoMergeEnabled:['自动追加合并核对','每对候选额外调用一次模型，单次最多 10 对。关闭时仍保留候选和批内合并，可手动处理。'],
   autoSummaryEvery:['自动总结每批楼数','从连续已完成位置的下一楼开始。'],
   recordingRules:['长期记录偏好','告诉总结模型哪些内容值得记住。'],
+  skillEvidenceEnabled:['习得依据与能力约束','默认关闭。复用人物属性与本轮候选，补充至多 4 条、900 估算单位的相关依据；无额外模型或向量调用。未提供依据不等于不会，合理程度仍由续写模型判断。'],
   focusMode:['总结侧重点','手动总结时可以临时补充要求。'],
     inputBudgetUnits:['总结输入预算','包括正文、提示词和相关记忆；直接按此预算规划请求，不再额外限制为 46,000。不是回复上限。'],
   outputBudgetUnits:['总结回复上限（Token）','0 表示沿用服务商默认值。'],
@@ -94,7 +95,7 @@ const card = (title, body) => `<div class="sy-card"><h4>${title}</h4>${body}</di
 export const SETTING_GROUPS = Object.freeze({
   recording: ['messageCount','summaryReviewEnabled','summaryStaged','recordingRules','focusMode','autoMergeEnabled','autoQualityEnabled','qualityBatchRecords','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize'],
   automatic: ['autoSummaryEnabled','autoSummaryEvery','autoKeepRecent'],
-  injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','dialogueEnabled','journalEnabled','injectionPosition','injectionRole','injectionLogEnabled'],
+  injection: ['injectionEnabled','retrievalLimit','retrievalBudgetUnits','timeProtection','personaEnabled','performanceEnabled','dialogueEnabled','journalEnabled','injectionPosition','injectionRole','injectionLogEnabled','skillEvidenceEnabled'],
   vectors: ['vectorEnabled','vectorAutoUpdate'],
   retrieval: ['rerankEnabled','tagRecallEnabled','tagCandidateLimit','retrievalCandidateLimit','rerankMaxCandidates','bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant','distributedEnabled','distributedStrategy','distributedChannel','retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs'],
   world: ['knowledgeEnabled'],
@@ -105,7 +106,7 @@ export function settingsSection(kind) {
   const keys = SETTING_GROUPS[kind];
   if (kind === 'recording') return card('共同记录偏好',fields(['recordingRules','focusMode'])+'<p class="sy-help">正常游戏只需配置 API 与自动楼层规则。下方校对不是必需，开启会增加请求与等待；已有选择不会因升级改变。</p>'+advanced('可选校对（额外调用）',['summaryReviewEnabled','summaryStaged','autoMergeEnabled','autoQualityEnabled','qualityBatchRecords'])+button('per-call-mode','使用单次主总结（关闭额外校对）')+'<p class="sy-help">双次复核：每批两次；分工总结：每批两次；自动校对与合并还会按候选追加请求。双次模式超过预算会提示调整，不暗中拆批。</p>'+advanced('总结高级设置',['messageCount','inputBudgetUnits','outputBudgetUnits','excludedTags','summaryBatchSize']));
   if (kind === 'automatic') return card('自动总结',setting('autoSummaryEnabled').replace('<input','<input disabled')+fields(['autoSummaryEvery','autoKeepRecent'])+field('当前聊天从哪楼起算','<input data-auto-start type="number" min="0" value="1">')+'<p class="sy-help">新聊天默认从第 1 楼；需要包含开场白可填 0。老聊天会接着已连续总结的楼层处理。改起点只改变后续处理范围，不伪造此前的总结。</p><div class="sy-packet" data-auto-progress role="status"></div><div class="sy-actions"><button type="button" data-action="auto-save">保存自动设置</button></div><div class="sy-actions"><button type="button" data-action="auto-start">启用自动</button><button type="button" data-action="auto-pause">暂停自动</button><button type="button" data-action="auto-process">处理下一批</button></div>');
-  if (kind === 'injection') return card('把记忆交给 AI', '<p class="sy-help">相关人物带入整份已启用档案；关键台词与当前心迹随人物使用，私密想法不赋予其他角色知情。动态人设在人物模块独立开关；本轮实际内容可看“召回 → 注入日志”。</p>'+fields(keys.slice(0,8)) + advanced('注入位置与日志', keys.slice(8)));
+  if (kind === 'injection') return card('把记忆交给 AI', '<p class="sy-help">相关人物带入整份已启用档案；关键台词与当前心迹随人物使用，私密想法不赋予其他角色知情。动态人设在人物模块独立开关；本轮实际内容可看“召回 → 注入日志”。</p>'+fields(keys.slice(0,8)) + advanced('习得依据（可选）',['skillEvidenceEnabled']) + advanced('注入位置与日志', keys.slice(8).filter(key=>key!=='skillEvidenceEnabled')));
   if (kind === 'vectors') return card('向量索引',fields(keys));
   if (kind === 'retrieval') return card('召回策略', fields(['rerankEnabled','retrievalCandidateLimit','rerankMaxCandidates']) + advanced('标签辅助召回',['tagRecallEnabled','tagCandidateLimit']) + advanced('关键词与融合',['bm25K1','bm25B','vectorWeight','fusionLocalWeight','fusionRankConstant']) + advanced('分类检索',['distributedEnabled','distributedStrategy','distributedChannel']) + advanced('超时保护',['retrievalTimeoutMs','vectorTimeoutMs','rerankTimeoutMs']));
   if(kind==='dictionary')return card('字典设置',fields(keys));

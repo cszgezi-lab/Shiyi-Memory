@@ -11,6 +11,7 @@ import { compileEventPacket } from './product-event-packet.js';
 import { factValidity, awarenessAssociationSupported } from './memory-evidence.js';
 import { originalSourceText, sourceRecallExcerpt, sourceQuote, evidenceTerms, sourceEvidenceQuery, projectSourceForRecall } from './source-recall-evidence.js';
 import { innerLifeText, importantDialoguePacket,markDiaryHistory,characterKeepsakes } from './character-journal.js';
+import { skillEvidencePacket } from './product-skill-evidence.js';
 
 export const CATEGORY_LABELS = Object.freeze({ events: '事件', awarenessChanges: '知情', entityFactChanges: '人物与事实', relationshipChanges: '关系', personaChanges: '人设变化', commitmentChanges: '约定', performanceHints: '演绎参考', summaryView: '楼层摘要', conflicts: '冲突与疑点', knowledge: '资料' });
 /** Short names for the compact category tiles only. At 390px the full labels
@@ -702,7 +703,7 @@ export async function buildPersonaBudgetPlan(attributePlan, settings, { focusQue
   };
 }
 
-export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null,focusQuery=query,ordinaryQuery=focusQuery,characterQuery=query,dossierPeople=[],dossierProfiles=[] } = {}) {
+export async function recallMemory(cards, query, settings, { vectorAdapter = null, reranker = null, signal, indexCache = null, scopeKey, revision, dictionary=null,focusQuery=query,ordinaryQuery=focusQuery,characterQuery=query,dossierPeople=[],dossierProfiles=[],playerName='' } = {}) {
   if(settings.sceneClock)settings={...settings,storyDate:settings.sceneClock.status==='known'?settings.sceneClock.date??'':''};
   const startedAt = globalThis.performance?.now?.() ?? Date.now();
   // Ordinary event cards provide facts and source context. Verbatim historical
@@ -731,10 +732,14 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   // Resolve each spelling once per immutable recall. Re-scanning the whole
   // dictionary for every field/candidate dominated long-history local search.
   const canonicalNames=new Map(),canonicalResults=new Map();
+  const skillPlayerKey=settings.skillEvidenceEnabled===true&&typeof playerName==='string'?foldName(playerName):'';
+  const skillAliasCandidates=[];
   for(const e of lexicon.entries??[]){
     if(e.disabled)continue;
     const ambiguous=new Set((e.ambiguous??[]).map(foldName));
-    for(const key of new Set([e.name,...(e.aliases??[])].map(foldName))){
+    const spellings=new Set([e.name,...(e.aliases??[])].map(foldName));
+    if(skillPlayerKey&&spellings.has(skillPlayerKey))skillAliasCandidates.push(...[...spellings].slice(0,64-skillAliasCandidates.length));
+    for(const key of spellings){
       if(ambiguous.has(key))continue;
       const matches=canonicalNames.get(key)??[];matches.push(e.name);canonicalNames.set(key,matches);
     }
@@ -1164,11 +1169,24 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   // knowledge context and important dialogues all carry their own state and
   // are recorded in `result.trace`; do not let a coincidence of empty
   // bookkeeping arrays erase real content that is already proven effective.
+  // Optional, bounded reuse of this recall's candidates. Never run another
+  // retrieval, load player cards, scan stored history or dispatch a model here.
+  // A missing packet is not evidence that the player lacks an ability.
+  let skillPacket=null;
+  if(settings.skillEvidenceEnabled===true){
+    const playerAuthority=authorityName(playerName);
+    const aliases=playerAuthority?skillAliasCandidates.filter(name=>authorityName(name)===playerAuthority):[];
+    skillPacket=skillEvidencePacket({playerName:playerAuthority?canonical(playerName):'',aliases,query:focusQuery,
+      candidates:candidates.slice(0,48).filter(candidate=>candidate.record&&filter(candidate.record)),
+      currentAttributes:characterChosen.slice(0,48).map(row=>row.record),budgetUnits:900,
+      render:record=>`${sourceLabel(record)}\n${renderMemoryCard(record,ordinaryRenderSettings,{body:record.description,query:focusQuery})}`});
+  }
   const bodyParts=[
     characterText,
     eventPacket.text,
     contextText,
     dialoguePacket.text,
+    skillPacket?.text,
   ].filter(text=>typeof text==='string'&&text.trim().length>0);
   content=bodyParts.length?[packetHeader,...bodyParts,timeFocus.text].filter(Boolean).join('\n\n'):'';
   result.trace.timeFocus={...timeFocus,units:bodyParts.length?timeFocus.units:0,eventCount:bodyParts.length?timeFocus.eventCount:0};
@@ -1187,10 +1205,13 @@ export async function recallMemory(cards, query, settings, { vectorAdapter = nul
   result.trace.characters={mode:personaPlan.stats?.mode??'current_fields',people:[...new Set(attributePlan.filter(group=>group.current.length).map(group=>group.subject))],records:emittedCharacterCount,units:estimateUnits(characterText),truncated:false,budget:personaPlan.stats};
   result.trace.knowledgeContext={eventIds:[...knowledgeContext.keys()],units:estimateUnits(contextText),unresolvedRecordIds:unresolvedKnowledge,mode:'explicit_link_brief',extraModelCalls:0};
   result.trace.budget={ordinaryUnits:bodyParts.length?estimateUnits(ordinaryText(dialoguePacket.text)):0,ordinaryLimit:budget,currentUnits:estimateUnits(characterText),contextOmitted:0};
+  if(skillPacket){result.trace.skillEvidence=skillPacket.trace;result.trace.budget.skillEvidenceUnits=estimateUnits(skillPacket.text);}
   for(const event of knowledgeContext.values())decisions.push({id:event.id,title:recordTitle(event),category:'events',status:'selected',detail:'knowledge_context',reason:'解释已注入知情的明确关联事件'});
   result.trace.packing={selected:packed.length+knowledgeContext.size+dialogueCards.length,memorySelected:memoryCount,memoryUnits,expanded:0,excerpts,brief:memoryCount-excerpts,omitted:omitted.length,duplicates:decisions.filter(d=>d.status==='duplicate').length,decisions};
   result.trace.packing.eventPacket={groups:eventPacket.groups,groupedRecords:eventPacket.groupedRecords,sharedLines:eventPacket.sharedLines,beforeChars:eventPacket.beforeChars,afterChars:eventPacket.afterChars,savedChars:eventPacket.savedChars};
   result.trace.timings.recallMs = (globalThis.performance?.now?.() ?? Date.now()) - startedAt;
   result.trace.timings.packingMs=(globalThis.performance?.now?.()??Date.now())-packingStarted;
-  return { status: 'preview', previewOnly: true, sent: false, degraded: result.trace.degraded, text: content, timeFocusText:bodyParts.length?timeFocus.text:'', cards: [...packed,...knowledgeContext.values(),...dialogueCards], usedUnits: content ? estimateUnits(content) : 0, omitted, trace: result.trace };
+  const emittedCards=[...packed,...knowledgeContext.values(),...dialogueCards];
+  if(skillPacket)for(const record of skillPacket.records??[])if(!emittedCards.some(card=>card.id===record.id))emittedCards.push(record);
+  return { status: 'preview', previewOnly: true, sent: false, degraded: result.trace.degraded, text: content, timeFocusText:bodyParts.length?timeFocus.text:'', cards: emittedCards, usedUnits: content ? estimateUnits(content) : 0, omitted, trace: result.trace };
 }

@@ -6,6 +6,7 @@ import {
 } from './contracts.js';
 import { MemoryRepository } from './repository.js';
 import { freezeSummaryRules } from './summary-presets.js';
+import { SKILL_RECORDING_RULE } from './product-skill-evidence.js';
 import { LocalBM25Index, retrieveAndPack } from './retrieval.js';
 import { SummaryEngine } from './summary-engine.js';
 import { HostAdapter } from './host-adapter.js';
@@ -547,7 +548,7 @@ export function createProductShellController({
       inputBudget: state.settings.inputBudgetUnits,
       outputBudget: state.settings.outputBudgetUnits,
       outputReserveUnits: 0,
-      recordingRules: freezeSummaryRules([state.settings.recordingRules, runtimeRules()].filter(Boolean).join('\n'),state.settings.summaryPresets,state.settings.narrativeExtraction),
+      recordingRules: freezeSummaryRules([state.settings.recordingRules, state.settings.skillEvidenceEnabled===true?SKILL_RECORDING_RULE:'', runtimeRules()].filter(Boolean).join('\n'),state.settings.summaryPresets,state.settings.narrativeExtraction),
       trigger,
     });
     const preflightAbort=new AbortController();abortController=preflightAbort;activeTask=operationId;
@@ -926,7 +927,7 @@ export function createProductShellController({
         // Only the selected unfinished operation can restart. A changed source
         // or rule still requires explicit regeneration; it must not be hidden
         // by advancing the repository revision under an old draft.
-        const rules=freezeSummaryRules([state.settings.recordingRules,runtimeRules()].filter(Boolean).join('\n'),state.settings.summaryPresets,state.settings.narrativeExtraction);
+        const rules=freezeSummaryRules([state.settings.recordingRules,state.settings.skillEvidenceEnabled===true?SKILL_RECORDING_RULE:'',runtimeRules()].filter(Boolean).join('\n'),state.settings.summaryPresets,state.settings.narrativeExtraction);
         if(stableStringify(frozen.batch.rules)!==stableStringify(rules)||focus!==undefined&&String(frozen.batch.focusSpec?.focus??'')!==text(focus))throw Object.assign(new Error('本批记录规则或侧重点已变化，请重新生成；没有复用过期任务'),{code:'SOURCE_INVALIDATED'});
         const refs=[...(frozen.batch.coverage?.sourceRefs??[]),...(frozen.batch.coverage?.bridgeRefs??[])];
         const verified=await verifyProductSources(session.handle.history,{frozen:[{sourceRefs:refs}]},check);check();
