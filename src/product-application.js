@@ -2321,7 +2321,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   };
   application.deletePerson=deletePerson;
   const exportRawBackup=application.exportBackup;
-  application.exportBackup=async()=>{const token=epoch,backup=await exportRawBackup();assertCurrent(token);return {...backup,dynamicPersona:dynamicPersona.export(),qualityReview:clone(qualitySaved),memoryRetrospective:clone(retrospectiveSaved),effectiveRecords:clone(state.records)};};
+  application.exportBackup=async(options={})=>{const token=epoch,backup=await exportRawBackup(options);assertCurrent(token);return {...backup,dynamicPersona:dynamicPersona.export(),qualityReview:clone(qualitySaved),memoryRetrospective:clone(retrospectiveSaved),effectiveRecords:clone(state.records)};};
   // One failure boundary for all public actions, including manual edits, DIY,
   // import/export and settings; keep their sync/async return contracts intact.
   for(const [name,descriptor]of Object.entries(Object.getOwnPropertyDescriptors(application))){

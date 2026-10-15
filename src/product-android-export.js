@@ -1,3 +1,5 @@
+import { verifyNativeExportFile } from './product-native-export.js';
+
 // TT 2.2 exports no picker option on downloadBlobWithRuntime. Use its documented
 // native protocol directly, without assigning to a Java @JavascriptInterface.
 // The cache root and fs write headers match TT's file-export.js; no dependencies.
@@ -62,20 +64,23 @@ function pickDocument(host, bridge, name, type, timeoutMs, state) {
 }
 
 async function writeAndCopy(host, bridge, blob, name, uri, state, timeoutMs) {
-  const pathApi = host.__TAURI__.path, invoke = host.__TAURI__.core.invoke;
-  let directory, filePath, timer, expired = false, stage = 'export_prepare';
-  const check = () => { if (expired) throw new Error('export expired'); };
+  const pathApi = host.__TAURI__.path, invoke = (...args) => host.__TAURI__.core.invoke(...args);
+  let directory, directoryOwned = false, filePath, timer, expired = false, stage = 'export_prepare';
+  const deadline = Date.now() + timeoutMs;
+  const check = () => { if (expired || Date.now() > deadline) throw new Error('export expired'); };
   const work = (async () => {
     try {
       const cache = await pathApi.appCacheDir(); check();
       if (typeof cache !== 'string' || !/^\//.test(cache)) throw new Error('invalid Android cache root');
       const root = await pathApi.join(cache, 'tauritavern-export-staging'); check();
-      const leaf = `shiyi-export-${Date.now().toString(36)}-${(++sequence).toString(36)}`;
+      const random = typeof host.crypto?.randomUUID === 'function' ? host.crypto.randomUUID().replaceAll('-', '') : Math.random().toString(36).slice(2);
+      const leaf = `shiyi-export-${Date.now().toString(36)}-${(++sequence).toString(36)}-${random}`;
       const target = await pathApi.join(root, leaf); check();
       // Recursive cleanup can only touch this operation's new child directory.
       if (target !== `${root.replace(/\/+$/, '')}/${leaf}` || /(?:^|\/)\.\.?(?:\/|$)/.test(target)) throw new Error('invalid staging path');
       directory = target;
-      await invoke('plugin:fs|mkdir', { path: directory, options: { recursive: true } }); check();
+      await invoke('plugin:fs|mkdir', { path: root, options: { recursive: true } }); check();
+      await invoke('plugin:fs|mkdir', { path: directory, options: { recursive: false } }); directoryOwned = true; check();
       filePath = await pathApi.join(directory, name); check();
       if (filePath !== `${directory}/${name}`) throw new Error('invalid staged filename');
       for (let offset = 0; offset < Math.max(blob.size, 1); offset += CHUNK) {
@@ -84,23 +89,37 @@ async function writeAndCopy(host, bridge, blob, name, uri, state, timeoutMs) {
           headers: { path: encodeURIComponent(filePath), options: JSON.stringify({ append: offset > 0, create: true }) },
         }); check();
       }
+      stage = 'export_save_verify';
+      await verifyNativeExportFile({ invoke: (...args) => host.__TAURI__.core.invoke(...args), filePath, blob, check }); check();
       stage = 'export_save_copy';
       const copied = bridge.copyFileToContentUri(filePath, uri);
       // TT returns the destination URI only after its synchronous channel copy
       // finishes. A blank, mismatched or promise-like answer is not a receipt.
       if (typeof copied !== 'string' || copied.trim() !== uri) throw new Error('copy receipt missing');
+      check(); stage = 'export_target_verify';
+      // A URI alone does not prove that the selected document contains bytes.
+      // TT already exposes a ContentResolver read bridge for imports. Read only
+      // this selected URI back into this operation's cache and compare the data.
+      const verifyName = name === '_shiyi-target-readback.bin' ? '_shiyi-target-readback-2.bin' : '_shiyi-target-readback.bin';
+      const verifyPath = await pathApi.join(directory, verifyName); check();
+      if (verifyPath !== `${directory}/${verifyName}`) throw new Error('invalid verification path');
+      const readback = host.TauriTavernAndroidImportArchiveBridge.stageContentUriToFile(uri, verifyPath); check();
+      if (typeof readback !== 'string' || readback.trim() !== verifyPath) throw new Error('target readback receipt missing');
+      await verifyNativeExportFile({ invoke, filePath: verifyPath, blob, check }); check();
       return { mode: 'android-document-picker', savedPath: '', uri, displayName: name,
         status: 'saved', saved: true, exportAttempt: 'picker', saveLocation: '你选择的保存位置' };
     } catch (error) {
       const denied = /NotAllowedError|SecurityException|permission|denied|权限/i.test(`${error?.name ?? ''} ${error?.message ?? ''}`);
-      throw failure(denied ? 'export_permission_denied' : stage === 'export_prepare' ? 'export_stage_write_failed' : 'export_picker_copy_failed', stage,
+      throw failure(denied ? 'export_permission_denied' : stage === 'export_prepare' ? 'export_stage_write_failed' : stage === 'export_save_verify' ? 'export_file_verify_failed' : stage === 'export_target_verify' ? 'export_target_verify_failed' : 'export_picker_copy_failed', stage,
         stage === 'export_prepare' ? '已选择保存位置，但 TT 写入导出暂存文件失败；目标可能为空文件，未确认保存，可复制文本。'
+          : stage === 'export_save_verify' ? '导出暂存文件的内容校验未通过，没有复制到所选位置；目标可能为空文件，原数据保留，可重试。'
+          : stage === 'export_target_verify' ? '所选位置的文件未通过内容校验，不能作为备份。请换一个保存位置后重试；原数据保留。'
           : '已选择保存位置，但 TT 未能确认文件写入完成；目标可能为空或不完整文件，可复制文本。',
-        error, stage === 'export_save_copy' ? 'copyFileToContentUri' : undefined);
+        error, stage === 'export_save_copy' ? 'copyFileToContentUri' : stage === 'export_target_verify' ? 'stageContentUriToFile' : undefined);
     } finally {
       // If a disk operation times out, let it finish before cleaning its own
       // directory, but never copy the payload afterwards or report late success.
-      if (directory) try { await invoke('plugin:fs|remove', { path: directory, options: { recursive: true } }); } catch { /* cache only */ }
+      if (directoryOwned) try { await invoke('plugin:fs|remove', { path: directory, options: { recursive: true } }); } catch { /* this operation's cache only */ }
       if (active.get(host) === state) active.delete(host);
     }
   })();
@@ -116,6 +135,7 @@ async function writeAndCopy(host, bridge, blob, name, uri, state, timeoutMs) {
 export async function exportAndroidJson(blob, name, host, timeoutMs = 30000) {
   const bridge = host?.[BRIDGE], pathApi = host?.__TAURI__?.path;
   if (!bridge || typeof bridge.requestCreateDocumentPicker !== 'function' || typeof bridge.copyFileToContentUri !== 'function'
+      || typeof host?.TauriTavernAndroidImportArchiveBridge?.stageContentUriToFile !== 'function'
       || typeof pathApi?.appCacheDir !== 'function' || typeof pathApi?.join !== 'function' || typeof host?.__TAURI__?.core?.invoke !== 'function') {
     throw failure('export_picker_unavailable', 'export_picker_open', '当前 TT 未提供完整的系统保存接口；未回退到出错的 Downloads 直存。请使用“查看／复制文本”。');
   }

@@ -1,4 +1,5 @@
 import { exportAndroidJson } from './product-android-export.js';
+import { exportDesktopJson, isDesktopNativeExport } from './product-native-export.js';
 
 /** TT desktop replaces window.confirm with a native command that 2.2 does not
  * permit. Keep confirmation inside the WebView; never grant native permissions
@@ -106,7 +107,7 @@ function confirmedExport(result) {
   if (!value || typeof value !== 'object') return false;
   if (value.mode === 'mobile-native' || value.mode === 'android-document-picker') return Boolean(String(value.savedPath ?? '').trim() || String(value.uri ?? '').trim());
   if (value.mode === 'ios-native-share') return value.completed === true;
-  if (value.mode === 'browser') return true;
+  if (value.mode === 'browser') return false;
   // No mode: a raw bridge answer that reports a saved location is still a save.
   return Boolean(String(value.savedPath ?? '').trim() || String(value.uri ?? '').trim()) && Boolean(value.displayName ?? value.savedPath ?? value.uri);
 }
@@ -179,7 +180,9 @@ export async function exportProductJson(data, name, {
   timeoutMs = 30000,
   preferBrowser = false,
 } = {}) {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const text = JSON.stringify(data, null, 2);
+  if (typeof text !== 'string' || !text.trim()) throw exportFailure('导出内容不可用，未开始保存；原数据保留。', 'export_payload_invalid', { stage: 'export_prepare' });
+  const blob = new Blob([text], { type: 'application/json' });
   if (preferBrowser === 'picker' && (host?.[BRIDGE_NAME] || /android/i.test(host?.navigator?.userAgent ?? ''))) {
     return exportAndroidJson(blob, name, host, timeoutMs);
   }
@@ -190,6 +193,7 @@ export async function exportProductJson(data, name, {
     try { return await triggerBrowserExport(blob, name, documentRef); }
     catch { /* fall through to the bridge path */ }
   }
+  if (isDesktopNativeExport(host)) return exportDesktopJson(blob, name, host, timeoutMs);
   if (host?.__TAURITAVERN__?.api) {
     let downloadBlobWithRuntime;
     try{({downloadBlobWithRuntime}=await loadExporter());if(typeof downloadBlobWithRuntime!=='function')throw new Error('missing exporter');}

@@ -24,6 +24,12 @@ export const DIAGNOSTIC_REASONS = Object.freeze({
   queue_foreground:'正在生成聊天回复，后台请求等待本轮结束',
   log_io_timeout:'日志存储响应超时；本次保留在内存，不阻止任务或日志导出',
   export_module_unavailable:'宿主文件导出接口加载失败，可复制日志文本',
+  export_payload_invalid:'导出内容不可用，未开始保存；原数据保留',
+  export_desktop_unavailable:'TT 下载目录保存接口不可用，未确认文件保存',
+  export_desktop_busy:'上一次文件保存尚未结束，请等待后重试；原数据保留',
+  export_desktop_write_failed:'TT 未能完成下载目录中的文件保存；原数据保留',
+  export_file_verify_failed:'导出文件内容校验失败，未确认保存；原数据保留',
+  export_target_verify_failed:'所选位置的文件内容校验失败，不能作为备份；请换位置重试，原数据保留',
   export_permission_denied:'系统拒绝保存文件的权限，可复制日志文本',
   export_native_failed:'宿主文件保存失败，可复制日志文本；不代表记忆丢失',
   export_host_exception:'宿主原生下载接口抛出 Java 异常，本次未确认文件已保存；请改用文本导出',
@@ -80,7 +86,7 @@ export const DIAGNOSTIC_REASONS = Object.freeze({
 });
 export const PERSONA_STEPS=Object.freeze({history_tail:'读取当前聊天进度',history_range:'读取本批原文',api_config:'检查人设 API 配置',worldbook_read:'读取角色原世界书',prepare_profile:'整理人设输入',cached_response:'读取暂存回答',model_request:'请求人设模型',parse_profile:'解析与检查人设回答',source_verify:'保存前复查原文',worldbook_verify:'保存前复查世界书',profile_save:'保存人物档案',failure_save:'保存失败进度'});
 export const DIAGNOSTIC_PURPOSES=Object.freeze({summary_verification:'原文复核与补漏',summary_narrative:'事件与楼层整理',summary_details:'人物与知情整理',reference_repair:'纠正事件引用',summary:'主总结',floor_repair:'逐楼摘要补全',category_repair:'区块补全',enum_repair:'字段纠错',chat:'聊天模型',embeddings:'向量',rerank:'重排',models:'模型列表',ui:'界面操作',background:'后台任务'});
-export const DIAGNOSTIC_STAGES=Object.freeze({export_picker_open:'打开系统保存位置窗口',export_native_save:'调用宿主保存接口（内部阶段未确认）',queue:'等待共享请求队列',prepare:'准备请求',request:'等待接口',read_body:'读取响应正文',parse_envelope:'解析接口响应',parse_content:'解析模型正文',validate:'校验结果',repair:'补全结果',storage:'本机保存',ui:'界面操作',background:'后台处理',export_load:'加载宿主导出接口',export_prepare:'准备导出文件',export_dispatch:'派发下载动作',export_save_verify:'校验导出暂存文件',export_save_copy:'写入导出文件',export_save_publish:'发布到系统下载目录'});
+export const DIAGNOSTIC_STAGES=Object.freeze({export_picker_open:'打开系统保存位置窗口',export_native_save:'调用宿主保存接口（内部阶段未确认）',queue:'等待共享请求队列',prepare:'准备请求',request:'等待接口',read_body:'读取响应正文',parse_envelope:'解析接口响应',parse_content:'解析模型正文',validate:'校验结果',repair:'补全结果',storage:'本机保存',ui:'界面操作',background:'后台处理',export_load:'加载宿主导出接口',export_prepare:'准备导出文件',export_dispatch:'派发下载动作',export_save_verify:'校验导出文件内容',export_target_verify:'读回核对所选位置的文件',export_save_copy:'写入导出文件',export_save_publish:'发布到系统下载目录'});
 export const UPSTREAM_CODES=Object.freeze({invalid_api_key:'密钥无效',api_key_missing:'服务要求密钥',context_length_exceeded:'超出模型上下文',insufficient_quota:'额度不足',rate_limit_exceeded:'服务限流',model_not_found:'模型不存在',server_error:'服务内部错误',invalid_request_error:'服务拒绝请求格式',outbound_host_denied:'出站地址被服务拒绝'});
 // Providers may put a vendor-specific code beside a standard error type.
 // An unrecognized code must not hide a recognized quota/authentication cause.
@@ -241,7 +247,7 @@ export function safeDiagnosticFields(value={}){
     if(Object.hasOwn(DIAGNOSTIC_STAGES,raw)){result.stage=raw;break;}
   }
   // Which host save path was used, and whether the direct one already failed.
-  if(['direct','picker','picker_failed','browser'].includes(value?.exportAttempt))result.exportAttempt=value.exportAttempt;
+  if(['direct','picker','picker_failed','browser','desktop'].includes(value?.exportAttempt))result.exportAttempt=value.exportAttempt;
   // Which TT bridge operations the export actually reached, and how each failed.
   // Fixed operation keys and reason enums only: never a path or host message.
   if(Number.isSafeInteger(value?.exportBytes)&&value.exportBytes>=0)result.exportBytes=value.exportBytes;
@@ -249,7 +255,7 @@ export function safeDiagnosticFields(value={}){
     // Attribution is the operation name plus the fixed error type. The failing
     // save step is already carried by saveStage/stage, so no host text is needed
     // here and unknown operation names are dropped.
-    const operation=['saveFileToDownloads','requestCreateDocumentPicker','copyFileToContentUri'].includes(row?.operation)?row.operation:null;
+    const operation=['saveFileToDownloads','requestCreateDocumentPicker','copyFileToContentUri','stageContentUriToFile'].includes(row?.operation)?row.operation:null;
     if(!operation)return [];
     const errorType=errorTypes.has(row?.errorType)?row.errorType:undefined;
     return [{operation,...(errorType?{errorType}:{})}];
