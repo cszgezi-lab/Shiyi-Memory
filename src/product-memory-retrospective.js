@@ -179,8 +179,9 @@ export function validateRetrospectiveReview(records,decisions,sources,output,{di
 }
 
 export function projectRetrospectiveRecords(records,saved={},controls={},options={}){
-  const result={...records},raw=byId(records),map=new Map(rows(records).map(r=>[r.id,r])),entries=Array.isArray(saved)?[...saved]:Object.values(saved??{});
+  const result={...records},entries=Array.isArray(saved)?[...saved]:Object.values(saved??{});
   if(!entries.some(e=>e?.version===1&&e.status==='reviewed'))return result;
+  const raw=byId(records),map=new Map(rows(records).map(r=>[r.id,r]));
   const proposals=[];
   for(const entry of entries.sort((a,b)=>(a?.at??0)-(b?.at??0))){
     if(entry?.status!=='reviewed'||entry.version!==1)continue;

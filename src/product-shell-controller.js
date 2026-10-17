@@ -14,6 +14,7 @@ import { productFailure } from './product-feedback.js';
 import { safeLogDetails } from './product-runtime-log.js';
 import { verifyProductSources } from './product-sources.js';
 import { makeId, clone, stableStringify, sha256, estimateUnits } from './utils.js';
+import { lazyViewState } from './product-view-scheduling.js';
 import {
   captureProductHostSession,
   createProductTransport,
@@ -115,7 +116,15 @@ function summaryCounts(records) {
   };
 }
 
-function cloneState(state) {
+function cloneState(state, lazy = false) {
+  if(lazy){
+    // Render-only access: reading scope/status must not copy selected source
+    // bodies and every previously saved event on each progress paint.
+    const readers=Object.fromEntries(Object.entries(state).filter(([key])=>key!=='session').map(([key,value])=>[key,()=>clone(value)]));
+    readers.closed=()=>Boolean(state.closed);
+    readers.session=()=>state.session?{status:'ready',identityReady:true,scopeKind:'chat-bound',hasStore:Boolean(state.session.handle?.store)}:null;
+    return lazyViewState(readers);
+  }
   return {
     schemaVersion: state.schemaVersion,
     kind: state.kind,
@@ -820,18 +829,22 @@ export function createProductShellController({
     return memoryView(snapshot);
   }
   function memoryView(snapshot){
-    return {
+    return lazyViewState({
+      // readScope already gives this caller an isolated projection. Copying
+      // it again retains a second full audit and all original floor bodies.
+      records:()=>snapshot.records,
+      events:()=>clone(snapshot.records.events),
+      awarenessChanges:()=>clone(snapshot.records.awarenessChanges),
+      temporal:()=>clone(snapshot.records.events.map(event=>event.temporal??event.storyTime??event.time??{kind:'unknown'})),
+      sources:()=>clone(snapshot.records.coverage?.sourceRefs??[]),
+      ...Object.fromEntries(Object.entries({
       status: 'ready',
       committedRevision: snapshot.committedRevision,
       source: 'committed-snapshot',
       counts: summaryCounts(snapshot.records),
-      events: clone(snapshot.records.events),
-      records: clone(snapshot.records),
       controls: clone(snapshot.manifest?.controls??{}),
-      awarenessChanges: clone(snapshot.records.awarenessChanges),
-      temporal: clone(snapshot.records.events.map((event) => event.temporal ?? event.storyTime ?? event.time ?? { kind: 'unknown' })),
-      sources: clone(snapshot.records.coverage?.sourceRefs ?? []),
-    };
+      }).map(([key,value])=>[key,()=>value])),
+    });
   }
 
   async function sourceValidity(records,options) {
@@ -879,6 +892,7 @@ export function createProductShellController({
       return {...range,messages:cleanMessages(range.messages)};
     },
     get state() { return cloneState(state); },
+    readViewState() { return cloneState(state,true); },
     get sourceEndIndex() { return Math.max(state.range?.endIndex??-1,summarySourceGuard?.range?.endIndex??-1); },
     get settings() { return clone(state.settings); },
     get legacyApiSettings() { return clone(legacyApiSettings); },
@@ -949,7 +963,7 @@ export function createProductShellController({
       if(!repository||!state.session||activeTask)throw new Error('请先打开聊天并等待任务结束');
       const token=currentToken(),session=state.session,check=()=>{if(!tokenValid(token,session))throw Object.assign(new Error('聊天已变化'),{code:'CHAT_CHANGED'});callerCheck();};
       check();const {viewSnapshot,...result}=await repository.updateControls(session.scope,patch,{check,signal,waitMs,returnView});check();
-      if(viewSnapshot){const value=memoryView(viewSnapshot);operationMemoryViews.set(value,{snapshot:viewSnapshot,scope:clone(session.scope),token,session});return {...result,memoryView:value};}
+      if(viewSnapshot){const value=returnView==='deferred'?{status:'ready',committedRevision:viewSnapshot.committedRevision}:memoryView(viewSnapshot);operationMemoryViews.set(value,{snapshot:viewSnapshot,scope:clone(session.scope),token,session});return {...result,memoryView:value};}
       return result;
     },
     remember,

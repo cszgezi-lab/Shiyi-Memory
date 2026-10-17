@@ -232,13 +232,16 @@ function mergeRecordRevision(previous, next, revision, operationId, { canonicalI
 
 async function mergeRecords(chunks,check=()=>{}) {
   const result = emptyRecords();let nextYield=Date.now()+8;
+  const categoryIndexes=new Map(),dirtyIndexes=new Set(CATEGORIES),coverageKeys=new Map();
   for (const chunk of chunks) {
     const revision = Number.isInteger(chunk?.committedRevision) ? chunk.committedRevision : result.history.length + 1;
     const operationId = chunk?.operationId ?? null;
     for (const category of CATEGORIES) {
-      const indexes = new Map();
-      for (let index = 0; index < result[category].length; index += 1) {
-        for (const key of recordIdentityKeys(category, result[category][index])) indexes.set(key, index);
+      let indexes=categoryIndexes.get(category);
+      if(dirtyIndexes.has(category)){
+        indexes=new Map();
+        for(let index=0;index<result[category].length;index++)for(const key of recordIdentityKeys(category,result[category][index]))indexes.set(key,index);
+        categoryIndexes.set(category,indexes);dirtyIndexes.delete(category);
       }
       for (const record of chunk?.[category] ?? []) {
         const keys = recordIdentityKeys(category, record);
@@ -247,6 +250,9 @@ async function mergeRecords(chunks,check=()=>{}) {
           const index = result[category].push(clone(record)) - 1;
           for (const key of keys) indexes.set(key, index);
         } else {
+          // A revision can replace identity keys. Rebuild before the NEXT
+          // chunk, preserving the existing within-chunk alias semantics.
+          dirtyIndexes.add(category);
           const previousRecord = result[category][existingIndex];
           if (category === 'events' && previousRecord?.id && record?.id && previousRecord.id !== record.id) {
             // Preserve both directions for readers holding either revision's
@@ -277,7 +283,8 @@ async function mergeRecords(chunks,check=()=>{}) {
     }
     for (const key of ['sourceRefs', 'bridgeRefs', 'processed', 'excluded', 'unprocessed']) {
       const values = Array.isArray(chunk.coverage?.[key]) ? chunk.coverage[key] : [];
-      const known = new Set(result.coverage[key].map((value) => stableStringify(value)));
+      if(!coverageKeys.has(key))coverageKeys.set(key,new Set());
+      const known=coverageKeys.get(key);
       for (const value of values) {
         const identity = stableStringify(value);
         if (!known.has(identity)) { result.coverage[key].push(clone(value)); known.add(identity); }
@@ -502,7 +509,15 @@ export class MemoryRepository {
       const pointer={schemaVersion:1,kind:'memory-pointer',scope:frozen,scopeKey:scopeKey(frozen),committedRevision:revision,manifestRef,manifestSha256,operationId,updatedAt:this.now()};
       await verifiedWrite(this.store,{namespace:this.namespace,key:keys.pointer},pointer,{check});
       check();
-      const viewSnapshot=returnView?await this._readScope(frozen,{check},previous,pointer,true):null;
+      let viewSnapshot=null;
+      if(returnView==='deferred'){
+        // Internal activation hands a single-use verified chunk capability to
+        // the following read. No caller-visible full projection exists yet,
+        // so there is no need to retain a protective second materialization.
+        const verified=VERIFIED_SCOPE_READS.get(previous);VERIFIED_SCOPE_READS.delete(previous);
+        viewSnapshot={scope:frozen,committedRevision:revision,pointer,manifest};
+        captureScope(this,viewSnapshot,verified.chunks);
+      }else if(returnView)viewSnapshot=await this._readScope(frozen,{check},previous,pointer,true);
       if(!returnView)VERIFIED_SCOPE_READS.delete(previous);
       check();
       return {status:'saved',committedRevision:revision,...(viewSnapshot?{viewSnapshot}:{})};

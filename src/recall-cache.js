@@ -1,8 +1,10 @@
 import { LocalBM25Index } from './retrieval.js';
-import { abortError, stableStringify, throwIfAborted, yieldLocalWork } from './utils.js';
+import { abortError, sha256, sha256Async, stableStringify, throwIfAborted, yieldLocalWork } from './utils.js';
 
 const now = () => globalThis.performance?.now?.() ?? Date.now();
-const yieldToHost = yieldLocalWork;
+// Prioritized scheduler continuations can keep painting/timer queues waiting
+// throughout a large index build. Admit an ordinary browser task between slices.
+const yieldToHost = () => yieldLocalWork({prioritized:false});
 
 /** One instance per application, never shared across users or chats.
  * Callers supply an immutable snapshot revision and reject in-flight results
@@ -45,7 +47,12 @@ export class RecallIndexCache {
         const id = record?.id;
         if (typeof id !== 'string' || !id || seen.has(id)) throw new Error('recall snapshot contains missing or duplicate IDs');
         seen.add(id);
-        const signature = stableStringify(record);
+        // Keep a fixed-size comparison digest, not another serialized copy of
+        // every original floor plus its local search body for the cache life.
+        const serialized=stableStringify(record);
+        // Small snapshots retain their microtask-only ordering. Native I/O on
+        // every tiny signature lets unrelated background work overtake sends.
+        const signature = records.length<256&&serialized.length<=32768?sha256(serialized):await sha256Async(serialized,{yieldTask:yieldToHost});check();
         if (signature !== signatures.get(id)) {
           stats[index.upsert(record)]++;
           signatures.set(id, signature);

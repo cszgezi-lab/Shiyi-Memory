@@ -21,9 +21,9 @@ export function safeSourceRanges(source){
   return ranges;
 }
 
-export function qualitySourceSegments(source,{includeStructural=false}={}){
+export function qualitySourceSegments(source,{includeStructural=false,includeIds=true}={}){
   const text=String(source.text??''),ranges=safeSourceRanges(source);
-  const prefix=sha256([source.id,text]).slice(0,8),segments=[];
+  const prefix=includeIds?sha256([source.id,text]).slice(0,8):'',segments=[];
   for(const [a,b]of ranges)for(const m of text.slice(a,b).matchAll(/[^\r\n]+(?:\r?\n|$)/g)){
     const value=m[0];if(!value.replace(/<[^>]*>/g,'').trim()&&!(includeStructural&&/^\s*(?:<\/?(?:sy_context|sy_private|time_format)\b[^>]*>\s*)+$/i.test(value)))continue;
     const start=a+m.index;

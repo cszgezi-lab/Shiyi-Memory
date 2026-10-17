@@ -274,19 +274,25 @@ export function validateQualityReviewPartial(records,targets,sources,output,opti
   return entry;
 }
 
-export function projectQualityRecords(records,saved={},controls={}){
+export function projectQualityRecords(records,saved={},controls={},{copyUnchanged=true}={}){
   // Separate category snapshots even when an in-memory host shares objects
   // with history. Projection must never rewrite the original batch record.
-  const result=Object.fromEntries(Object.entries(records).map(([k,v])=>[k,clone(v)])),raw=new Map(list(records).map(x=>[x.record.id,x.record]));
+  const result=Object.fromEntries(Object.entries(records).map(([k,v])=>[k,copyUnchanged?clone(v):categories.includes(k)?[...v]:v])),raw=new Map(list(records).map(x=>[x.record.id,x.record]));
   const byId=new Map(list(result).map(x=>[x.record.id,x.record]));
+  const locations=new Map(list(result).map(({category,record})=>[record.id,category]));
+  const writable=id=>{
+    const target=byId.get(id);if(!target||copyUnchanged||target!==raw.get(id))return target;
+    const category=locations.get(id),index=result[category].indexOf(target),copy={...target};
+    result[category][index]=copy;byId.set(id,copy);return copy;
+  };
   for(const entry of Object.values(saved).sort((a,b)=>(Number.isFinite(a?.at)?a.at:0)-(Number.isFinite(b?.at)?b.at:0))){
     if(entry?.status!=='reviewed')continue;
     const current=new Set(Object.entries(entry.anchors??{}).filter(([id,hash])=>raw.has(id)&&sha256(raw.get(id))===hash).map(([id])=>id));
-    for(const u of entry.updates??[]){const target=byId.get(u.id);if(current.has(u.id)&&target&&!controls.edits?.[u.id]&&!knowledgeLinks(target).some(id=>Object.hasOwn(entry.anchors,id)&&!current.has(id)))Object.assign(target,clone(u.fields));}
+    for(const u of entry.updates??[]){const target=byId.get(u.id);if(current.has(u.id)&&target&&!controls.edits?.[u.id]&&!knowledgeLinks(target).some(id=>Object.hasOwn(entry.anchors,id)&&!current.has(id)))Object.assign(writable(u.id),clone(u.fields));}
     for(const a of entry.additions??[]){if(!current.has(a.anchorId)||controls.deletedRecords?.[a.record.id]||knowledgeLinks(a.record).some(id=>Object.hasOwn(entry.anchors,id)&&!current.has(id)))continue;const r={...clone(a.record),...clone(controls.edits?.[a.record.id]??{})};if(!byId.has(r.id)){(result[a.category]??=[]).push(r);byId.set(r.id,r);}}
-    for(const issue of entry.issues??[])for(const id of issue.recordIds??[]){const r=byId.get(id);if(current.has(id)&&r&&!r.manualQualityChecked)r.continuityWarnings=[...new Set([...(r.continuityWarnings??[]),issue.description])];}
+    for(const issue of entry.issues??[])for(const id of issue.recordIds??[]){const r=byId.get(id);if(current.has(id)&&r&&!r.manualQualityChecked)writable(id).continuityWarnings=[...new Set([...(r.continuityWarnings??[]),issue.description])];}
   }
-  for(const issue of memoryQualityIssues(result).filter(i=>i.kind==='fact_conflict'))for(const id of issue.recordIds){const r=byId.get(id);if(r)r.continuityWarnings=[...new Set([...(r.continuityWarnings??[]),issue.description])];}
+  for(const issue of memoryQualityIssues(result).filter(i=>i.kind==='fact_conflict'))for(const id of issue.recordIds){const r=byId.get(id);if(r)writable(id).continuityWarnings=[...new Set([...(r.continuityWarnings??[]),issue.description])];}
   return result;
 }
 

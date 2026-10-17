@@ -1,7 +1,7 @@
 import { sha256 } from './utils.js';
 import {narrativeReading,narrativeReadingText} from './narrative-reading.js';
 
-const readingCache=new WeakMap(),projectionCache=new WeakMap();
+const readingCache=new WeakMap(),projectionCache=new WeakMap(),verifiedText=new WeakMap();
 
 // A second, local-only search surface. The host binds each floor's frozen body;
 // a model-supplied copy, bridge floor, or stale content hash is never accepted.
@@ -24,13 +24,19 @@ export function originalSourceText(record) {
   const original = record?.originalSource, ref = record?.sourceRefs?.[0];
   if (record?.category !== 'summaryView' || record.sourceRefs?.length !== 1 || typeof original?.text !== 'string' || !ref?.contentHash) return '';
   if (!['sourceId','fragmentId','version','swipeId','hash','contentHash'].every(k => (original.sourceRef?.[k] ?? null) === (ref[k] ?? null))) return '';
-  if(sha256(original.text)!==ref.contentHash)return '';
+  // The text and expected digest are immutable strings; changing either (or
+  // the source identity checked above) revokes this object-local validation.
+  const verified=verifiedText.get(original);
+  if(verified?.text!==original.text||verified?.hash!==ref.contentHash){
+    if(sha256(original.text)!==ref.contentHash)return '';
+    verifiedText.set(original,{text:original.text,hash:ref.contentHash});
+  }
   if(typeof record.recallReadingConfig!=='string')return original.text;
   const prior=readingCache.get(original);
   if(prior?.raw===original.text)return prior.text;
   // Recall applies only the default source safety boundary. User extraction
   // belongs to selected model-input floors, never to historical recall.
-  const text=narrativeReadingText(narrativeReading({text:original.text},''));
+  const text=narrativeReadingText(narrativeReading({text:original.text},'',{sourceIds:false}));
   readingCache.set(original,{raw:original.text,text});return text;
 }
 

@@ -80,8 +80,8 @@ function* sha256Steps(value) {
 }
 
 export function sha256(value){const steps=sha256Steps(value);let next;do{next=steps.next();}while(!next.done);return next.value;}
-export function yieldLocalWork(){
-  if(globalThis.scheduler?.yield)return globalThis.scheduler.yield();
+export function yieldLocalWork({prioritized=true}={}){
+  if(prioritized&&globalThis.scheduler?.yield)return globalThis.scheduler.yield();
   if(typeof MessageChannel==='function')return new Promise(resolve=>{const channel=new MessageChannel();channel.port1.onmessage=()=>{channel.port1.close();channel.port2.close();resolve();};channel.port2.postMessage(null);});
   return new Promise(resolve=>setTimeout(resolve,0));
 }

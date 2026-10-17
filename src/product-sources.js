@@ -5,6 +5,7 @@ export const sourceKey = ref => JSON.stringify([ref?.sourceId, ref?.version ?? n
 /** Verify raw bodies, including UUID messages. Unread evidence is unknown, never valid. */
 export async function verifyProductSources(history, records, check = () => {}, {includeMessages=false}={}) {
   const started=Date.now();let historyPages=0,fetchedMessages=0,normalizedMessages=0;
+  let nextYield=Date.now()+8;
   const refs = [...new Map(Object.values(records ?? {}).filter(Array.isArray).flatMap(list => list.flatMap(r => r?.sourceRefs ?? [])).map(r => [sourceKey(r), r])).values()];
   const current = new Map(), byIndex = new Map();
   const pending = refs.filter(r => !String(r.sourceId).startsWith('user-note_'));
@@ -18,11 +19,18 @@ export async function verifyProductSources(history, records, check = () => {}, {
       if (total === null) total = page.totalCount ?? page.startIndex + page.messages.length;
       if (page.totalCount !== undefined && page.totalCount !== total) throw new Error('历史在来源核对期间变化');
       historyPages++;fetchedMessages+=page.messages.length;
-      page.messages.forEach((m, i) => {
+      for(const [i,m]of page.messages.entries()){
         const index=page.startIndex+i,explicit=m?.id??m?.messageId??m?.uuid??m?.sourceId;
-        if(!wantedIndices.has(index)&&!wantedIds.has(typeof explicit==='string'?explicit.trim():explicit))return;
+        if(!wantedIndices.has(index)&&!wantedIds.has(typeof explicit==='string'?explicit.trim():explicit))continue;
         const value = normalizeHostMessage(m, index); normalizedMessages++;current.set(value.id, value); byIndex.set(value.index, value);
-      });
+        if(Date.now()>=nextYield){
+          // Normalizing one entire 500-floor page can block low-end webviews.
+          // Keep the same raw-body digests; admit stop/paint between slices.
+          if(typeof MessageChannel==='function')await new Promise(resolve=>{const channel=new MessageChannel();channel.port1.onmessage=()=>{channel.port1.close();channel.port2.close();resolve();};channel.port2.postMessage(null);});
+          else await new Promise(resolve=>setTimeout(resolve,0));
+          check();nextYield=Date.now()+8;
+        }
+      }
       if (page.startIndex === 0) { complete = true; break; }
       const unresolved = pending.some(r => { const match = /^message:(\d+):/.exec(r.sourceId); return match ? Number(match[1]) < total && !byIndex.has(Number(match[1])) : !current.has(r.sourceId); });
       if (!unresolved || typeof history.before !== 'function') break;

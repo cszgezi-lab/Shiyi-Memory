@@ -3,10 +3,10 @@ import {readNarrative} from './narrative-extraction.js';
 
 // A reading projection, never a replacement of stored sources. Stable pN
 // indexes continue to address the original safe paragraphs, even after filters.
-export function narrativeReading(source,config=''){
+export function narrativeReading(source,config='',{sourceIds=true}={}){
   let regexConfig=false;
   try{regexConfig=(typeof config==='string'?JSON.parse(config):config)?.version===2;}catch{}
-  const base=qualitySourceSegments(source),safe=qualitySourceSegments(source,{includeStructural:true}),result=readNarrative(source,config,regexConfig?undefined:safe);
+  const base=qualitySourceSegments(source,{includeIds:sourceIds}),safe=qualitySourceSegments(source,{includeStructural:true,includeIds:sourceIds}),result=readNarrative(source,config,regexConfig?undefined:safe);
   const regexReading=result.configVersion===2;
   const parts=[];
   for(let i=0;i<base.length;i++){

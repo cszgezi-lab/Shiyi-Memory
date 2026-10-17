@@ -15,7 +15,7 @@ import { ProviderClient, observeProviderRequests, scheduleProviderRequests } fro
 import {createProviderScheduler,shouldPauseProviderBatch,backgroundRetryDelay} from './provider-scheduler.js';
 import { errorDiagnostics, jsonFailure,installDiagnosticBoundary,diagnosticRequestId } from './diagnostics.js';
 import { SummaryResponseError } from './errors.js';
-import { memoryCards, recallMemory, readable, recordDescription, selectRecallCards, prepareRecallIndex, relevantPassage } from './product-memory.js';
+import { memoryCards, memoryCardsAsync, recallMemory, readable, recordDescription, selectRecallCards, prepareRecallIndex, relevantPassage } from './product-memory.js';
 import { RecallIndexCache } from './recall-cache.js';
 import {rerankDocument,createRecallLaneBackoff} from './product-recall-policy.js';
 import { ProductVectorCache, vectorNorm, vectorIndexCoverage } from './product-vector-cache.js';
@@ -277,7 +277,10 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       peopleRevision:()=>{const settings=core.settings;return JSON.stringify([cardRevision,viewIdentity(state.dynamicPersona),viewIdentity(activeDictionary()),settings.aliases,settings.dynamicPersonaMvuMode]);},
       merges:()=>workspace?.isCurrent()&&!state.stale?clone(state.merges??[]):[],injectionLog:()=>workspace?.isCurrent()?injectionLog?.state:null,
       dictionary:()=>clone(activeDictionary()),runtimeLog:()=>runtimeLog.state,enabled:()=>enabled,chatReady:()=>Boolean(workspace?.isCurrent())&&!state.stale,
-      settings:()=>core.settings,core:()=>core.state,busy:()=>Boolean(active)||apiOperations.size>0,
+      settings:()=>core.settings,core:()=>core.readViewState?.()??core.state,busy:()=>Boolean(active)||apiOperations.size>0,
+      summaryBatches:()=>state.batches.map(({records,replacement,...batch})=>clone({...batch,...(replacement?{replacement:{...replacement,affected:(replacement.affected??[]).map(({id,startIndex,endIndex})=>({id,startIndex,endIndex}))}}:{})})),
+      cardCounts:()=>Object.fromEntries(MEMORY_CATEGORIES.map(category=>[category,state.cards.filter(c=>!c.customModuleId&&c.category===category).length])),
+      personCount:()=>new Set(state.cards.filter(c=>!c.customModuleId&&c.category==='entityFactChanges').map(c=>c.entity??c.entityId).filter(Boolean)).size,
       credentialDirty:()=>Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])),
       credentialPresent:()=>Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)]))});
   }
@@ -517,7 +520,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         if(disposed||version!==followVersion)return;
         if(foregroundBusy()){followPending=true;return;}
         if(!target){await stopListeners();emptyChatView('no_chat');await clearPrompt();const text='打开一段聊天后，会自动加载对应记忆和总结批次';state.feedback={id:++feedbackSequence,kind:'chat',level:'info',text};setMessage(text);return;}
-        if(workspace?.isCurrent()&&!state.stale&&boundRefKey===stableStringify(target)&&core.state.status!=='invalidated')return;
+        if(workspace?.isCurrent()&&!state.stale&&boundRefKey===stableStringify(target)&&(core.readViewState?.()??core.state).status!=='invalidated')return;
         await open({enable:enabled,expectedRef:target,passive:true});
         followReadAttempts=0;
       }catch(error){
@@ -647,14 +650,14 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     workspace=null;boundScope=null;boundRefKey=null;state.cards=[];state.records={};state.batches=[];state.deletedRecords=[];state.progress='';modules.clear();state.status='loading';notify();
     const result = await core.bindCurrentChat({expectedRef:target});
     await checkTarget();
-    if (result.status !== 'ready' || result.persistence !== 'available') throw Object.assign(new Error(core.state.errorMessage ?? '当前聊天尚未保存或宿主存储不可用'),{code:result.errorCode??'PERSISTENCE_UNAVAILABLE'});
+    if (result.status !== 'ready' || result.persistence !== 'available') throw Object.assign(new Error((core.readViewState?.()??core.state).errorMessage ?? '当前聊天尚未保存或宿主存储不可用'),{code:result.errorCode??'PERSISTENCE_UNAVAILABLE'});
     if(passive&&sourceContextComplete)await settledHistoryTail();checkOpen();
     epoch++; knowledgeCache = []; recallChanged({ clear: true });
     workspace = createWorkspace(core.workspace());
     {const current=workspace;injectionLog=createInjectionLog({workspace:current,onChange:()=>{if(workspace===current)notify();}});await injectionLog.load();checkOpen();}
     await apiSettings.adoptLegacy(core.legacySettings);checkOpen();
     core.setSessionCredential(effectiveKeys().summary);
-    boundScope = core.state.scope;boundRefKey=targetKey;
+    boundScope = (core.readViewState?.()??core.state).scope;boundRefKey=targetKey;
     const [ui,hidden,excludedVectors]=await Promise.all([workspace.read('ui',{savedThrough:-1}),workspace.read('hidden',[]),workspace.read('vector-excluded',[])]);
     checkOpen();vectorExcluded=Array.isArray(excludedVectors)?excludedVectors.filter(id=>typeof id==='string'):[];
     checkOpen();assertCurrent();Object.assign(state,{savedThrough:ui.savedThrough??-1,hidden,preview:null,actual:null,stale:false});
@@ -779,7 +782,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     state.rawRecords=filtered;state.memoryControls=view.controls??{};
     state.summaryHold=view.controls?.automation?.summaryHold??null;
     const loadedQuality=await bound.read(QUALITY_STORE_KEY,{});check();qualitySaved=loadedQuality;
-    state.records=projectQualityRecords(filtered,qualitySaved,view.controls);
+    state.records=projectQualityRecords(filtered,qualitySaved,view.controls,{copyUnchanged:false});
     state.quality=qualityStatus(filtered,qualitySaved,view.controls,state.records);
     const loadedRetrospective=await bound.read(RETROSPECTIVE_STORE_KEY,null);check();retrospectiveSaved=loadedRetrospective;
     if(!retrospectiveOperation)state.memoryRetrospective=retrospectiveState(retrospectiveSaved,{records:state.records,controls:view.controls,dictionary:activeDictionary()});
@@ -789,7 +792,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const loadedMerges=await bound.read(MERGE_STORE_KEY,{});check();mergeDecisions=loadedMerges;
     state.merges=mergeJobs(state.records,mergeDecisions);
     try{await modules.sync();}catch(error){check();void reportError(error,{task:'background',stage:'background'});state.message='MVU 暂不可读，扩展区块没有使用旧值；可点击刷新重试';}
-    check();state.cards = projectMergedCards(modules.cards(memoryCards(state.records, { hidden: state.hidden, includeAwareness:true })),state.records,mergeDecisions,state.merges).filter(c=>!state.hidden.includes(c.id));
+    const cards=await memoryCardsAsync(state.records,{hidden:state.hidden,includeAwareness:true},{check});
+    check();state.cards = projectMergedCards(modules.cards(cards),state.records,mergeDecisions,state.merges).filter(c=>!state.hidden.includes(c.id));
     await readBatches(view,{check});check();
     // Publish a completed view atomically for sends. Pure additions do not
     // invalidate an in-flight recall of the preceding committed snapshot.
@@ -917,7 +921,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     }
   }
   function publishRetrospectiveView(){
-    const base=projectQualityRecords(state.rawRecords,qualitySaved,state.memoryControls);
+    const base=projectQualityRecords(state.rawRecords,qualitySaved,state.memoryControls,{copyUnchanged:false});
     const dictionary=activeDictionary();
     state.records=projectRetrospectiveRecords(base,retrospectiveEntries(retrospectiveSaved),state.memoryControls,{dictionary});
     state.memoryRetrospective=retrospectiveState(retrospectiveSaved,{records:base,controls:state.memoryControls,dictionary});
@@ -937,7 +941,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         const saved=await op.workspace.read(QUALITY_STORE_KEY,{});op.check();
         const accepted=new Set(MEMORY_CATEGORIES.flatMap(k=>(state.rawRecords[k]??[]).map(r=>r.id)));
         const records=Object.fromEntries(MEMORY_CATEGORIES.map(k=>[k,(view.records?.[k]??[]).filter(r=>accepted.has(r.id))]));
-        const base=projectQualityRecords(records,saved,view.controls),profiles=dynamicPersona.profiles();
+        const base=projectQualityRecords(records,saved,view.controls,{copyUnchanged:false}),profiles=dynamicPersona.profiles();
         return {records:base,profiles,controls:view.controls??{},revision:qualityFingerprint(view.records),dictionary:buildDictionary(memoryCards(base),{aliases:core.settings.aliases,automatic:core.settings.dictionaryEnabled,profiles})};
       };
       retrospectiveSaved=await runMemoryRetrospective({workspace:op.workspace,snapshot,client:client('summary'),settings:core.settings,readSources:rows=>core.readQualitySources(rows),check:op.check,signal:op.signal,onChange:value=>{if(op.token===epoch){state.memoryRetrospective=value;notify();}},parseResponse:r=>jsonContent(completion(r).content)});
@@ -1048,7 +1052,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         const prior=previous??(overwrite?.grouped?null:list.find(b=>sameBatchRange(b,range)));
         return {...prior,id:prior?.id??makeId('summary-batch'),number:prior?.number??Math.max(0,...list.map(b=>b.number??0))+i+1,groupId,plan,...range,focus,trigger,status:'queued',freshStart:resume&&prior?.status!=='saved'&&prior?.status!=='deleted'?prior?.freshStart??!prior?.operationId:true,operationId:prior?.operationId??null,createdAt:prior?.createdAt??Date.now(),attempts:prior?.attempts??[]};
       });
-      const replacement=((resume||rebuildCandidate)?previous?.replacement:null)??(overwrite?.grouped?{id:groupId,memberIds:planned.map(p=>p.id),oldIds:overwrite.affected.map(b=>b.id),oldOperations:[...new Set(overwrite.affected.flatMap(batchOperationIds))],affected:overwrite.affected,recipeHash:summaryRecipeHash(),requested:overwrite.requested,discardedTail:overwrite.discardedTail}:null);
+      const replacement=((resume||rebuildCandidate)?previous?.replacement:null)??(overwrite?.grouped?{id:groupId,memberIds:planned.map(p=>p.id),oldIds:overwrite.affected.map(b=>b.id),oldOperations:[...new Set(overwrite.affected.flatMap(batchOperationIds))],affected:overwrite.affected.map(({id,startIndex,endIndex})=>({id,startIndex,endIndex})),recipeHash:summaryRecipeHash(),requested:overwrite.requested,discardedTail:overwrite.discardedTail}:null);
       if(replacement&&!resume&&!rebuildCandidate){
         const view=await core.readMemoryView();op.check();
         replacement.recordIds=[...new Set(replacement.oldOperations.flatMap(id=>Object.values(batchRecords(view.records.history,id)).flat().map(r=>r.id)))];
@@ -1074,7 +1078,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
         // Staged generations survive crashes but are never available for recall.
         if(!continuing)await core.updateMemoryControls({operations:{[operationId]:'pending'}});op.check();
         const range=await core.readRange({startIndex:item.startIndex,endIndex:item.endIndex});
-        op.check();if(range.status!=='ready')throw Object.assign(new Error(core.state.errorMessage??'范围读取失败'),{code:range.errorCode??'HISTORY_UNAVAILABLE',details:range.errorDetails});
+        op.check();if(range.status!=='ready')throw Object.assign(new Error((core.readViewState?.()??core.state).errorMessage??'范围读取失败'),{code:range.errorCode??'HISTORY_UNAVAILABLE',details:range.errorDetails});
         await readBatches(await core.readMemoryView());
         const displayNumber=numberedSummaryBatches(state.batches).find(b=>b.id===item.id)?.displayNumber??i+1;
         state.progress=`第 ${i+1}/${planned.length} 批 · 已读取 #${item.startIndex}–${item.endIndex}，共 ${range.count} 楼`;
@@ -1107,7 +1111,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           if(event.phase==='recovery_compact')summaryFeedback('running',`接口响应异常，正在压缩无关历史后重试 · #${item.startIndex}–${item.endIndex}`,trigger);
           if(event.phase==='retry_wait')summaryFeedback('running',`接口暂时异常，${Math.max(1,Math.ceil(event.details.retryDelayMs/1000))} 秒后重试当前片段；已保存内容不重做`,trigger);
         }});
-        op.check();if(result.status!=='saved')throw Object.assign(new Error(core.state.errorMessage??'总结未保存'),{code:result.failure?.code??result.errorCode??'SUMMARY_RESPONSE_ERROR',details:result.errorDetails});
+        op.check();if(result.status!=='saved')throw Object.assign(new Error((core.readViewState?.()??core.state).errorMessage??'总结未保存'),{code:result.failure?.code??result.errorCode??'SUMMARY_RESPONSE_ERROR',details:result.errorDetails});
         const publishingAt=Date.now();let publishedView=null;
         if(currentBatch.replacement){
           currentBatch={...currentBatch,status:'queued',replacementReady:true,sourceRevision:range.sourceRevision,requests:result.requests,updatedAt:Date.now()};
@@ -1116,7 +1120,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
           stagedOnly=!await publishSummaryReplacement(currentBatch.replacement,op);
         }else{
-          const applied=await core.updateMemoryControls({operations:{...Object.fromEntries(currentBatch.attempts.map(id=>[id,'deleted'])),[operationId]:'active'}},{returnView:true});op.check();
+          const applied=await core.updateMemoryControls({operations:{...Object.fromEntries(currentBatch.attempts.map(id=>[id,'deleted'])),[operationId]:'active'}},{returnView:'deferred'});op.check();
           publishedView=applied?.memoryView;
           currentBatch={...currentBatch,status:'saved',savedOperationId:operationId,requests:result.requests,updatedAt:Date.now()};
           await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]).catch(error=>{bookkeepingWarning=true;runtimeLog.record({run:diagnosticRun,task:'summary',phase:'checkpoint_warning',level:'warning',details:{...errorDiagnostics(error),storageArtifact:'checkpoint'}});});
@@ -1555,7 +1559,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     return reservePersonaCommand(async()=>{
       const op=begin();let memoryAttempted=false;
       const prepare=()=>{
-        op.check();if(input.scopeKey!==JSON.stringify(core.state.scope))throw personDeleteFailure('person_delete_stale');
+        op.check();if(input.scopeKey!==JSON.stringify((core.readViewState?.()??core.state).scope))throw personDeleteFailure('person_delete_stale');
         for(const row of input.records){const card=state.cards.find(c=>c.id===row?.id);if(!card||sha256(card)!==row.expected)throw personDeleteFailure('person_delete_stale');}
         if(!input.records.length&&!input.keepsakes.length)return {ids:[],edits:{}};
         try{return prepareRecordDeletion(input.records.map(r=>r.id),input.keepsakes,{originalParts:true});}
@@ -1709,8 +1713,8 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     await prepareSummaryChat();const op=begin();
     try{state.autoLastIndex=await core.historyTail();op.check();notify();return automaticPlan();}finally{op.finish();}
   }
-  async function setAutoStartFloor(floor,expectedScope=core.state.scope){    assertCurrent();if(active)throw new Error('请先停止当前总结');
-    if(stableStringify(expectedScope)!==stableStringify(core.state.scope))throw new Error('聊天已切换，起算楼层未修改');
+  async function setAutoStartFloor(floor,expectedScope=(core.readViewState?.()??core.state).scope){    assertCurrent();if(active)throw new Error('请先停止当前总结');
+    if(stableStringify(expectedScope)!==stableStringify((core.readViewState?.()??core.state).scope))throw new Error('聊天已切换，起算楼层未修改');
     if(!Number.isSafeInteger(floor)||floor<0)throw new Error('起算楼层必须是 0 或正整数');
     await workspace.write('auto-progress',{startFloor:floor});state.autoStartFloor=floor;notify();
   }
@@ -2210,7 +2214,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
       setMessage('已强制停止未响应的任务；已有保存结果保留');
     },500);
     stopForceTimer?.unref?.();
-    if(boundScope&&core.state.status!=='invalidated'&&stableStringify(core.state.scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());
+    if(boundScope&&(core.readViewState?.()??core.state).status!=='invalidated'&&stableStringify((core.readViewState?.()??core.state).scope)===stableStringify(boundScope))workspace=createWorkspace(core.workspace());
     setMessage('正在停止；已有保存结果保留');
     await Promise.race([dynamicPersona.pause().catch(error=>void reportError(error,{task:'persona',stage:'ui'})),new Promise(resolve=>setTimeout(resolve,2000))]);}
   async function disable(){enabled=false;automaticPaused=true;recallChanged({clear:true});await stop();await stopListeners();await clearPrompt();setMessage('已暂停插件任务和记忆注入，仍会跟随聊天加载记忆');}
@@ -2339,6 +2343,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     async dispose(){disposed=true;clearTimeout(stopForceTimer);stopForceTimer=null;host.document?.removeEventListener?.('visibilitychange',resumeAutomaticTasks);host.removeEventListener?.('online',resumeAutomaticTasks);await dynamicPersona.dispose();host.document?.removeEventListener?.('visibilitychange',resumeVectorMaintenance);host.removeEventListener?.('online',resumeVectorMaintenance);host.removeEventListener?.('offline',resumeVectorMaintenance);tracking=false;clearTimeout(followTimer);followTimer=null;followPending=false;for(const off of [...chatListeners.splice(0),...generationListeners.splice(0)]){try{await off();}catch{}}await disable();await injectionLog?.flush();epoch++;await core.dispose();stopRequestScheduler();stopTransportDiagnostics();stopErrorBoundary();for(const resolve of followWaiters.splice(0))resolve(publicState());await flushDiagnostics();},
   };
   application.deletePerson=deletePerson;
+  application.readBatchRecords=id=>clone(state.batches.find(batch=>batch.id===id)?.records??{});
+  application.refresh=async(...args)=>{
+    const view=await refresh(...args);
+    // Internal owned projections share unchanged rows. External consumers get
+    // isolated fields when requested, without an unused full clone on a click.
+    return lazyViewState(Object.fromEntries(Object.keys(view??{}).map(key=>[key,()=>clone(view[key])])));
+  };
   const exportRawBackup=application.exportBackup;
   application.exportBackup=async(options={})=>{const token=epoch,backup=await exportRawBackup(options);assertCurrent(token);return {...backup,dynamicPersona:dynamicPersona.export(),qualityReview:clone(qualitySaved),memoryRetrospective:clone(retrospectiveSaved),effectiveRecords:clone(state.records)};};
   // One failure boundary for all public actions, including manual edits, DIY,

@@ -195,11 +195,12 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
  const personaBatchSelection=new Set();
  function paintSummaryModules(s){
    const box=$('[data-summary-modules]');if(!box)return;
+   const summaryBatches=s.summaryBatches??s.batches??[];
    const fallback={eligibleEnd:null,coveredRanges:[],missingRanges:[],coveredFloors:0,missingFloors:0};
    const settings=s.settings??{};
    const observedChatFloors=Number.isSafeInteger(s.autoLastIndex)?s.autoLastIndex:null;
    const rows=[
-     {kind:'memory',title:'记忆总结',batches:s.batches??[],batchSize:settings.autoSummaryEvery,keepRecent:settings.autoKeepRecent,startFloor:s.autoStartFloor??1,detail:`事件 ${countOf(s,'events')} · 知情 ${countOf(s,'awarenessChanges')} · 演绎 ${countOf(s,'performanceHints')} · 楼层摘要 ${countOf(s,'summaryView')} · 疑点 ${countOf(s,'conflicts')}`},
+     {kind:'memory',title:'记忆总结',batches:summaryBatches,batchSize:settings.autoSummaryEvery,keepRecent:settings.autoKeepRecent,startFloor:s.autoStartFloor??1,detail:`事件 ${countOf(s,'events')} · 知情 ${countOf(s,'awarenessChanges')} · 演绎 ${countOf(s,'performanceHints')} · 楼层摘要 ${countOf(s,'summaryView')} · 疑点 ${countOf(s,'conflicts')}`},
      {kind:'persona',title:'动态人设总结',batches:s.dynamicPersona?.batches??[],batchSize:settings.dynamicPersonaEvery,keepRecent:settings.dynamicPersonaKeepRecent,startFloor:s.dynamicPersona?.startFloor??1,detail:`人物 ${personCount(s)} 位 · 关系 ${countOf(s,'relationshipChanges')} · 约定 ${countOf(s,'commitmentChanges')} · 人设变化 ${countOf(s,'personaChanges')}`},
    ];
   for(const row of rows){
@@ -261,13 +262,13 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
      if(coverageLine){coverageLine.hidden=true;coverageLine.textContent='';}
      const nextButton=node.querySelector?.('[data-summary-next-batch]');
      if(nextButton){
-       const pending=row.kind==='memory'?(s.batches??[]).filter(batch=>['queued','running','failed','interrupted'].includes(batch.status)&&!hasNewerSavedCoverage(batch,s.batches??[])):[];
+       const pending=row.kind==='memory'?summaryBatches.filter(batch=>['queued','running','failed','interrupted'].includes(batch.status)&&!hasNewerSavedCoverage(batch,summaryBatches)):[];
        nextButton.disabled=row.kind==='memory'?Boolean(s.busy)||!next:!next;
        nextButton.textContent=next?`总结下一批 ${next.startIndex}–${next.endIndex} 楼`:'没有可总结的批次';
        nextButton.dataset.summaryStart=next?String(next.startIndex):'';
        nextButton.dataset.summaryEnd=next?String(next.endIndex):'';
        const count=node.querySelector?.('[data-summary-batch-count]');
-       if(count)count.textContent=`${(s.batches??[]).filter(batch=>batch.status!=='deleted').length} 批${pending.length?` · ${pending.length} 批未完成`:''}`;
+       if(count)count.textContent=`${summaryBatches.filter(batch=>batch.status!=='deleted').length} 批${pending.length?` · ${pending.length} 批未完成`:''}`;
      }
      if(row.kind==='memory'&&s.summaryHold){node.querySelector('[data-summary-state]').textContent='自动接续已暂停';node.querySelector('[data-summary-next]').textContent='已按所选终点撤下后续记录；点击“总结下一批”处理一批，或在自动总结中启用接续。';}
      const pause=node.querySelector?.('[data-summary-pause]');
@@ -299,8 +300,8 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
      void fallback;
    }
  }
- function countOf(s,category){return (s.cards??[]).filter(c=>!c.customModuleId&&c.category===category).length;}
- function personCount(s){return new Set((s.cards??[]).filter(c=>!c.customModuleId&&c.category==='entityFactChanges').map(c=>c.entity??c.entityId).filter(Boolean)).size;}
+ function countOf(s,category){return s.cardCounts?.[category]??(s.cards??[]).filter(c=>!c.customModuleId&&c.category===category).length;}
+ function personCount(s){return s.personCount??new Set((s.cards??[]).filter(c=>!c.customModuleId&&c.category==='entityFactChanges').map(c=>c.entity??c.entityId).filter(Boolean)).size;}
  function paintCards(){
     if(!snapshot||!$('[data-cards]'))return;
     if(floating?.window.hidden||currentPage!=='memory')return;

@@ -1,5 +1,5 @@
 import { LocalBM25Index, retrieveMemories, tokenizeChinese } from './retrieval.js';
-import { estimateUnits, clone, stableStringify } from './utils.js';
+import { estimateUnits, clone, stableStringify, throwIfAborted, yieldLocalWork } from './utils.js';
 import { buildDictionary, dictionaryQuery,enrichRetrievalMetadata } from './product-dictionary.js';
 import { fullSearchText, narrativeText, recordTitle, sourceFloors, sourceLabel, stateLabel, awarenessLabel, viaLabel, relationLabel, epistemicLabel, fieldLabel,scopeLabel } from './product-narrative.js';
 import { hasStoryTime, storyDateOf } from './temporal.js';
@@ -82,7 +82,18 @@ function dependencyIndex(records, keysFor) {
     return [...found].sort((a, b) => a[0] - b[0]).map(([, record]) => record);
   };
 }
-export function memoryCards(records = {}, { hidden = [], knowledge = [], includeAwareness = false } = {}) {
+export function memoryCards(records={},options={}){
+  const steps=memoryCardSteps(records,options);let next;do{next=steps.next();}while(!next.done);return next.value;
+}
+
+export async function memoryCardsAsync(records={},options={},{check=()=>{}}={}){
+  if(Object.keys(CATEGORY_LABELS).reduce((n,k)=>n+(records[k]?.length??0),0)<256){check();return memoryCards(records,options);}
+  const steps=memoryCardSteps(records,options);let next,nextYield=Date.now()+8;
+  do{next=steps.next();if(!next.done&&Date.now()>=nextYield){await yieldLocalWork({prioritized:false});check();nextYield=Date.now()+8;}}while(!next.done);
+  check();return next.value;
+}
+
+function* memoryCardSteps(records = {}, { hidden = [], knowledge = [], includeAwareness = false } = {}) {
   const ignored = new Set(hidden);
   const cards = [];
   const visible=r=>!ignored.has(r.id)&&!['retracted','superseded'].includes(r.lifecycleState);
@@ -139,6 +150,7 @@ export function memoryCards(records = {}, { hidden = [], knowledge = [], include
       const original=originalSourceText(card);
       if(original)card.localSearchText=`${card.searchText}\n${original}`;
       cards.push(card);
+      yield;
     }
   }
   const attached=new Set(cards.filter(c=>c.category!=='awarenessChanges'&&c.category!=='summaryView').flatMap(c=>(c.awareness??[]).map(a=>a.id)));
@@ -318,9 +330,15 @@ export function selectRecallCards(cards, settings, {includeAwareness=false}={}) 
   cards=cards.filter(c=>!c.journalOnly||(settings.journalEnabled!==false&&c.innerLife?.text&&!c.innerLife.disabled));
   return cards.filter(c => c.customInject !== false && (includeAwareness||c.category !== 'awarenessChanges'||c.standaloneRecall===true) && !['retracted', 'superseded'].includes(c.lifecycleState) && (c.category !== 'conflicts'||c.sourceRefs?.length>0) && (settings.personaEnabled || !['entityFactChanges','personaChanges','relationshipChanges','awarenessChanges'].includes(c.category)) && (settings.performanceEnabled || c.category !== 'performanceHints') && (settings.knowledgeEnabled || c.category !== 'knowledge')).map(c=>projectSourceForRecall(c));
 }
-export function prepareRecallIndex(cache, cards, settings, { scopeKey, revision, signal } = {}) {
+export async function prepareRecallIndex(cache, cards, settings, { scopeKey, revision, signal } = {}) {
   if (revision === undefined) throw new Error('recall cache requires a snapshot revision');
-  return cache.prepare(selectRecallCards(cards, settings), { scopeKey, revision: { snapshot: revision, persona: settings.personaEnabled, performance: settings.performanceEnabled, knowledge: settings.knowledgeEnabled,journal:settings.journalEnabled }, k1: settings.bm25K1, b: settings.bm25B, signal });
+  throwIfAborted(signal);
+  const selected=[];let nextYield=Date.now()+8;
+  for(const card of cards){
+    selected.push(...selectRecallCards([card],settings));
+    if(cards.length>=256&&Date.now()>=nextYield){await yieldLocalWork({prioritized:false});throwIfAborted(signal);nextYield=Date.now()+8;}
+  }
+  return cache.prepare(selected, { scopeKey, revision: { snapshot: revision, persona: settings.personaEnabled, performance: settings.performanceEnabled, knowledge: settings.knowledgeEnabled,journal:settings.journalEnabled }, k1: settings.bm25K1, b: settings.bm25B, signal });
 }
 
 /** Persona modular budget planner (U209, 2026-09-25).

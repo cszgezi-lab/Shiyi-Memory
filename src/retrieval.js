@@ -6,8 +6,11 @@ const CJK_RE = /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/u;
 const WORD_RE = /[\p{L}\p{N}_-]+/gu;
 
 export function tokenizeChinese(value) {
+  return [...chineseTokens(value)];
+}
+
+function* chineseTokens(value) {
   const text = normalizeText(value).toLocaleLowerCase();
-  const tokens = [];
   const words = text.match(WORD_RE) ?? [];
   for (const word of words) {
     if ([...word].some((ch) => CJK_RE.test(ch))) {
@@ -15,17 +18,16 @@ export function tokenizeChinese(value) {
       // is not floor 500. CJK n-grams still handle unknown names without a
       // heavyweight segmenter or a model request.
       for(const part of word.match(/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]+|[^\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]+/gu)??[]){
-        if(!CJK_RE.test(part)){tokens.push(part);continue;}
+        if(!CJK_RE.test(part)){yield part;continue;}
         const chars = [...part];
-        for (const ch of chars) tokens.push(ch);
-        for (let i = 0; i < chars.length - 1; i += 1) tokens.push(chars.slice(i, i + 2).join(''));
-        for (let i = 0; i < chars.length - 2; i += 1) tokens.push(chars.slice(i, i + 3).join(''));
+        yield* chars;
+        for(let i=0;i<chars.length-1;i++)yield chars[i]+chars[i+1];
+        for(let i=0;i<chars.length-2;i++)yield chars[i]+chars[i+1]+chars[i+2];
       }
     } else {
-      tokens.push(word);
+      yield word;
     }
   }
-  return tokens;
 }
 
 function textOf(record) {
@@ -63,21 +65,22 @@ export class LocalBM25Index {
   add(record) {
     const id = candidateId(record, this._nextIndex++);
     if (this.documents.has(id)) this.remove(id);
-    const tokens = tokenizeChinese(localTextOf(record));
-    const frequencies = new Map();
-    for (const token of tokens) frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
+    // BM25 needs counts and document length, never the expanded occurrence
+    // array. Full source floors can produce millions of repeated CJK n-grams.
+    const frequencies = new Map();let length=0;
+    for(const token of chineseTokens(localTextOf(record))){frequencies.set(token,(frequencies.get(token)??0)+1);length++;}
     for (const token of frequencies.keys()) {
       this.docFrequency.set(token, (this.docFrequency.get(token) ?? 0) + 1);
       if (!this.postings.has(token)) this.postings.set(token, new Set());
       this.postings.get(token).add(id);
     }
-    const document = { id, record: clone(record), tokens, frequencies, entities: entitiesOf(record), length: tokens.length };
+    const document = { id, record: clone(record), frequencies, entities: entitiesOf(record), length };
     for (const entity of document.entities) {
       if (!this.entityPostings.has(entity)) this.entityPostings.set(entity, new Set());
       this.entityPostings.get(entity).add(id);
     }
     this.documents.set(id, document);
-    this.totalLength += tokens.length;
+    this.totalLength += length;
     return id;
   }
 
