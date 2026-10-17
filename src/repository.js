@@ -12,9 +12,25 @@ import {
   scopeKey,
   validateDraftBundle,
 } from './contracts.js';
-import { clone, isPlainObject, makeId, sha256, stableStringify } from './utils.js';
+import { clone, isPlainObject, makeId, sha256, sha256Async, stableStringify } from './utils.js';
 import { mergeEventDetails, exactEventDuplicate } from './event-consolidation.js';
 import {losslessStore,verifiedWrite,runStorageOperation} from './reliable-storage.js';
+
+// Admit host/stop callbacks without prioritized scheduler continuations or
+// repeated nested-timer clamping. Close both ports after every local turn.
+async function yieldScopeRead(check){
+  if(typeof MessageChannel==='function')await new Promise(resolve=>{const channel=new MessageChannel();channel.port1.onmessage=()=>{channel.port1.close();channel.port2.close();resolve();};channel.port2.postMessage(null);});
+  else await new Promise(resolve=>setTimeout(resolve,0));
+  check();
+}
+
+// Small scopes keep their existing in-turn fast path. A native digest adds
+// I/O turns even for tiny payloads; long histories amortize that offload.
+async function hashScopeValue(value,check,offloadSmall=false){
+  const serialized=stableStringify(value)??'undefined';
+  if(!offloadSmall&&serialized.length<=32768)return sha256(serialized);
+  return sha256Async(serialized,{yieldTask:()=>yieldScopeRead(check)});
+}
 
 const DEFAULT_NAMESPACE = 'shiyi-memory-core';
 // One-operation capabilities only. Ordinary reads still verify every chunk.
@@ -127,15 +143,20 @@ async function confirmScopeReuse(repository,frozenScope,reuseSnapshot,expectedPo
   return {header,reuse};
 }
 
-function projectScope(repository,header,verifiedChunks,{includeOperations=[],excludeOperations=[]}={},captureChunks=false) {
+async function projectScope(repository,header,verifiedChunks,{includeOperations=[],excludeOperations=[],check=()=>{}}={},captureChunks=false) {
   const {scope:frozenScope,pointer,manifest}=header;
   if(!manifest)return {scope:frozenScope,committedRevision:0,records:emptyRecords(),pointer,manifest:null};
   const chunks=(manifest.chunks??[]).map(ref=>verifiedChunks.get(ref.key));
   const controls=manifest.controls??{operations:{},deletedRecords:{},edits:{}};
   const parent=id=>id?.split('/child-')[0];
   const visible=chunk=>!excludeOperations.includes(parent(chunk.operationId))&&(!['pending','deleted'].includes(controls.operations?.[parent(chunk.operationId)])||includeOperations.includes(parent(chunk.operationId)));
-  const records=mergeRecords(chunks.filter(visible));
-  records.history=chunks.map(chunk=>({revision:chunk.committedRevision,operationId:chunk.operationId,sourceRevision:chunk.sourceRevision,createdAt:chunk.createdAt,scopeKey:chunk.scopeKey,idMap:clone(chunk.idMap??{}),coverage:clone(chunk.coverage),categories:Object.fromEntries(CATEGORIES.map(k=>[k,clone(chunk[k]??[])])),excluded:!visible(chunk)}));
+  const records=await mergeRecords(chunks.filter(visible),check);
+  records.history=[];let nextYield=Date.now()+8;
+  for(const chunk of chunks){
+    records.history.push({revision:chunk.committedRevision,operationId:chunk.operationId,sourceRevision:chunk.sourceRevision,createdAt:chunk.createdAt,scopeKey:chunk.scopeKey,idMap:clone(chunk.idMap??{}),coverage:clone(chunk.coverage),categories:Object.fromEntries(CATEGORIES.map(k=>[k,clone(chunk[k]??[])])),excluded:!visible(chunk)});
+    if(Date.now()>=nextYield){await yieldScopeRead(check);nextYield=Date.now()+8;}
+  }
+  check();
   projectManualNoteKnowledge(records,controls);
   for(const category of CATEGORIES)records[category]=records[category].filter(r=>!controls.deletedRecords?.[r.id]).map(r=>controls.edits?.[r.id]?{...r,...clone(controls.edits[r.id]),epistemicStatus:'user_asserted'}:r);
   const eventIds=new Set(records.events.map(r=>r.id));
@@ -207,14 +228,12 @@ function mergeRecordRevision(previous, next, revision, operationId, { canonicalI
   return merged;
 }
 
-function mergeRecords(chunks) {
-  const result = emptyRecords();
+async function mergeRecords(chunks,check=()=>{}) {
+  const result = emptyRecords();let nextYield=Date.now()+8;
   for (const chunk of chunks) {
     const revision = Number.isInteger(chunk?.committedRevision) ? chunk.committedRevision : result.history.length + 1;
     const operationId = chunk?.operationId ?? null;
-    const auditCategories = {};
     for (const category of CATEGORIES) {
-      auditCategories[category] = clone(chunk?.[category] ?? []);
       const indexes = new Map();
       for (let index = 0; index < result[category].length; index += 1) {
         for (const key of recordIdentityKeys(category, result[category][index])) indexes.set(key, index);
@@ -240,16 +259,9 @@ function mergeRecords(chunks) {
         }
       }
     }
-    result.history.push({
-      revision,
-      operationId,
-      sourceRevision: chunk?.sourceRevision ?? null,
-      scopeKey: chunk?.scopeKey ?? null,
-      categories: auditCategories,
-      coverage: clone(chunk?.coverage ?? null),
-      idMap: clone(chunk?.idMap ?? {}),
-      createdAt: chunk?.createdAt ?? null,
-    });
+    // projectScope builds the complete audit history once, including excluded
+    // chunks. Only its length is needed here for legacy revision fallback.
+    result.history.push({revision});
     for (const [from, to] of Object.entries(chunk?.idMap ?? {})) {
       const prior = result.idAliases[from];
       if (isTemporaryId(from) && prior && prior !== to) {
@@ -269,7 +281,9 @@ function mergeRecords(chunks) {
         if (!known.has(identity)) { result.coverage[key].push(clone(value)); known.add(identity); }
       }
     }
+    if(Date.now()>=nextYield){await yieldScopeRead(check);nextYield=Date.now()+8;}
   }
+  check();
   // Apply identity aliases to all dependent records after revisions have
   // established their canonical event IDs.  This also handles an awareness
   // record emitted in the same chunk as e2.
@@ -427,7 +441,7 @@ export class MemoryRepository {
       const {header,reuse}=await confirmScopeReuse(this,normalizeScope(scope),options.reuseSnapshot,null,check);
       check();
       if(reuse.materialized&&reuse.projectionKey===stableStringify({includeOperations,excludeOperations}))return reuse.materialized;
-      return projectScope(this,header,reuse.chunks,{includeOperations,excludeOperations});
+      return projectScope(this,header,reuse.chunks,{includeOperations,excludeOperations,check});
     }
     return this._readScope(scope,options);
   }
@@ -437,7 +451,8 @@ export class MemoryRepository {
     if(!pointer.manifestRef)return {scope:frozenScope,committedRevision:0,pointer,manifest:null};
     const manifest=await requiredGet(this.store,{namespace:this.namespace,key:pointer.manifestRef},'manifest pointer target is missing');check();
     if(!isPlainObject(manifest)||manifest.scopeKey!==scopeKey(frozenScope)||manifest.committedRevision!==pointer.committedRevision)throw new PersistenceError('manifest does not match committed pointer');
-    if(!pointer.manifestSha256||sha256(manifest)!==pointer.manifestSha256)throw new PersistenceError('manifest hash does not match committed pointer');
+    const manifestHash=await hashScopeValue(manifest,check);check();
+    if(!pointer.manifestSha256||manifestHash!==pointer.manifestSha256)throw new PersistenceError('manifest hash does not match committed pointer');
     if(!Array.isArray(manifest.chunks??[]))throw new PersistenceError('manifest chunks are malformed');
     return {scope:frozenScope,committedRevision:pointer.committedRevision,pointer,manifest};
   }
@@ -446,12 +461,15 @@ export class MemoryRepository {
   // projection that updateControls never uses. The capability stays in RAM.
   async _loadScope(scope,{check=()=>{}}={}) {
     const frozenScope=normalizeScope(scope),loaded=await this._readScopeHeader(frozenScope,check),chunks=new Map();
+    let nextYield=Date.now()+8;const offloadSmall=(loaded.manifest?.chunks?.length??0)>=32;
     for(const ref of loaded.manifest?.chunks??[]) {
       check();
       if(!isPlainObject(ref)||typeof ref.key!=='string'||typeof ref.sha256!=='string')throw new PersistenceError('manifest chunk reference is malformed');
       const value=await requiredGet(this.store,{namespace:this.namespace,key:ref.key},`immutable chunk is missing: ${ref.key}`);check();
-      if(sha256(value)!==ref.sha256)throw new PersistenceError(`immutable chunk hash mismatch: ${ref.key}`);
+      const chunkHash=await hashScopeValue(value,check,offloadSmall);check();
+      if(chunkHash!==ref.sha256)throw new PersistenceError(`immutable chunk hash mismatch: ${ref.key}`);
       chunks.set(ref.key,value);
+      if(Date.now()>=nextYield){await yieldScopeRead(check);nextYield=Date.now()+8;}
     }
     captureScope(this,loaded,chunks);return loaded;
   }
@@ -461,7 +479,7 @@ export class MemoryRepository {
     let header,reuse;
     if(reuseSnapshot)({header,reuse}=await confirmScopeReuse(this,frozenScope,reuseSnapshot,expectedPointer,check));
     else {header=await this._loadScope(frozenScope,{check});reuse=VERIFIED_SCOPE_READS.get(header);VERIFIED_SCOPE_READS.delete(header);}
-    check();return projectScope(this,header,reuse.chunks,{includeOperations,excludeOperations},captureChunks);
+    check();return projectScope(this,header,reuse.chunks,{includeOperations,excludeOperations,check},captureChunks);
   }
 
   /** Recoverable view changes: immutable evidence is retained, projection is atomic. */
