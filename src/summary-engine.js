@@ -16,7 +16,7 @@ import { tokenizeChinese } from './retrieval.js';
 import { normalizeSummaryEnums, normalizePersonaValidity, normalizeRecordIdentifiers, repairableEnumTargets, createEnumRepairRequest, applyEnumCorrections, deferCommitmentStates, quarantineInvalidEnums } from './summary-enum-repair.js';
 import {transientSummaryError,recoveryAttemptLimit,recoveryDelay,repairCategories,categoryRepairRequest,applyCategoryRepair,missingFloorRequest} from './summary-recovery.js';
 import {summaryTransportOptions} from './summary-transport.js';
-import { selectSummaryContext, summarySources } from './summary-context.js';
+import { selectSummaryContextAsync, summarySources } from './summary-context.js';
 import { runSummaryStages, isolateDraftIds } from './summary-stages.js';
 import { referenceRepairRequest, applyReferenceRepair } from './summary-reference-repair.js';
 import { verificationRequest, verificationEnvelope, compactVerificationHints, applyVerificationProgress, verificationCounts, VERIFICATION_POLICY, VERIFICATION_MODULES } from './summary-verification.js';
@@ -417,7 +417,7 @@ export class SummaryEngine {
     if (typeof this.repository.listRecords !== 'function') return { records: {}, authoritativeRecords: {}, ids: new Set(), selection: { usedUnits: 0, candidateCount: 0, omittedCount: 0 } };
     authoritativeRecords ??= await this.repository.listRecords(scope);
     const ids = contextIds(authoritativeRecords);
-    const selection = selectSummaryContext(relevantRecords ?? authoritativeRecords, [...sourceMessages,...bridgeMessages], {budgetUnits:Math.min(budgetUnits,6000),maxRecords:this.maxRelevantRecords});
+    const selection = await selectSummaryContextAsync(relevantRecords ?? authoritativeRecords, [...sourceMessages,...bridgeMessages], {budgetUnits:Math.min(budgetUnits,6000),maxRecords:this.maxRelevantRecords});
     return { records: selection.records, authoritativeRecords, ids, selection };
   }
 
@@ -1201,7 +1201,11 @@ export class SummaryEngine {
     if (typeof this.repository.saveCheckpoint === 'function') await this.repository.saveCheckpoint(batch.operationId, {
       status: 'done', scope: clone(batch.scope), sourceRevision: batch.sourceRevision, configVersion: String(batch.configVersion), rulesVersion: String(batch.rulesVersion), focusVersion: checkpointBinding.focusVersion, splitPlanFingerprint, splitPlan: clone(splitPlan), parentRange: clone(batch.parentRange), completedChildIndexes: state.completedChildren, failedChildIndexes: [], totalChildren: children.length, receipts: clone(state.receipts),
           }).catch(e=>emit('checkpoint_warning',{...errorDiagnostics(e),storageArtifact:'checkpoint'},'warning'));
-    if(this.recoveryEnabled)for(const child of children)await this.repository.clearPrivateTask?.(batch.scope,child.operationId).catch(error=>emit('checkpoint_warning',{...errorDiagnostics(error),storageArtifact:'checkpoint'},'warning'));
+    // An unsplit child shares the parent's key. Its frozen batch is still
+    // needed if the host exits before activation/bookkeeping. Split parents
+    // already survive this cleanup; retain the unsplit parent in the same
+    // bounded recovery catalog as well.
+    if(this.recoveryEnabled)for(const child of children)if(child.operationId!==batch.operationId)await this.repository.clearPrivateTask?.(batch.scope,child.operationId).catch(error=>emit('checkpoint_warning',{...errorDiagnostics(error),storageArtifact:'checkpoint'},'warning'));
     return state;
   }
 

@@ -558,7 +558,17 @@ export function createProductShellController({
     const safeSplitUnits=sourceSplitUnits();
     try{
     frozen=resume?await repository.readPrivateTask(state.scope,operationId):null;
-    if(resume&&!frozen?.batch)throw Object.assign(new Error('没有可续跑的暂存任务，请重新生成'),{code:'RESUME_UNAVAILABLE'});
+    if(resume&&!frozen?.batch){
+      // Older unsplit jobs removed the parent cache after commit, before the
+      // application activated it. Rebuild only a FULLY committed plan; the
+      // engine still verifies every receipt, source binding and split proof
+      // before its completed-plan return. Partial/unknown work cannot enter.
+      const checkpoint=await repository.getCheckpoint(operationId,state.scope);
+      const done=[...new Set(checkpoint?.completedChildIndexes??[])].sort((a,b)=>a-b),total=checkpoint?.totalChildren,first=checkpoint?.receipts?.[0]?.expectedRevision;
+      if(!Number.isSafeInteger(total)||total<1||done.length!==total||done.some((n,i)=>n!==i)||checkpoint.splitPlan?.length!==total||checkpoint.receipts?.length!==total||!Number.isSafeInteger(first))throw Object.assign(new Error('没有可续跑的暂存任务，请重新生成'),{code:'RESUME_UNAVAILABLE'});
+      if(checkpoint.sourceRevision!==batch.sourceRevision)throw Object.assign(new Error('已提交总结的原文已变化，未启用旧结果'),{code:'SOURCE_INVALIDATED'});
+      frozen={batch:{...batch,expectedRevision:first},splitUnits:safeSplitUnits,requestPlanning:'wire-v1'};
+    }
     // Resume the frozen split plan. Changing child boundaries under the same
     // operation ID would invalidate receipts and can reuse the wrong result.
     if(frozen?.batch){
@@ -596,7 +606,7 @@ export function createProductShellController({
     const summaryRepository=Object.create(repository);
     const validateBundle=summaryBundleValidator();
     summaryRepository.commitBundle=async (...args)=>{validateBundle(args[0]);return repository.commitBundle(...args);};
-    summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations})).records;
+    summaryRepository.listRecords=async scope=>(await repository.readScope(scope,{includeOperations:[operationId],excludeOperations,includeHistory:false})).records;
     try {
       engine = new SummaryEngine({ repository: summaryRepository, model: summaryModel, supplementModel:supplementModelFactory?.()??null, staged:state.settings.summaryStaged, verified:state.settings.summaryReviewEnabled, isolateIds:true, packRequests:state.job.requestPlanning==='wire-v1', maxInputUnits: state.settings.inputBudgetUnits, maxSourceUnits: state.job.splitUnits, requireFloorSummaries, stageCrossBatchMerges:true, recoveryEnabled:true, outputReserveUnits: 0, now });
       const result = await engine.process(batch, { signal: preflightAbort.signal, onDiagnostic, onSourcePlan:plan=>{
@@ -605,7 +615,7 @@ export function createProductShellController({
         summarySourceGuard={operationId,token,sourceRevision:plan.sourceRevision,scopeKey:stableStringify(plan.scope),range:clone(plan.range),children:new Map(plan.children.map(child=>[child.operationId,Object.freeze({...child})])),report:onDiagnostic};
       }});
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
-      const snapshot = await repository.readScope(session.scope);
+      const snapshot = await repository.readScope(session.scope,{includeHistory:false});
       if (!tokenValid(token, session)) return { status: state.status, errorCode: state.errorCode };
       if (!snapshot || snapshot.committedRevision <= expectedRevision) throw Object.assign(new Error('persistence readback did not advance'), { code: 'PERSISTENCE_ERROR' });
       state.lastSaved = {

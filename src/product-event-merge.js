@@ -6,24 +6,30 @@ import { mergeEventDetails } from './event-consolidation.js';
 // ownership never change. Any source edit/deletion invalidates its merge vote.
 export const MERGE_STORE_KEY = 'event-merge-decisions-v1';
 export const MERGE_STATUS = Object.freeze({pending:'待合并',merged:'已合并',different:'不同事件，保留独立',uncertain:'待核对',failed:'合并未完成，可重试',separate:'已保持独立',missing:'找不到目标记录'});
-function eventHashes(records){
-  const owners=new Map((records.events??[]).map(e=>[e.id,[]]));
+function eventHashes(records,ids){
+  const events=(records.events??[]).filter(e=>ids.has(e.id));
+  if(!events.length)return new Map();
+  const owners=new Map(events.map(e=>[e.id,[]]));
   for(const batch of Object.values(records.history??[])){
     if(batch.excluded)continue;
     for(const e of batch.categories?.events??[])owners.get(e.id)?.push(batch.operationId);
   }
-  return new Map((records.events??[]).map(e=>[e.id,sha256({event:e,operations:[...new Set(owners.get(e.id))].sort()})]));
+  return new Map(events.map(e=>[e.id,sha256({event:e,operations:[...new Set(owners.get(e.id))].sort()})]));
 }
-export const eventFingerprint = (event,records={events:[event]}) => eventHashes(records).get(event.id);
+export const eventFingerprint = (event,records={events:[event]}) => eventHashes(records,new Set([event.id])).get(event.id);
 const body = e => String(e.description ?? e.content ?? '');
 const time = e => typeof e.temporal === 'string' ? e.temporal : e.temporal?.occurredAt ?? e.temporal?.date;
 const title = e => e?.title || body(e ?? {}).slice(0,80) || '未找到事件';
 
 export function mergeJobs(records={}, saved={}) {
-  const events=records.events??[], byId=new Map(events.map(e=>[e.id,e])),hashes=eventHashes(records);
-  return events.filter(e=>e.mergeReview?.targetId||saved[e.id]?.targetId).map(from=>{
+  const events=records.events??[], byId=new Map(events.map(e=>[e.id,e]));
+  const candidates=events.filter(e=>e.mergeReview?.targetId||saved[e.id]?.targetId);
+  // Pending proposals have no vote to invalidate. Hash only the endpoints of
+  // saved votes, preserving their exact content and generation ownership.
+  const hashes=eventHashes(records,new Set(candidates.filter(e=>saved[e.id]).flatMap(e=>[e.id,saved[e.id].targetId??e.mergeReview?.targetId])));
+  return candidates.map(from=>{
     const decision=saved[from.id], targetId=decision?.targetId??from.mergeReview.targetId, to=byId.get(targetId);
-    const current=decision?.fromHash===hashes.get(from.id)&&(to?decision?.toHash===hashes.get(to.id):decision?.status==='separate');
+    const current=Boolean(decision)&&decision.fromHash===hashes.get(from.id)&&(to?decision.toHash===hashes.get(to.id):decision.status==='separate');
     const status=current&&decision?.status==='separate'?'separate':!to?'missing':current&&Object.hasOwn(MERGE_STATUS,decision.status)?decision.status:'pending';
     return {id:from.id,targetId,fromTitle:title(from),targetTitle:title(to),status,
       reason:current?String(decision.reason??'').slice(0,1000):!to?'原目标不在当前有效记忆中，可改选目标；本条总结已经保存。':'总结已保存，等待独立核对是否为同一次经历。',
@@ -34,7 +40,7 @@ export function mergeJobs(records={}, saved={}) {
 export function mergeDecision(records, job, result, attempts=0) {
   const from=records.events?.find(e=>e.id===job.id),to=records.events?.find(e=>e.id===job.targetId);
   if(!from||!to||from.id===to.id)throw new Error('合并对象不存在或指向自身，请重新选择');
-  const hashes=eventHashes(records);
+  const hashes=eventHashes(records,new Set([from.id,to.id]));
   return {targetId:to.id,fromHash:hashes.get(from.id),toHash:hashes.get(to.id),
     status:result.status,reason:String(result.reason??'').slice(0,1000),attempts,at:Date.now()};
 }
@@ -66,11 +72,11 @@ export function validateMergeVote(records,job,vote){
   return {status:'merged',reason:vote.reason};
 }
 
-export function projectMergedCards(cards,records,saved={}){
+export function projectMergedCards(cards,records,saved={},jobs=mergeJobs(records,saved)){
   const events=new Map(cards.filter(c=>c.category==='events').map(c=>[c.id,c]));
   const parent=new Map([...events.keys()].map(id=>[id,id]));
   const root=id=>{let n=id;while(parent.get(n)!==n)n=parent.get(n);return n;};
-  const jobs=mergeJobs(records,saved), resolved=new Set(jobs.filter(j=>['merged','different','separate'].includes(j.status)).map(j=>j.id));
+  const resolved=new Set(jobs.filter(j=>['merged','different','separate'].includes(j.status)).map(j=>j.id));
   for(const j of jobs){
     if(j.status!=='merged'||!events.has(j.id)||!events.has(j.targetId)||j.id===j.targetId)continue;
     const a=root(j.id),b=root(j.targetId);if(a!==b)parent.set(a,b);

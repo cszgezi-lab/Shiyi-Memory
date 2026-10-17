@@ -128,9 +128,9 @@ async function requiredGet(store,args,missingMessage) {
   }
 }
 
-function captureScope(repository,snapshot,chunks,{includeOperations=[],excludeOperations=[]}={},materialized=null) {
+function captureScope(repository,snapshot,chunks,{includeOperations=[],excludeOperations=[],includeHistory=true}={},materialized=null) {
   VERIFIED_SCOPE_READS.set(snapshot,{store:repository.store,namespace:repository.namespace,scopeKey:scopeKey(snapshot.scope),pointer:clone(snapshot.pointer),refs:clone(snapshot.manifest?.chunks??[]),chunks,
-    projectionKey:stableStringify({includeOperations,excludeOperations}),materialized:materialized?clone(materialized):null});
+    projectionKey:stableStringify({includeOperations,excludeOperations,includeHistory}),materialized:materialized?clone(materialized):null});
 }
 
 async function confirmScopeReuse(repository,frozenScope,reuseSnapshot,expectedPointer,check) {
@@ -143,7 +143,7 @@ async function confirmScopeReuse(repository,frozenScope,reuseSnapshot,expectedPo
   return {header,reuse};
 }
 
-async function projectScope(repository,header,verifiedChunks,{includeOperations=[],excludeOperations=[],check=()=>{}}={},captureChunks=false) {
+async function projectScope(repository,header,verifiedChunks,{includeOperations=[],excludeOperations=[],includeHistory=true,check=()=>{}}={},captureChunks=false) {
   const {scope:frozenScope,pointer,manifest}=header;
   if(!manifest)return {scope:frozenScope,committedRevision:0,records:emptyRecords(),pointer,manifest:null};
   const chunks=(manifest.chunks??[]).map(ref=>verifiedChunks.get(ref.key));
@@ -152,7 +152,9 @@ async function projectScope(repository,header,verifiedChunks,{includeOperations=
   const visible=chunk=>!excludeOperations.includes(parent(chunk.operationId))&&(!['pending','deleted'].includes(controls.operations?.[parent(chunk.operationId)])||includeOperations.includes(parent(chunk.operationId)));
   const records=await mergeRecords(chunks.filter(visible),check);
   records.history=[];let nextYield=Date.now()+8;
-  for(const chunk of chunks){
+  // Internal summary reads need effective records, not a second full copy of
+  // every immutable generation. Public views and exports retain the audit.
+  for(const chunk of includeHistory?chunks:[]){
     records.history.push({revision:chunk.committedRevision,operationId:chunk.operationId,sourceRevision:chunk.sourceRevision,createdAt:chunk.createdAt,scopeKey:chunk.scopeKey,idMap:clone(chunk.idMap??{}),coverage:clone(chunk.coverage),categories:Object.fromEntries(CATEGORIES.map(k=>[k,clone(chunk[k]??[])])),excluded:!visible(chunk)});
     if(Date.now()>=nextYield){await yieldScopeRead(check);nextYield=Date.now()+8;}
   }
@@ -162,7 +164,7 @@ async function projectScope(repository,header,verifiedChunks,{includeOperations=
   const eventIds=new Set(records.events.map(r=>r.id));
   records.awarenessChanges=records.awarenessChanges.filter(r=>[r.eventRef,...(r.eventRefs??[])].filter(Boolean).every(id=>eventIds.has(id)));
   const snapshot={scope:frozenScope,committedRevision:pointer.committedRevision,records,pointer,manifest};
-  if(captureChunks)captureScope(repository,snapshot,verifiedChunks,{includeOperations,excludeOperations},snapshot);
+  if(captureChunks)captureScope(repository,snapshot,verifiedChunks,{includeOperations,excludeOperations,includeHistory},snapshot);
   return snapshot;
 }
 
@@ -437,11 +439,11 @@ export class MemoryRepository {
 
   async readScope(scope, options = {}) {
     if(options.reuseSnapshot) {
-      const {includeOperations=[],excludeOperations=[],check=()=>{}}=options;
+      const {includeOperations=[],excludeOperations=[],includeHistory=true,check=()=>{}}=options;
       const {header,reuse}=await confirmScopeReuse(this,normalizeScope(scope),options.reuseSnapshot,null,check);
       check();
-      if(reuse.materialized&&reuse.projectionKey===stableStringify({includeOperations,excludeOperations}))return reuse.materialized;
-      return projectScope(this,header,reuse.chunks,{includeOperations,excludeOperations,check});
+      if(reuse.materialized&&reuse.projectionKey===stableStringify({includeOperations,excludeOperations,includeHistory}))return reuse.materialized;
+      return projectScope(this,header,reuse.chunks,{includeOperations,excludeOperations,includeHistory,check});
     }
     return this._readScope(scope,options);
   }
@@ -475,11 +477,11 @@ export class MemoryRepository {
   }
 
   async _readScope(scope,options={},reuseSnapshot=null,expectedPointer=null,captureChunks=false) {
-    const {includeOperations=[],excludeOperations=[],check=()=>{}}=options,frozenScope=normalizeScope(scope);
+    const {includeOperations=[],excludeOperations=[],includeHistory=true,check=()=>{}}=options,frozenScope=normalizeScope(scope);
     let header,reuse;
     if(reuseSnapshot)({header,reuse}=await confirmScopeReuse(this,frozenScope,reuseSnapshot,expectedPointer,check));
     else {header=await this._loadScope(frozenScope,{check});reuse=VERIFIED_SCOPE_READS.get(header);VERIFIED_SCOPE_READS.delete(header);}
-    check();return projectScope(this,header,reuse.chunks,{includeOperations,excludeOperations,check},captureChunks);
+    check();return projectScope(this,header,reuse.chunks,{includeOperations,excludeOperations,includeHistory,check},captureChunks);
   }
 
   /** Recoverable view changes: immutable evidence is retained, projection is atomic. */
@@ -544,7 +546,7 @@ export class MemoryRepository {
     // Validate references against the authoritative same-scope snapshot.  A
     // later batch may add awareness or a correction for an older event, but a
     // record from another scope/branch is never accepted as context.
-    const previous = await this.readScope(frozenScope,{includeOperations:[operationId.split('/child-')[0]]});
+    const previous = await this.readScope(frozenScope,{includeOperations:[operationId.split('/child-')[0]],includeHistory:false});
     const knownRecordIds = new Set();
     for (const category of CATEGORIES) {
       for (const record of previous.records?.[category] ?? []) if (record?.id) knownRecordIds.add(record.id);

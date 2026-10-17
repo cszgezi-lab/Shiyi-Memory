@@ -571,7 +571,15 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     try{const id=context?.getCurrentChatId?.();moduleSourceChatId=typeof id==='string'&&id?id:null;}catch{moduleSourceChatId=null;}
   }
   function sourceEventRelevant(reason){
-    if(reason==='CHAT_CHANGED')return true;
+    if(reason==='CHAT_CHANGED'){
+      // TT also emits CHAT_CHANGED after API/regex display refreshes. Its
+      // native ref getter is synchronous (TT 2.2); keep the binding only when
+      // the complete native identity and the protected raw prefix still match.
+      // Unknown/async references and partial contexts retain the reload path.
+      if(!sourceContextComplete)return true;
+      try{const current=host.__TAURITAVERN__?.api?.chat?.current,ref=current?.ref?.call(current);if(!ref||typeof ref.then==='function'||stableStringify(ref)!==boundRefKey)return true;}
+      catch{return true;}
+    }
     if(reason==='MESSAGE_UPDATED'&&moduleMetadataOnly())return false;
     // The native context gives the complete live chat. Compare exact source
     // stamps, never infer a deletion position from MESSAGE_DELETED's new count.
@@ -580,6 +588,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     if(state.stale||!workspace?.isCurrent()||!sourcePrefixVerified||!moduleSourceBaseline||moduleSourceChatId===null)return true;
     let context;try{context=mvuContext(host);if(context?.getCurrentChatId?.()!==moduleSourceChatId)return true;}catch{return true;}
     const chat=context?.chat;if(!Array.isArray(chat))return true;
+    if(reason==='CHAT_CHANGED'&&chat.length!==moduleSourceBaseline.length)return true;
     const persona=state.dynamicPersona??{};
     const ends=[core.sourceEndIndex,...state.batches.map(b=>b.endIndex),...(persona.batches??[]).map(b=>b.endIndex),...(persona.manualPlan?.items??[]).map(b=>b.endIndex),...(persona.profiles??[]).map(p=>p.through)];
     if(!Number.isInteger(ends[0]))return true;
@@ -780,7 +789,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
     const loadedMerges=await bound.read(MERGE_STORE_KEY,{});check();mergeDecisions=loadedMerges;
     state.merges=mergeJobs(state.records,mergeDecisions);
     try{await modules.sync();}catch(error){check();void reportError(error,{task:'background',stage:'background'});state.message='MVU 暂不可读，扩展区块没有使用旧值；可点击刷新重试';}
-    check();state.cards = projectMergedCards(modules.cards(memoryCards(state.records, { hidden: state.hidden, includeAwareness:true })),state.records,mergeDecisions).filter(c=>!state.hidden.includes(c.id));
+    check();state.cards = projectMergedCards(modules.cards(memoryCards(state.records, { hidden: state.hidden, includeAwareness:true })),state.records,mergeDecisions,state.merges).filter(c=>!state.hidden.includes(c.id));
     await readBatches(view,{check});check();
     // Publish a completed view atomically for sends. Pure additions do not
     // invalidate an in-flight recall of the preceding committed snapshot.
@@ -1099,7 +1108,7 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           if(event.phase==='retry_wait')summaryFeedback('running',`接口暂时异常，${Math.max(1,Math.ceil(event.details.retryDelayMs/1000))} 秒后重试当前片段；已保存内容不重做`,trigger);
         }});
         op.check();if(result.status!=='saved')throw Object.assign(new Error(core.state.errorMessage??'总结未保存'),{code:result.failure?.code??result.errorCode??'SUMMARY_RESPONSE_ERROR',details:result.errorDetails});
-        const publishingAt=Date.now();
+        const publishingAt=Date.now();let publishedView=null;
         if(currentBatch.replacement){
           currentBatch={...currentBatch,status:'queued',replacementReady:true,sourceRevision:range.sourceRevision,requests:result.requests,updatedAt:Date.now()};
           // This checkpoint is required: no old operation is retired before
@@ -1107,12 +1116,13 @@ export function createProductApplication({ host = globalThis, adapter = null, co
           await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]);op.check();
           stagedOnly=!await publishSummaryReplacement(currentBatch.replacement,op);
         }else{
-          await core.updateMemoryControls({operations:{...Object.fromEntries(currentBatch.attempts.map(id=>[id,'deleted'])),[operationId]:'active'}});op.check();
+          const applied=await core.updateMemoryControls({operations:{...Object.fromEntries(currentBatch.attempts.map(id=>[id,'deleted'])),[operationId]:'active'}},{returnView:true});op.check();
+          publishedView=applied?.memoryView;
           currentBatch={...currentBatch,status:'saved',savedOperationId:operationId,requests:result.requests,updatedAt:Date.now()};
           await workspace.update('summary-batches',rows=>rows.map(b=>b.id===item.id?currentBatch:b),[]).catch(error=>{bookkeepingWarning=true;runtimeLog.record({run:diagnosticRun,task:'summary',phase:'checkpoint_warning',level:'warning',details:{...errorDiagnostics(error),storageArtifact:'checkpoint'}});});
         }
         saved++;summaryMonitor(op,{phase:'saving',completedBatches:saved});if(!stagedOnly)state.savedThrough=Math.max(state.savedThrough,item.endIndex);state.stale=false;
-        await workspace.write('ui',{savedThrough:state.savedThrough}).catch(error=>{bookkeepingWarning=true;void reportError(error,{task:'storage',stage:'storage'});});await refresh({summaryCommit:true});currentBatch=null;
+        await workspace.write('ui',{savedThrough:state.savedThrough}).catch(error=>{bookkeepingWarning=true;void reportError(error,{task:'storage',stage:'storage'});});await refresh({summaryCommit:true,view:publishedView});currentBatch=null;
         // Use the refreshed committed batches, not the pre-request running row.
         try{await syncAutoStartFloor(diagnosticRun);}catch(error){void reportError(error,{task:'summary',stage:'background'});}
         publishMs+=Date.now()-publishingAt;

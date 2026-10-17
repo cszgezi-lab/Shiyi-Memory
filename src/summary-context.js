@@ -25,7 +25,7 @@ export function summarySources(messages = []) {
   });
 }
 
-export function selectSummaryContext(records, messages, {budgetUnits=6000, maxRecords=48, categories=null}={}) {
+function* summaryContextSteps(records, messages, {budgetUnits=6000, maxRecords=48, categories=null}={}) {
   const query = messages.map(m=>m.text??'').join('\n').toLocaleLowerCase();
   const tokens = [...new Set(tokenizeChinese(query).filter(t=>t.length>1))];
   const sourceIds = new Set(messages.map(m=>m.id));
@@ -35,6 +35,7 @@ export function selectSummaryContext(records, messages, {budgetUnits=6000, maxRe
     if (!Array.isArray(rows) || ['history','summaryView','conflicts','coverage'].includes(category) || categories && !categories.includes(category)) continue;
     selected[category]=[];
     for (const original of rows) {
+      yield;
       if(historical.has(original.id))continue;
       const record=summaryRecord(original);
       const text=stableStringify(record).toLocaleLowerCase();
@@ -65,4 +66,19 @@ export function selectSummaryContext(records, messages, {budgetUnits=6000, maxRe
     selected[item.category].push(item.record);usedUnits+=item.units;count++;
   }
   return {records:selected,usedUnits,candidateCount:candidates.length,omittedCount:candidates.length-count};
+}
+
+export function selectSummaryContext(records,messages,options){
+  const steps=summaryContextSteps(records,messages,options);let next;
+  do{next=steps.next();}while(!next.done);return next.value;
+}
+
+/** Same selection order and budget; large histories admit browser tasks while
+ * scoring. Small reads retain the original task ordering. */
+export async function selectSummaryContextAsync(records,messages,options={}, {yieldTask=()=>new Promise(resolve=>setTimeout(resolve,0))}={}){
+  const large=Object.values(records??{}).filter(Array.isArray).reduce((n,rows)=>n+rows.length,0)>=256;
+  if(!large)return selectSummaryContext(records,messages,options);
+  const steps=summaryContextSteps(records,messages,options);let next,until=Date.now()+8;
+  do{next=steps.next();if(!next.done&&Date.now()>=until){await yieldTask();until=Date.now()+8;}}while(!next.done);
+  return next.value;
 }
