@@ -260,10 +260,19 @@ export function createProductApplication({ host = globalThis, adapter = null, co
   function publicState() { const automatic=automaticPlan();return { ...clone(state),automatic,autoRunning,taskMonitor:taskMonitor(automatic), merges:workspace?.isCurrent()&&!state.stale?clone(state.merges??[]):[], injectionLog:workspace?.isCurrent()?injectionLog?.state:null, dictionary:clone(activeDictionary()), runtimeLog:runtimeLog.state, enabled, chatReady:Boolean(workspace?.isCurrent())&&!state.stale, settings: core.settings, core: core.state, busy: Boolean(active)||apiOperations.size>0, credentialDirty:Object.fromEntries(Object.keys(keys).map(kind=>[kind,keyEdited.has(kind)&&Boolean(keys[kind])])), credentialPresent: Object.fromEntries(Object.entries(effectiveKeys()).map(([kind,value])=>[kind,Boolean(value)])) }; }
   const viewIdentities=new WeakMap();let nextViewIdentity=0;
   const viewIdentity=value=>{if(!value||typeof value!=='object')return value;if(!viewIdentities.has(value))viewIdentities.set(value,++nextViewIdentity);return viewIdentities.get(value);};
+  // UI-only projection cache. Worker scheduling still rereads its normal
+  // planning path; visible log/progress ticks must not rescan record bodies.
+  let viewPlanCache=null;
+  function viewAutomaticPlan(){
+    const settings=core.settings,options={startFloor:state.autoStartFloor??1,batchSize:settings.autoSummaryEvery,keepRecent:settings.autoKeepRecent,lastIndex:state.autoLastIndex??null};
+    const key=[state.batches,autoInvalidSources,...Object.values(options)];
+    if(!viewPlanCache||key.some((value,index)=>value!==viewPlanCache.key[index]))viewPlanCache={key,plan:autoSummaryPlan(validAutomaticBatches(),options)};
+    return viewPlanCache.plan;
+  }
   function readViewState(){
     const readers=Object.fromEntries(Object.entries(state).map(([key,value])=>[key,()=>clone(value)]));
     const cardRevision=viewIdentity(state.cards);
-    return lazyViewState({...readers,cardRevision:()=>cardRevision,batchRevision:()=>viewIdentity(state.batches),automatic:automaticPlan,autoRunning:()=>autoRunning,taskMonitor,
+    return lazyViewState({...readers,cardRevision:()=>cardRevision,batchRevision:()=>viewIdentity(state.batches),automatic:()=>clone(viewAutomaticPlan()),autoRunning:()=>autoRunning,taskMonitor:()=>taskMonitor(viewAutomaticPlan()),
       // Compare source identities before the people view consumes/clones large fields.
       peopleRevision:()=>{const settings=core.settings;return JSON.stringify([cardRevision,viewIdentity(state.dynamicPersona),viewIdentity(activeDictionary()),settings.aliases,settings.dynamicPersonaMvuMode]);},
       merges:()=>workspace?.isCurrent()&&!state.stale?clone(state.merges??[]):[],injectionLog:()=>workspace?.isCurrent()?injectionLog?.state:null,

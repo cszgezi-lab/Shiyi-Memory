@@ -324,6 +324,17 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
    }));
  }
  function paint(s){snapshot=s;for(const [sel,value]of [['[data-status]',s.message],['[data-scope]',s.chatReady?`当前聊天 · 已连接${s.enabled?'':' · 自动任务未启用'}`:s.status==='loading'?'正在加载当前聊天…':s.status==='no_chat'?'尚未打开聊天':s.stale?'正在重新核对聊天来源…':'等待当前聊天就绪'],['[data-progress]',s.progress]])if($(sel)&&$(sel).textContent!==value)$(sel).textContent=value;
+   if(s.feedback&&s.feedback.id!==lastFeedbackId){lastFeedbackId=s.feedback.id;feedback(s.feedback.text,s.feedback.level,['success','error'].includes(s.feedback.level));if(currentPage==='recording'&&s.feedback.kind==='summary'&&['error','warning'].includes(s.feedback.level)&&(s.batches??[]).some(batch=>['queued','running','failed','interrupted'].includes(batch.status))){const batches=$('[data-summary-memory-batches]');if(batches)batches.open=true;}}
+   if(panel.dataset.queueNotice!==(s.requestQueueNotice??'')){
+     const previous=panel.dataset.queueNotice;panel.dataset.queueNotice=s.requestQueueNotice??'';
+     if(s.requestQueueNotice)feedback(s.requestQueueNotice,'info');
+     else if(previous)feedback(s.feedback?.text??s.message,s.feedback?.level??'info');
+   }
+   // Background diagnostic persistence must not erase a visible operation error.
+   if(noticeLevel==='error'&&$('[data-status]'))$('[data-status]').textContent=noticeText;
+    floating?.setBusy(s.busy||modelRequests.size>0);
+    floating?.setTaskMonitor(s.taskMonitor);
+    if(floating?.window.hidden)return;
    // 更新中心只汇总进度：未读取到数据时明确说“未读取”，不假装一切正常。
    const updateProgress=$('[data-update-progress]');
    if(updateProgress){
@@ -341,17 +352,6 @@ function summaryModuleText({covered,missing,skipped,pending,next,batches=[],star
      const next=summaryLine+'\n'+personaLine;
      if(updateProgress.textContent!==next)updateProgress.textContent=next;
    }
-   if(s.feedback&&s.feedback.id!==lastFeedbackId){lastFeedbackId=s.feedback.id;feedback(s.feedback.text,s.feedback.level,['success','error'].includes(s.feedback.level));if(currentPage==='recording'&&s.feedback.kind==='summary'&&['error','warning'].includes(s.feedback.level)&&(s.batches??[]).some(batch=>['queued','running','failed','interrupted'].includes(batch.status))){const batches=$('[data-summary-memory-batches]');if(batches)batches.open=true;}}
-   if(panel.dataset.queueNotice!==(s.requestQueueNotice??'')){
-     const previous=panel.dataset.queueNotice;panel.dataset.queueNotice=s.requestQueueNotice??'';
-     if(s.requestQueueNotice)feedback(s.requestQueueNotice,'info');
-     else if(previous)feedback(s.feedback?.text??s.message,s.feedback?.level??'info');
-   }
-   // Background diagnostic persistence must not erase a visible operation error.
-   if(noticeLevel==='error'&&$('[data-status]'))$('[data-status]').textContent=noticeText;
-    floating?.setBusy(s.busy||modelRequests.size>0);
-    floating?.setTaskMonitor(s.taskMonitor);
-    if(floating?.window.hidden)return;
     taskMonitorView?.paint(s.taskMonitor);
     journalView?.paint(s,currentPage);
     if(['dynamic-persona','persona-profiles'].includes(currentPage)){
